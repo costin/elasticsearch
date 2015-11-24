@@ -86,6 +86,7 @@ public class PluginManager {
             "mapper-murmur3",
             "mapper-size",
             "repository-azure",
+            "repository-hdfs",
             "repository-s3",
             "store-smb"));
 
