@@ -50,6 +50,12 @@ dependencies {
     exclude module: "commons-beanutils"
     exclude module: "commons-beanutils-core"
     exclude module: "junit"
+    // provided by ES itself
+    exclude module: "commons-logging"
+    exclude module: "commons-codec"
+    exclude module: "commons-lang"
+    exclude group: "org.slf4j"
+    exclude group: "log4j"
   }
 
   hadoop2("org.apache.hadoop:hadoop-client:${versions.hadoop2}") {
@@ -68,6 +74,12 @@ dependencies {
       exclude module: "javax.servlet"
       exclude module: "guava"
       exclude module: "junit"
+      // provided by ES itself
+      exclude module: "commons-logging"
+      exclude module: "commons-codec"
+      exclude module: "commons-lang"
+      exclude group: "org.slf4j"
+      exclude group: "log4j"
   }
 
   hadoop2("org.apache.hadoop:hadoop-hdfs:${versions.hadoop2}") {
@@ -75,13 +87,72 @@ dependencies {
       exclude module: "log4j"
       exclude module: "junit"
   }
+} 
+
+configurations.all {
+    resolutionStrategy {
+        force "commons-lang:commons-lang:2.6"
+        force "commons-httpclient:commons-httpclient:3.0.1"
+        force "org.codehaus.jackson:jackson-core-asl:1.8.8"
+        force "org.codehaus.jackson:jackson-mapper-asl:1.8.8"
+    }
 }
+
 
 dependencyLicenses {
   mapping from: /hadoop-.*/, to: 'hadoop'
 }
 
 compileJava.options.compilerArgs << '-Xlint:-deprecation,-rawtypes'
+
+// main jar includes just the plugin classes
+jar {
+    include "org/elasticsearch/plugin/hadoop/hdfs/*"
+}
+
+// haddop jar (which actually depend on Hadoop)
+task hadoopLinkedJar(type: Jar, dependsOn:jar) {
+    appendix "internal"
+    from sourceSets.main.output.classesDir
+    // exclude plugin
+    exclude "org/elasticsearch/plugin/hadoop/hdfs/*"
+}
+
+
+// configure 'bundle' as being w/o Hadoop deps
+bundlePlugin {
+    into ("internal-libs") {
+        from hadoopLinkedJar.archivePath
+    }
+}
+
+task distZipHadoop1(type: Zip, dependsOn: [hadoopLinkedJar, jar]) { zipTask ->
+    from bundlePlugin
+    description = "Builds archive (with Hadoop1 dependencies) suitable for download page."
+
+    into ("hadoop-libs") {
+        from configurations.hadoop1.allArtifacts.files
+        from configurations.hadoop1
+    }
+}
+
+task distZipHadoop2(type: Zip, dependsOn: [hadoopLinkedJar, jar]) { zipTask ->
+    from bundlePlugin
+    description = "Builds archive (with Hadoop2/YARN dependencies) suitable for download page."
+    classifier = "hadoop2"
+
+    into ("hadoop-libs") {
+        from configurations.hadoop2.allArtifacts.files
+        from configurations.hadoop2
+    }
+}
+
+artifacts {
+    archives bundlePlugin
+    'default' bundlePlugin
+    archives distZipHadoop1
+    archives distZipHadoop2
+}
 
 test {
   // this is needed for insecure plugins, remove if possible!
