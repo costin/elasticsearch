@@ -35,7 +35,6 @@ import org.elasticsearch.client.Client;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.settings.SettingsException;
-import org.elasticsearch.plugin.hadoop.hdfs.HdfsPlugin;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.repositories.RepositoryMissingException;
 import org.elasticsearch.snapshots.SnapshotState;
@@ -88,7 +87,7 @@ public class HdfsSnapshotRestoreTests extends ESIntegTestCase {
 
     @Override
     protected Collection<Class<? extends Plugin>> nodePlugins() {
-        return pluginList(HdfsPlugin.class);
+        return pluginList(HdfsTestPlugin.class);
     }
 
     private String path;
@@ -111,7 +110,7 @@ public class HdfsSnapshotRestoreTests extends ESIntegTestCase {
         logger.info("-->  creating hdfs repository with path [{}]", path);
 
         PutRepositoryResponse putRepositoryResponse = client.admin().cluster().preparePutRepository("test-repo")
-.setType("hdfs")
+                .setType("hdfs")
                 .setSettings(Settings.settingsBuilder()
                         .put("uri", "file://./")
                         .put("path", path)

@@ -18,8 +18,16 @@
  */
 
 grant {
+  // create special URLClassLoader
+  permission java.lang.RuntimePermission "createClassLoader";
+  
+  permission java.security.SecurityPermission "createAccessControlContext";
+  
   // set TCCL used for bootstrapping Hadoop Configuration and JAAS
   permission java.lang.RuntimePermission "setContextClassLoader";
+  
+  // Hadoop UGI
+  permission java.lang.reflect.ReflectPermission "suppressAccessChecks";
   
   // allow JAAS
   permission javax.security.auth.AuthPermission "getSubject";

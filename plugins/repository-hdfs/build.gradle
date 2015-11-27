@@ -51,9 +51,6 @@ dependencies {
     exclude module: "commons-beanutils-core"
     exclude module: "junit"
     // provided by ES itself
-    exclude module: "commons-logging"
-    exclude module: "commons-codec"
-    exclude module: "commons-lang"
     exclude group: "org.slf4j"
     exclude group: "log4j"
   }
@@ -75,9 +72,6 @@ dependencies {
       exclude module: "guava"
       exclude module: "junit"
       // provided by ES itself
-      exclude module: "commons-logging"
-      exclude module: "commons-codec"
-      exclude module: "commons-lang"
       exclude group: "org.slf4j"
       exclude group: "log4j"
   }
@@ -86,11 +80,16 @@ dependencies {
       exclude module: "guava"
       exclude module: "log4j"
       exclude module: "junit"
+      // provided by ES itself
+      exclude group: "org.slf4j"
+      exclude group: "log4j"
   }
 } 
 
 configurations.all {
     resolutionStrategy {
+        force "commons-codec:commons-codec:${versions.commonscodec}"
+        force "commons-logging:commons-logging:${versions.commonslogging}"
         force "commons-lang:commons-lang:2.6"
         force "commons-httpclient:commons-httpclient:3.0.1"
         force "org.codehaus.jackson:jackson-core-asl:1.8.8"
@@ -127,8 +126,9 @@ bundlePlugin {
 }
 
 task distZipHadoop1(type: Zip, dependsOn: [hadoopLinkedJar, jar]) { zipTask ->
-    from bundlePlugin
+    from zipTree(bundlePlugin.archivePath)
     description = "Builds archive (with Hadoop1 dependencies) suitable for download page."
+    classifier = "hadoop1"
 
     into ("hadoop-libs") {
         from configurations.hadoop1.allArtifacts.files
@@ -137,7 +137,7 @@ task distZipHadoop1(type: Zip, dependsOn: [hadoopLinkedJar, jar]) { zipTask ->
 }
 
 task distZipHadoop2(type: Zip, dependsOn: [hadoopLinkedJar, jar]) { zipTask ->
-    from bundlePlugin
+    from zipTree(bundlePlugin.archivePath)
     description = "Builds archive (with Hadoop2/YARN dependencies) suitable for download page."
     classifier = "hadoop2"
 

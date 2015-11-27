@@ -19,12 +19,22 @@
 package org.elasticsearch.plugin.hadoop.hdfs;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Path;
+import java.security.AccessControlContext;
+import java.security.AccessController;
+import java.security.CodeSource;
+import java.security.DomainCombiner;
+import java.security.Permission;
+import java.security.PermissionCollection;
+import java.security.Policy;
+import java.security.PrivilegedAction;
+import java.security.ProtectionDomain;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -53,13 +63,8 @@ public class HdfsPlugin extends Plugin {
     @SuppressWarnings("unchecked")
     public void onModule(RepositoriesModule repositoriesModule) {
         String baseLib = detectLibFolder();
-
-        List<URL> cp = new ArrayList<>();
-        // add plugin internal jar
-        discoverJars(createURI(baseLib, "internal-libs"), cp);
-        // add Hadoop jars
-        discoverJars(createURI(baseLib, "hadoop-libs"), cp);
-
+        List<URL> cp = getHadoopClassLoaderPath(baseLib);
+        
         ClassLoader hadoopCL = URLClassLoader.newInstance(cp.toArray(new URL[cp.size()]), getClass().getClassLoader());
 
         Class<? extends Repository> repository = null;
@@ -69,13 +74,119 @@ public class HdfsPlugin extends Plugin {
             throw new IllegalStateException("Cannot load plugin class; is the plugin class setup correctly?", cnfe);
         }
 
-        repositoriesModule.registerRepository("hdfs", repository, BlobStoreIndexShardRepository.class);
+        // changeCodeSource(repository);
 
+        // setupHadoopPolicy(baseLib);
+
+        repositoriesModule.registerRepository("hdfs", repository, BlobStoreIndexShardRepository.class);
         Loggers.getLogger(HdfsPlugin.class).info("Loaded Hadoop [{}] libraries from {}", getHadoopVersion(hadoopCL), baseLib);
 
-        if (System.getSecurityManager() != null) {
-            Loggers.getLogger(HdfsPlugin.class).warn("The Java Security Manager is enabled however Hadoop is not compatible with it and thus needs to be disabled; see the docs for more information...");
+        // not needed in ES 2.2 or higher
+        // if (System.getSecurityManager() != null) {
+        // Loggers.getLogger(HdfsPlugin.class).warn("The Java Security Manager
+        // is enabled however Hadoop is not compatible with it and thus needs to
+        // be disabled; see the docs for more information...");
+        // }
+    }
+
+    public static AccessControlContext hadoopACC() {
+        return AccessController.doPrivileged(new PrivilegedAction<AccessControlContext>() {
+            @Override
+            public AccessControlContext run() {
+                return new AccessControlContext(AccessController.getContext(), new HadoopDomainCombiner());
+            }
+        });
+    }
+
+    private static class HadoopDomainCombiner implements DomainCombiner {
+
+        private static String BASE_LIB = detectLibFolder();
+        
+        @Override
+        public ProtectionDomain[] combine(ProtectionDomain[] currentDomains, ProtectionDomain[] assignedDomains) {
+            for (ProtectionDomain pd : assignedDomains) {
+                if (pd.getCodeSource().getLocation().toString().startsWith(BASE_LIB)) {
+                    System.out.println("Found matching Hadoop sub-domain " + pd.getCodeSource().getLocation().toString());
+                    return assignedDomains;
+                }
+            }
+
+            return currentDomains;
         }
+    }
+
+    private static class HadoopPolicy extends Policy {
+
+        private final Policy esPolicy;
+        private final String baseLib;
+
+        public HadoopPolicy(Policy esPolicy, String baseLib) {
+            this.esPolicy = esPolicy;
+            this.baseLib = baseLib;
+        }
+
+        public PermissionCollection getPermissions(CodeSource codesource) {
+            return esPolicy.getPermissions(codesource);
+        }
+
+        public PermissionCollection getPermissions(ProtectionDomain domain) {
+            return esPolicy.getPermissions(domain);
+        }
+
+        public boolean implies(ProtectionDomain domain, Permission permission) {
+            CodeSource cs = null;
+            if (domain != null) {
+                cs = domain.getCodeSource();
+            }
+
+            if (cs.getLocation().toString().startsWith(baseLib)) {
+                return HdfsPlugin.class.getProtectionDomain().implies(permission);
+            }
+
+            return esPolicy.implies(domain, permission);
+        }
+
+        public void refresh() {
+            esPolicy.refresh();
+        }
+    }
+
+    private void setupHadoopPolicy(String baseLib) {
+        AccessController.doPrivileged(new PrivilegedAction<Void>() {
+            @Override
+            public Void run() {
+                Policy oldPolicy = Policy.getPolicy();
+                Policy.setPolicy(new HadoopPolicy(oldPolicy, baseLib));
+                return null;
+            }
+        });
+    }
+
+    private void changeCodeSource(Class<? extends Repository> repository) {
+        CodeSource cs = repository.getProtectionDomain().getCodeSource();
+
+        AccessController.doPrivileged(new PrivilegedAction<Void>() {
+            @Override
+            public Void run() {
+                try {
+                    Field loc = cs.getClass().getDeclaredField("location");
+                    loc.setAccessible(true);
+                    loc.set(cs, HdfsPlugin.class.getProtectionDomain().getCodeSource().getLocation());
+                } catch (Exception ex) {
+                    throw new RuntimeException("Cannot change code source ", ex);
+                }
+                return null;
+            }
+        });
+    }
+
+    protected List<URL> getHadoopClassLoaderPath(String baseLib) {
+        List<URL> cp = new ArrayList<>();
+        // add plugin internal jar
+        discoverJars(createURI(baseLib, "internal-libs"), cp, false);
+        // add Hadoop jars
+        discoverJars(createURI(baseLib, "hadoop-libs"), cp, true);
+        return cp;
     }
 
     private String getHadoopVersion(ClassLoader hadoopCL) {
@@ -100,13 +211,14 @@ public class HdfsPlugin extends Plugin {
         return version;
     }
 
-    private String detectLibFolder() {
-        ClassLoader cl = getClass().getClassLoader();
+    private static String detectLibFolder() {
+        ClassLoader cl = HdfsPlugin.class.getClassLoader();
 
         // we could get the URL from the URLClassloader directly
         // but that can create issues when running the tests from the IDE
-        // we could detect that by loading resources but that as well relies on the JAR URL
-        String classToLookFor = getClass().getName().replace(".", "/").concat(".class");
+        // we could detect that by loading resources but that as well relies on
+        // the JAR URL
+        String classToLookFor = HdfsPlugin.class.getName().replace(".", "/").concat(".class");
         URL classURL = cl.getResource(classToLookFor);
         if (classURL == null) {
             throw new IllegalStateException("Cannot detect itself; something is wrong with this ClassLoader " + cl);
@@ -131,7 +243,7 @@ public class HdfsPlugin extends Plugin {
             base = base.substring(0, base.length() - classToLookFor.length());
         }
 
-        // append hadoop-libs/
+        // append /
         if (!base.endsWith("/")) {
             base = base.concat("/");
         }
@@ -149,7 +261,7 @@ public class HdfsPlugin extends Plugin {
     }
 
     @SuppressForbidden(reason = "discover nested jar")
-    private void discoverJars(URI libPath, List<URL> cp) {
+    private void discoverJars(URI libPath, List<URL> cp, boolean optional) {
         try {
             Path[] jars = FileSystemUtils.files(PathUtils.get(libPath), "*.jar");
 
@@ -157,7 +269,9 @@ public class HdfsPlugin extends Plugin {
                 cp.add(path.toUri().toURL());
             }
         } catch (IOException ex) {
-            throw new IllegalStateException("Cannot compute plugin classpath", ex);
+            if (!optional) {
+                throw new IllegalStateException("Cannot compute plugin classpath", ex);
+            }
         }
     }
 }

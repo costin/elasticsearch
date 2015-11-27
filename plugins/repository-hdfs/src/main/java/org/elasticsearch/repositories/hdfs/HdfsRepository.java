@@ -23,6 +23,9 @@ import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
 import java.nio.file.Files;
+import java.security.AccessController;
+import java.security.PrivilegedActionException;
+import java.security.PrivilegedExceptionAction;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -43,6 +46,7 @@ import org.elasticsearch.common.io.PathUtils;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.hadoop.hdfs.blobstore.HdfsBlobStore;
 import org.elasticsearch.index.snapshots.IndexShardRepository;
+import org.elasticsearch.plugin.hadoop.hdfs.HdfsPlugin;
 import org.elasticsearch.repositories.RepositoryName;
 import org.elasticsearch.repositories.RepositorySettings;
 import org.elasticsearch.repositories.blobstore.BlobStoreRepository;
@@ -69,6 +73,8 @@ public class HdfsRepository extends BlobStoreRepository implements FileSystemFac
         if (path == null) {
             throw new IllegalArgumentException("no 'path' defined for hdfs snapshot/restore");
         }
+
+        System.out.println("repository cs " + getClass().getProtectionDomain().getCodeSource());
 
         // get configuration
         fs = getFileSystem();
@@ -99,13 +105,30 @@ public class HdfsRepository extends BlobStoreRepository implements FileSystemFac
             }
         }
         if (fs == null) {
-            fs = initFileSystem(repositorySettings);
+            try {
+                fs = AccessController.doPrivileged(new PrivilegedExceptionAction<FileSystem>() {
+                    @Override
+                    public FileSystem run() throws IOException {
+                        Thread th = Thread.currentThread();
+                        ClassLoader oldCL = th.getContextClassLoader();
+                        try {
+                            th.setContextClassLoader(getClass().getClassLoader());
+                            return initFileSystem(repositorySettings);
+                        } finally {
+                            th.setContextClassLoader(oldCL);
+                        }
+                    }
+                }, HdfsPlugin.hadoopACC());
+            } catch (PrivilegedActionException pae) {
+                throw (IOException) pae.getCause();
+            }
         }
 
         return fs;
     }
 
     private FileSystem initFileSystem(RepositorySettings repositorySettings) throws IOException {
+
         Configuration cfg = new Configuration(repositorySettings.settings().getAsBoolean("load_defaults", settings.getAsBoolean("load_defaults", true)));
         cfg.setClassLoader(this.getClass().getClassLoader());
         cfg.reloadConfiguration();
@@ -122,27 +145,30 @@ public class HdfsRepository extends BlobStoreRepository implements FileSystemFac
             cfg.set(entry.getKey(), entry.getValue());
         }
 
-        UserGroupInformation.setConfiguration(cfg);
+        System.out.println(AccessController.getContext());
+        System.out.println(getClass().getProtectionDomain());
+        System.out.println(getClass().getProtectionDomain().getPermissions());
+
+        try {
+            UserGroupInformation.isSecurityEnabled();
+            UserGroupInformation.setConfiguration(cfg);
+        } catch (Throwable th) {
+            System.err.println(th);
+        }
 
         String uri = repositorySettings.settings().get("uri", settings.get("uri"));
         URI actualUri = (uri != null ? URI.create(uri) : FileSystem.getDefaultUri(cfg));
         String user = repositorySettings.settings().get("user", settings.get("user"));
 
-        Thread th = Thread.currentThread();
-        ClassLoader oldCL = th.getContextClassLoader();
         try {
             // disable FS cache
             String disableFsCache = String.format(Locale.ROOT, "fs.%s.impl.disable.cache", actualUri.getScheme());
             cfg.setBoolean(disableFsCache, true);
 
-            th.setContextClassLoader(cfg.getClassLoader());
             return (user != null ? FileSystem.get(actualUri, cfg, user) : FileSystem.get(actualUri, cfg));
         } catch (Exception ex) {
             throw new ElasticsearchGenerationException(String.format(Locale.ROOT, "Cannot create Hdfs file-system for uri [%s]", actualUri), ex);
-        } finally {
-            th.setContextClassLoader(oldCL);
         }
-
     }
 
     @SuppressForbidden(reason = "pick up Hadoop config (which can be on HDFS)")
