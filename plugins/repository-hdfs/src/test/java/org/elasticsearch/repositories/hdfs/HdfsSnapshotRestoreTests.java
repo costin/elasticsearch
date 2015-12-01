@@ -38,10 +38,14 @@ import org.elasticsearch.test.ESIntegTestCase.ClusterScope;
 import org.elasticsearch.test.ESIntegTestCase.Scope;
 import org.elasticsearch.test.store.MockFSDirectoryService;
 import org.junit.After;
-import org.junit.AfterClass;
 import org.junit.Before;
 
 import java.io.IOException;
+import java.security.AccessControlContext;
+import java.security.AccessController;
+import java.security.DomainCombiner;
+import java.security.PrivilegedAction;
+import java.security.ProtectionDomain;
 import java.util.Collection;
 
 import static org.hamcrest.Matchers.equalTo;
@@ -53,16 +57,38 @@ import static org.hamcrest.Matchers.greaterThan;
 @ClusterScope(scope = Scope.SUITE, numDataNodes = 2)
 public class HdfsSnapshotRestoreTests extends ESIntegTestCase {
 
-    // @BeforeClass
-    // public static void startHDFS() throws Exception {
-    @Before
-    public void startHDFS() throws Exception {
-        // MiniHDFSCluster.main(new String[] {});
+    private static class HadoopTestLibCombiner implements DomainCombiner {
+
+        private static String BASE_CS = HadoopTestLibCombiner.class.getProtectionDomain().getCodeSource().getLocation().toString();
+
+        @Override
+        public ProtectionDomain[] combine(ProtectionDomain[] currentDomains, ProtectionDomain[] assignedDomains) {
+            for (ProtectionDomain pd : assignedDomains) {
+                if (pd.getCodeSource().getLocation().toString().startsWith(BASE_CS)) {
+                    return assignedDomains;
+                }
+            }
+
+            return currentDomains;
+        }
     }
 
-    @AfterClass
-    public static void stopHDFS() throws Exception {
-        // ?
+    // @Before
+    public void startHDFS() throws Exception {
+        ProtectionDomain pd = getClass().getProtectionDomain();
+        AccessControlContext acc = AccessController.doPrivileged(new PrivilegedAction<AccessControlContext>() {
+            @Override
+            public AccessControlContext run() {
+                return new AccessControlContext(AccessController.getContext(), new HadoopTestLibCombiner());
+            }
+        });
+
+        AccessController.doPrivileged(new PrivilegedAction<Void>() {
+            @Override
+            public Void run() {
+                return null;
+            }
+        }, acc);
     }
 
     @Override
@@ -75,6 +101,7 @@ public class HdfsSnapshotRestoreTests extends ESIntegTestCase {
 
     @Override
     protected Settings nodeSettings(int ordinal) {
+
         // During restore we frequently restore index to exactly the same state it was before, that might cause the same
         // checksum file to be written twice during restore operation
         Settings.Builder settings = Settings.builder()
@@ -127,7 +154,9 @@ public class HdfsSnapshotRestoreTests extends ESIntegTestCase {
         PutRepositoryResponse putRepositoryResponse = client.admin().cluster().preparePutRepository("test-repo")
                 .setType("hdfs")
                 .setSettings(Settings.settingsBuilder()
-                        .put("uri", "hdfs://127.0.0.1:51227")
+                        //.put("uri", "hdfs://127.0.0.1:51227")
+                        .put("conf.fs.es-hdfs.impl", "org.elasticsearch.repositories.hdfs.TestingFs")
+                        .put("uri", "es-hdfs://./build/")
                         .put("path", path)
                         .put("conf", "additional-cfg.xml, conf-2.xml")
                         .put("chunk_size", randomIntBetween(100, 1000) + "k")
@@ -209,7 +238,9 @@ public class HdfsSnapshotRestoreTests extends ESIntegTestCase {
             PutRepositoryResponse putRepositoryResponse = client.admin().cluster().preparePutRepository("test-repo")
                     .setType("hdfs")
                     .setSettings(Settings.settingsBuilder()
-                        .put("uri", "hdfs://127.0.0.1:51227/")
+                            // .put("uri", "hdfs://127.0.0.1:51227/")
+                        .put("conf.fs.es-hdfs.impl", "org.elasticsearch.repositories.hdfs.TestingFs")
+                        .put("uri", "es-hdfs:///")
                         .put("path", path + "a@b$c#11:22")
                         .put("chunk_size", randomIntBetween(100, 1000) + "k")
                         .put("compress", randomBoolean()))

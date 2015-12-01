@@ -158,7 +158,7 @@ public class HdfsRepository extends BlobStoreRepository implements FileSystemFac
             }
         }
 
-        Map<String, String> map = settings.getByPrefix("conf.").getAsMap();
+        Map<String, String> map = repositorySettings.settings().getByPrefix("conf.").getAsMap();
         for (Entry<String, String> entry : map.entrySet()) {
             cfg.set(entry.getKey(), entry.getValue());
         }
