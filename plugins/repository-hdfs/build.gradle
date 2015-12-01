@@ -35,9 +35,22 @@ versions << [
 ]
 
 dependencies {
-  provided "org.apache.hadoop:hadoop-core:${versions.hadoop1}"
   provided "org.elasticsearch:elasticsearch:${versions.elasticsearch}"
-  //testCompile "org.apache.lucene:lucene-test-framework:${versions.lucene}"
+  provided "org.apache.hadoop:hadoop-core:${versions.hadoop1}"
+
+  // use Hadoop1 to compile and test things (a subset of Hadoop2)
+  testCompile "org.apache.hadoop:hadoop-core:${versions.hadoop1}"
+  testCompile "org.apache.hadoop:hadoop-test:${versions.hadoop1}"
+  // Hadoop dependencies
+  testCompile "commons-configuration:commons-configuration:1.6"
+  testCompile "commons-lang:commons-lang:${versions.commonslang}"
+  testCompile "commons-collections:commons-collections:3.2.2"
+  testCompile "commons-net:commons-net:1.4.1"
+  testCompile "org.mortbay.jetty:jetty:6.1.26"
+  testCompile "org.mortbay.jetty:jetty-util:6.1.26"
+  testCompile "org.mortbay.jetty:servlet-api:2.5-20081211"
+  testCompile "com.sun.jersey:jersey-core:1.8"
+  
 
   hadoop1("org.apache.hadoop:hadoop-core:${versions.hadoop1}") {
     exclude module: "commons-cli"
@@ -91,6 +104,7 @@ configurations.all {
         force "commons-codec:commons-codec:${versions.commonscodec}"
         force "commons-logging:commons-logging:${versions.commonslogging}"
         force "commons-lang:commons-lang:2.6"
+        //force "commons-collections:commons-collections:3.2.2"
         force "commons-httpclient:commons-httpclient:3.0.1"
         force "org.codehaus.jackson:jackson-core-asl:1.8.8"
         force "org.codehaus.jackson:jackson-mapper-asl:1.8.8"

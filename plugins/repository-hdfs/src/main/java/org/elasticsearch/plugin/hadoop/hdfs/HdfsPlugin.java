@@ -18,27 +18,6 @@
  */
 package org.elasticsearch.plugin.hadoop.hdfs;
 
-import java.io.IOException;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.net.URL;
-import java.net.URLClassLoader;
-import java.nio.file.Path;
-import java.security.AccessControlContext;
-import java.security.AccessController;
-import java.security.CodeSource;
-import java.security.DomainCombiner;
-import java.security.Permission;
-import java.security.PermissionCollection;
-import java.security.Policy;
-import java.security.PrivilegedAction;
-import java.security.ProtectionDomain;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
-
 import org.elasticsearch.common.SuppressForbidden;
 import org.elasticsearch.common.io.FileSystemUtils;
 import org.elasticsearch.common.io.PathUtils;
@@ -47,6 +26,22 @@ import org.elasticsearch.index.snapshots.blobstore.BlobStoreIndexShardRepository
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.repositories.RepositoriesModule;
 import org.elasticsearch.repositories.Repository;
+
+import java.io.IOException;
+import java.lang.reflect.Method;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.file.Path;
+import java.security.AccessControlContext;
+import java.security.AccessController;
+import java.security.DomainCombiner;
+import java.security.PrivilegedAction;
+import java.security.ProtectionDomain;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 
 public class HdfsPlugin extends Plugin {
 
@@ -74,19 +69,8 @@ public class HdfsPlugin extends Plugin {
             throw new IllegalStateException("Cannot load plugin class; is the plugin class setup correctly?", cnfe);
         }
 
-        // changeCodeSource(repository);
-
-        // setupHadoopPolicy(baseLib);
-
         repositoriesModule.registerRepository("hdfs", repository, BlobStoreIndexShardRepository.class);
         Loggers.getLogger(HdfsPlugin.class).info("Loaded Hadoop [{}] libraries from {}", getHadoopVersion(hadoopCL), baseLib);
-
-        // not needed in ES 2.2 or higher
-        // if (System.getSecurityManager() != null) {
-        // Loggers.getLogger(HdfsPlugin.class).warn("The Java Security Manager
-        // is enabled however Hadoop is not compatible with it and thus needs to
-        // be disabled; see the docs for more information...");
-        // }
     }
 
     public static AccessControlContext hadoopACC() {
@@ -106,78 +90,12 @@ public class HdfsPlugin extends Plugin {
         public ProtectionDomain[] combine(ProtectionDomain[] currentDomains, ProtectionDomain[] assignedDomains) {
             for (ProtectionDomain pd : assignedDomains) {
                 if (pd.getCodeSource().getLocation().toString().startsWith(BASE_LIB)) {
-                    System.out.println("Found matching Hadoop sub-domain " + pd.getCodeSource().getLocation().toString());
                     return assignedDomains;
                 }
             }
 
             return currentDomains;
         }
-    }
-
-    private static class HadoopPolicy extends Policy {
-
-        private final Policy esPolicy;
-        private final String baseLib;
-
-        public HadoopPolicy(Policy esPolicy, String baseLib) {
-            this.esPolicy = esPolicy;
-            this.baseLib = baseLib;
-        }
-
-        public PermissionCollection getPermissions(CodeSource codesource) {
-            return esPolicy.getPermissions(codesource);
-        }
-
-        public PermissionCollection getPermissions(ProtectionDomain domain) {
-            return esPolicy.getPermissions(domain);
-        }
-
-        public boolean implies(ProtectionDomain domain, Permission permission) {
-            CodeSource cs = null;
-            if (domain != null) {
-                cs = domain.getCodeSource();
-            }
-
-            if (cs.getLocation().toString().startsWith(baseLib)) {
-                return HdfsPlugin.class.getProtectionDomain().implies(permission);
-            }
-
-            return esPolicy.implies(domain, permission);
-        }
-
-        public void refresh() {
-            esPolicy.refresh();
-        }
-    }
-
-    private void setupHadoopPolicy(String baseLib) {
-        AccessController.doPrivileged(new PrivilegedAction<Void>() {
-            @Override
-            public Void run() {
-                Policy oldPolicy = Policy.getPolicy();
-                Policy.setPolicy(new HadoopPolicy(oldPolicy, baseLib));
-                return null;
-            }
-        });
-    }
-
-    private void changeCodeSource(Class<? extends Repository> repository) {
-        CodeSource cs = repository.getProtectionDomain().getCodeSource();
-
-        AccessController.doPrivileged(new PrivilegedAction<Void>() {
-            @Override
-            public Void run() {
-                try {
-                    Field loc = cs.getClass().getDeclaredField("location");
-                    loc.setAccessible(true);
-                    loc.set(cs, HdfsPlugin.class.getProtectionDomain().getCodeSource().getLocation());
-                } catch (Exception ex) {
-                    throw new RuntimeException("Cannot change code source ", ex);
-                }
-                return null;
-            }
-        });
     }
 
     protected List<URL> getHadoopClassLoaderPath(String baseLib) {

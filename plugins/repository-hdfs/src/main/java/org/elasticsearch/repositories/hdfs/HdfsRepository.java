@@ -18,18 +18,6 @@
  */
 package org.elasticsearch.repositories.hdfs;
 
-import java.io.IOException;
-import java.net.MalformedURLException;
-import java.net.URI;
-import java.net.URL;
-import java.nio.file.Files;
-import java.security.AccessController;
-import java.security.PrivilegedActionException;
-import java.security.PrivilegedExceptionAction;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Map.Entry;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -51,6 +39,18 @@ import org.elasticsearch.repositories.RepositoryName;
 import org.elasticsearch.repositories.RepositorySettings;
 import org.elasticsearch.repositories.blobstore.BlobStoreRepository;
 import org.elasticsearch.threadpool.ThreadPool;
+
+import java.io.IOException;
+import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URL;
+import java.nio.file.Files;
+import java.security.AccessController;
+import java.security.PrivilegedActionException;
+import java.security.PrivilegedExceptionAction;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Map.Entry;
 
 public class HdfsRepository extends BlobStoreRepository implements FileSystemFactory {
 
@@ -74,11 +74,14 @@ public class HdfsRepository extends BlobStoreRepository implements FileSystemFac
             throw new IllegalArgumentException("no 'path' defined for hdfs snapshot/restore");
         }
 
-        System.out.println("repository cs " + getClass().getProtectionDomain().getCodeSource());
-
         // get configuration
         fs = getFileSystem();
-        Path hdfsPath = fs.makeQualified(new Path(path));
+        Path hdfsPath = SecurityUtils.execute(fs, new FsCallback<Path>() {
+            @Override
+            public Path doInHdfs(FileSystem fs) throws IOException {
+                return fs.makeQualified(new Path(path));
+            }
+        });
         this.basePath = BlobPath.cleanPath();
 
         logger.debug("Using file-system [{}] for URI [{}], path [{}]", fs, fs.getUri(), hdfsPath);
@@ -90,6 +93,29 @@ public class HdfsRepository extends BlobStoreRepository implements FileSystemFac
     // as the FileSystem is long-lived and might go away, make sure to check it before it's being used.
     @Override
     public FileSystem getFileSystem() throws IOException {
+        try {
+            return AccessController.doPrivileged(new PrivilegedExceptionAction<FileSystem>() {
+                @Override
+                public FileSystem run() throws IOException {
+                    return doGetFileSystem();
+                }
+            }, HdfsPlugin.hadoopACC());
+        } catch (PrivilegedActionException pae) {
+            Throwable th = pae.getCause();
+            if (th instanceof Error) {
+                throw (Error) th;
+            }
+            if (th instanceof RuntimeException) {
+                throw (RuntimeException) th;
+            }
+            if (th instanceof IOException) {
+                throw (IOException) th;
+            }
+            throw new ElasticsearchException(pae);
+        }
+    }
+
+    private FileSystem doGetFileSystem() throws IOException {
         // check if the fs is still alive
         // make a cheap call that triggers little to no security checks
         if (fs != null) {
@@ -105,25 +131,17 @@ public class HdfsRepository extends BlobStoreRepository implements FileSystemFac
             }
         }
         if (fs == null) {
+            Thread th = Thread.currentThread();
+            ClassLoader oldCL = th.getContextClassLoader();
             try {
-                fs = AccessController.doPrivileged(new PrivilegedExceptionAction<FileSystem>() {
-                    @Override
-                    public FileSystem run() throws IOException {
-                        Thread th = Thread.currentThread();
-                        ClassLoader oldCL = th.getContextClassLoader();
-                        try {
-                            th.setContextClassLoader(getClass().getClassLoader());
-                            return initFileSystem(repositorySettings);
-                        } finally {
-                            th.setContextClassLoader(oldCL);
-                        }
-                    }
-                }, HdfsPlugin.hadoopACC());
-            } catch (PrivilegedActionException pae) {
-                throw (IOException) pae.getCause();
+                th.setContextClassLoader(getClass().getClassLoader());
+                return initFileSystem(repositorySettings);
+            } catch (IOException ex) {
+                throw ex;
+            } finally {
+                th.setContextClassLoader(oldCL);
             }
         }
-
         return fs;
     }
 
@@ -145,15 +163,10 @@ public class HdfsRepository extends BlobStoreRepository implements FileSystemFac
             cfg.set(entry.getKey(), entry.getValue());
         }
 
-        System.out.println(AccessController.getContext());
-        System.out.println(getClass().getProtectionDomain());
-        System.out.println(getClass().getProtectionDomain().getPermissions());
-
         try {
-            UserGroupInformation.isSecurityEnabled();
             UserGroupInformation.setConfiguration(cfg);
         } catch (Throwable th) {
-            System.err.println(th);
+            throw new ElasticsearchGenerationException(String.format(Locale.ROOT, "Cannot initialize Hadoop"), th);
         }
 
         String uri = repositorySettings.settings().get("uri", settings.get("uri"));

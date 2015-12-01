@@ -18,12 +18,6 @@
  */
 package org.elasticsearch.repositories.hdfs;
 
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.greaterThan;
-
-import java.io.IOException;
-import java.util.Collection;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalFileSystem;
@@ -36,6 +30,7 @@ import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.settings.SettingsException;
 import org.elasticsearch.plugins.Plugin;
+import org.elasticsearch.repositories.RepositoryException;
 import org.elasticsearch.repositories.RepositoryMissingException;
 import org.elasticsearch.snapshots.SnapshotState;
 import org.elasticsearch.test.ESIntegTestCase;
@@ -43,13 +38,32 @@ import org.elasticsearch.test.ESIntegTestCase.ClusterScope;
 import org.elasticsearch.test.ESIntegTestCase.Scope;
 import org.elasticsearch.test.store.MockFSDirectoryService;
 import org.junit.After;
+import org.junit.AfterClass;
 import org.junit.Before;
+
+import java.io.IOException;
+import java.util.Collection;
+
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.greaterThan;
 
 /**
  * You must specify {@code -Dtests.thirdparty=true -Dtests.config=/path/to/config}
  */
 @ClusterScope(scope = Scope.SUITE, numDataNodes = 2)
 public class HdfsSnapshotRestoreTests extends ESIntegTestCase {
+
+    // @BeforeClass
+    // public static void startHDFS() throws Exception {
+    @Before
+    public void startHDFS() throws Exception {
+        // MiniHDFSCluster.main(new String[] {});
+    }
+
+    @AfterClass
+    public static void stopHDFS() throws Exception {
+        // ?
+    }
 
     @Override
     public Settings indexSettings() {
@@ -66,6 +80,7 @@ public class HdfsSnapshotRestoreTests extends ESIntegTestCase {
         Settings.Builder settings = Settings.builder()
                 .put(super.nodeSettings(ordinal))
                 .put("path.home", createTempDir())
+                .put("path.repo", "")
                 .put(MockFSDirectoryService.RANDOM_PREVENT_DOUBLE_WRITE, false)
                 .put(MockFSDirectoryService.RANDOM_NO_DELETE_OPEN_FILE, false);
         // .put("plugin.types", HdfsPlugin.class.getName());
@@ -112,7 +127,7 @@ public class HdfsSnapshotRestoreTests extends ESIntegTestCase {
         PutRepositoryResponse putRepositoryResponse = client.admin().cluster().preparePutRepository("test-repo")
                 .setType("hdfs")
                 .setSettings(Settings.settingsBuilder()
-                        .put("uri", "file://./")
+                        .put("uri", "hdfs://127.0.0.1:51227")
                         .put("path", path)
                         .put("conf", "additional-cfg.xml, conf-2.xml")
                         .put("chunk_size", randomIntBetween(100, 1000) + "k")
@@ -190,18 +205,23 @@ public class HdfsSnapshotRestoreTests extends ESIntegTestCase {
         Client client = client();
         logger.info("-->  creating hdfs repository with path [{}]", path);
 
-        PutRepositoryResponse putRepositoryResponse = client.admin().cluster().preparePutRepository("test-repo")
-                .setType("hdfs")
-                .setSettings(Settings.settingsBuilder()
-                        .put("uri", "file://./")
+        try {
+            PutRepositoryResponse putRepositoryResponse = client.admin().cluster().preparePutRepository("test-repo")
+                    .setType("hdfs")
+                    .setSettings(Settings.settingsBuilder()
+                        .put("uri", "hdfs://127.0.0.1:51227/")
                         .put("path", path + "a@b$c#11:22")
                         .put("chunk_size", randomIntBetween(100, 1000) + "k")
-                        .put("compress", randomBoolean())
-                        ).get();
-        assertThat(putRepositoryResponse.isAcknowledged(), equalTo(true));
+                        .put("compress", randomBoolean()))
+                    .get();
+            assertThat(putRepositoryResponse.isAcknowledged(), equalTo(true));
 
-        createIndex("test-idx-1", "test-idx-2", "test-idx-3");
-        ensureGreen();
+            createIndex("test-idx-1", "test-idx-2", "test-idx-3");
+            ensureGreen();
+            fail("Path name is invalid");
+        } catch (RepositoryException re) {
+            // expected
+        }
     }
 
     /**

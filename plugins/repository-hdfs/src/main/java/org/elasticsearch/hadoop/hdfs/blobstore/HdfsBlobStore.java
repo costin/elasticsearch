@@ -18,11 +18,9 @@
  */
 package org.elasticsearch.hadoop.hdfs.blobstore;
 
-import java.io.IOException;
-import java.util.concurrent.Executor;
-
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.common.blobstore.BlobContainer;
 import org.elasticsearch.common.blobstore.BlobPath;
 import org.elasticsearch.common.blobstore.BlobStore;
@@ -31,7 +29,12 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.repositories.hdfs.FileSystemFactory;
+import org.elasticsearch.repositories.hdfs.FsCallback;
+import org.elasticsearch.repositories.hdfs.SecurityUtils;
 import org.elasticsearch.threadpool.ThreadPool;
+
+import java.io.IOException;
+import java.util.concurrent.Executor;
 
 public class HdfsBlobStore extends AbstractComponent implements BlobStore {
 
@@ -48,11 +51,19 @@ public class HdfsBlobStore extends AbstractComponent implements BlobStore {
 
         this.bufferSizeInBytes = (int) settings.getAsBytesSize("buffer_size", new ByteSizeValue(100, ByteSizeUnit.KB)).bytes();
 
-        FileSystem fs = ffs.getFileSystem();
+        mkdirs(path);
+    }
 
-        if (!fs.exists(path)) {
-            fs.mkdirs(path);
-        }
+    private void mkdirs(Path path) throws IOException {
+        SecurityUtils.execute(ffs, new FsCallback<Void>() {
+            @Override
+            public Void doInHdfs(FileSystem fs) throws IOException {
+                if (!fs.exists(path)) {
+                    fs.mkdirs(path);
+                }
+                return null;
+            }
+        });
     }
 
     @Override
@@ -82,19 +93,22 @@ public class HdfsBlobStore extends AbstractComponent implements BlobStore {
     }
 
     @Override
-    public void delete(BlobPath path) {
-        try {
-            ffs.getFileSystem().delete(translateToHdfsPath(path), true);
-        } catch (IOException ex) {
-        }
+    public void delete(BlobPath path) throws IOException {
+        SecurityUtils.execute(ffs, new FsCallback<Void>() {
+            @Override
+            public Void doInHdfs(FileSystem fs) throws IOException {
+                fs.delete(translateToHdfsPath(path), true);
+                return null;
+            }
+        });
     }
 
     private Path buildHdfsPath(BlobPath blobPath) {
-        Path path = translateToHdfsPath(blobPath);
+        final Path path = translateToHdfsPath(blobPath);
         try {
-            ffs.getFileSystem().mkdirs(path);
-        } catch (IOException e) {
-            // ignore
+            mkdirs(path);
+        } catch (IOException ex) {
+            throw new ElasticsearchException("failed to create blob container", ex);
         }
         return path;
     }
