@@ -83,15 +83,15 @@ public final class FakeRestChannel extends AbstractRestChannel {
         return capturedRestResponse;
     }
 
-    public boolean await() throws InterruptedException {
-        return latch.await(10, TimeUnit.SECONDS);
-    }
-
     public AtomicInteger responses() {
         return responses;
     }
 
     public AtomicInteger errors() {
         return errors;
+    }
+
+    public boolean await() throws InterruptedException {
+        return latch.await(10, TimeUnit.SECONDS);
     }
 }

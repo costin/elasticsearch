@@ -10,6 +10,7 @@ import com.carrotsearch.randomizedtesting.annotations.ParametersFactory;
 import org.apache.logging.log4j.Logger;
 import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.elasticsearch.xpack.sql.qa.jdbc.CsvTestUtils.CsvTestCase;
+import org.junit.ClassRule;
 
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -21,7 +22,11 @@ import static org.elasticsearch.xpack.sql.qa.jdbc.CsvTestUtils.executeCsvQuery;
 import static org.elasticsearch.xpack.sql.qa.jdbc.CsvTestUtils.specParser;
 
 @TestLogging("org.elasticsearch.xpack.sql:TRACE")
-public abstract class DebugCsvSpec extends SpecBaseIntegrationTestCase {
+public class DebugCsvSpec extends SpecBaseIntegrationTestCase {
+
+    @ClassRule
+    public static final EmbeddedSqlServer EMBEDDED_SERVER = new EmbeddedSqlServer();
+
     private final CsvTestCase testCase;
 
     @ParametersFactory(shuffle = false, argumentFormatting = SqlSpecTestCase.PARAM_FORMATTING)
@@ -36,15 +41,20 @@ public abstract class DebugCsvSpec extends SpecBaseIntegrationTestCase {
     }
 
     @Override
-    protected void assertResults(ResultSet expected, ResultSet elastic) throws SQLException {
-        Logger log = logEsResultSet() ? logger : null;
+    protected final void doTest() throws Throwable {
+        try (Connection csv = csvConnection(testCase); Connection es = esJdbc()) {
+            // pass the testName as table for debugging purposes (in case the underlying reader is missing)
+            ResultSet expected = executeCsvQuery(csv, testName);
+            ResultSet elasticResults = executeJdbcQuery(es, testCase.query);
+            assertResults(expected, elasticResults);
+        }
+    }
 
-        //
-        // uncomment this to printout the result set and create new CSV tests
-        //
-        JdbcTestUtils.logResultSetMetadata(elastic, log);
-        JdbcTestUtils.logResultSetData(elastic, log);
-        //JdbcAssert.assertResultSets(expected, elastic, log);
+    @Override
+    public Connection esJdbc() throws SQLException {
+        // use the same random path as the rest of the tests
+        randomBoolean();
+        return EMBEDDED_SERVER.connection(connectionProperties());
     }
 
     @Override
@@ -53,12 +63,13 @@ public abstract class DebugCsvSpec extends SpecBaseIntegrationTestCase {
     }
 
     @Override
-    protected final void doTest() throws Throwable {
-        try (Connection csv = csvConnection(testCase); Connection es = esJdbc()) {
-            // pass the testName as table for debugging purposes (in case the underlying reader is missing)
-            ResultSet expected = executeCsvQuery(csv, testName);
-            ResultSet elasticResults = executeJdbcQuery(es, testCase.query);
-            assertResults(expected, elasticResults);
-        }
+    protected void assertResults(ResultSet expected, ResultSet elastic) throws SQLException {
+        Logger log = logEsResultSet() ? logger : null;
+
+        //
+        // uncomment this to printout the result set and create new CSV tests
+        //
+        //JdbcTestUtils.logLikeCLI(elastic, log);
+        JdbcAssert.assertResultSets(expected, elastic, log);
     }
 }

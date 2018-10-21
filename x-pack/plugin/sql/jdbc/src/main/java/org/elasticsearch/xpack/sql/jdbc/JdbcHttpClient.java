@@ -40,7 +40,7 @@ class JdbcHttpClient {
         httpClient = new HttpClient(conCfg);
         this.conCfg = conCfg;
         this.serverInfo = fetchServerInfo();
-        checkServerVersion();
+        //checkServerVersion();
     }
 
     boolean ping(long timeoutInMs) throws SQLException {

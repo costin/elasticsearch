@@ -22,6 +22,7 @@ import java.sql.SQLException;
  * It's using a {@code MockWebServer} to be able to create a response just like the one an ES instance
  * would create for a request to "/", where the ES version used is configurable. 
  */
+@AwaitsFix(bugUrl = "http://debuggin")
 public class VersionParityTests extends WebServerTestCase {
 
     public void testExceptionThrownOnIncompatibleVersions() throws IOException, SQLException {
