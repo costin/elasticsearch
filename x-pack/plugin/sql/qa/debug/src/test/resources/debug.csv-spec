@@ -1,0 +1,12 @@
+//
+// Spec used for debugging a certain test (without having to alter the spec suite of which it might be part of)
+//
+
+debug
+SHOW TABLES "test*,-test_a*";
+
+     name      |     type      |     kind      
+---------------+---------------+---------------
+test_emp       |BASE TABLE     |INDEX          
+test_emp_copy  |BASE TABLE     |INDEX   
+;
