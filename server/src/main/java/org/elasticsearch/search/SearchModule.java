@@ -280,6 +280,7 @@ public class SearchModule {
     public static final Setting<Integer> INDICES_MAX_CLAUSE_COUNT_SETTING = Setting.intSetting("indices.query.bool.max_clause_count",
             1024, 1, Integer.MAX_VALUE, Setting.Property.NodeScope);
 
+    private final boolean transportClient;
     private final Map<String, Highlighter> highlighters;
 
     private final List<FetchSubPhase> fetchSubPhases = new ArrayList<>();
@@ -297,6 +298,11 @@ public class SearchModule {
      * @param plugins List of included {@link SearchPlugin} objects.
      */
     public SearchModule(Settings settings, List<SearchPlugin> plugins) {
+        this(false, settings, plugins);
+    }
+
+    public SearchModule(boolean transportClient, Settings settings, List<SearchPlugin> plugins) {
+        this.transportClient = transportClient;
         this.settings = settings;
         registerSuggesters(plugins);
         highlighters = setupHighlighters(settings, plugins);
@@ -431,10 +437,12 @@ public class SearchModule {
     }
 
     private void registerAggregation(AggregationSpec spec) {
+        if (false == transportClient) {
         namedXContents.add(new NamedXContentRegistry.Entry(BaseAggregationBuilder.class, spec.getName(), (p, c) -> {
             String name = (String) c;
             return spec.getParser().parse(p, name);
         }));
+        }
         namedWriteables.add(
                 new NamedWriteableRegistry.Entry(AggregationBuilder.class, spec.getName().getPreferredName(), spec.getReader()));
         for (Map.Entry<String, Writeable.Reader<? extends InternalAggregation>> t : spec.getResultReaders().entrySet()) {
@@ -530,10 +538,12 @@ public class SearchModule {
     }
 
     private void registerPipelineAggregation(PipelineAggregationSpec spec) {
+        if (false == transportClient) {
         namedXContents.add(new NamedXContentRegistry.Entry(BaseAggregationBuilder.class, spec.getName(), (p, c) -> {
             String name = (String) c;
             return spec.getParser().parse(name, p);
         }));
+        }
         namedWriteables.add(
                 new NamedWriteableRegistry.Entry(PipelineAggregationBuilder.class, spec.getName().getPreferredName(), spec.getReader()));
         namedWriteables.add(
@@ -556,7 +566,9 @@ public class SearchModule {
     }
 
     private void registerRescorer(RescorerSpec<?> spec) {
+        if (false == transportClient) {
         namedXContents.add(new NamedXContentRegistry.Entry(RescorerBuilder.class, spec.getName(), (p, c) -> spec.getParser().apply(p)));
+        }
         namedWriteables.add(new NamedWriteableRegistry.Entry(RescorerBuilder.class, spec.getName().getPreferredName(), spec.getReader()));
     }
 
