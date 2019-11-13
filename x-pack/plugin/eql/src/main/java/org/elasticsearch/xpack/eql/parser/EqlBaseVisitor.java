@@ -205,6 +205,13 @@ interface EqlBaseVisitor<T> extends ParseTreeVisitor<T> {
    */
   T visitIdentifier(EqlBaseParser.IdentifierContext ctx);
   /**
+   * Visit a parse tree produced by the {@code quotedIdentifier}
+   * labeled alternative in {@link EqlBaseParser#quoteIdentifier}.
+   * @param ctx the parse tree
+   * @return the visitor result
+   */
+  T visitQuotedIdentifier(EqlBaseParser.QuotedIdentifierContext ctx);
+  /**
    * Visit a parse tree produced by the {@code unquotedIdentifier}
    * labeled alternative in {@link EqlBaseParser#unquoteIdentifier}.
    * @param ctx the parse tree

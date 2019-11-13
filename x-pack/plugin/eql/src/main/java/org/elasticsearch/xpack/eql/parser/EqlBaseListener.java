@@ -336,6 +336,18 @@ interface EqlBaseListener extends ParseTreeListener {
    */
   void exitIdentifier(EqlBaseParser.IdentifierContext ctx);
   /**
+   * Enter a parse tree produced by the {@code quotedIdentifier}
+   * labeled alternative in {@link EqlBaseParser#quoteIdentifier}.
+   * @param ctx the parse tree
+   */
+  void enterQuotedIdentifier(EqlBaseParser.QuotedIdentifierContext ctx);
+  /**
+   * Exit a parse tree produced by the {@code quotedIdentifier}
+   * labeled alternative in {@link EqlBaseParser#quoteIdentifier}.
+   * @param ctx the parse tree
+   */
+  void exitQuotedIdentifier(EqlBaseParser.QuotedIdentifierContext ctx);
+  /**
    * Enter a parse tree produced by the {@code unquotedIdentifier}
    * labeled alternative in {@link EqlBaseParser#unquoteIdentifier}.
    * @param ctx the parse tree

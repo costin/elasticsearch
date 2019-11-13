@@ -24,7 +24,6 @@ statement
     | query
     ;
 
-
 sequence
     : SEQUENCE (by=joinKeys)? (span)?
       match+
@@ -113,7 +112,12 @@ booleanValue
     ;
 
 identifier
-    : unquoteIdentifier
+    : quoteIdentifier
+    | unquoteIdentifier
+    ;
+
+quoteIdentifier
+    : QUOTED_IDENTIFIER      #quotedIdentifier
     ;
 
 unquoteIdentifier
@@ -205,6 +209,10 @@ DIGIT_IDENTIFIER
     : DIGIT (LETTER | DIGIT | '_' | '@')+
     ;
 
+QUOTED_IDENTIFIER
+    : '"' ( ~'"' | '""' )* '"'
+    ;
+   
 fragment EXPONENT
     : 'E' [+-]? DIGIT+
     ;

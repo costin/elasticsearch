@@ -376,6 +376,18 @@ class EqlBaseBaseListener implements EqlBaseListener {
    *
    * <p>The default implementation does nothing.</p>
    */
+  @Override public void enterQuotedIdentifier(EqlBaseParser.QuotedIdentifierContext ctx) { }
+  /**
+   * {@inheritDoc}
+   *
+   * <p>The default implementation does nothing.</p>
+   */
+  @Override public void exitQuotedIdentifier(EqlBaseParser.QuotedIdentifierContext ctx) { }
+  /**
+   * {@inheritDoc}
+   *
+   * <p>The default implementation does nothing.</p>
+   */
   @Override public void enterUnquotedIdentifier(EqlBaseParser.UnquotedIdentifierContext ctx) { }
   /**
    * {@inheritDoc}
