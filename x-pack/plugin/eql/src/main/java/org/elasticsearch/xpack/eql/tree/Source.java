@@ -6,13 +6,11 @@
 
 package org.elasticsearch.xpack.eql.tree;
 
-import org.elasticsearch.xpack.sql.proto.StringUtils;
-
 import java.util.Objects;
 
 public final class Source {
 
-    public static final Source EMPTY = new Source(Location.EMPTY, StringUtils.EMPTY);
+    public static final Source EMPTY = new Source(Location.EMPTY, "");
 
     private final Location location;
     private final String text;

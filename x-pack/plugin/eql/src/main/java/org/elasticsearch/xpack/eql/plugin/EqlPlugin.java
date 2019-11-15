@@ -6,6 +6,9 @@
 
 package org.elasticsearch.xpack.eql.plugin;
 
-public class EqlPlugin {
+import org.elasticsearch.plugins.ActionPlugin;
+import org.elasticsearch.plugins.Plugin;
+
+public class EqlPlugin extends Plugin implements ActionPlugin {
 
 }
