@@ -38,6 +38,13 @@ class EqlBaseBaseVisitor<T> extends AbstractParseTreeVisitor<T> implements EqlBa
    * <p>The default implementation returns the result of calling
    * {@link #visitChildren} on {@code ctx}.</p>
    */
+  @Override public T visitQuery(EqlBaseParser.QueryContext ctx) { return visitChildren(ctx); }
+  /**
+   * {@inheritDoc}
+   *
+   * <p>The default implementation returns the result of calling
+   * {@link #visitChildren} on {@code ctx}.</p>
+   */
   @Override public T visitSequence(EqlBaseParser.SequenceContext ctx) { return visitChildren(ctx); }
   /**
    * {@inheritDoc}
@@ -46,6 +53,13 @@ class EqlBaseBaseVisitor<T> extends AbstractParseTreeVisitor<T> implements EqlBa
    * {@link #visitChildren} on {@code ctx}.</p>
    */
   @Override public T visitJoin(EqlBaseParser.JoinContext ctx) { return visitChildren(ctx); }
+  /**
+   * {@inheritDoc}
+   *
+   * <p>The default implementation returns the result of calling
+   * {@link #visitChildren} on {@code ctx}.</p>
+   */
+  @Override public T visitPipe(EqlBaseParser.PipeContext ctx) { return visitChildren(ctx); }
   /**
    * {@inheritDoc}
    *
@@ -73,7 +87,7 @@ class EqlBaseBaseVisitor<T> extends AbstractParseTreeVisitor<T> implements EqlBa
    * <p>The default implementation returns the result of calling
    * {@link #visitChildren} on {@code ctx}.</p>
    */
-  @Override public T visitQuery(EqlBaseParser.QueryContext ctx) { return visitChildren(ctx); }
+  @Override public T visitCondition(EqlBaseParser.ConditionContext ctx) { return visitChildren(ctx); }
   /**
    * {@inheritDoc}
    *
@@ -164,6 +178,13 @@ class EqlBaseBaseVisitor<T> extends AbstractParseTreeVisitor<T> implements EqlBa
    * <p>The default implementation returns the result of calling
    * {@link #visitChildren} on {@code ctx}.</p>
    */
+  @Override public T visitDereference(EqlBaseParser.DereferenceContext ctx) { return visitChildren(ctx); }
+  /**
+   * {@inheritDoc}
+   *
+   * <p>The default implementation returns the result of calling
+   * {@link #visitChildren} on {@code ctx}.</p>
+   */
   @Override public T visitParenthesizedExpression(EqlBaseParser.ParenthesizedExpressionContext ctx) { return visitChildren(ctx); }
   /**
    * {@inheritDoc}
@@ -214,6 +235,20 @@ class EqlBaseBaseVisitor<T> extends AbstractParseTreeVisitor<T> implements EqlBa
    * {@link #visitChildren} on {@code ctx}.</p>
    */
   @Override public T visitBooleanValue(EqlBaseParser.BooleanValueContext ctx) { return visitChildren(ctx); }
+  /**
+   * {@inheritDoc}
+   *
+   * <p>The default implementation returns the result of calling
+   * {@link #visitChildren} on {@code ctx}.</p>
+   */
+  @Override public T visitQualifiedNames(EqlBaseParser.QualifiedNamesContext ctx) { return visitChildren(ctx); }
+  /**
+   * {@inheritDoc}
+   *
+   * <p>The default implementation returns the result of calling
+   * {@link #visitChildren} on {@code ctx}.</p>
+   */
+  @Override public T visitQualifiedName(EqlBaseParser.QualifiedNameContext ctx) { return visitChildren(ctx); }
   /**
    * {@inheritDoc}
    *

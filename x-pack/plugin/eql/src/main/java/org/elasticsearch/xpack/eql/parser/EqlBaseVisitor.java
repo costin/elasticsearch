@@ -29,6 +29,12 @@ interface EqlBaseVisitor<T> extends ParseTreeVisitor<T> {
    */
   T visitStatement(EqlBaseParser.StatementContext ctx);
   /**
+   * Visit a parse tree produced by {@link EqlBaseParser#query}.
+   * @param ctx the parse tree
+   * @return the visitor result
+   */
+  T visitQuery(EqlBaseParser.QueryContext ctx);
+  /**
    * Visit a parse tree produced by {@link EqlBaseParser#sequence}.
    * @param ctx the parse tree
    * @return the visitor result
@@ -40,6 +46,12 @@ interface EqlBaseVisitor<T> extends ParseTreeVisitor<T> {
    * @return the visitor result
    */
   T visitJoin(EqlBaseParser.JoinContext ctx);
+  /**
+   * Visit a parse tree produced by {@link EqlBaseParser#pipe}.
+   * @param ctx the parse tree
+   * @return the visitor result
+   */
+  T visitPipe(EqlBaseParser.PipeContext ctx);
   /**
    * Visit a parse tree produced by {@link EqlBaseParser#joinKeys}.
    * @param ctx the parse tree
@@ -59,11 +71,11 @@ interface EqlBaseVisitor<T> extends ParseTreeVisitor<T> {
    */
   T visitMatch(EqlBaseParser.MatchContext ctx);
   /**
-   * Visit a parse tree produced by {@link EqlBaseParser#query}.
+   * Visit a parse tree produced by {@link EqlBaseParser#condition}.
    * @param ctx the parse tree
    * @return the visitor result
    */
-  T visitQuery(EqlBaseParser.QueryContext ctx);
+  T visitCondition(EqlBaseParser.ConditionContext ctx);
   /**
    * Visit a parse tree produced by {@link EqlBaseParser#expression}.
    * @param ctx the parse tree
@@ -146,6 +158,13 @@ interface EqlBaseVisitor<T> extends ParseTreeVisitor<T> {
    */
   T visitFunction(EqlBaseParser.FunctionContext ctx);
   /**
+   * Visit a parse tree produced by the {@code dereference}
+   * labeled alternative in {@link EqlBaseParser#primaryExpression}.
+   * @param ctx the parse tree
+   * @return the visitor result
+   */
+  T visitDereference(EqlBaseParser.DereferenceContext ctx);
+  /**
    * Visit a parse tree produced by the {@code parenthesizedExpression}
    * labeled alternative in {@link EqlBaseParser#primaryExpression}.
    * @param ctx the parse tree
@@ -198,6 +217,18 @@ interface EqlBaseVisitor<T> extends ParseTreeVisitor<T> {
    * @return the visitor result
    */
   T visitBooleanValue(EqlBaseParser.BooleanValueContext ctx);
+  /**
+   * Visit a parse tree produced by {@link EqlBaseParser#qualifiedNames}.
+   * @param ctx the parse tree
+   * @return the visitor result
+   */
+  T visitQualifiedNames(EqlBaseParser.QualifiedNamesContext ctx);
+  /**
+   * Visit a parse tree produced by {@link EqlBaseParser#qualifiedName}.
+   * @param ctx the parse tree
+   * @return the visitor result
+   */
+  T visitQualifiedName(EqlBaseParser.QualifiedNameContext ctx);
   /**
    * Visit a parse tree produced by {@link EqlBaseParser#identifier}.
    * @param ctx the parse tree

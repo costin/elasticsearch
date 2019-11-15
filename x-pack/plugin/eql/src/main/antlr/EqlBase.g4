@@ -19,11 +19,15 @@ singleExpression
     ;
 
 statement
+    : query (PIPE pipe)*
+    ;
+ 
+query
     : sequence
     | join
-    | query
+    | condition
     ;
-
+    
 sequence
     : SEQUENCE (by=joinKeys)? (span)?
       match+
@@ -36,20 +40,24 @@ join
       (UNTIL match)?
     ;
 
-joinKeys
-    : BY identifier (',' identifier)*
+pipe
+    : kind=IDENTIFIER (booleanExpression (COMMA booleanExpression)*)?
     ;
 
+joinKeys
+    : BY qualifiedNames
+    ;
+    
 span
-    : WITH MAXSPAN EQ number (unit=string)?
+    : WITH MAXSPAN EQ DIGIT_IDENTIFIER
     ;
 
 match
-    : LB query RB
+    : LB condition RB (by=joinKeys)?
     ;
 
-query
-    : event=identifier WHERE expression
+condition
+    : event=qualifiedName WHERE expression
     ;
 
 expression
@@ -74,7 +82,7 @@ predicated
 // instead the property kind is used for differentiation
 predicate
     : NOT? kind=BETWEEN lower=valueExpression AND upper=valueExpression
-    | NOT? kind=IN LP valueExpression (',' valueExpression)* RP
+    | NOT? kind=IN LP valueExpression (COMMA valueExpression)* RP
     | NOT? kind=IN LP query RP
     ;
 
@@ -89,11 +97,12 @@ valueExpression
 primaryExpression
     : constant                                                                          #constantDefault
     | functionExpression                                                                #function
-    | '(' expression ')'                                                                #parenthesizedExpression
+    | qualifiedName                                                                     #dereference
+    | LP expression RP                                                                  #parenthesizedExpression
     ;
 
 functionExpression
-    : identifier LP (expression (',' expression)*)? RP
+    : identifier LP (expression (COMMA expression)*)? RP
     ;
 
 constant
@@ -109,6 +118,14 @@ comparisonOperator
 
 booleanValue
     : TRUE | FALSE
+    ;
+
+qualifiedNames
+    : qualifiedName (COMMA qualifiedName)*
+    ;
+
+qualifiedName
+    : (identifier DOT)* identifier
     ;
 
 identifier
@@ -156,16 +173,6 @@ UNTIL: 'UNTIL';
 WHERE: 'WHERE';
 WITH: 'WITH';
 
-
-// Pipes
-PIPE: '|';
-COUNT: 'COUNT';
-FILTER: 'FILTER';
-HEAD: 'HEAD';
-SORT: 'SORT';
-TAIL: 'TAIL';
-UNIQUE_COUNT: 'UNIQUE_COUNT';
-
 // Operators
 EQ  : '=' | '==';
 NEQ : '<>' | '!=';
@@ -180,10 +187,12 @@ ASTERISK: '*';
 SLASH: '/';
 PERCENT: '%';
 DOT: '.';
+COMMA: ',';
 LB: '[';
 RB: ']';
 LP: '(';
 RP: ')';
+PIPE: '|';
 
 STRING
     : '\'' ( ~'\'')* '\''

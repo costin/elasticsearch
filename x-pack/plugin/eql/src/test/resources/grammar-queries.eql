@@ -1,24 +1,30 @@
 process where process_name == "svchost.exe" and command_line != "* -k *";
+process where process_name in ('ipconfig.exe', 'netstat.exe', 'systeminfo.exe', 'route.exe');
+process where subtype.create and wildcard(command_line, "*.ost *", "*.pst *")
+;
+
+process where subtype.create and
+  process_name == "attrib.exe" and command_line == "* +h*"
+;
+
+file where file_name == "*Library/Preferences/*.plist";
+
+
+//
+// Pipes
+//
+
 process where true | count;
 process where true | count process_name;
 process where true | count parent_process_name, process_name;
 process where true | unique process_name;
 process where true | unique process_name, command_line;
-process where process_name in ('ipconfig.exe', 'netstat.exe', 'systeminfo.exe', 'route.exe');
 
-process where subtype.create and wildcard(command_line, "*.ost *", "*.pst *")
-;
-
-process where subtype.create and
-  process_name == "attrib.exe" and
-  command_line == "* +h*"
-;
-
-file where file_name == "*Library/Preferences/*.plist";
 
 network where true
 | unique destination_address, destination_port
 | filter timestamp_utc >= "2018-05-01";
+
 
 process where true | unique_count process_name | filter count < 5;
 
@@ -43,7 +49,7 @@ network where total_out_bytes > 100000000
 // Sequences
 // 
 
-sequence with by user_name
+sequence by user_name
   [process where process_name == "whoami"]
   [process where process_name == "hostname"]
   [process where process_name == "ifconfig"]

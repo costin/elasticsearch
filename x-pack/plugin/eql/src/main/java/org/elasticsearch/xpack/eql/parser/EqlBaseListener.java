@@ -38,6 +38,16 @@ interface EqlBaseListener extends ParseTreeListener {
    */
   void exitStatement(EqlBaseParser.StatementContext ctx);
   /**
+   * Enter a parse tree produced by {@link EqlBaseParser#query}.
+   * @param ctx the parse tree
+   */
+  void enterQuery(EqlBaseParser.QueryContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EqlBaseParser#query}.
+   * @param ctx the parse tree
+   */
+  void exitQuery(EqlBaseParser.QueryContext ctx);
+  /**
    * Enter a parse tree produced by {@link EqlBaseParser#sequence}.
    * @param ctx the parse tree
    */
@@ -57,6 +67,16 @@ interface EqlBaseListener extends ParseTreeListener {
    * @param ctx the parse tree
    */
   void exitJoin(EqlBaseParser.JoinContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EqlBaseParser#pipe}.
+   * @param ctx the parse tree
+   */
+  void enterPipe(EqlBaseParser.PipeContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EqlBaseParser#pipe}.
+   * @param ctx the parse tree
+   */
+  void exitPipe(EqlBaseParser.PipeContext ctx);
   /**
    * Enter a parse tree produced by {@link EqlBaseParser#joinKeys}.
    * @param ctx the parse tree
@@ -88,15 +108,15 @@ interface EqlBaseListener extends ParseTreeListener {
    */
   void exitMatch(EqlBaseParser.MatchContext ctx);
   /**
-   * Enter a parse tree produced by {@link EqlBaseParser#query}.
+   * Enter a parse tree produced by {@link EqlBaseParser#condition}.
    * @param ctx the parse tree
    */
-  void enterQuery(EqlBaseParser.QueryContext ctx);
+  void enterCondition(EqlBaseParser.ConditionContext ctx);
   /**
-   * Exit a parse tree produced by {@link EqlBaseParser#query}.
+   * Exit a parse tree produced by {@link EqlBaseParser#condition}.
    * @param ctx the parse tree
    */
-  void exitQuery(EqlBaseParser.QueryContext ctx);
+  void exitCondition(EqlBaseParser.ConditionContext ctx);
   /**
    * Enter a parse tree produced by {@link EqlBaseParser#expression}.
    * @param ctx the parse tree
@@ -236,6 +256,18 @@ interface EqlBaseListener extends ParseTreeListener {
    */
   void exitFunction(EqlBaseParser.FunctionContext ctx);
   /**
+   * Enter a parse tree produced by the {@code dereference}
+   * labeled alternative in {@link EqlBaseParser#primaryExpression}.
+   * @param ctx the parse tree
+   */
+  void enterDereference(EqlBaseParser.DereferenceContext ctx);
+  /**
+   * Exit a parse tree produced by the {@code dereference}
+   * labeled alternative in {@link EqlBaseParser#primaryExpression}.
+   * @param ctx the parse tree
+   */
+  void exitDereference(EqlBaseParser.DereferenceContext ctx);
+  /**
    * Enter a parse tree produced by the {@code parenthesizedExpression}
    * labeled alternative in {@link EqlBaseParser#primaryExpression}.
    * @param ctx the parse tree
@@ -325,6 +357,26 @@ interface EqlBaseListener extends ParseTreeListener {
    * @param ctx the parse tree
    */
   void exitBooleanValue(EqlBaseParser.BooleanValueContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EqlBaseParser#qualifiedNames}.
+   * @param ctx the parse tree
+   */
+  void enterQualifiedNames(EqlBaseParser.QualifiedNamesContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EqlBaseParser#qualifiedNames}.
+   * @param ctx the parse tree
+   */
+  void exitQualifiedNames(EqlBaseParser.QualifiedNamesContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EqlBaseParser#qualifiedName}.
+   * @param ctx the parse tree
+   */
+  void enterQualifiedName(EqlBaseParser.QualifiedNameContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EqlBaseParser#qualifiedName}.
+   * @param ctx the parse tree
+   */
+  void exitQualifiedName(EqlBaseParser.QualifiedNameContext ctx);
   /**
    * Enter a parse tree produced by {@link EqlBaseParser#identifier}.
    * @param ctx the parse tree

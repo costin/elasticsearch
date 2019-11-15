@@ -32,11 +32,17 @@ public class GrammarTest extends ESTestCase {
         EqlParser parser = new EqlParser();
         List<Tuple<String, Integer>> lines = readQueries("/grammar-queries.eql");
         for (Tuple<String, Integer> line : lines) {
+            String q = line.v1();
             try {
-                parser.createStatement(line.v1());
+                parser.createStatement(q);
             } catch (ParsingException pe) {
-                throw new ParsingException(new Source(pe.getLineNumber() + line.v2(), pe.getColumnNumber(), line.v1()),
-                        pe.getMessage());
+                if (pe.getErrorMessage().startsWith("Does not know how to handle")) {
+                    // ignore for now
+                }
+                else {
+                    throw new ParsingException(new Source(pe.getLineNumber() + line.v2() - 1, pe.getColumnNumber(), q),
+                            pe.getErrorMessage() + " inside statement <{}>", q);
+                }
             }
         }
     }
@@ -53,7 +59,6 @@ public class GrammarTest extends ESTestCase {
             int lineNumber = 1;
 
             while ((line = reader.readLine()) != null) {
-                line = line.trim();
                 // ignore comments
                 if (line.isEmpty() == false && line.startsWith("//") == false) {
                     query.append(line);

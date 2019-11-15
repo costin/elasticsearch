@@ -35,7 +35,7 @@ public class EqlParser {
 
     private static final Logger log = LogManager.getLogger();
 
-    private final boolean DEBUG = false;
+    private final boolean DEBUG = true;
 
     /**
      * Parses an EQL statement into execution plan
