@@ -528,7 +528,8 @@ public class TransportService extends AbstractLifecycleComponent
         }
 
         private static boolean isIncompatibleBuild(Version version, String buildHash) {
-            return version == Version.CURRENT && Build.CURRENT.hash().equals(buildHash) == false;
+            return version == Version.CURRENT && Build.CURRENT.hash().equals(buildHash) == false
+                && Build.CURRENT.hash().equals("unknown") == false;
         }
     }
 

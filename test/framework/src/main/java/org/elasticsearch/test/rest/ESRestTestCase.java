@@ -518,7 +518,8 @@ public abstract class ESRestTestCase extends ESTestCase {
      */
     protected Set<String> preserveILMPolicyIds() {
         return Sets.newHashSet("ilm-history-ilm-policy", "slm-history-ilm-policy",
-            "watch-history-ilm-policy", "ml-size-based-ilm-policy", "logs", "metrics");
+            "watch-history-ilm-policy", "ml-size-based-ilm-policy", "logs", "metrics",
+            "kibana-event-log-policy");
     }
 
     /**

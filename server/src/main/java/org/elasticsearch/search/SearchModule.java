@@ -263,6 +263,7 @@ public class SearchModule {
     public static final Setting<Integer> INDICES_MAX_NESTED_DEPTH_SETTING = Setting.intSetting("indices.query.bool.max_nested_depth",
         20, 1, Integer.MAX_VALUE, Setting.Property.NodeScope);
 
+    private final boolean transportClient;
     private final Map<String, Highlighter> highlighters;
 
     private final List<FetchSubPhase> fetchSubPhases = new ArrayList<>();
@@ -277,10 +278,15 @@ public class SearchModule {
      *
      * NOTE: This constructor should not be called in production unless an accurate {@link Settings} object is provided.
      *       When constructed, a static flag is set in Lucene {@link BooleanQuery#setMaxClauseCount} according to the settings.
-     * @param settings Current settings
+     *  @param settings Current settings
      * @param plugins List of included {@link SearchPlugin} objects.
      */
     public SearchModule(Settings settings, List<SearchPlugin> plugins) {
+        this(false, settings, plugins);
+    }
+
+    public SearchModule(boolean transportClient, Settings settings, List<SearchPlugin> plugins) {
+        this.transportClient = transportClient;
         this.settings = settings;
         registerSuggesters(plugins);
         highlighters = setupHighlighters(settings, plugins);
@@ -348,17 +354,17 @@ public class SearchModule {
                 .addResultReader(InternalValueCount::new)
                 .setAggregatorRegistrar(ValueCountAggregationBuilder::registerAggregators), builder);
         registerAggregation(new AggregationSpec(PercentilesAggregationBuilder.NAME, PercentilesAggregationBuilder::new,
-            PercentilesAggregationBuilder.PARSER)
+                PercentilesAggregationBuilder.PARSER)
                 .addResultReader(InternalTDigestPercentiles.NAME, InternalTDigestPercentiles::new)
                 .addResultReader(InternalHDRPercentiles.NAME, InternalHDRPercentiles::new)
                 .setAggregatorRegistrar(PercentilesAggregationBuilder::registerAggregators), builder);
         registerAggregation(new AggregationSpec(PercentileRanksAggregationBuilder.NAME, PercentileRanksAggregationBuilder::new,
-            PercentileRanksAggregationBuilder.PARSER)
+                PercentileRanksAggregationBuilder.PARSER)
                 .addResultReader(InternalTDigestPercentileRanks.NAME, InternalTDigestPercentileRanks::new)
                 .addResultReader(InternalHDRPercentileRanks.NAME, InternalHDRPercentileRanks::new)
                 .setAggregatorRegistrar(PercentileRanksAggregationBuilder::registerAggregators), builder);
         registerAggregation(new AggregationSpec(MedianAbsoluteDeviationAggregationBuilder.NAME,
-            MedianAbsoluteDeviationAggregationBuilder::new, MedianAbsoluteDeviationAggregationBuilder.PARSER)
+                MedianAbsoluteDeviationAggregationBuilder::new, MedianAbsoluteDeviationAggregationBuilder.PARSER)
                 .addResultReader(InternalMedianAbsoluteDeviation::new)
                 .setAggregatorRegistrar(MedianAbsoluteDeviationAggregationBuilder::registerAggregators), builder);
         registerAggregation(new AggregationSpec(CardinalityAggregationBuilder.NAME, CardinalityAggregationBuilder::new,
@@ -478,10 +484,12 @@ public class SearchModule {
     }
 
     private void registerAggregation(AggregationSpec spec, ValuesSourceRegistry.Builder builder) {
+        if (false == transportClient) {
         namedXContents.add(new NamedXContentRegistry.Entry(BaseAggregationBuilder.class, spec.getName(), (p, c) -> {
             String name = (String) c;
             return spec.getParser().parse(p, name);
         }));
+        }
         namedWriteables.add(
                 new NamedWriteableRegistry.Entry(AggregationBuilder.class, spec.getName().getPreferredName(), spec.getReader()));
         for (Map.Entry<String, Writeable.Reader<? extends InternalAggregation>> t : spec.getResultReaders().entrySet()) {
@@ -496,7 +504,7 @@ public class SearchModule {
             // Register is typically handling usage registration, but for the older aggregations that don't use register, we
             // have to register usage explicitly here.
             builder.registerUsage(spec.getName().getPreferredName());
-        }
+    }
     }
 
     private void registerPipelineAggregations(List<SearchPlugin> plugins) {
@@ -571,8 +579,9 @@ public class SearchModule {
     }
 
     private void registerPipelineAggregation(PipelineAggregationSpec spec) {
+        if (false == transportClient) {
         namedXContents.add(new NamedXContentRegistry.Entry(BaseAggregationBuilder.class, spec.getName(),
-                (p, c) -> spec.getParser().parse(p, (String) c)));
+                (p, c) -> spec.getParser().parse(p, (String) c)));        }
         namedWriteables.add(
                 new NamedWriteableRegistry.Entry(PipelineAggregationBuilder.class, spec.getName().getPreferredName(), spec.getReader()));
         for (Map.Entry<String, Writeable.Reader<? extends InternalAggregation>> resultReader : spec.getResultReaders().entrySet()) {
@@ -593,7 +602,9 @@ public class SearchModule {
     }
 
     private void registerRescorer(RescorerSpec<?> spec) {
+        if (false == transportClient) {
         namedXContents.add(new NamedXContentRegistry.Entry(RescorerBuilder.class, spec.getName(), (p, c) -> spec.getParser().apply(p)));
+        }
         namedWriteables.add(new NamedWriteableRegistry.Entry(RescorerBuilder.class, spec.getName().getPreferredName(), spec.getReader()));
     }
 

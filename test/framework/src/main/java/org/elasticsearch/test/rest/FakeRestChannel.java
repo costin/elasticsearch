@@ -13,6 +13,7 @@ import org.elasticsearch.rest.RestResponse;
 import org.elasticsearch.rest.RestStatus;
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public final class FakeRestChannel extends AbstractRestChannel {
@@ -47,5 +48,9 @@ public final class FakeRestChannel extends AbstractRestChannel {
 
     public AtomicInteger errors() {
         return errors;
+    }
+
+    public boolean await() throws InterruptedException {
+        return latch.await(20, TimeUnit.MINUTES);
     }
 }

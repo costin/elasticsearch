@@ -9,16 +9,15 @@ package org.elasticsearch.xpack.sql.plugin;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.elasticsearch.action.ActionListener;
-import org.elasticsearch.action.ActionListenerResponseHandler;
 import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.action.support.HandledTransportAction;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Strings;
-import org.elasticsearch.common.util.BigArrays;
-import org.elasticsearch.core.Tuple;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.util.BigArrays;
+import org.elasticsearch.core.Tuple;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -56,7 +55,6 @@ import java.util.Map;
 import static java.util.Collections.unmodifiableList;
 import static org.elasticsearch.action.ActionListener.wrap;
 import static org.elasticsearch.xpack.core.ClientHelper.ASYNC_SEARCH_ORIGIN;
-import static org.elasticsearch.xpack.ql.plugin.TransportActionUtils.executeRequestWithRetryAttempt;
 import static org.elasticsearch.xpack.sql.plugin.Transports.clusterName;
 import static org.elasticsearch.xpack.sql.plugin.Transports.username;
 import static org.elasticsearch.xpack.sql.proto.Mode.CLI;
@@ -97,40 +95,50 @@ public class TransportSqlQueryAction extends HandledTransportAction<SqlQueryRequ
             asyncTaskManagementService.asyncExecute(request, request.waitForCompletionTimeout(), request.keepAlive(),
                 request.keepOnCompletion(), listener);
         } else {
-            operation(planExecutor, (SqlQueryTask) task, request, listener, username(securityContext), transportService, clusterService);
+            operation(planExecutor, request, listener, username(securityContext), clusterName(clusterService));
         }
     }
 
     /**
      * Actual implementation of the action. Statically available to support embedded mode.
      */
-    public static void operation(PlanExecutor planExecutor, SqlQueryTask task, SqlQueryRequest request,
-                                 ActionListener<SqlQueryResponse> listener, String username, TransportService transportService,
-                                 ClusterService clusterService) {
+    public static void operation(
+        PlanExecutor planExecutor,
+        SqlQueryRequest request,
+        ActionListener<SqlQueryResponse> listener,
+        String username,
+        String clusterName
+    ) {
         // The configuration is always created however when dealing with the next page, only the timeouts are relevant
         // the rest having default values (since the query is already created)
         SqlConfiguration cfg = new SqlConfiguration(request.zoneId(), request.fetchSize(), request.requestTimeout(), request.pageTimeout(),
                 request.filter(), request.runtimeMappings(), request.mode(), request.clientId(), request.version(), username,
-                clusterName(clusterService), request.fieldMultiValueLeniency(), request.indexIncludeFrozen(),
-                new TaskId(clusterService.localNode().getId(), task.getId()), task,
-                request.waitForCompletionTimeout(), request.keepOnCompletion(), request.keepAlive());
+            clusterName,
+            request.fieldMultiValueLeniency(),
+            request.indexIncludeFrozen(),
+            null,
+            null,
+            request.waitForCompletionTimeout(),
+            request.keepOnCompletion(),
+            request.keepAlive()
+        );
 
         if (Strings.hasText(request.cursor()) == false) {
-            executeRequestWithRetryAttempt(clusterService, listener::onFailure,
-                onFailure -> planExecutor.sql(cfg, request.query(), request.params(),
-                    wrap(p -> listener.onResponse(createResponseWithSchema(request, p, task)), onFailure)),
-                node -> transportService.sendRequest(node, SqlQueryAction.NAME, request,
-                    new ActionListenerResponseHandler<>(listener, SqlQueryResponse::new, ThreadPool.Names.SAME)),
-                log);
+            planExecutor.sql(
+                cfg,
+                request.query(),
+                request.params(),
+                wrap(p -> listener.onResponse(createResponseWithSchema(request, p, null)), listener::onFailure)
+            );
         } else {
             Tuple<Cursor, ZoneId> decoded = Cursors.decodeFromStringWithZone(request.cursor());
             planExecutor.nextPage(cfg, decoded.v1(),
-                    wrap(p -> listener.onResponse(createResponse(request, decoded.v2(), null, p, task)),
+                wrap(p -> listener.onResponse(createResponse(request, decoded.v2(), null, p, null)),
                             listener::onFailure));
         }
     }
 
-    private static SqlQueryResponse createResponseWithSchema(SqlQueryRequest request, Page page, SqlQueryTask task) {
+    private static SqlQueryResponse createResponseWithSchema(SqlQueryRequest request, Page page, AsyncExecutionId executionId) {
         RowSet rset = page.rowSet();
         if ((rset instanceof SchemaRowSet) == false) {
             throw new SqlIllegalArgumentException("No schema found inside {}", rset.getClass());
@@ -146,11 +154,12 @@ public class TransportSqlQueryAction extends HandledTransportAction<SqlQueryRequ
             }
         }
         columns = unmodifiableList(columns);
-        return createResponse(request, request.zoneId(), columns, page, task);
+        return createResponse(request, request.zoneId(), columns, page, executionId);
     }
 
     private static SqlQueryResponse createResponse(SqlQueryRequest request, ZoneId zoneId, List<ColumnInfo> header, Page page,
-                                                   SqlQueryTask task) {
+        AsyncExecutionId executionId
+    ) {
         List<List<Object>> rows = new ArrayList<>();
         page.rowSet().forEachRow(rowView -> {
             List<Object> row = new ArrayList<>(rowView.columnCount());
@@ -158,7 +167,6 @@ public class TransportSqlQueryAction extends HandledTransportAction<SqlQueryRequ
             rows.add(unmodifiableList(row));
         });
 
-        AsyncExecutionId executionId = task.getExecutionId();
         return new SqlQueryResponse(
                 Cursors.encodeToString(page.next(), zoneId),
                 request.mode(),
@@ -201,7 +209,7 @@ public class TransportSqlQueryAction extends HandledTransportAction<SqlQueryRequ
 
     @Override
     public void execute(SqlQueryRequest request, SqlQueryTask task, ActionListener<SqlQueryResponse> listener) {
-        operation(planExecutor, task, request, listener, username(securityContext), transportService, clusterService);
+        operation(planExecutor, request, listener, username(securityContext), clusterName(clusterService));
     }
 
     @Override

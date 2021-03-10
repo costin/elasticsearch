@@ -1,0 +1,29 @@
+apply plugin: 'elasticsearch.build'
+description = 'IDE Debugging for xQL'
+
+dependencies {
+  api project(":test:framework")
+  implementation project(path: xpackModule('ql'))
+  implementation project(path: xpackModule('core'))
+  implementation "org.slf4j:slf4j-api:${versions.slf4j}"
+  implementation "org.apache.logging.log4j:log4j-slf4j-impl:${versions.log4j}"
+  implementation "org.slf4j:slf4j-api:${versions.slf4j}"
+  implementation project(path: ':modules:transport-netty4')
+
+}
+
+jar {
+  doLast {
+    println archiveFile.get().asFile
+  }
+}
+
+artifacts {
+  archives jar
+}
+
+dependencyLicenses.enabled = false
+forbiddenApisMain.enabled = false
+forbiddenApisTest.enabled = false
+testingConventions.enabled = false
+thirdPartyAudit.enabled = false

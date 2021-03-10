@@ -26,7 +26,6 @@ import org.elasticsearch.common.logging.LoggerMessageFormat;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.test.rest.ESRestTestCase;
-import org.junit.AfterClass;
 import org.junit.Before;
 
 import java.io.IOException;
@@ -44,8 +43,8 @@ public abstract class BaseEqlSpecTestCase extends ESRestTestCase {
 
     private RestHighLevelClient highLevelClient;
 
-    private final String index;
-    private final String query;
+    protected final String index;
+    protected final String query;
     private final String name;
     private final long[] eventIds;
 
@@ -56,7 +55,7 @@ public abstract class BaseEqlSpecTestCase extends ESRestTestCase {
         }
     }
 
-    @AfterClass
+    //@AfterClass
     public static void wipeTestData() throws IOException {
         try {
             adminClient().performRequest(new Request("DELETE", "/*"));

@@ -1,0 +1,22 @@
+[[queries]]
+name='debug'
+query = '''
+sequence
+  [process where true]
+  [process where serial_event_id <= 4]
+  [process where true]
+  [process where true]
+'''
+expected_event_ids  = [1, 2, 3, 4,
+                       2, 3, 4, 5,
+                       3, 4, 5, 6]
+
+
+
+
+
+
+
+
+
+

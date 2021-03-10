@@ -40,7 +40,7 @@ class JdbcHttpClient {
      * If we remove it, we need to make sure no other types of Exceptions (runtime or otherwise) are thrown
      */
     JdbcHttpClient(JdbcConfiguration conCfg) throws SQLException {
-        this(conCfg, true);
+        this(conCfg, false);
     }
 
     JdbcHttpClient(JdbcConfiguration conCfg, boolean checkServer) throws SQLException {
@@ -48,7 +48,6 @@ class JdbcHttpClient {
         this.conCfg = conCfg;
         if (checkServer) {
             this.serverInfo = fetchServerInfo();
-            checkServerVersion();
         }
     }
 

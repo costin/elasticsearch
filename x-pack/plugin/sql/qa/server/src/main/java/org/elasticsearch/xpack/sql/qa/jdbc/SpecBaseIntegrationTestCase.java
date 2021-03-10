@@ -6,11 +6,18 @@
  */
 package org.elasticsearch.xpack.sql.qa.jdbc;
 
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.methods.HttpPut;
 import org.apache.logging.log4j.Logger;
+import org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest;
+import org.elasticsearch.action.support.DestructiveOperations;
 import org.elasticsearch.client.Request;
 import org.elasticsearch.client.ResponseException;
 import org.elasticsearch.client.RestClient;
 import org.elasticsearch.common.Strings;
+import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.common.xcontent.json.JsonXContent;
 import org.elasticsearch.xpack.ql.TestUtils;
 import org.junit.AfterClass;
 import org.junit.Before;
@@ -74,9 +81,25 @@ public abstract class SpecBaseIntegrationTestCase extends JdbcIntegrationTestCas
         return true;
     }
 
+    @Override
+    protected boolean preserveTemplatesUponCompletion() {
+        return true;
+    }
+
     @AfterClass
     public static void wipeTestData() throws IOException {
         try {
+            ClusterUpdateSettingsRequest clusterSettings = new ClusterUpdateSettingsRequest();
+            Request allowWildcard = new Request(HttpPut.METHOD_NAME, "_cluster/settings");
+            XContentBuilder entity = JsonXContent.contentBuilder();
+            entity.startObject().startObject("transient");
+            {
+                entity.field(DestructiveOperations.REQUIRES_NAME_SETTING.getKey(), false);
+            }
+            entity.endObject().endObject();
+
+            allowWildcard.setJsonEntity(Strings.toString(entity));
+            adminClient().performRequest(allowWildcard);
             adminClient().performRequest(new Request("DELETE", "/*"));
         } catch (ResponseException e) {
             // 404 here just means we had no indexes

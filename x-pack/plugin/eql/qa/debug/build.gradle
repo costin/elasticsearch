@@ -1,0 +1,19 @@
+apply plugin: 'elasticsearch.build'
+description = 'IDE Debugging for EQL'
+
+dependencies {
+  testImplementation project(":test:framework")
+  
+  testImplementation project(':client:rest-high-level')
+  testImplementation project(path: xpackModule('core'))
+  testImplementation project(path: xpackModule('ql'))
+  testImplementation project(':x-pack:plugin:ql:qa:debug-base')
+  testImplementation project(path: xpackModule('eql'))
+  testImplementation project(path: ':x-pack:plugin:eql:qa:common')
+  testImplementation "org.slf4j:slf4j-api:${versions.slf4j}"
+  testImplementation "org.apache.logging.log4j:log4j-slf4j-impl:${versions.log4j}"
+}
+
+forbiddenApisTest.enabled = false
+testingConventions.enabled = false
+thirdPartyAudit.enabled = false
