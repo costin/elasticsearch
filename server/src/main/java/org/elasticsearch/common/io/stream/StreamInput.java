@@ -513,7 +513,11 @@ public abstract class StreamInput extends InputStream {
                 }
             }
         }
-        return charsRef.toString();
+        return asString(charsRef);
+    }
+
+    protected String asString(CharsRef charRef) {
+        return charRef.toString();
     }
 
     private static void throwOnBrokenChar(int c) throws IOException {
