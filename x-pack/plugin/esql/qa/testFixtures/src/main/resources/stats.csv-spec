@@ -468,3 +468,40 @@ from employees | stats min(salary), max(salary), c = count(salary);
 min(salary):i | max(salary):i | c:l
 25324         | 74999         | 100
 ;
+
+weightedAvgWithLiteralOneAndNoGroup
+from employees | stats c = count(salary), s = sum(salary), a = avg(salary), wa = weighted_avg(salary, 1)
+;
+
+c:l | s:l | a:d | wa:d
+100 | 4824855 | 48248.55 | 48248.55
+;
+
+weightedAvgWithAnotherLiteralAndNoGroup
+from employees | stats c = count(salary), s = sum(salary), a = avg(salary), wa = weighted_avg(salary, 3)
+;
+
+c:l | s:l | a:d | wa:d
+100 | 4824855 | 48248.55 | 144745.65
+;
+
+weightedAvgWithLiteralAndGroups
+from employees | stats c = count(salary), s = sum(salary), a = avg(salary), wa = weighted_avg(salary, 3) by languages | sort languages
+;
+
+c:l | s:l     | a:d                  | wa:d                 | languages:i
+15  | 758650  | 50576.666666666664   | 151730.0             | 1
+19  | 915398  | 48178.84210526316    | 144536.52631578947   | 2
+17  | 891121  | 52418.882352941175   | 157256.64705882352   | 3
+18  | 859194  | 47733.0              | 143199.0             | 4
+21  | 875296  | 41680.76190476191    | 125042.28571428571   | 5
+10  | 525196  | 52519.6              | 157558.8             | null
+;
+
+weightedAvgWithFieldsAndGroups
+from employees | stats c = count(salary), s = sum(salary), a = avg(salary), wa = weighted_avg(salary, height) by languages | sort languages
+;
+
+c:l | s:l | a:d | wa:d | languages:i  
+;
+

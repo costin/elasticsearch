@@ -64,14 +64,18 @@ public class WeightedAvg extends AggregateFunction implements SurrogateExpressio
         var field = field();
 
         Expression surrogate = null;
-        // if the weight is a constant, turn this into a regular average
+        // if the weight is a constant, turn this into a regular average (sum/count)
+        // however to preserve precision, multiply the weight with the sum and then divide it by the count
+        Expression left, right;
         if (weight.foldable()) {
             var literal = Literal.of(weight);
-            surrogate = new Mul(s, new Avg(s, field), literal);
+            left = new Mul(s, new Sum(s, field), literal);
+            right = new Count(s, field);
         } else {
             var mul = new Mul(s, field, weight);
-            surrogate = new Div(s, new Sum(s, mul), new Sum(s, weight));
+            left = new Sum(s, mul);
+            right = new Sum(s, weight);
         }
-        return surrogate;
+        return new Div(s, left, right, DataTypes.DOUBLE);
     }
 }
