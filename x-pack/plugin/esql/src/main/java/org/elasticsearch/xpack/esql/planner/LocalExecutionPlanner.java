@@ -270,7 +270,7 @@ public class LocalExecutionPlanner {
         );
     }
 
-    private static Function<Page, Page> alignPageToAttributes(List<Attribute> attrs, Layout layout) {
+    private static Function<Page, Page> alignPageToAttributes(List<Attribute> attrs, ChannelLayout layout) {
         // align the page layout with the operator output
         // extraction order - the list ordinal is the same as the column one
         // while the value represents the position in the original page
@@ -278,7 +278,7 @@ public class LocalExecutionPlanner {
         int index = -1;
         boolean transformRequired = false;
         for (var attribute : attrs) {
-            mappedPosition[++index] = layout.getChannel(attribute.id());
+            mappedPosition[++index] = layout.getChannel(attribute);
             transformRequired |= mappedPosition[index] != index;
         }
         Function<Page, Page> transformer = transformRequired ? p -> {
@@ -555,10 +555,10 @@ public class LocalExecutionPlanner {
         final List<OperatorFactory> intermediateOperatorFactories;
         final SinkOperatorFactory sinkOperatorFactory;
 
-        final Layout layout; // maps field names to channels
+        final ChannelLayout layout; // maps attributes to channels
 
         /** Creates a new physical operation with the given source and layout. */
-        static PhysicalOperation fromSource(SourceOperatorFactory sourceOperatorFactory, Layout layout) {
+        static PhysicalOperation fromSource(SourceOperatorFactory sourceOperatorFactory, ChannelLayout layout) {
             return new PhysicalOperation(sourceOperatorFactory, layout);
         }
 
@@ -568,16 +568,16 @@ public class LocalExecutionPlanner {
         }
 
         /** Creates a new physical operation from this operation with the given intermediate operator and layout. */
-        PhysicalOperation with(OperatorFactory operatorFactory, Layout layout) {
+        PhysicalOperation with(OperatorFactory operatorFactory, ChannelLayout layout) {
             return new PhysicalOperation(this, Optional.of(operatorFactory), Optional.empty(), layout);
         }
 
         /** Creates a new physical operation from this operation with the given sink and layout. */
-        PhysicalOperation withSink(SinkOperatorFactory sink, Layout layout) {
+        PhysicalOperation withSink(SinkOperatorFactory sink, ChannelLayout layout) {
             return new PhysicalOperation(this, Optional.empty(), Optional.of(sink), layout);
         }
 
-        private PhysicalOperation(SourceOperatorFactory sourceOperatorFactory, Layout layout) {
+        private PhysicalOperation(SourceOperatorFactory sourceOperatorFactory, ChannelLayout layout) {
             this.sourceOperatorFactory = sourceOperatorFactory;
             this.intermediateOperatorFactories = List.of();
             this.sinkOperatorFactory = null;
@@ -588,7 +588,7 @@ public class LocalExecutionPlanner {
             PhysicalOperation physicalOperation,
             Optional<OperatorFactory> intermediateOperatorFactory,
             Optional<SinkOperatorFactory> sinkOperatorFactory,
-            Layout layout
+            ChannelLayout layout
         ) {
             sourceOperatorFactory = physicalOperation.sourceOperatorFactory;
             intermediateOperatorFactories = new ArrayList<>();

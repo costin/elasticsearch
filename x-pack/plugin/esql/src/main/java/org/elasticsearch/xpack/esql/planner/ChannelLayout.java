@@ -103,6 +103,10 @@ public class ChannelLayout {
         aliases.put(duplicate, target);
     }
 
+    public int getChannel(Attribute attr) {
+        return attributeToChannels.getOrDefault(aliases.resolve(attr, attr), -1);
+    }
+
     public int layerSize() {
         return stages.size();
     }
