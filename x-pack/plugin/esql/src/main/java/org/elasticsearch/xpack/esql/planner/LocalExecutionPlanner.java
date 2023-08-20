@@ -278,7 +278,7 @@ public class LocalExecutionPlanner {
         int index = -1;
         boolean transformRequired = false;
         for (var attribute : attrs) {
-            mappedPosition[++index] = layout.getChannel(attribute);
+            mappedPosition[++index] = layout.channel(attribute);
             transformRequired |= mappedPosition[index] != index;
         }
         Function<Page, Page> transformer = transformRequired ? p -> {
@@ -325,11 +325,13 @@ public class LocalExecutionPlanner {
         PhysicalOperation source = plan(topNExec.child(), context);
 
         List<TopNOperator.SortOrder> orders = topNExec.order().stream().map(order -> {
-            int sortByChannel;
-            if (order.child() instanceof Attribute a) {
-                sortByChannel = source.layout.getChannel(a.id());
-            } else {
-                throw new UnsupportedOperationException();
+            var orderExpression = order.child();
+            int sortByChannel = source.layout.channel(order);
+
+            if (sortByChannel == -1) {
+                throw new EsqlIllegalArgumentException(
+                    "Cannot find channel for expression " + orderExpression + " in layout " + source.layout
+                );
             }
 
             return new TopNOperator.SortOrder(
@@ -445,7 +447,7 @@ public class LocalExecutionPlanner {
                 sessionId,
                 parentTask,
                 1, // TODO: Add a concurrent setting for enrich - also support unordered mode
-                source.layout.getChannel(enrich.matchField().id()),
+                source.layout.channel(enrich.matchField().id()),
                 enrichLookupService,
                 enrichIndex,
                 "match", // TODO: enrich should also resolve the match_type
@@ -507,7 +509,7 @@ public class LocalExecutionPlanner {
             } else {
                 inputId = ne.id();
             }
-            int inputChannel = source.layout.getChannel(inputId);
+            int inputChannel = source.layout.channel(inputId);
             inputChannelToOutputIds.computeIfAbsent(inputChannel, ignore -> new HashSet<>()).add(ne.id());
         }
 
@@ -544,7 +546,7 @@ public class LocalExecutionPlanner {
 
     private PhysicalOperation planMvExpand(MvExpandExec mvExpandExec, LocalExecutionPlannerContext context) {
         PhysicalOperation source = plan(mvExpandExec.child(), context);
-        return source.with(new MvExpandOperator.Factory(source.layout.getChannel(mvExpandExec.target().id())), source.layout);
+        return source.with(new MvExpandOperator.Factory(source.layout.channel(mvExpandExec.target().id())), source.layout);
     }
 
     /**

@@ -118,7 +118,7 @@ abstract class AbstractPhysicalOperationProviders implements PhysicalOperationPr
                     }
                 }
                 layout.appendChannel(grpAttribIds);
-                groupSpecs.add(new GroupSpec(source.layout.getChannel(groupAttribute.id()), groupAttribute));
+                groupSpecs.add(new GroupSpec(source.layout.channel(groupAttribute.id()), groupAttribute));
             }
 
             if (mode == AggregateExec.Mode.FINAL) {

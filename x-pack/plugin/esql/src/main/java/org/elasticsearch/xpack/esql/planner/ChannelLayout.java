@@ -11,6 +11,7 @@ import org.elasticsearch.xpack.esql.EsqlIllegalArgumentException;
 import org.elasticsearch.xpack.esql.plan.physical.PhysicalPlan;
 import org.elasticsearch.xpack.ql.expression.Attribute;
 import org.elasticsearch.xpack.ql.expression.AttributeMap;
+import org.elasticsearch.xpack.ql.expression.Expression;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -103,8 +104,10 @@ public class ChannelLayout {
         aliases.put(duplicate, target);
     }
 
-    public int getChannel(Attribute attr) {
-        return attributeToChannels.getOrDefault(aliases.resolve(attr, attr), -1);
+    public int channel(Expression expression) {
+        var source = aliases.resolve(expression);
+        expression = source != null ? source : expression;
+        return attributeToChannels.getOrDefault(expression, -1);
     }
 
     public int layerSize() {
