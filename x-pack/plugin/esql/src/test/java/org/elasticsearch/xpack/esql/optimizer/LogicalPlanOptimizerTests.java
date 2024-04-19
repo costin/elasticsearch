@@ -4505,6 +4505,123 @@ public class LogicalPlanOptimizerTests extends ESTestCase {
         assertEquals(and, new PropagateNullable().rule(and));
     }
 
+    //
+    // Inlinestats
+    //
+
+    /**
+     * Expects
+     * Limit[1000[INTEGER]]
+     * \_Join[CROSS,true[BOOLEAN]]
+     *   |_EsRelation[test][_meta_field{f}#10, emp_no{f}#4, first_name{f}#5, ge..]
+     *   \_Aggregate[[],[COUNT([2a][KEYWORD]) AS c]]
+     *     \_EsRelation[test][_meta_field{f}#10, emp_no{f}#4, first_name{f}#5, ge..]
+     */
+    public void testBasicInlineStatsNoGroupingToCrossJoin() throws Exception {
+        var plan = optimizedPlan("""
+            from test
+            | inlinestats c = count(*)
+            """);
+
+        System.out.println(plan);
+        fail("not implemented yet");
+    }
+
+    /**
+     * Expects
+     * Limit[1000[INTEGER]]
+     * \_Join[CROSS,true[BOOLEAN]]
+     *   |_EsRelation[test][_meta_field{f}#16, emp_no{f}#10, first_name{f}#11, ..]
+     *   \_Aggregate[[],[COUNT([2a][KEYWORD]) AS c, MAX(salary{f}#15) AS ma, MIN(languages{f}#13) AS mi]]
+     *     \_EsRelation[test][_meta_field{f}#16, emp_no{f}#10, first_name{f}#11, ..]
+     */
+    public void testBasicInlineStatsNoGroupingMultipleAggsToCrossJoin() throws Exception {
+        var plan = optimizedPlan("""
+            from test
+            | inlinestats c = count(*), ma = max(salary), mi = min(languages)
+            """);
+
+        System.out.println(plan);
+        fail("not implemented yet");
+    }
+
+    /**
+     * Limit[1000[INTEGER]]
+     * \_Join[CROSS,true[BOOLEAN]]
+     *   |_EsRelation[test][_meta_field{f}#11, emp_no{f}#5, first_name{f}#6, ge..]
+     *   \_Project[[m{r}#4]]
+     *     \_Eval[[$$MAX$max(salary_%_2)>$0{r}#16 + 3[INTEGER] AS m]]
+     *       \_Aggregate[[],[MAX($$salary_%_2$MAX$0{r}#15) AS $$MAX$max(salary_%_2)>$0]]
+     *         \_Eval[[salary{f}#10 % 2[INTEGER] AS $$salary_%_2$MAX$0]]
+     *           \_EsRelation[test][_meta_field{f}#11, emp_no{f}#5, first_name{f}#6, ge..]
+     */
+    public void testInlineStatsNoGroupingAggExpressionToCrossJoin() throws Exception {
+        var plan = optimizedPlan("""
+            from test
+            | inlinestats m = max(salary % 2) + 3
+            """);
+
+        System.out.println(plan);
+        fail("not implemented yet");
+    }
+
+    /**
+     * Expects
+     * Limit[1000[INTEGER]]
+     * \_Join[USING [languages{f}#8],true[BOOLEAN]]
+     *   |_EsRelation[test][_meta_field{f}#11, emp_no{f}#5, first_name{f}#6, ge..]
+     *   \_Aggregate[[languages{f}#8],[COUNT([2a][KEYWORD]) AS c, languages{f}#8]]
+     *     \_EsRelation[test][_meta_field{f}#11, emp_no{f}#5, first_name{f}#6, ge..]
+     */
+    public void testBasicInlineStatsWithOneGroupingToEquiJoin() throws Exception {
+        var plan = optimizedPlan("""
+            from test
+            | inlinestats c = count(*) by languages
+            """);
+
+        System.out.println(plan);
+        fail("not implemented yet");
+    }
+
+    /**
+     * Expects
+     * Limit[1000[INTEGER]]
+     * \_Join[USING [gender{f}#11, languages{f}#12],true[BOOLEAN]]
+     *   |_EsRelation[test][_meta_field{f}#15, emp_no{f}#9, first_name{f}#10, g..]
+     *   \_Aggregate[[gender{f}#11, languages{f}#12],[COUNT([2a][KEYWORD]) AS c, MAX(salary{f}#14) AS ma, gender{f}#11, languages{f}
+     * #12]]
+     *     \_EsRelation[test][_meta_field{f}#15, emp_no{f}#9, first_name{f}#10, g..]
+     */
+    public void testBasicInlineStatsWithMultiGroupingToEquiJoin() throws Exception {
+        var plan = optimizedPlan("""
+            from test
+            | inlinestats c = count(*), ma = max(salary) by gender, languages
+            """);
+
+        System.out.println(plan);
+        fail("not implemented yet");
+    }
+
+    /**
+     * Expects
+     * Limit[1000[INTEGER]]
+     * \_Join[USING [x{r}#6],true[BOOLEAN]]
+     *   |_Eval[[languages{f}#10 % 2[INTEGER] AS x]]
+     *   | \_EsRelation[test][_meta_field{f}#13, emp_no{f}#7, first_name{f}#8, ge..]
+     *   \_Aggregate[[x{r}#6],[COUNT([2a][KEYWORD]) AS c, x{r}#6]]
+     *     \_Eval[[languages{f}#10 % 2[INTEGER] AS x]]
+     *       \_EsRelation[test][_meta_field{f}#13, emp_no{f}#7, first_name{f}#8, ge..]
+     */
+    public void testInlineStatsWithGroupingNamedExpressionToEquiJoin() throws Exception {
+        var plan = optimizedPlan("""
+            from test
+            | inlinestats c = count(*) by x = languages % 2
+            """);
+
+        System.out.println(plan);
+        fail("not implemented yet");
+    }
+
     private Literal nullOf(DataType dataType) {
         return new Literal(Source.EMPTY, null, dataType);
     }

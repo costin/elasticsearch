@@ -13,6 +13,7 @@ import org.antlr.v4.runtime.tree.ParseTree;
 import org.elasticsearch.core.Tuple;
 import org.elasticsearch.dissect.DissectException;
 import org.elasticsearch.dissect.DissectParser;
+import org.elasticsearch.monitor.os.OsStats;
 import org.elasticsearch.xpack.esql.VerificationException;
 import org.elasticsearch.xpack.esql.expression.UnresolvedNamePattern;
 import org.elasticsearch.xpack.esql.parser.EsqlBaseParser.MetadataOptionContext;
@@ -273,7 +274,7 @@ public class LogicalPlanBuilder extends ExpressionBuilder {
         List<NamedExpression> aggregates = new ArrayList<>(visitFields(ctx.stats));
         List<NamedExpression> groupings = visitGrouping(ctx.grouping);
         aggregates.addAll(groupings);
-        return input -> new InlineAggregate(source(ctx), input, new ArrayList<>(groupings), aggregates);
+        return input -> new InlineAggregate(source(ctx), input, groupings, aggregates);
     }
 
     @Override

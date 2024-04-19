@@ -24,14 +24,17 @@ import org.elasticsearch.xpack.esql.expression.function.scalar.spatial.SpatialRe
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.In;
 import org.elasticsearch.xpack.esql.plan.logical.Enrich;
 import org.elasticsearch.xpack.esql.plan.logical.Eval;
+import org.elasticsearch.xpack.esql.plan.logical.InlineAggregate;
 import org.elasticsearch.xpack.esql.plan.logical.MvExpand;
 import org.elasticsearch.xpack.esql.plan.logical.RegexExtract;
 import org.elasticsearch.xpack.esql.plan.logical.TopN;
+import org.elasticsearch.xpack.esql.plan.logical.join.Join;
+import org.elasticsearch.xpack.esql.plan.logical.join.JoinType;
+import org.elasticsearch.xpack.esql.plan.logical.join.JoinTypes;
 import org.elasticsearch.xpack.esql.plan.logical.local.LocalRelation;
 import org.elasticsearch.xpack.esql.plan.logical.local.LocalSupplier;
 import org.elasticsearch.xpack.esql.planner.PlannerUtils;
 import org.elasticsearch.xpack.esql.type.EsqlDataTypes;
-import org.elasticsearch.xpack.ql.analyzer.AnalyzerRules;
 import org.elasticsearch.xpack.ql.common.Failures;
 import org.elasticsearch.xpack.ql.expression.Alias;
 import org.elasticsearch.xpack.ql.expression.Attribute;
@@ -116,6 +119,7 @@ public class LogicalPlanOptimizer extends ParameterizedRuleExecutor<LogicalPlan,
         return new Batch<>(
             "Substitutions",
             Limiter.ONCE,
+            new ReplaceInlineAggsWithJoin(),
             new RemoveStatsOverride(),
             // first extract nested expressions inside aggs
             new ReplaceStatsNestedExpressionWithEval(),
@@ -1305,7 +1309,11 @@ public class LogicalPlanOptimizer extends ParameterizedRuleExecutor<LogicalPlan,
     static class ReplaceStatsNestedExpressionWithEval extends OptimizerRules.OptimizerRule<Aggregate> {
 
         @Override
-        protected LogicalPlan rule(Aggregate aggregate) {
+        protected Aggregate rule(Aggregate aggregate) {
+            return replaceNestedExpressions(aggregate);
+        }
+
+        static Aggregate replaceNestedExpressions(Aggregate aggregate) {
             List<Alias> evals = new ArrayList<>();
             Map<String, Attribute> evalNames = new HashMap<>();
             List<Expression> newGroupings = new ArrayList<>(aggregate.groupings());
@@ -1616,19 +1624,18 @@ public class LogicalPlanOptimizer extends ParameterizedRuleExecutor<LogicalPlan,
      * becomes
      * STATS max($x + 1) BY $x = a + b
      */
-    private static class RemoveStatsOverride extends AnalyzerRules.AnalyzerRule<Aggregate> {
+    private static class RemoveStatsOverride extends OptimizerRules.OptimizerRule<Aggregate> {
 
-        @Override
-        protected boolean skipResolved() {
-            return false;
+        RemoveStatsOverride() {
+            super(TransformDirection.UP);
         }
 
         @Override
-        protected LogicalPlan rule(Aggregate agg) {
-            return agg.resolved() ? removeAggDuplicates(agg) : agg;
+        protected Aggregate rule(Aggregate agg) {
+            return removeAggDuplicates(agg);
         }
 
-        private static Aggregate removeAggDuplicates(Aggregate agg) {
+        static Aggregate removeAggDuplicates(Aggregate agg) {
             var groupings = agg.groupings();
             var aggregates = agg.aggregates();
 
@@ -1652,6 +1659,64 @@ public class LogicalPlanOptimizer extends ParameterizedRuleExecutor<LogicalPlan,
                 }
             }
             return newList.size() == list.size() ? list : newList;
+        }
+    }
+
+    /**
+     * Replace inline aggregations with a logical join mainly for reusing the join optimizations across
+     * different commands.
+     * An inlinestats with no grouping is replaced by a cross join
+     * FROM index | INLINESTATS mx = max(x)
+     * becomes
+     * FROM index | CROSS JOIN [FROM index | STATS x=max(x)]
+     * If grouping is present, a left join is used for replacing
+     * FROM index | INLINESTATS mx = max(x) by a, b
+     * becomes
+     * FROM index | INNER JOIN [FROM index | STATS x=max(x) by a, b] ON a, b
+     * Expressions specified in the grouping are extracted as EVALs before grouping so they can be used later for joining
+     * the two sides:
+     * FROM index | INLINESTATS mx = max(x) by g = a + b
+     * becomes
+     * FROM index | EVAL g = a + b | INNER JOIN [FROM index | STATS x=max(x) by g] ON g
+     */
+    private static class ReplaceInlineAggsWithJoin extends OptimizerRules.OptimizerRule<InlineAggregate> {
+
+        ReplaceInlineAggsWithJoin() {
+            super(TransformDirection.UP);
+        }
+
+        @Override
+        protected LogicalPlan rule(InlineAggregate inlineAgg) {
+            JoinType joinType;
+            Expression condition = Literal.TRUE;
+
+            LogicalPlan child = inlineAgg.child();
+            // create the aggregate but since it can accept expressions, optimize its groups first as they are used as joining key
+            Aggregate right = new Aggregate(inlineAgg.source(), child, new ArrayList<>(inlineAgg.groupings()), inlineAgg.aggregates());
+            // remove group duplicates
+            right = RemoveStatsOverride.removeAggDuplicates(right);
+            // then the grouping expressions
+            right = ReplaceStatsNestedExpressionWithEval.replaceNestedExpressions(right);
+            // the aggs optimization will be picked up by the separate rule if necessary
+
+            // set the left side as the child of the right to have the latest join keys (such as potential evals of the aggregate)
+            LogicalPlan left = right.child();
+
+            List<Expression> groupings = right.groupings();
+            // grouping specified -> INNER (could be left but since it's self eq-join, they are the equivalent)
+            if (groupings.size() > 0) {
+                List<Attribute> groupingAttributes = new ArrayList<>(groupings.size());
+                for (Expression grouping : groupings) {
+                    groupingAttributes.add(Expressions.attribute(grouping));
+                }
+                joinType = new JoinTypes.UsingJoinType(JoinTypes.INNER, groupingAttributes);
+            }
+            // no grouping -> CROSS
+            else {
+                joinType = JoinTypes.CROSS;
+            }
+
+            return new Join(inlineAgg.source(), left, right, joinType, condition);
         }
     }
 

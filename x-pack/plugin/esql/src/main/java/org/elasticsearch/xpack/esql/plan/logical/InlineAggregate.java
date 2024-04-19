@@ -10,26 +10,27 @@ package org.elasticsearch.xpack.esql.plan.logical;
 import org.elasticsearch.xpack.esql.expression.NamedExpressions;
 import org.elasticsearch.xpack.ql.capabilities.Resolvables;
 import org.elasticsearch.xpack.ql.expression.Attribute;
-import org.elasticsearch.xpack.ql.expression.Expression;
-import org.elasticsearch.xpack.ql.expression.Expressions;
 import org.elasticsearch.xpack.ql.expression.NamedExpression;
 import org.elasticsearch.xpack.ql.plan.logical.LogicalPlan;
 import org.elasticsearch.xpack.ql.plan.logical.UnaryPlan;
 import org.elasticsearch.xpack.ql.tree.NodeInfo;
 import org.elasticsearch.xpack.ql.tree.Source;
-import org.elasticsearch.xpack.ql.util.CollectionUtils;
 
-import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 
 public class InlineAggregate extends UnaryPlan {
 
-    private final List<Expression> groupings;
+    private final List<? extends NamedExpression> groupings;
     private final List<? extends NamedExpression> aggregates;
     private List<Attribute> lazyOutput;
 
-    public InlineAggregate(Source source, LogicalPlan child, List<Expression> groupings, List<? extends NamedExpression> aggregates) {
+    public InlineAggregate(
+        Source source,
+        LogicalPlan child,
+        List<? extends NamedExpression> groupings,
+        List<? extends NamedExpression> aggregates
+    ) {
         super(source, child);
         this.groupings = groupings;
         this.aggregates = aggregates;
@@ -45,7 +46,7 @@ public class InlineAggregate extends UnaryPlan {
         return new InlineAggregate(source(), newChild, groupings, aggregates);
     }
 
-    public List<Expression> groupings() {
+    public List<? extends NamedExpression> groupings() {
         return groupings;
     }
 

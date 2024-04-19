@@ -142,9 +142,11 @@ import org.elasticsearch.xpack.esql.plan.logical.Dissect.Parser;
 import org.elasticsearch.xpack.esql.plan.logical.Enrich;
 import org.elasticsearch.xpack.esql.plan.logical.Eval;
 import org.elasticsearch.xpack.esql.plan.logical.Grok;
-import org.elasticsearch.xpack.esql.plan.logical.InlineAggregate;
 import org.elasticsearch.xpack.esql.plan.logical.MvExpand;
 import org.elasticsearch.xpack.esql.plan.logical.TopN;
+import org.elasticsearch.xpack.esql.plan.logical.join.Join;
+import org.elasticsearch.xpack.esql.plan.logical.join.JoinType;
+import org.elasticsearch.xpack.esql.plan.logical.join.JoinTypes;
 import org.elasticsearch.xpack.esql.plan.logical.local.EsqlProject;
 import org.elasticsearch.xpack.esql.plan.physical.AggregateExec;
 import org.elasticsearch.xpack.esql.plan.physical.DissectExec;
@@ -297,7 +299,7 @@ public final class PlanNamedTypes {
             of(LogicalPlan.class, EsqlProject.class, PlanNamedTypes::writeEsqlProject, PlanNamedTypes::readEsqlProject),
             of(LogicalPlan.class, Filter.class, PlanNamedTypes::writeFilter, PlanNamedTypes::readFilter),
             of(LogicalPlan.class, Grok.class, PlanNamedTypes::writeGrok, PlanNamedTypes::readGrok),
-            of(LogicalPlan.class, InlineAggregate.class, PlanNamedTypes::writeInlineAggregate, PlanNamedTypes::readInlineAggregate),
+            of(LogicalPlan.class, Join.class, PlanNamedTypes::writeJoin, PlanNamedTypes::readJoin),
             of(LogicalPlan.class, Limit.class, PlanNamedTypes::writeLimit, PlanNamedTypes::readLimit),
             of(LogicalPlan.class, MvExpand.class, PlanNamedTypes::writeMvExpand, PlanNamedTypes::readMvExpand),
             of(LogicalPlan.class, OrderBy.class, PlanNamedTypes::writeOrderBy, PlanNamedTypes::readOrderBy),
@@ -920,20 +922,16 @@ public final class PlanNamedTypes {
         writeAttributes(out, grok.extractedFields());
     }
 
-    static InlineAggregate readInlineAggregate(PlanStreamInput in) throws IOException {
-        return new InlineAggregate(
-            in.readSource(),
-            in.readLogicalPlanNode(),
-            in.readCollectionAsList(readerFromPlanReader(PlanStreamInput::readExpression)),
-            readNamedExpressions(in)
-        );
+    static Join readJoin(PlanStreamInput in) throws IOException {
+        return new Join(in.readSource(), in.readLogicalPlanNode(), in.readLogicalPlanNode(), readJoinType(in), in.readExpression());
     }
 
-    static void writeInlineAggregate(PlanStreamOutput out, InlineAggregate aggregate) throws IOException {
+    static void writeJoin(PlanStreamOutput out, Join join) throws IOException {
         out.writeNoSource();
-        out.writeLogicalPlanNode(aggregate.child());
-        out.writeCollection(aggregate.groupings(), writerFromPlanWriter(PlanStreamOutput::writeExpression));
-        writeNamedExpressions(out, aggregate.aggregates());
+        out.writeLogicalPlanNode(join.left());
+        out.writeLogicalPlanNode(join.right());
+        writeJoinType(out, join.type());
+        out.writeExpression(join.condition());
     }
 
     static Limit readLimit(PlanStreamInput in) throws IOException {
@@ -1939,6 +1937,30 @@ public final class PlanNamedTypes {
     static void writeDissectParser(PlanStreamOutput out, Parser dissectParser) throws IOException {
         out.writeString(dissectParser.pattern());
         out.writeString(dissectParser.appendSeparator());
+    }
+
+    static JoinType readJoinType(PlanStreamInput in) throws IOException {
+        switch (in.readByte()) {
+            case 0:
+                return in.readEnum(JoinTypes.CoreJoinType.class);
+            case 1:
+                return new JoinTypes.UsingJoinType(in.readEnum(JoinTypes.CoreJoinType.class), readAttributes(in));
+            default:
+                throw new IllegalArgumentException("Unknown join type");
+        }
+    }
+
+    static void writeJoinType(PlanStreamOutput out, JoinType joinType) throws IOException {
+        if (joinType instanceof JoinTypes.CoreJoinType coreJoinType) {
+            out.writeByte((byte) 0);
+            out.writeEnum(coreJoinType);
+        } else if (joinType instanceof JoinTypes.UsingJoinType usingJoinType) {
+            out.writeByte((byte) 1);
+            out.writeEnum(usingJoinType.coreJoin());
+            writeAttributes(out, usingJoinType.columns());
+        } else {
+            throw new IllegalArgumentException("Unknown join type: " + joinType);
+        }
     }
 
     static Log readLog(PlanStreamInput in) throws IOException {
