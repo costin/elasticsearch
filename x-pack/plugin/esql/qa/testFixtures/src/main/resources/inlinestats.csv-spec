@@ -1,0 +1,6 @@
+maxOfLong
+from employees | inlinestats l = max(languages.long) | sort emp_no | limit 5;
+
+l:long
+5
+;

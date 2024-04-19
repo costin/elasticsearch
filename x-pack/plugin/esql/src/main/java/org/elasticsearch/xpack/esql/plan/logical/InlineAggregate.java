@@ -7,6 +7,7 @@
 
 package org.elasticsearch.xpack.esql.plan.logical;
 
+import org.elasticsearch.xpack.esql.expression.NamedExpressions;
 import org.elasticsearch.xpack.ql.capabilities.Resolvables;
 import org.elasticsearch.xpack.ql.expression.Attribute;
 import org.elasticsearch.xpack.ql.expression.Expression;
@@ -16,29 +17,32 @@ import org.elasticsearch.xpack.ql.plan.logical.LogicalPlan;
 import org.elasticsearch.xpack.ql.plan.logical.UnaryPlan;
 import org.elasticsearch.xpack.ql.tree.NodeInfo;
 import org.elasticsearch.xpack.ql.tree.Source;
+import org.elasticsearch.xpack.ql.util.CollectionUtils;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 
-public class InlineStats extends UnaryPlan {
+public class InlineAggregate extends UnaryPlan {
 
     private final List<Expression> groupings;
     private final List<? extends NamedExpression> aggregates;
+    private List<Attribute> lazyOutput;
 
-    public InlineStats(Source source, LogicalPlan child, List<Expression> groupings, List<? extends NamedExpression> aggregates) {
+    public InlineAggregate(Source source, LogicalPlan child, List<Expression> groupings, List<? extends NamedExpression> aggregates) {
         super(source, child);
         this.groupings = groupings;
         this.aggregates = aggregates;
     }
 
     @Override
-    protected NodeInfo<InlineStats> info() {
-        return NodeInfo.create(this, InlineStats::new, child(), groupings, aggregates);
+    protected NodeInfo<InlineAggregate> info() {
+        return NodeInfo.create(this, InlineAggregate::new, child(), groupings, aggregates);
     }
 
     @Override
-    public InlineStats replaceChild(LogicalPlan newChild) {
-        return new InlineStats(source(), newChild, groupings, aggregates);
+    public InlineAggregate replaceChild(LogicalPlan newChild) {
+        return new InlineAggregate(source(), newChild, groupings, aggregates);
     }
 
     public List<Expression> groupings() {
@@ -56,7 +60,10 @@ public class InlineStats extends UnaryPlan {
 
     @Override
     public List<Attribute> output() {
-        return Expressions.asAttributes(aggregates);
+        if (lazyOutput == null) {
+            lazyOutput = NamedExpressions.mergeOutputAttributes(aggregates, child().output());
+        }
+        return lazyOutput;
     }
 
     @Override
@@ -74,7 +81,7 @@ public class InlineStats extends UnaryPlan {
             return false;
         }
 
-        InlineStats other = (InlineStats) obj;
+        InlineAggregate other = (InlineAggregate) obj;
         return Objects.equals(groupings, other.groupings)
             && Objects.equals(aggregates, other.aggregates)
             && Objects.equals(child(), other.child());

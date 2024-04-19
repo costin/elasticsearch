@@ -142,6 +142,7 @@ import org.elasticsearch.xpack.esql.plan.logical.Dissect.Parser;
 import org.elasticsearch.xpack.esql.plan.logical.Enrich;
 import org.elasticsearch.xpack.esql.plan.logical.Eval;
 import org.elasticsearch.xpack.esql.plan.logical.Grok;
+import org.elasticsearch.xpack.esql.plan.logical.InlineAggregate;
 import org.elasticsearch.xpack.esql.plan.logical.MvExpand;
 import org.elasticsearch.xpack.esql.plan.logical.TopN;
 import org.elasticsearch.xpack.esql.plan.logical.local.EsqlProject;
@@ -296,6 +297,7 @@ public final class PlanNamedTypes {
             of(LogicalPlan.class, EsqlProject.class, PlanNamedTypes::writeEsqlProject, PlanNamedTypes::readEsqlProject),
             of(LogicalPlan.class, Filter.class, PlanNamedTypes::writeFilter, PlanNamedTypes::readFilter),
             of(LogicalPlan.class, Grok.class, PlanNamedTypes::writeGrok, PlanNamedTypes::readGrok),
+            of(LogicalPlan.class, InlineAggregate.class, PlanNamedTypes::writeInlineAggregate, PlanNamedTypes::readInlineAggregate),
             of(LogicalPlan.class, Limit.class, PlanNamedTypes::writeLimit, PlanNamedTypes::readLimit),
             of(LogicalPlan.class, MvExpand.class, PlanNamedTypes::writeMvExpand, PlanNamedTypes::readMvExpand),
             of(LogicalPlan.class, OrderBy.class, PlanNamedTypes::writeOrderBy, PlanNamedTypes::readOrderBy),
@@ -916,6 +918,22 @@ public final class PlanNamedTypes {
         out.writeExpression(grok.input());
         out.writeString(grok.parser().pattern());
         writeAttributes(out, grok.extractedFields());
+    }
+
+    static InlineAggregate readInlineAggregate(PlanStreamInput in) throws IOException {
+        return new InlineAggregate(
+            in.readSource(),
+            in.readLogicalPlanNode(),
+            in.readCollectionAsList(readerFromPlanReader(PlanStreamInput::readExpression)),
+            readNamedExpressions(in)
+        );
+    }
+
+    static void writeInlineAggregate(PlanStreamOutput out, InlineAggregate aggregate) throws IOException {
+        out.writeNoSource();
+        out.writeLogicalPlanNode(aggregate.child());
+        out.writeCollection(aggregate.groupings(), writerFromPlanWriter(PlanStreamOutput::writeExpression));
+        writeNamedExpressions(out, aggregate.aggregates());
     }
 
     static Limit readLimit(PlanStreamInput in) throws IOException {

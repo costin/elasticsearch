@@ -25,7 +25,7 @@ import org.elasticsearch.xpack.esql.plan.logical.EsqlUnresolvedRelation;
 import org.elasticsearch.xpack.esql.plan.logical.Eval;
 import org.elasticsearch.xpack.esql.plan.logical.Explain;
 import org.elasticsearch.xpack.esql.plan.logical.Grok;
-import org.elasticsearch.xpack.esql.plan.logical.InlineStats;
+import org.elasticsearch.xpack.esql.plan.logical.InlineAggregate;
 import org.elasticsearch.xpack.esql.plan.logical.Keep;
 import org.elasticsearch.xpack.esql.plan.logical.MvExpand;
 import org.elasticsearch.xpack.esql.plan.logical.Rename;
@@ -273,7 +273,7 @@ public class LogicalPlanBuilder extends ExpressionBuilder {
         List<NamedExpression> aggregates = new ArrayList<>(visitFields(ctx.stats));
         List<NamedExpression> groupings = visitGrouping(ctx.grouping);
         aggregates.addAll(groupings);
-        return input -> new InlineStats(source(ctx), input, new ArrayList<>(groupings), aggregates);
+        return input -> new InlineAggregate(source(ctx), input, new ArrayList<>(groupings), aggregates);
     }
 
     @Override

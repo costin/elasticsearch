@@ -27,7 +27,7 @@ import org.elasticsearch.xpack.esql.plan.logical.EsqlUnresolvedRelation;
 import org.elasticsearch.xpack.esql.plan.logical.Eval;
 import org.elasticsearch.xpack.esql.plan.logical.Explain;
 import org.elasticsearch.xpack.esql.plan.logical.Grok;
-import org.elasticsearch.xpack.esql.plan.logical.InlineStats;
+import org.elasticsearch.xpack.esql.plan.logical.InlineAggregate;
 import org.elasticsearch.xpack.esql.plan.logical.MvExpand;
 import org.elasticsearch.xpack.esql.plan.logical.Row;
 import org.elasticsearch.xpack.ql.capabilities.UnresolvedException;
@@ -306,7 +306,7 @@ public class StatementParserTests extends ESTestCase {
 
     public void testInlineStatsWithGroups() {
         assertEquals(
-            new InlineStats(
+            new InlineAggregate(
                 EMPTY,
                 PROCESSING_CMD_INPUT,
                 List.of(attribute("c"), attribute("d.e")),
@@ -322,7 +322,7 @@ public class StatementParserTests extends ESTestCase {
 
     public void testInlineStatsWithoutGroups() {
         assertEquals(
-            new InlineStats(
+            new InlineAggregate(
                 EMPTY,
                 PROCESSING_CMD_INPUT,
                 List.of(),
