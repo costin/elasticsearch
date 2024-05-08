@@ -1,4 +1,3 @@
-
 /*
  * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
  * or more contributor license agreements. Licensed under the Elastic License
@@ -24,6 +23,7 @@ sourceCommand
     | fromCommand
     | rowCommand
     | metricsCommand
+    | searchCommand
     | showCommand
     | metaCommand
     ;
@@ -267,4 +267,65 @@ enrichCommand
 
 enrichWithClause
     : (newName=qualifiedNamePattern ASSIGN)? enrichField=qualifiedNamePattern
+    ;
+
+searchCommand
+    : SEARCH searchIdentifier (COMMA searchIdentifier)*  OPENING_BRACKET (PIPE searchSubCommand)+ CLOSING_BRACKET
+    ;
+
+searchIdentifier
+    : INDEX_UNQUOTED_IDENTIFIER
+    ;
+
+searchSubCommand
+    : searchFilterCommand
+    | searchLimitCommand
+    | searchQueryCommand
+    | searchRankCommand
+    | searchScoreCommmand
+    | searchSortCommmand
+    ;
+
+searchFilterCommand
+    : WHERE searchQueryOrReference
+    ;
+
+searchQueryOrReference
+    : searchQueryExpression
+    ;
+
+searchQueryIdentifier
+    : identifier
+    ;
+
+searchLimitCommand
+    : LIMIT INTEGER_LITERAL
+    ;
+
+searchQueryCommand
+    : QUERY searchQueryDeclaration (COMMA searchQueryDeclaration)*
+    ;
+
+searchQueryDeclaration
+    : searchQueryIdentifier ASSIGN searchQueryExpression
+    ;
+
+searchRankCommand
+    : RANK searchQueryOrReference
+    ;
+
+searchScoreCommmand
+    : SCORE searchQueryOrReference
+    ;
+
+searchSortCommmand
+    : sortCommand
+    ;
+
+searchQueryExpression
+    : searchMatchingExpression
+    ;
+
+searchMatchingExpression
+    : booleanExpression
     ;

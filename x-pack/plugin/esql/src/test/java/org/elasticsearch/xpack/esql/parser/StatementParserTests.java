@@ -1096,6 +1096,36 @@ public class StatementParserTests extends ESTestCase {
         }
     }
 
+    //
+    // Search commands
+    //
+
+    public void testBasicSearchFilter() {
+        System.out.println(searchCommand("| WHERE a > 1"));
+    }
+
+    public void testBasicSearchScore() {
+        System.out.println(searchCommand("| SCORE a > 1"));
+    }
+
+    public void testBasicSearchRank() {
+        System.out.println(searchCommand("| RANK a > 1"));
+    }
+
+    public void testBasicSRank() {
+        System.out.println(searchCommand("""
+            | RANK match("iphone red")
+            | LIMIT 100
+            | RANK match_phrase("iphone red")
+            """));
+    }
+
+    private LogicalPlan searchCommand(String searchCommand) {
+        assumeTrue("search command requires snapshot build", Build.current().isSnapshot());
+        String fullCommand = "SEARCH index [" + searchCommand + "]";
+        return statement(fullCommand);
+    }
+
     private void assertStatement(String statement, LogicalPlan expected) {
         final LogicalPlan actual;
         try {

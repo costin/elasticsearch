@@ -819,4 +819,144 @@ public interface EsqlBaseParserListener extends ParseTreeListener {
    * @param ctx the parse tree
    */
   void exitEnrichWithClause(EsqlBaseParser.EnrichWithClauseContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#searchCommand}.
+   * @param ctx the parse tree
+   */
+  void enterSearchCommand(EsqlBaseParser.SearchCommandContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#searchCommand}.
+   * @param ctx the parse tree
+   */
+  void exitSearchCommand(EsqlBaseParser.SearchCommandContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#searchIdentifier}.
+   * @param ctx the parse tree
+   */
+  void enterSearchIdentifier(EsqlBaseParser.SearchIdentifierContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#searchIdentifier}.
+   * @param ctx the parse tree
+   */
+  void exitSearchIdentifier(EsqlBaseParser.SearchIdentifierContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#searchSubCommand}.
+   * @param ctx the parse tree
+   */
+  void enterSearchSubCommand(EsqlBaseParser.SearchSubCommandContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#searchSubCommand}.
+   * @param ctx the parse tree
+   */
+  void exitSearchSubCommand(EsqlBaseParser.SearchSubCommandContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#searchFilterCommand}.
+   * @param ctx the parse tree
+   */
+  void enterSearchFilterCommand(EsqlBaseParser.SearchFilterCommandContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#searchFilterCommand}.
+   * @param ctx the parse tree
+   */
+  void exitSearchFilterCommand(EsqlBaseParser.SearchFilterCommandContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#searchQueryOrReference}.
+   * @param ctx the parse tree
+   */
+  void enterSearchQueryOrReference(EsqlBaseParser.SearchQueryOrReferenceContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#searchQueryOrReference}.
+   * @param ctx the parse tree
+   */
+  void exitSearchQueryOrReference(EsqlBaseParser.SearchQueryOrReferenceContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#searchQueryIdentifier}.
+   * @param ctx the parse tree
+   */
+  void enterSearchQueryIdentifier(EsqlBaseParser.SearchQueryIdentifierContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#searchQueryIdentifier}.
+   * @param ctx the parse tree
+   */
+  void exitSearchQueryIdentifier(EsqlBaseParser.SearchQueryIdentifierContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#searchLimitCommand}.
+   * @param ctx the parse tree
+   */
+  void enterSearchLimitCommand(EsqlBaseParser.SearchLimitCommandContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#searchLimitCommand}.
+   * @param ctx the parse tree
+   */
+  void exitSearchLimitCommand(EsqlBaseParser.SearchLimitCommandContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#searchQueryCommand}.
+   * @param ctx the parse tree
+   */
+  void enterSearchQueryCommand(EsqlBaseParser.SearchQueryCommandContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#searchQueryCommand}.
+   * @param ctx the parse tree
+   */
+  void exitSearchQueryCommand(EsqlBaseParser.SearchQueryCommandContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#searchQueryDeclaration}.
+   * @param ctx the parse tree
+   */
+  void enterSearchQueryDeclaration(EsqlBaseParser.SearchQueryDeclarationContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#searchQueryDeclaration}.
+   * @param ctx the parse tree
+   */
+  void exitSearchQueryDeclaration(EsqlBaseParser.SearchQueryDeclarationContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#searchRankCommand}.
+   * @param ctx the parse tree
+   */
+  void enterSearchRankCommand(EsqlBaseParser.SearchRankCommandContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#searchRankCommand}.
+   * @param ctx the parse tree
+   */
+  void exitSearchRankCommand(EsqlBaseParser.SearchRankCommandContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#searchScoreCommmand}.
+   * @param ctx the parse tree
+   */
+  void enterSearchScoreCommmand(EsqlBaseParser.SearchScoreCommmandContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#searchScoreCommmand}.
+   * @param ctx the parse tree
+   */
+  void exitSearchScoreCommmand(EsqlBaseParser.SearchScoreCommmandContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#searchSortCommmand}.
+   * @param ctx the parse tree
+   */
+  void enterSearchSortCommmand(EsqlBaseParser.SearchSortCommmandContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#searchSortCommmand}.
+   * @param ctx the parse tree
+   */
+  void exitSearchSortCommmand(EsqlBaseParser.SearchSortCommmandContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#searchQueryExpression}.
+   * @param ctx the parse tree
+   */
+  void enterSearchQueryExpression(EsqlBaseParser.SearchQueryExpressionContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#searchQueryExpression}.
+   * @param ctx the parse tree
+   */
+  void exitSearchQueryExpression(EsqlBaseParser.SearchQueryExpressionContext ctx);
+  /**
+   * Enter a parse tree produced by {@link EsqlBaseParser#searchMatchingExpression}.
+   * @param ctx the parse tree
+   */
+  void enterSearchMatchingExpression(EsqlBaseParser.SearchMatchingExpressionContext ctx);
+  /**
+   * Exit a parse tree produced by {@link EsqlBaseParser#searchMatchingExpression}.
+   * @param ctx the parse tree
+   */
+  void exitSearchMatchingExpression(EsqlBaseParser.SearchMatchingExpressionContext ctx);
 }

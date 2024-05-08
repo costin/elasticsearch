@@ -1,3 +1,10 @@
+/*
+ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
+ */
+
 lexer grammar EsqlBaseLexer;
 
 DISSECT : 'dissect'           -> pushMode(EXPRESSION_MODE);
@@ -15,6 +22,7 @@ METRICS : 'metrics'           -> pushMode(METRICS_MODE);
 MV_EXPAND : 'mv_expand'       -> pushMode(MVEXPAND_MODE);
 RENAME : 'rename'             -> pushMode(RENAME_MODE);
 ROW : 'row'                   -> pushMode(EXPRESSION_MODE);
+SEARCH : 'search'             -> pushMode(SEARCH_MODE);
 SHOW : 'show'                 -> pushMode(SHOW_MODE);
 SORT : 'sort'                 -> pushMode(EXPRESSION_MODE);
 STATS : 'stats'               -> pushMode(EXPRESSION_MODE);
@@ -485,4 +493,53 @@ CLOSING_METRICS_BY
 
 CLOSING_METRICS_PIPE
     : PIPE -> type(PIPE), popMode
+    ;
+//
+// SEARCH command
+//
+mode SEARCH_MODE;
+SEARCH_OPENING_BRACKET : OPENING_BRACKET -> type(OPENING_BRACKET);
+SEARCH_PIPE : PIPE -> type(PIPE), pushMode(SEARCH_CTX_MODE);
+
+QUERY: 'query';
+RANK : 'rank';
+SCORE: 'score';
+
+SEARCH_UNQUOTED_IDENTIFIER
+    : INDEX_UNQUOTED_IDENTIFIER -> type(INDEX_UNQUOTED_IDENTIFIER)
+    ;
+
+SEARCH_LINE_COMMENT
+    : LINE_COMMENT -> channel(HIDDEN)
+    ;
+
+SEARCH_MULTILINE_COMMENT
+    : MULTILINE_COMMENT -> channel(HIDDEN)
+    ;
+
+SEARCH_WS
+    : WS -> channel(HIDDEN)
+    ;
+
+mode SEARCH_CTX_MODE;
+SEARCH_CTX_CLOSING_BRACKET : CLOSING_BRACKET -> type(CLOSING_BRACKET), popMode;
+
+// available sub-commands
+SEARCH_CTX_LIMIT : LIMIT -> type(LIMIT), pushMode(EXPRESSION_MODE);
+SEARCH_CTX_QUERY : QUERY -> type(QUERY), pushMode(EXPRESSION_MODE);
+SEARCH_CTX_RANK  : RANK  -> type(RANK),  pushMode(EXPRESSION_MODE);
+SEARCH_CTX_SCORE : SCORE -> type(SCORE), pushMode(EXPRESSION_MODE);
+SEARCH_CTX_SORT  : SORT  -> type(SORT),  pushMode(EXPRESSION_MODE);
+SEARCH_CTX_WHERE : WHERE -> type(WHERE), pushMode(EXPRESSION_MODE);
+
+SEARCH_CTX_LINE_COMMENT
+    : LINE_COMMENT -> channel(HIDDEN)
+    ;
+
+SEARCH_CTX_MULTILINE_COMMENT
+    : MULTILINE_COMMENT -> channel(HIDDEN)
+    ;
+
+SEARCH_CTX_WS
+    : WS -> channel(HIDDEN)
     ;
