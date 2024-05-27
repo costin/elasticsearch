@@ -1104,6 +1104,11 @@ public class StatementParserTests extends ESTestCase {
         System.out.println(searchCommand("| WHERE a > 1"));
     }
 
+    public void testBasicSearchFilterWithFollowup() {
+        var command = asSearchCommand("| WHERE a > 1") + " | keep emp_no";
+        System.out.println(statement(command));
+    }
+
     public void testBasicSearchScore() {
         System.out.println(searchCommand("| SCORE a > 1"));
     }
@@ -1120,10 +1125,13 @@ public class StatementParserTests extends ESTestCase {
             """));
     }
 
-    private LogicalPlan searchCommand(String searchCommand) {
+    private String asSearchCommand(String searchCommand) {
         assumeTrue("search command requires snapshot build", Build.current().isSnapshot());
-        String fullCommand = "SEARCH index [" + searchCommand + "]";
-        return statement(fullCommand);
+        return "SEARCH index [" + searchCommand + "]";
+    }
+
+    private LogicalPlan searchCommand(String searchCommand) {
+        return statement(asSearchCommand(searchCommand));
     }
 
     private void assertStatement(String statement, LogicalPlan expected) {

@@ -270,7 +270,7 @@ enrichWithClause
     ;
 
 searchCommand
-    : SEARCH searchIdentifier (COMMA searchIdentifier)*  OPENING_BRACKET (PIPE searchSubCommand)+ CLOSING_BRACKET
+    : SEARCH searchIdentifier (COMMA searchIdentifier)* (OPENING_BRACKET (PIPE searchSubCommand)* CLOSING_BRACKET)*
     ;
 
 searchIdentifier

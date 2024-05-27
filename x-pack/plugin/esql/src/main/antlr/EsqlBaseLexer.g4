@@ -498,8 +498,11 @@ CLOSING_METRICS_PIPE
 // SEARCH command
 //
 mode SEARCH_MODE;
-SEARCH_OPENING_BRACKET : OPENING_BRACKET -> type(OPENING_BRACKET);
-SEARCH_PIPE : PIPE -> type(PIPE), pushMode(SEARCH_CTX_MODE);
+SEARCH_OPENING_BRACKET : OPENING_BRACKET -> type(OPENING_BRACKET), pushMode(SEARCH_CTX_MODE);
+// closing bracket is declared in case of empty declaration
+SEARCH_CLOSING_BRACKET : CLOSING_BRACKET -> type(CLOSING_BRACKET);
+// close current mode (go to DEFAULT_MODE)
+SEARCH_PIPE: PIPE -> type(PIPE), popMode;
 
 QUERY: 'query';
 RANK : 'rank';
@@ -522,9 +525,13 @@ SEARCH_WS
     ;
 
 mode SEARCH_CTX_MODE;
+// go back to SEARCH_MODE
 SEARCH_CTX_CLOSING_BRACKET : CLOSING_BRACKET -> type(CLOSING_BRACKET), popMode;
+// eat first pipe
+SEARCH_CTX_PIPE: PIPE -> type(PIPE);
 
 // available sub-commands
+// NB: expression mode will exit on ] by doing two pops (1. to SEARCH_CTX_MODE, 2. to SEARCH_MODE)
 SEARCH_CTX_LIMIT : LIMIT -> type(LIMIT), pushMode(EXPRESSION_MODE);
 SEARCH_CTX_QUERY : QUERY -> type(QUERY), pushMode(EXPRESSION_MODE);
 SEARCH_CTX_RANK  : RANK  -> type(RANK),  pushMode(EXPRESSION_MODE);
