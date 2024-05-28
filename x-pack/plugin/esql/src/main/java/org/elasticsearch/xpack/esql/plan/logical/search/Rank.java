@@ -7,21 +7,44 @@
 
 package org.elasticsearch.xpack.esql.plan.logical.search;
 
+import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
+import org.elasticsearch.xpack.esql.core.expression.MetadataAttribute;
+import org.elasticsearch.xpack.esql.core.expression.Nullability;
 import org.elasticsearch.xpack.esql.core.plan.logical.LogicalPlan;
 import org.elasticsearch.xpack.esql.core.plan.logical.UnaryPlan;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
 import org.elasticsearch.xpack.esql.core.tree.Source;
+import org.elasticsearch.xpack.esql.core.type.DataTypes;
 
+import java.util.List;
 import java.util.Objects;
 
+import static java.util.Arrays.asList;
+import static org.elasticsearch.xpack.esql.expression.NamedExpressions.mergeOutputAttributes;
+
+/**
+ * Rank commands which performs filtering and scoring of the given query.
+ * The score is returned through the _score column (if its exists, it gets overwritten)
+ */
 public class Rank extends UnaryPlan {
 
     private final Expression query;
+    private List<Attribute> lazyOutput;
 
     public Rank(Source source, LogicalPlan child, Expression query) {
         super(source, child);
         this.query = query;
+    }
+
+    @Override
+    public List<Attribute> output() {
+        if (lazyOutput == null) {
+            MetadataAttribute score = new MetadataAttribute(source(), "_score", DataTypes.DOUBLE, false);
+            lazyOutput = mergeOutputAttributes(asList(score), child().output());
+        }
+
+        return lazyOutput;
     }
 
     @Override

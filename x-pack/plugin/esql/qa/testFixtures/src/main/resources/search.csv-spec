@@ -1,4 +1,16 @@
-scoringOnNumeric
+filterOnly
+search employees [
+  | where emp_no > 1000 AND emp_no < 1010 
+]
+| keep emp_no
+| sort emp_no
+;
+
+emp_no:integer | _score:double
+10013          | Eberhardt      
+;
+
+scoreOnNumeric
 search employees [
   | score emp_no > 1000 AND emp_no < 1010 
 ]
@@ -10,7 +22,7 @@ emp_no:integer | _score:double
 10013          | Eberhardt      
 ;
 
-rankText
+rankRangeQuery
 search employees [
   | rank emp_no > 1000 AND emp_no < 1010 
 ]
