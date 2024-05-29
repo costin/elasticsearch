@@ -40,7 +40,7 @@ public class Rank extends UnaryPlan {
     @Override
     public List<Attribute> output() {
         if (lazyOutput == null) {
-            MetadataAttribute score = new MetadataAttribute(source(), "_score", DataTypes.DOUBLE, false);
+            MetadataAttribute score = new MetadataAttribute(source(), "_score", DataTypes.FLOAT, false);
             lazyOutput = mergeOutputAttributes(asList(score), child().output());
         }
 
