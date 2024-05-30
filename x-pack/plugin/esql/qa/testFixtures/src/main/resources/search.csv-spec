@@ -4,10 +4,11 @@ search employees [
 ]
 | keep emp_no
 | sort emp_no
+| limit 5
 ;
 
-emp_no:integer | _score:double
-10013          | Eberhardt      
+emp_no:integer
+10013               
 ;
 
 scoreOnNumeric

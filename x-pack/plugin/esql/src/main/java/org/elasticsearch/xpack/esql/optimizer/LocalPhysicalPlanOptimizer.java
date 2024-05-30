@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.optimizer;
 import org.elasticsearch.core.Tuple;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
+import org.elasticsearch.xpack.esql.EsqlIllegalArgumentException;
 import org.elasticsearch.xpack.esql.VerificationException;
 import org.elasticsearch.xpack.esql.core.common.Failure;
 import org.elasticsearch.xpack.esql.core.expression.Alias;
@@ -60,6 +61,8 @@ import org.elasticsearch.xpack.esql.plan.physical.LimitExec;
 import org.elasticsearch.xpack.esql.plan.physical.PhysicalPlan;
 import org.elasticsearch.xpack.esql.plan.physical.TopNExec;
 import org.elasticsearch.xpack.esql.plan.physical.UnaryExec;
+import org.elasticsearch.xpack.esql.plan.physical.search.EsScoreQueryExec;
+import org.elasticsearch.xpack.esql.plan.physical.search.RankExec;
 import org.elasticsearch.xpack.esql.planner.AbstractPhysicalOperationProviders;
 import org.elasticsearch.xpack.esql.planner.EsqlTranslatorHandler;
 import org.elasticsearch.xpack.esql.stats.SearchStats;
@@ -109,6 +112,7 @@ public class LocalPhysicalPlanOptimizer extends ParameterizedRuleExecutor<Physic
             esSourceRules.add(new PushTopNToSource());
             esSourceRules.add(new PushLimitToSource());
             esSourceRules.add(new PushFiltersToSource());
+            esSourceRules.add(new PushRankToSource());
             esSourceRules.add(new PushStatsToSource());
         }
 
@@ -351,6 +355,36 @@ public class LocalPhysicalPlanOptimizer extends ParameterizedRuleExecutor<Physic
             return queryExec.canPushSorts();
         }
         return false;
+    }
+
+    private static class PushRankToSource extends PhysicalOptimizerRules.ParameterizedOptimizerRule<
+        RankExec,
+        LocalPhysicalOptimizerContext> {
+        @Override
+        protected PhysicalPlan rule(RankExec rankExec, LocalPhysicalOptimizerContext ctx) {
+            PhysicalPlan plan = rankExec;
+            PhysicalPlan child = rankExec.child();
+
+            Query queryDSL = TRANSLATOR_HANDLER.asQuery(rankExec.query());
+            QueryBuilder planQuery = queryDSL.asBuilder();
+
+            if (child instanceof EsQueryExec esQueryExec) {
+                // create a scoring source
+                EsScoreQueryExec scoreQueryExec = new EsScoreQueryExec(
+                    esQueryExec.source(),
+                    esQueryExec.index(),
+                    esQueryExec.attrs(),
+                    planQuery,
+                    esQueryExec.limit(),
+                    emptyList(),
+                    esQueryExec.estimatedRowSize()
+                );
+
+                return esQueryExec;
+            } else {
+                throw new EsqlIllegalArgumentException("Unexpected branch");
+            }
+        }
     }
 
     /**

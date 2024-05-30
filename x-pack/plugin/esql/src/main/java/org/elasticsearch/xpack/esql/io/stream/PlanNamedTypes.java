@@ -186,6 +186,7 @@ import org.elasticsearch.xpack.esql.plan.logical.MvExpand;
 import org.elasticsearch.xpack.esql.plan.logical.Project;
 import org.elasticsearch.xpack.esql.plan.logical.TopN;
 import org.elasticsearch.xpack.esql.plan.logical.local.EsqlProject;
+import org.elasticsearch.xpack.esql.plan.logical.search.Rank;
 import org.elasticsearch.xpack.esql.plan.physical.AggregateExec;
 import org.elasticsearch.xpack.esql.plan.physical.DissectExec;
 import org.elasticsearch.xpack.esql.plan.physical.EnrichExec;
@@ -300,6 +301,7 @@ public final class PlanNamedTypes {
             of(LogicalPlan.class, MvExpand.class, PlanNamedTypes::writeMvExpand, PlanNamedTypes::readMvExpand),
             of(LogicalPlan.class, OrderBy.class, PlanNamedTypes::writeOrderBy, PlanNamedTypes::readOrderBy),
             of(LogicalPlan.class, Project.class, PlanNamedTypes::writeProject, PlanNamedTypes::readProject),
+            of(LogicalPlan.class, Rank.class, PlanNamedTypes::writeRank, PlanNamedTypes::readRank),
             of(LogicalPlan.class, TopN.class, PlanNamedTypes::writeTopN, PlanNamedTypes::readTopN),
             // Attributes
             of(Attribute.class, FieldAttribute.class, PlanNamedTypes::writeFieldAttribute, PlanNamedTypes::readFieldAttribute),
@@ -1011,6 +1013,16 @@ public final class PlanNamedTypes {
         out.writeNoSource();
         out.writeLogicalPlanNode(project.child());
         writeNamedExpressions(out, project.projections());
+    }
+
+    static Rank readRank(PlanStreamInput in) throws IOException {
+        return new Rank(in.readSource(), in.readLogicalPlanNode(), in.readExpression());
+    }
+
+    static void writeRank(PlanStreamOutput out, Rank rank) throws IOException {
+        out.writeNoSource();
+        out.writeLogicalPlanNode(rank.child());
+        out.writeExpression(rank.query());
     }
 
     static TopN readTopN(PlanStreamInput in) throws IOException {

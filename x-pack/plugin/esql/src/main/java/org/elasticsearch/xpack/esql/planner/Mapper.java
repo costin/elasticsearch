@@ -27,6 +27,7 @@ import org.elasticsearch.xpack.esql.plan.logical.Row;
 import org.elasticsearch.xpack.esql.plan.logical.TopN;
 import org.elasticsearch.xpack.esql.plan.logical.local.LocalRelation;
 import org.elasticsearch.xpack.esql.plan.logical.meta.MetaFunctions;
+import org.elasticsearch.xpack.esql.plan.logical.search.Rank;
 import org.elasticsearch.xpack.esql.plan.logical.show.ShowInfo;
 import org.elasticsearch.xpack.esql.plan.physical.AggregateExec;
 import org.elasticsearch.xpack.esql.plan.physical.DissectExec;
@@ -46,6 +47,7 @@ import org.elasticsearch.xpack.esql.plan.physical.ProjectExec;
 import org.elasticsearch.xpack.esql.plan.physical.RowExec;
 import org.elasticsearch.xpack.esql.plan.physical.ShowExec;
 import org.elasticsearch.xpack.esql.plan.physical.TopNExec;
+import org.elasticsearch.xpack.esql.plan.physical.search.RankExec;
 
 import static org.elasticsearch.xpack.esql.plan.physical.AggregateExec.Mode;
 import static org.elasticsearch.xpack.esql.plan.physical.AggregateExec.Mode.FINAL;
@@ -160,6 +162,10 @@ public class Mapper {
 
         if (p instanceof MvExpand mvExpand) {
             return new MvExpandExec(mvExpand.source(), map(mvExpand.child()), mvExpand.target(), mvExpand.expanded());
+        }
+
+        if (p instanceof Rank rank) {
+            return new RankExec(rank.source(), map(rank.child()), rank.query());
         }
 
         //

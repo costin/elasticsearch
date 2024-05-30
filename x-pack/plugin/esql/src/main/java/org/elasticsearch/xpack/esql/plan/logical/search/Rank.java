@@ -37,11 +37,14 @@ public class Rank extends UnaryPlan {
         this.query = query;
     }
 
+    public Expression query() {
+        return query;
+    }
+
     @Override
     public List<Attribute> output() {
         if (lazyOutput == null) {
-            MetadataAttribute score = new MetadataAttribute(source(), "_score", DataTypes.FLOAT, false);
-            lazyOutput = mergeOutputAttributes(asList(score), child().output());
+            lazyOutput = mergeOutputAttributes(asList(SearchUtils.scoreField(source())), child().output());
         }
 
         return lazyOutput;
