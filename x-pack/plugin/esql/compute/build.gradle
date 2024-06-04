@@ -41,7 +41,6 @@ def prop(Type, type, TYPE, BYTES, Array, Hash) {
 
     "int" : type == "int" ? "true" : "",
     "long" : type == "long" ? "true" : "",
-    "float" : type == "float" ? "true" : "",
     "double" : type == "double" ? "true" : "",
     "BytesRef" : type == "BytesRef" ? "true" : "",
     "boolean" : type == "boolean" ? "true" : "",
@@ -51,7 +50,6 @@ def prop(Type, type, TYPE, BYTES, Array, Hash) {
 tasks.named('stringTemplates').configure {
   var intProperties      = prop("Int", "int", "INT", "Integer.BYTES", "IntArray", "LongHash")
   var longProperties     = prop("Long", "long", "LONG", "Long.BYTES", "LongArray", "LongHash")
-  var floatProperties    = prop("Float", "float", "FLOAT", "Float.BYTES", "FloatArray", "FloatHash")
   var doubleProperties   = prop("Double", "double", "DOUBLE", "Double.BYTES", "DoubleArray", "LongHash")
   var bytesRefProperties = prop("BytesRef", "BytesRef", "BYTES_REF", "org.apache.lucene.util.RamUsageEstimator.NUM_BYTES_OBJECT_REF", "", "BytesRefHash")
   var booleanProperties  = prop("Boolean", "boolean", "BOOLEAN", "Byte.BYTES", "BitArray", "")
@@ -66,11 +64,6 @@ tasks.named('stringTemplates').configure {
     it.properties = longProperties
     it.inputFile =  vectorInputFile
     it.outputFile = "org/elasticsearch/compute/data/LongVector.java"
-  }
-  template {
-    it.properties = floatProperties
-    it.inputFile =  vectorInputFile
-    it.outputFile = "org/elasticsearch/compute/data/FloatVector.java"
   }
   template {
     it.properties = doubleProperties
@@ -100,11 +93,6 @@ tasks.named('stringTemplates').configure {
     it.outputFile = "org/elasticsearch/compute/data/LongArrayVector.java"
   }
   template {
-    it.properties = floatProperties
-    it.inputFile =  arrayVectorInputFile
-    it.outputFile = "org/elasticsearch/compute/data/FloatArrayVector.java"
-  }
-  template {
     it.properties = doubleProperties
     it.inputFile =  arrayVectorInputFile
     it.outputFile = "org/elasticsearch/compute/data/DoubleArrayVector.java"
@@ -132,11 +120,6 @@ tasks.named('stringTemplates').configure {
     it.outputFile = "org/elasticsearch/compute/data/LongBigArrayVector.java"
   }
   template {
-    it.properties = floatProperties
-    it.inputFile =  bigArrayVectorInputFile
-    it.outputFile = "org/elasticsearch/compute/data/FloatBigArrayVector.java"
-  }
-  template {
     it.properties = doubleProperties
     it.inputFile =  bigArrayVectorInputFile
     it.outputFile = "org/elasticsearch/compute/data/DoubleBigArrayVector.java"
@@ -157,11 +140,6 @@ tasks.named('stringTemplates').configure {
     it.properties = longProperties
     it.inputFile =  constantVectorInputFile
     it.outputFile = "org/elasticsearch/compute/data/ConstantLongVector.java"
-  }
-  template {
-    it.properties = floatProperties
-    it.inputFile =  constantVectorInputFile
-    it.outputFile = "org/elasticsearch/compute/data/ConstantFloatVector.java"
   }
   template {
     it.properties = doubleProperties
@@ -191,11 +169,6 @@ tasks.named('stringTemplates').configure {
     it.outputFile = "org/elasticsearch/compute/data/LongBlock.java"
   }
   template {
-    it.properties = floatProperties
-    it.inputFile =  blockInputFile
-    it.outputFile = "org/elasticsearch/compute/data/FloatBlock.java"
-  }
-  template {
     it.properties = doubleProperties
     it.inputFile =  blockInputFile
     it.outputFile = "org/elasticsearch/compute/data/DoubleBlock.java"
@@ -221,11 +194,6 @@ tasks.named('stringTemplates').configure {
     it.properties = longProperties
     it.inputFile =  arrayBlockInputFile
     it.outputFile = "org/elasticsearch/compute/data/LongArrayBlock.java"
-  }
-  template {
-    it.properties = floatProperties
-    it.inputFile =  arrayBlockInputFile
-    it.outputFile = "org/elasticsearch/compute/data/FloatArrayBlock.java"
   }
   template {
     it.properties = doubleProperties
@@ -255,11 +223,6 @@ tasks.named('stringTemplates').configure {
     it.outputFile = "org/elasticsearch/compute/data/LongBigArrayBlock.java"
   }
   template {
-    it.properties = floatProperties
-    it.inputFile =  bigArrayBlockInputFile
-    it.outputFile = "org/elasticsearch/compute/data/FloatBigArrayBlock.java"
-  }
-  template {
     it.properties = doubleProperties
     it.inputFile =  bigArrayBlockInputFile
     it.outputFile = "org/elasticsearch/compute/data/DoubleBigArrayBlock.java"
@@ -280,11 +243,6 @@ tasks.named('stringTemplates').configure {
     it.properties = longProperties
     it.inputFile =  vectorBlockInputFile
     it.outputFile = "org/elasticsearch/compute/data/LongVectorBlock.java"
-  }
-  template {
-    it.properties = floatProperties
-    it.inputFile =  vectorBlockInputFile
-    it.outputFile = "org/elasticsearch/compute/data/FloatVectorBlock.java"
   }
   template {
     it.properties = doubleProperties
@@ -314,11 +272,6 @@ tasks.named('stringTemplates').configure {
     it.outputFile = "org/elasticsearch/compute/data/LongBlockBuilder.java"
   }
   template {
-    it.properties = floatProperties
-    it.inputFile =  blockBuildersInputFile
-    it.outputFile = "org/elasticsearch/compute/data/FloatBlockBuilder.java"
-  }
-  template {
     it.properties = doubleProperties
     it.inputFile =  blockBuildersInputFile
     it.outputFile = "org/elasticsearch/compute/data/DoubleBlockBuilder.java"
@@ -344,11 +297,6 @@ tasks.named('stringTemplates').configure {
     it.properties = longProperties
     it.inputFile =  vectorBuildersInputFile
     it.outputFile = "org/elasticsearch/compute/data/LongVectorBuilder.java"
-  }
-  template {
-    it.properties = floatProperties
-    it.inputFile =  vectorBuildersInputFile
-    it.outputFile = "org/elasticsearch/compute/data/FloatVectorBuilder.java"
   }
   template {
     it.properties = doubleProperties
@@ -377,11 +325,6 @@ tasks.named('stringTemplates').configure {
     it.outputFile = "org/elasticsearch/compute/data/LongVectorFixedBuilder.java"
   }
   template {
-    it.properties = floatProperties
-    it.inputFile =  vectorFixedBuildersInputFile
-    it.outputFile = "org/elasticsearch/compute/data/FloatVectorFixedBuilder.java"
-  }
-  template {
     it.properties = doubleProperties
     it.inputFile =  vectorFixedBuildersInputFile
     it.outputFile = "org/elasticsearch/compute/data/DoubleVectorFixedBuilder.java"
@@ -403,11 +346,6 @@ tasks.named('stringTemplates').configure {
     it.outputFile = "org/elasticsearch/compute/aggregation/LongState.java"
   }
   template {
-    it.properties = floatProperties
-    it.inputFile =  stateInputFile
-    it.outputFile = "org/elasticsearch/compute/aggregation/FloatState.java"
-  }
-  template {
     it.properties = doubleProperties
     it.inputFile =  stateInputFile
     it.outputFile = "org/elasticsearch/compute/aggregation/DoubleState.java"
@@ -423,11 +361,6 @@ tasks.named('stringTemplates').configure {
     it.properties = longProperties
     it.inputFile =  lookupInputFile
     it.outputFile = "org/elasticsearch/compute/data/LongLookup.java"
-  }
-  template {
-    it.properties = floatProperties
-    it.inputFile =  lookupInputFile
-    it.outputFile = "org/elasticsearch/compute/data/FloatLookup.java"
   }
   template {
     it.properties = doubleProperties
@@ -456,11 +389,6 @@ tasks.named('stringTemplates').configure {
     it.outputFile = "org/elasticsearch/compute/aggregation/LongArrayState.java"
   }
   template {
-    it.properties = floatProperties
-    it.inputFile =  arrayStateInputFile
-    it.outputFile = "org/elasticsearch/compute/aggregation/FloatArrayState.java"
-  }
-  template {
     it.properties = doubleProperties
     it.inputFile =  arrayStateInputFile
     it.outputFile = "org/elasticsearch/compute/aggregation/DoubleArrayState.java"
@@ -475,11 +403,6 @@ tasks.named('stringTemplates').configure {
     it.properties = longProperties
     it.inputFile =  valuesAggregatorInputFile
     it.outputFile = "org/elasticsearch/compute/aggregation/ValuesLongAggregator.java"
-  }
-  template {
-    it.properties = floatProperties
-    it.inputFile =  valuesAggregatorInputFile
-    it.outputFile = "org/elasticsearch/compute/aggregation/ValuesFloatAggregator.java"
   }
   template {
     it.properties = doubleProperties
@@ -504,11 +427,6 @@ tasks.named('stringTemplates').configure {
     it.outputFile = "org/elasticsearch/compute/aggregation/RateLongAggregator.java"
   }
   template {
-    it.properties = floatProperties
-    it.inputFile =  rateAggregatorInputFile
-    it.outputFile = "org/elasticsearch/compute/aggregation/RateFloatAggregator.java"
-  }
-  template {
     it.properties = doubleProperties
     it.inputFile =  rateAggregatorInputFile
     it.outputFile = "org/elasticsearch/compute/aggregation/RateDoubleAggregator.java"
@@ -524,11 +442,6 @@ tasks.named('stringTemplates').configure {
     it.properties = longProperties
     it.inputFile =  multivalueDedupeInputFile
     it.outputFile = "org/elasticsearch/compute/operator/mvdedupe/MultivalueDedupeLong.java"
-  }
-  template {
-    it.properties = floatProperties
-    it.inputFile =  multivalueDedupeInputFile
-    it.outputFile = "org/elasticsearch/compute/operator/mvdedupe/MultivalueDedupeFloat.java"
   }
   template {
     it.properties = doubleProperties
@@ -550,11 +463,6 @@ tasks.named('stringTemplates').configure {
     it.properties = longProperties
     it.inputFile =  blockHashInputFile
     it.outputFile = "org/elasticsearch/compute/aggregation/blockhash/LongBlockHash.java"
-  }
-  template {
-    it.properties = floatProperties
-    it.inputFile =  blockHashInputFile
-    it.outputFile = "org/elasticsearch/compute/aggregation/blockhash/FloatBlockHash.java"
   }
   template {
     it.properties = doubleProperties
@@ -588,11 +496,6 @@ tasks.named('stringTemplates').configure {
     it.outputFile = "org/elasticsearch/compute/operator/topn/KeyExtractorForLong.java"
   }
   template {
-    it.properties = floatProperties
-    it.inputFile =  keyExtractorInputFile
-    it.outputFile = "org/elasticsearch/compute/operator/topn/KeyExtractorForFloat.java"
-  }
-  template {
     it.properties = doubleProperties
     it.inputFile =  keyExtractorInputFile
     it.outputFile = "org/elasticsearch/compute/operator/topn/KeyExtractorForDouble.java"
@@ -619,11 +522,6 @@ tasks.named('stringTemplates').configure {
     it.outputFile = "org/elasticsearch/compute/operator/topn/ValueExtractorForLong.java"
   }
   template {
-    it.properties = floatProperties
-    it.inputFile =  valueExtractorInputFile
-    it.outputFile = "org/elasticsearch/compute/operator/topn/ValueExtractorForFloat.java"
-  }
-  template {
     it.properties = doubleProperties
     it.inputFile =  valueExtractorInputFile
     it.outputFile = "org/elasticsearch/compute/operator/topn/ValueExtractorForDouble.java"
@@ -648,11 +546,6 @@ tasks.named('stringTemplates').configure {
     it.properties = longProperties
     it.inputFile =  resultBuilderInputFile
     it.outputFile = "org/elasticsearch/compute/operator/topn/ResultBuilderForLong.java"
-  }
-  template {
-    it.properties = floatProperties
-    it.inputFile =  resultBuilderInputFile
-    it.outputFile = "org/elasticsearch/compute/operator/topn/ResultBuilderForFloat.java"
   }
   template {
     it.properties = doubleProperties
