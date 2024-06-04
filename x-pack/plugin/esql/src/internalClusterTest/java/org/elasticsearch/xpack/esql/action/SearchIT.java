@@ -42,10 +42,10 @@ public class SearchIT extends AbstractEsqlIntegTestCase {
             search test [
               | score count > 40 and count < 46
             ]
-            | keep count, score
+            | keep count, _score
             | sort count
             """)) {
-            assertThat(results.columns(), equalTo(List.of(new ColumnInfo("count", "long"), new ColumnInfo("score", "double"))));
+            assertThat(results.columns(), equalTo(List.of(new ColumnInfo("count", "long"), new ColumnInfo("_score", "double"))));
             assertThat(getValuesList(results).size(), equalTo(40));
             assertThat(getValuesList(results).get(0).get(0), equalTo(1));
         }
