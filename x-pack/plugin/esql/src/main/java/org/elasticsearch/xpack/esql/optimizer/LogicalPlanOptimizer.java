@@ -122,20 +122,20 @@ public class LogicalPlanOptimizer extends ParameterizedRuleExecutor<LogicalPlan,
         return new Batch<>(
             "Substitutions",
             Limiter.ONCE,
-            new ReplaceLookupWithJoin(),
+            new SubstituteSurrogatePlans(),
             // translate filtered expressions into aggregate with filters - can't use surrogate expressions because it was
             // retrofitted for constant folding - this needs to be fixed
             new SubstituteFilteredExpression(),
             new RemoveStatsOverride(),
             // first extract nested expressions inside aggs
-            new ReplaceStatsNestedExpressionWithEval(),
+            new ReplaceAggregateNestedExpressionWithEval(),
             // then extract nested aggs top-level
-            new ReplaceStatsAggExpressionWithEval(),
+            new ReplaceAggregateAggExpressionWithEval(),
             // lastly replace surrogate functions
             new SubstituteSurrogates(),
             // translate metric aggregates after surrogate substitution and replace nested expressions with eval (again)
             new TranslateMetricsAggregate(),
-            new ReplaceStatsNestedExpressionWithEval(),
+            new ReplaceAggregateNestedExpressionWithEval(),
             new ReplaceRegexMatch(),
             new ReplaceTrivialTypeConversions(),
             new ReplaceAliasingEvalWithProject(),
@@ -188,4 +188,4 @@ public class LogicalPlanOptimizer extends ParameterizedRuleExecutor<LogicalPlan,
     protected static Batch<LogicalPlan> cleanup() {
         return new Batch<>("Clean Up", new ReplaceLimitAndSortAsTopN());
     }
-}
+    }

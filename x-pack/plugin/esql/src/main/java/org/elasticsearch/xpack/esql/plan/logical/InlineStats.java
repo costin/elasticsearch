@@ -16,13 +16,11 @@ import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BlockUtils;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.core.Releasables;
-import org.elasticsearch.xpack.esql.core.capabilities.Resolvables;
 import org.elasticsearch.xpack.esql.core.expression.Alias;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
-import org.elasticsearch.xpack.esql.core.expression.AttributeSet;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
+import org.elasticsearch.xpack.esql.core.expression.Expressions;
 import org.elasticsearch.xpack.esql.core.expression.Literal;
-import org.elasticsearch.xpack.esql.core.expression.NamedExpression;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.io.stream.PlanStreamInput;
@@ -48,38 +46,29 @@ import static org.elasticsearch.xpack.esql.expression.NamedExpressions.mergeOutp
  *     a {@link Join}.
  * </p>
  */
-public class InlineStats extends UnaryPlan implements NamedWriteable, Phased, Stats {
+public class InlineStats extends UnaryPlan implements NamedWriteable, Phased, SurrogateLogicalPlan {
     public static final NamedWriteableRegistry.Entry ENTRY = new NamedWriteableRegistry.Entry(
         LogicalPlan.class,
         "InlineStats",
         InlineStats::new
     );
 
-    private final List<Expression> groupings;
-    private final List<? extends NamedExpression> aggregates;
+    private final Aggregate aggregate;
     private List<Attribute> lazyOutput;
 
-    public InlineStats(Source source, LogicalPlan child, List<Expression> groupings, List<? extends NamedExpression> aggregates) {
-        super(source, child);
-        this.groupings = groupings;
-        this.aggregates = aggregates;
+    public InlineStats(Source source, Aggregate aggregate) {
+        super(source, aggregate);
+        this.aggregate = aggregate;
     }
 
     public InlineStats(StreamInput in) throws IOException {
-        this(
-            Source.readFrom((PlanStreamInput) in),
-            in.readNamedWriteable(LogicalPlan.class),
-            in.readNamedWriteableCollectionAsList(Expression.class),
-            in.readNamedWriteableCollectionAsList(NamedExpression.class)
-        );
+        this(Source.readFrom((PlanStreamInput) in), (Aggregate) in.readNamedWriteable(LogicalPlan.class));
     }
 
     @Override
     public void writeTo(StreamOutput out) throws IOException {
         source().writeTo(out);
-        out.writeNamedWriteable(child());
-        out.writeNamedWriteableCollection(groupings);
-        out.writeNamedWriteableCollection(aggregates);
+        out.writeNamedWriteable(aggregate);
     }
 
     @Override
@@ -89,27 +78,16 @@ public class InlineStats extends UnaryPlan implements NamedWriteable, Phased, St
 
     @Override
     protected NodeInfo<InlineStats> info() {
-        return NodeInfo.create(this, InlineStats::new, child(), groupings, aggregates);
+        return NodeInfo.create(this, InlineStats::new, aggregate);
     }
 
     @Override
     public InlineStats replaceChild(LogicalPlan newChild) {
-        return new InlineStats(source(), newChild, groupings, aggregates);
+        return new InlineStats(source(), (Aggregate) newChild);
     }
 
-    @Override
-    public InlineStats with(LogicalPlan child, List<Expression> newGroupings, List<? extends NamedExpression> newAggregates) {
-        return new InlineStats(source(), child, newGroupings, newAggregates);
-    }
-
-    @Override
-    public List<Expression> groupings() {
-        return groupings;
-    }
-
-    @Override
-    public List<? extends NamedExpression> aggregates() {
-        return aggregates;
+    public Aggregate aggregate() {
+        return aggregate;
     }
 
     @Override
@@ -119,31 +97,44 @@ public class InlineStats extends UnaryPlan implements NamedWriteable, Phased, St
 
     @Override
     public boolean expressionsResolved() {
-        return Resolvables.resolved(groupings) && Resolvables.resolved(aggregates);
+        return aggregate.expressionsResolved();
     }
 
     @Override
     public List<Attribute> output() {
         if (this.lazyOutput == null) {
-            List<NamedExpression> addedFields = new ArrayList<>();
-            AttributeSet set = child().outputSet();
+            // for (NamedExpression agg : aggregate.output()) {
+            // Attribute att = agg.toAttribute();
+            // if (set.contains(att) == false) {
+            // addedFields.add(agg);
+            // set.add(att);
+            // }
+            // }
 
-            for (NamedExpression agg : aggregates) {
-                Attribute att = agg.toAttribute();
-                if (set.contains(att) == false) {
-                    addedFields.add(agg);
-                    set.add(att);
-                }
-            }
-
-            this.lazyOutput = mergeOutputAttributes(addedFields, child().output());
+            this.lazyOutput = mergeOutputAttributes(aggregate.output(), aggregate.child().output());
         }
         return lazyOutput;
     }
 
+    private JoinConfig joinConfig() {
+        List<Expression> groupings = aggregate.groupings();
+        List<Attribute> namedGroupings = new ArrayList<>(groupings.size());
+        for (Expression g : groupings) {
+            namedGroupings.add(Expressions.attribute(g));
+        }
+
+        return new JoinConfig(JoinType.LEFT, namedGroupings, aggregate.child().output(), aggregate.output());
+    }
+
+    @Override
+    public LogicalPlan surrogate() {
+        // left join between the main relation and the local, lookup relation
+        return new Join(source(), aggregate, aggregate.child(), joinConfig());
+    }
+
     @Override
     public int hashCode() {
-        return Objects.hash(groupings, aggregates, child());
+        return Objects.hash(aggregate, child());
     }
 
     @Override
@@ -157,14 +148,12 @@ public class InlineStats extends UnaryPlan implements NamedWriteable, Phased, St
         }
 
         InlineStats other = (InlineStats) obj;
-        return Objects.equals(groupings, other.groupings)
-            && Objects.equals(aggregates, other.aggregates)
-            && Objects.equals(child(), other.child());
+        return Objects.equals(aggregate, other.aggregate);
     }
 
     @Override
     public LogicalPlan firstPhase() {
-        return new Aggregate(source(), child(), Aggregate.AggregateType.STANDARD, groupings, aggregates);
+        return aggregate;
     }
 
     @Override
@@ -172,7 +161,7 @@ public class InlineStats extends UnaryPlan implements NamedWriteable, Phased, St
         if (equalsAndSemanticEquals(firstPhase().output(), schema) == false) {
             throw new IllegalStateException("Unexpected first phase outputs: " + firstPhase().output() + " vs " + schema);
         }
-        if (groupings.isEmpty()) {
+        if (aggregate.groupings().isEmpty()) {
             return ungroupedNextPhase(schema, firstPhaseResult);
         }
         return groupedNextPhase(schema, firstPhaseResult);
@@ -190,7 +179,7 @@ public class InlineStats extends UnaryPlan implements NamedWriteable, Phased, St
         for (int i = 0; i < schema.size(); i++) {
             Attribute s = schema.get(i);
             Object value = BlockUtils.toJavaObject(p.getBlock(i), 0);
-            values.add(new Alias(source(), s.name(), new Literal(source(), value, s.dataType()), aggregates.get(i).id()));
+            values.add(new Alias(source(), s.name(), new Literal(source(), value, s.dataType()), aggregate.aggregates().get(i).id()));
         }
         return new Eval(source(), child(), values);
     }
@@ -209,6 +198,7 @@ public class InlineStats extends UnaryPlan implements NamedWriteable, Phased, St
 
     private LogicalPlan groupedNextPhase(List<Attribute> schema, List<Page> firstPhaseResult) {
         LocalRelation local = firstPhaseResultsToLocalRelation(schema, firstPhaseResult);
+        var groupings = aggregate.groupings();
         List<Attribute> groupingAttributes = new ArrayList<>(groupings.size());
         for (Expression g : groupings) {
             if (g instanceof Attribute a) {

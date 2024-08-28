@@ -15,6 +15,7 @@ import org.elasticsearch.core.Tuple;
 import org.elasticsearch.dissect.DissectParser;
 import org.elasticsearch.index.IndexMode;
 import org.elasticsearch.test.ESTestCase;
+import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.TestBlockFactory;
 import org.elasticsearch.xpack.esql.VerificationException;
@@ -4444,9 +4445,10 @@ public class LogicalPlanOptimizerTests extends ESTestCase {
     /**
      * Expects
      * Limit[1000[INTEGER]]
-     * \_InlineStats[[emp_no % 2{r}#6],[COUNT(salary{f}#12) AS c, emp_no % 2{r}#6]]
-     *   \_Eval[[emp_no{f}#7 % 2[INTEGER] AS emp_no % 2]]
-     *     \_EsRelation[test][_meta_field{f}#13, emp_no{f}#7, first_name{f}#8, ge..]
+     * \_InlineStats[]
+     *   \_Aggregate[STANDARD,[emp_no % 2{r}#3],[COUNT(salary{f}#13) AS c, emp_no % 2{r}#3]]
+     *     \_Eval[[emp_no{f}#8 % 2[INTEGER] AS emp_no % 2]]
+     *       \_EsRelation[test][_meta_field{f}#14, emp_no{f}#8, first_name{f}#9, ge..]
      */
     public void testInlinestatsNestedExpressionsInGroups() {
         var query = """
@@ -4460,7 +4462,8 @@ public class LogicalPlanOptimizerTests extends ESTestCase {
         }
         var plan = optimizedPlan(query);
         var limit = as(plan, Limit.class);
-        var agg = as(limit.child(), InlineStats.class);
+        var inline = as(limit.child(), InlineStats.class);
+        var agg = as(inline.child(), Aggregate.class);
         var groupings = agg.groupings();
         var aggs = agg.aggregates();
         var ref = as(groupings.get(0), ReferenceAttribute.class);
