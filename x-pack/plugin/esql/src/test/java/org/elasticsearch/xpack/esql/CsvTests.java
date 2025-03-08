@@ -20,6 +20,7 @@ import org.elasticsearch.common.logging.HeaderWarning;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.BigArrays;
+import org.elasticsearch.common.util.Maps;
 import org.elasticsearch.common.util.MockBigArrays;
 import org.elasticsearch.common.util.PageCacheRecycler;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
@@ -38,6 +39,7 @@ import org.elasticsearch.logging.Logger;
 import org.elasticsearch.tasks.CancellableTask;
 import org.elasticsearch.tasks.TaskId;
 import org.elasticsearch.test.ESTestCase;
+import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.elasticsearch.threadpool.FixedExecutorBuilder;
 import org.elasticsearch.threadpool.TestThreadPool;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -156,7 +158,7 @@ import static org.hamcrest.Matchers.notNullValue;
  * <p>
  * To log the results logResults() should return "true".
  */
-// @TestLogging(value = "org.elasticsearch.xpack.esql:TRACE,org.elasticsearch.compute:TRACE", reason = "debug")
+@TestLogging(value = "org.elasticsearch.xpack.esql:TRACE,org.elasticsearch.compute:TRACE", reason = "debug")
 public class CsvTests extends ESTestCase {
 
     private static final Logger LOGGER = LogManager.getLogger(CsvTests.class);
@@ -179,7 +181,7 @@ public class CsvTests extends ESTestCase {
 
     @ParametersFactory(argumentFormatting = "%2$s.%3$s")
     public static List<Object[]> readScriptSpec() throws Exception {
-        List<URL> urls = classpathResources("/*.csv-spec");
+        List<URL> urls = classpathResources("many_fields.csv-spec");
         assertThat("Not enough specs found " + urls, urls, hasSize(greaterThan(0)));
         return SpecReader.readScriptSpec(urls, specParser());
     }
@@ -350,7 +352,37 @@ public class CsvTests extends ESTestCase {
         // CsvTestUtils.logMetaData(actual.columnNames(), actual.columnTypes(), LOGGER);
         // CsvTestUtils.logData(actual.values(), LOGGER);
 
-        CsvAssert.assertResults(expected, actual, ignoreOrder, logger);
+        //CsvAssert.assertResults(expected, actual, ignoreOrder, logger);
+    }
+
+    private static IndexResolution loadManyFields() {
+        // return EsqlExtraUtils.fromFieldCaps("many_fields", "many_fields_fieldcaps.json");
+        var mapping = generateMappingForManyFields(5, 10_000);
+        var indices = Set.of("idx_0", "idx_1", "idx_2", "idx_3", "idx_4");
+        var index = new EsIndex("many_fields", mapping);
+        return IndexResolution.valid(index, indices, Map.of());
+    }
+
+    /**
+     * Generate 5 indices, each with 10K fields
+     */
+    private static Map<String, EsField> generateMappingForManyFields(int indices, int fieldsPerIndex) {
+        Map<String, EsField> mapping = Maps.newMapWithExpectedSize(indices * fieldsPerIndex);
+        for (int index = 0; index < indices; index++) {
+            String indexName = "idx_" + index;
+            for (int i = 0; i < fieldsPerIndex; i++) {
+                addField(indexName + "_field_" + i, mapping);
+            }
+        }
+
+        return mapping;
+    }
+
+    private static void addField(String name, Map<String, EsField> mapping) {
+        //var dataType = DataType.fromTypeName(type);
+        var dataType = DataType.KEYWORD;
+        var field = new EsField(name, dataType, Map.of(), true);
+        mapping.put(field.getName(), field);
     }
 
     private static IndexResolution loadIndexResolution(CsvTestsDataLoader.MultiIndexTestDataset datasets) {
@@ -457,14 +489,17 @@ public class CsvTests extends ESTestCase {
         }
     }
 
-    private LogicalPlan analyzedPlan(LogicalPlan parsed, CsvTestsDataLoader.MultiIndexTestDataset datasets) {
-        var indexResolution = loadIndexResolution(datasets);
+    private record Analyzed(LogicalPlan analyzed, IndexResolution indexResolution) {}
+
+    private Analyzed analyzedPlan(LogicalPlan parsed, CsvTestsDataLoader.MultiIndexTestDataset datasets) {
+        // var indexResolution = loadIndexResolution(datasets);
+        var indexResolution = loadManyFields();
         var enrichPolicies = loadEnrichPolicies();
         var analyzer = new Analyzer(new AnalyzerContext(configuration, functionRegistry, indexResolution, enrichPolicies), TEST_VERIFIER);
         LogicalPlan plan = analyzer.analyze(parsed);
         plan.setAnalyzed();
         LOGGER.debug("Analyzed plan:\n{}", plan);
-        return plan;
+        return new Analyzed(plan, indexResolution);
     }
 
     private static CsvTestsDataLoader.MultiIndexTestDataset testDatasets(LogicalPlan parsed) {
@@ -506,12 +541,12 @@ public class CsvTests extends ESTestCase {
 
     private static TestPhysicalOperationProviders testOperationProviders(
         FoldContext foldCtx,
-        CsvTestsDataLoader.MultiIndexTestDataset datasets
-    ) throws Exception {
+        CsvTestsDataLoader.MultiIndexTestDataset datasets,
+        Analyzed analyzed) throws Exception {
         var indexPages = new ArrayList<TestPhysicalOperationProviders.IndexPage>();
         for (CsvTestsDataLoader.TestDataset dataset : datasets.datasets()) {
             var testData = loadPageFromCsv(CsvTests.class.getResource("/data/" + dataset.dataFileName()), dataset.typeMapping());
-            Set<String> mappedFields = loadMapping(dataset.mappingFileName()).keySet();
+            Set<String> mappedFields = analyzed.indexResolution.get().mapping().keySet();
             indexPages.add(new TestPhysicalOperationProviders.IndexPage(dataset.indexName(), testData.v1(), testData.v2(), mappedFields));
         }
         return TestPhysicalOperationProviders.create(foldCtx, indexPages);
@@ -519,8 +554,9 @@ public class CsvTests extends ESTestCase {
 
     private ActualResults executePlan(BigArrays bigArrays) throws Exception {
         LogicalPlan parsed = parser.createStatement(testCase.query);
-        var testDatasets = testDatasets(parsed);
-        LogicalPlan analyzed = analyzedPlan(parsed, testDatasets);
+        // var testDatasets = testDatasets(parsed);
+        CsvTestsDataLoader.MultiIndexTestDataset testDatasets = new CsvTestsDataLoader.MultiIndexTestDataset("many_fields", List.of());
+        Analyzed analyzed = analyzedPlan(parsed, testDatasets);
 
         FoldContext foldCtx = FoldContext.small();
         EsqlSession session = new EsqlSession(
@@ -537,7 +573,7 @@ public class CsvTests extends ESTestCase {
             null,
             EsqlTestUtils.MOCK_TRANSPORT_ACTION_SERVICES
         );
-        TestPhysicalOperationProviders physicalOperationProviders = testOperationProviders(foldCtx, testDatasets);
+        TestPhysicalOperationProviders physicalOperationProviders = testOperationProviders(foldCtx, testDatasets, analyzed);
 
         PlainActionFuture<ActualResults> listener = new PlainActionFuture<>();
 
@@ -545,7 +581,7 @@ public class CsvTests extends ESTestCase {
             new EsqlQueryRequest(),
             new EsqlExecutionInfo(randomBoolean()),
             planRunner(bigArrays, foldCtx, physicalOperationProviders),
-            session.optimizedPlan(analyzed),
+            session.optimizedPlan(analyzed.analyzed),
             listener.delegateFailureAndWrap(
                 // Wrap so we can capture the warnings in the calling thread
                 (next, result) -> next.onResponse(

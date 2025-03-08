@@ -42,7 +42,7 @@ dependencies {
   implementation project('arrow')
 
   // Also contains a dummy processor to allow compilation with unused annotations.
-  annotationProcessor project('compute:gen')
+  //annotationProcessor project('compute:gen')
 
   testImplementation(project('qa:testFixtures')) {
     exclude(group:"org.elasticsearch.plugin", module: "esql")
