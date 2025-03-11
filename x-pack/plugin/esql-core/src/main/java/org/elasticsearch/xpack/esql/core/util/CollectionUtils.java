@@ -83,4 +83,8 @@ public abstract class CollectionUtils {
         }
         return list;
     }
+
+    public static int setOrMapCapacity(int expectedSize) {
+        return expectedSize < 2 ? expectedSize + 1 : (int) (expectedSize / 0.75f + 1.0f);
+    }
 }

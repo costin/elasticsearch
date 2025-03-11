@@ -8,6 +8,7 @@ package org.elasticsearch.xpack.esql.core.expression;
 
 import org.elasticsearch.common.util.set.Sets;
 import org.elasticsearch.xpack.esql.core.QlIllegalArgumentException;
+import org.elasticsearch.xpack.esql.core.util.CollectionUtils;
 
 import java.util.AbstractSet;
 import java.util.Collection;
@@ -19,6 +20,7 @@ import java.util.function.BiConsumer;
 import java.util.stream.Stream;
 
 import static java.util.Collections.emptyMap;
+import static java.util.Collections.unmodifiableCollection;
 
 /**
  * Dedicated map for checking {@link Attribute} equality.
@@ -28,7 +30,8 @@ import static java.util.Collections.emptyMap;
  * Expressions support semantic equality through {@link Expression#semanticEquals(Expression)} - this map is dedicated solution
  * for attributes as its common case picked up by the plan rules.
  * <p>
- * The map implementation is mutable thus consumers need to be careful NOT to modify the content unless they have ownership.
+ * The map implementation is immutable, use the builder to customize the map creation.
+ * <p
  * Worth noting the {@link #combine(AttributeMap)}, {@link #intersect(AttributeMap)} and {@link #subtract(AttributeMap)} methods which
  * return copies, decoupled from the input maps. In other words the returned maps can be modified without affecting the input or vice-versa.
  */
@@ -81,11 +84,6 @@ public final class AttributeMap<E> implements Map<Attribute, E> {
                 @Override
                 public U next() {
                     return unwrap(i.next());
-                }
-
-                @Override
-                public void remove() {
-                    i.remove();
                 }
             };
         }
@@ -160,13 +158,20 @@ public final class AttributeMap<E> implements Map<Attribute, E> {
     }
 
     private final Map<AttributeWrapper, E> delegate;
+    private Set<Attribute> keySet = null;
+    private Collection<E> values = null;
+    private Set<Entry<Attribute, E>> entrySet = null;
 
     private AttributeMap(Map<AttributeWrapper, E> other) {
         delegate = other;
     }
 
-    public AttributeMap() {
+    AttributeMap() {
         delegate = new LinkedHashMap<>();
+    }
+
+    AttributeMap(int size) {
+        delegate = new LinkedHashMap<>(size);
     }
 
     public AttributeMap(Attribute key, E value) {
@@ -220,12 +225,14 @@ public final class AttributeMap<E> implements Map<Attribute, E> {
         return true;
     }
 
-    public void add(Attribute key, E value) {
-        put(key, value);
+    void add(Attribute key, E value) {
+        delegate.put(new AttributeWrapper(key), value);
     }
 
-    public void addAll(AttributeMap<E> other) {
-        putAll(other);
+    void addAll(AttributeMap<E> other) {
+        for (Entry<? extends Attribute, ? extends E> entry : other.entrySet()) {
+            put(entry.getKey(), entry.getValue());
+        }
     }
 
     public Set<String> attributeNames() {
@@ -293,64 +300,79 @@ public final class AttributeMap<E> implements Map<Attribute, E> {
 
     @Override
     public E put(Attribute key, E value) {
-        return delegate.put(new AttributeWrapper(key), value);
+        throw new UnsupportedOperationException("Immutable map");
     }
 
     @Override
     public void putAll(Map<? extends Attribute, ? extends E> m) {
-        for (Entry<? extends Attribute, ? extends E> entry : m.entrySet()) {
-            put(entry.getKey(), entry.getValue());
-        }
+        throw new UnsupportedOperationException("Immutable map");
     }
 
     @Override
     public E remove(Object key) {
+        throw new UnsupportedOperationException("Immutable map");
+    }
+
+    private E doRemove(Object key) {
         return key instanceof NamedExpression ne ? delegate.remove(new AttributeWrapper(ne.toAttribute())) : null;
     }
 
     @Override
     public void clear() {
+        throw new UnsupportedOperationException("Immutable map");
+    }
+
+    private void doClear() {
         delegate.clear();
     }
 
     @Override
     public Set<Attribute> keySet() {
-        return new UnwrappingSet<>(delegate.keySet()) {
-            @Override
-            protected Attribute unwrap(AttributeWrapper next) {
-                return next.attr;
-            }
-        };
+        if (keySet == null) {
+            keySet = new UnwrappingSet<>(delegate.keySet()) {
+                @Override
+                protected Attribute unwrap(AttributeWrapper next) {
+                    return next.attr;
+                }
+            };
+        }
+        return keySet;
     }
 
     @Override
     public Collection<E> values() {
-        return delegate.values();
+        if (values == null) {
+            values = unmodifiableCollection(delegate.values());
+        }
+        return values;
     }
 
     @Override
     public Set<Entry<Attribute, E>> entrySet() {
-        return new UnwrappingSet<>(delegate.entrySet()) {
-            @Override
-            protected Entry<Attribute, E> unwrap(final Entry<AttributeWrapper, E> next) {
-                return new Entry<>() {
-                    @Override
-                    public Attribute getKey() {
-                        return next.getKey().attr;
-                    }
+        if (entrySet == null) {
+            entrySet = new UnwrappingSet<>(delegate.entrySet()) {
+                @Override
+                protected Entry<Attribute, E> unwrap(final Entry<AttributeWrapper, E> next) {
+                    return new Entry<>() {
+                        @Override
+                        public Attribute getKey() {
+                            return next.getKey().attr;
+                        }
 
-                    @Override
-                    public E getValue() {
-                        return next.getValue();
-                    }
+                        @Override
+                        public E getValue() {
+                            return next.getValue();
+                        }
 
-                    @Override
-                    public E setValue(E value) {
-                        return next.setValue(value);
-                    }
-                };
-            }
-        };
+                        @Override
+                        public E setValue(E value) {
+                            throw new UnsupportedOperationException("Immutable set");
+                        }
+                    };
+                }
+            };
+        }
+        return entrySet;
     }
 
     @Override
@@ -385,9 +407,15 @@ public final class AttributeMap<E> implements Map<Attribute, E> {
     }
 
     public static class Builder<E> {
-        private AttributeMap<E> map = new AttributeMap<>();
+        private final AttributeMap<E> map;
 
-        private Builder() {}
+        private Builder() {
+             map = new AttributeMap<>();
+        }
+
+        private Builder(int numberOfEntries) {
+            map = new AttributeMap<>(CollectionUtils.setOrMapCapacity(numberOfEntries));
+        }
 
         public Builder<E> put(Attribute attr, E value) {
             map.add(attr, value);

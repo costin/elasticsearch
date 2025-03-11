@@ -8,6 +8,7 @@ package org.elasticsearch.xpack.esql.core.expression;
 
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Set;
 import java.util.Spliterator;
 import java.util.function.Consumer;
@@ -35,11 +36,16 @@ public class AttributeSet implements Set<Attribute> {
     }
 
     public AttributeSet(Collection<? extends Attribute> attr) {
-        delegate = new AttributeMap<>();
+        delegate = new AttributeMap<>(attr.size());
 
         for (Attribute a : attr) {
             delegate.add(a, PRESENT);
         }
+        delegate.
+    }
+
+    public AttributeSet(Collection<AttributeSet> setCollection) {
+
     }
 
     private AttributeSet(AttributeMap<Object> delegate) {
@@ -113,20 +119,28 @@ public class AttributeSet implements Set<Attribute> {
 
     @Override
     public boolean add(Attribute e) {
+        throw new UnsupportedOperationException("Immutable set");
+    }
+
+    boolean doAdd(Attribute e) {
         return delegate.put(e, PRESENT) == null;
     }
 
     @Override
     public boolean remove(Object o) {
-        return delegate.remove(o) != null;
+        throw new UnsupportedOperationException("Immutable set");
     }
 
-    public void addAll(AttributeSet other) {
-        delegate.addAll(other.delegate);
+    boolean doRemove(Object o) {
+        return delegate.remove(o) != null;
     }
 
     @Override
     public boolean addAll(Collection<? extends Attribute> c) {
+        throw new UnsupportedOperationException("Immutable set");
+    }
+
+    boolean doAddAll(Collection<? extends Attribute> c) {
         int size = delegate.size();
         for (var e : c) {
             delegate.put(e, PRESENT);
@@ -134,13 +148,27 @@ public class AttributeSet implements Set<Attribute> {
         return delegate.size() != size;
     }
 
+    // package protected - should be called through Expressions to cheaply create
+    // a set from a collection of sets without too much copying
+    void addAll(AttributeSet other) {
+        delegate.addAll(other.delegate);
+    }
+
     @Override
     public boolean retainAll(Collection<?> c) {
+        throw new UnsupportedOperationException("Immutable set");
+    }
+
+    boolean doRetainAll(Collection<?> c) {
         return delegate.keySet().removeIf(e -> c.contains(e) == false);
     }
 
     @Override
     public boolean removeAll(Collection<?> c) {
+        throw new UnsupportedOperationException("Immutable set");
+    }
+
+    boolean doRemoveAll(Collection<?> c) {
         int size = delegate.size();
         for (var e : c) {
             delegate.remove(e);
@@ -150,6 +178,9 @@ public class AttributeSet implements Set<Attribute> {
 
     @Override
     public void clear() {
+    }
+
+    void doClear() {
         delegate.clear();
     }
 
@@ -160,6 +191,10 @@ public class AttributeSet implements Set<Attribute> {
 
     @Override
     public boolean removeIf(Predicate<? super Attribute> filter) {
+        throw new UnsupportedOperationException("Immutable set");
+    }
+
+    public boolean doRemoveIf(Predicate<? super Attribute> filter) {
         return delegate.keySet().removeIf(filter);
     }
 
@@ -174,12 +209,8 @@ public class AttributeSet implements Set<Attribute> {
     }
 
     @Override
-    public boolean equals(Object obj) {
-        if (obj instanceof AttributeSet as) {
-            obj = as.delegate;
-        }
-
-        return delegate.equals(obj);
+    public boolean equals(Object o) {
+        return delegate.equals(o);
     }
 
     @Override
