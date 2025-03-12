@@ -39,16 +39,6 @@ public abstract class UnaryPlan extends LogicalPlan {
     }
 
     @Override
-    public List<Attribute> output() {
-        return child.output();
-    }
-
-    @Override
-    public AttributeSet outputSet() {
-        return child.outputSet();
-    }
-
-    @Override
     public int hashCode() {
         return Objects.hashCode(child());
     }

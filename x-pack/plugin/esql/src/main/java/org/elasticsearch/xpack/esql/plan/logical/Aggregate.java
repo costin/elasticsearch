@@ -173,13 +173,16 @@ public class Aggregate extends UnaryPlan implements PostAnalysisVerificationAwar
     }
 
     public static AttributeSet computeReferences(List<? extends NamedExpression> aggregates, List<? extends Expression> groupings) {
-        AttributeSet result = Expressions.references(groupings).combine(Expressions.references(aggregates));
+        AttributeSet.Builder resultBuilder = AttributeSet.builder();
+        resultBuilder.addAll(Expressions.references(groupings));
+        resultBuilder.addAll(Expressions.references(aggregates));
+
         for (Expression grouping : groupings) {
-            if (grouping instanceof Alias) {
-                result.remove(((Alias) grouping).toAttribute());
+            if (grouping instanceof Alias alias) {
+                resultBuilder.remove(alias.toAttribute());
             }
         }
-        return result;
+        return resultBuilder.build();
     }
 
     @Override

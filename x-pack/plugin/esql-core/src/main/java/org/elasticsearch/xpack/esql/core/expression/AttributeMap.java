@@ -314,7 +314,7 @@ public final class AttributeMap<E> implements Map<Attribute, E> {
         throw new UnsupportedOperationException("Immutable map");
     }
 
-    private E doRemove(Object key) {
+    E doRemove(Object key) {
         return key instanceof NamedExpression ne ? delegate.remove(new AttributeWrapper(ne.toAttribute())) : null;
     }
 

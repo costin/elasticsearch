@@ -14,6 +14,8 @@ import org.elasticsearch.xpack.esql.capabilities.PostOptimizationVerificationAwa
 import org.elasticsearch.xpack.esql.capabilities.TelemetryAware;
 import org.elasticsearch.xpack.esql.common.Failures;
 import org.elasticsearch.xpack.esql.core.capabilities.Resolvables;
+import org.elasticsearch.xpack.esql.core.expression.Attribute;
+import org.elasticsearch.xpack.esql.core.expression.AttributeSet;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
@@ -54,6 +56,16 @@ public class OrderBy extends UnaryPlan
         Source.EMPTY.writeTo(out);
         out.writeNamedWriteable(child());
         out.writeCollection(order());
+    }
+
+    @Override
+    public List<Attribute> output() {
+        return child().output();
+    }
+
+    @Override
+    public AttributeSet outputSet() {
+        return child().outputSet();
     }
 
     @Override

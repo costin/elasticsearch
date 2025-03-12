@@ -145,7 +145,7 @@ public class AttributeSet implements Set<Attribute> {
     }
 
     boolean doRemove(Object o) {
-        return delegate.remove(o) != null;
+        return delegate.doRemove(o) != null;
     }
 
     @Override
@@ -261,6 +261,11 @@ public class AttributeSet implements Set<Attribute> {
 
         public Builder addAll(AttributeSet s) {
             set.doAddAll(s);
+            return this;
+        }
+
+        public Builder remove(Attribute attr) {
+            set.doRemove(attr);
             return this;
         }
 
