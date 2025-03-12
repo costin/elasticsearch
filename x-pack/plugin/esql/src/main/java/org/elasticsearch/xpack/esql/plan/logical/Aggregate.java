@@ -206,7 +206,7 @@ public class Aggregate extends UnaryPlan implements PostAnalysisVerificationAwar
 
     @Override
     public void postAnalysisVerification(Failures failures) {
-        AttributeSet groupRefs = new AttributeSet();
+        AttributeSet.Builder groupRefs = AttributeSet.builder();
         // check grouping
         // The grouping can not be an aggregate function
         groupings.forEach(e -> {
@@ -244,13 +244,15 @@ public class Aggregate extends UnaryPlan implements PostAnalysisVerificationAwar
         // don't allow the group by itself to avoid duplicates in the output
         // and since the groups are copied, only look at the declared aggregates
         // List<? extends NamedExpression> aggs = agg.aggregates();
+        var groupMap = groupRefs.build();
+
         aggregates.subList(0, aggregates.size() - groupings.size()).forEach(e -> {
             var exp = Alias.unwrap(e);
             if (exp.foldable()) {
                 failures.add(fail(exp, "expected an aggregate function but found [{}]", exp.sourceText()));
             }
             // traverse the tree to find invalid matches
-            checkInvalidNamedExpressionUsage(exp, groupings, groupRefs, failures, 0);
+            checkInvalidNamedExpressionUsage(exp, groupings, groupMap, failures, 0);
         });
         if (aggregateType() == Aggregate.AggregateType.METRICS) {
             aggregates.forEach(a -> checkRateAggregates(a, 0, failures));
@@ -316,14 +318,15 @@ public class Aggregate extends UnaryPlan implements PostAnalysisVerificationAwar
         );
 
         // Forbid CATEGORIZE being referenced as a child of an aggregation function
-        AttributeMap<Categorize> categorizeByAttribute = new AttributeMap<>();
+        AttributeMap.Builder<Categorize> mapBuilder = AttributeMap.builder();
         groupings.forEach(g -> {
             g.forEachDown(Alias.class, alias -> {
                 if (alias.child() instanceof Categorize categorize) {
-                    categorizeByAttribute.put(alias.toAttribute(), categorize);
+                    mapBuilder.put(alias.toAttribute(), categorize);
                 }
             });
         });
+        AttributeMap<Categorize> categorizeByAttribute = mapBuilder.build();
         aggregates.forEach(a -> a.forEachDown(AggregateFunction.class, aggregate -> aggregate.forEachDown(Attribute.class, attribute -> {
             var categorize = categorizeByAttribute.get(attribute);
             if (categorize != null) {

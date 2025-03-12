@@ -6,9 +6,10 @@
  */
 package org.elasticsearch.xpack.esql.core.expression;
 
+import org.elasticsearch.xpack.esql.core.util.CollectionUtils;
+
 import java.util.Collection;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Set;
 import java.util.Spliterator;
 import java.util.function.Consumer;
@@ -27,6 +28,10 @@ public class AttributeSet implements Set<Attribute> {
 
     private final AttributeMap<Object> delegate;
 
+    AttributeSet(int size) {
+        delegate = new AttributeMap<>(size);
+    }
+
     public AttributeSet() {
         delegate = new AttributeMap<>();
     }
@@ -36,16 +41,24 @@ public class AttributeSet implements Set<Attribute> {
     }
 
     public AttributeSet(Collection<? extends Attribute> attr) {
-        delegate = new AttributeMap<>(attr.size());
+        delegate = new AttributeMap<>(CollectionUtils.setOrMapCapacity(attr.size()));
 
         for (Attribute a : attr) {
             delegate.add(a, PRESENT);
         }
-        delegate.
     }
 
-    public AttributeSet(Collection<AttributeSet> setCollection) {
+    public AttributeSet(AttributeSet... setCollection) {
+        int size = 0;
+        for (AttributeSet set : setCollection) {
+            size += set.size();
+        }
 
+        delegate = new AttributeMap<>(CollectionUtils.setOrMapCapacity(size));
+
+        for (AttributeSet set : setCollection) {
+            delegate.addAll(set.delegate);
+        }
     }
 
     private AttributeSet(AttributeMap<Object> delegate) {
@@ -122,8 +135,8 @@ public class AttributeSet implements Set<Attribute> {
         throw new UnsupportedOperationException("Immutable set");
     }
 
-    boolean doAdd(Attribute e) {
-        return delegate.put(e, PRESENT) == null;
+    void doAdd(Attribute e) {
+        delegate.add(e, PRESENT);
     }
 
     @Override
@@ -140,12 +153,11 @@ public class AttributeSet implements Set<Attribute> {
         throw new UnsupportedOperationException("Immutable set");
     }
 
-    boolean doAddAll(Collection<? extends Attribute> c) {
+    void doAddAll(Collection<? extends Attribute> c) {
         int size = delegate.size();
         for (var e : c) {
-            delegate.put(e, PRESENT);
+            delegate.add(e, PRESENT);
         }
-        return delegate.size() != size;
     }
 
     // package protected - should be called through Expressions to cheaply create
@@ -221,5 +233,39 @@ public class AttributeSet implements Set<Attribute> {
     @Override
     public String toString() {
         return delegate.keySet().toString();
+    }
+
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static Builder builder(AttributeSet set) {
+        return new Builder().addAll(set);
+    }
+
+    public static class Builder {
+        private final AttributeSet set;
+
+        private Builder() {
+            set = new AttributeSet();
+        }
+
+        private Builder(int numberOfEntries) {
+            set = new AttributeSet(CollectionUtils.setOrMapCapacity(numberOfEntries));
+        }
+
+        public Builder add(Attribute attr) {
+            set.doAdd(attr);
+            return this;
+        }
+
+        public Builder addAll(AttributeSet s) {
+            set.doAddAll(s);
+            return this;
+        }
+
+        public AttributeSet build() {
+            return set;
+        }
     }
 }

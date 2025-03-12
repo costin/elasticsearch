@@ -96,16 +96,6 @@ public final class CombineProjections extends OptimizerRules.OptimizerRule<Unary
         List<? extends NamedExpression> upperProjection,
         List<? extends NamedExpression> lowerAggregations
     ) {
-        AttributeSet seen = new AttributeSet();
-        for (NamedExpression upper : upperProjection) {
-            Expression unwrapped = Alias.unwrap(upper);
-            // projection contains an inner alias (point to an existing fields inside the projection)
-            if (seen.contains(unwrapped)) {
-                return null;
-            }
-            seen.add(Expressions.attribute(unwrapped));
-        }
-
         lowerAggregations = combineProjections(upperProjection, lowerAggregations);
 
         return lowerAggregations;
@@ -117,19 +107,23 @@ public final class CombineProjections extends OptimizerRules.OptimizerRule<Unary
     private static List<NamedExpression> combineProjections(List<? extends NamedExpression> upper, List<? extends NamedExpression> lower) {
 
         // collect named expressions declaration in the lower list
-        AttributeMap<NamedExpression> namedExpressions = new AttributeMap<>();
+        AttributeMap.Builder<NamedExpression> namedExpressionsBuilder = AttributeMap.builder();
         // while also collecting the alias map for resolving the source (f1 = 1, f2 = f1, etc..)
-        AttributeMap<Expression> aliases = new AttributeMap<>();
+        AttributeMap.Builder<Expression> aliasesBuilder = AttributeMap.builder();
+        // get the underlying map transformed by the builder
+        AttributeMap<Expression> aliases = aliasesBuilder.build();
+
         for (NamedExpression ne : lower) {
             // record the alias
-            aliases.put(ne.toAttribute(), Alias.unwrap(ne));
-
+            aliasesBuilder.put(ne.toAttribute(), Alias.unwrap(ne));
             // record named expression as is
             if (ne instanceof Alias as) {
                 Expression child = as.child();
-                namedExpressions.put(ne.toAttribute(), as.replaceChild(aliases.resolve(child, child)));
+                namedExpressionsBuilder.put(ne.toAttribute(), as.replaceChild(aliases.resolve(child, child)));
             }
         }
+
+        var namedExpressions = namedExpressionsBuilder.build();
         List<NamedExpression> replaced = new ArrayList<>();
 
         // replace any matching attribute with a lower alias (if there's a match)
@@ -146,16 +140,19 @@ public final class CombineProjections extends OptimizerRules.OptimizerRule<Unary
         List<? extends NamedExpression> lowerProjections
     ) {
         assert upperGroupings.size() <= 1
+            // FIXME: this needs to be moved into the Categorize verification
             || upperGroupings.stream().anyMatch(group -> group.anyMatch(expr -> expr instanceof Categorize)) == false
             : "CombineProjections only tested with a single CATEGORIZE with no additional groups";
         // Collect the alias map for resolving the source (f1 = 1, f2 = f1, etc..)
-        AttributeMap<Attribute> aliases = new AttributeMap<>();
+        AttributeMap.Builder<Attribute> aliasesBuilder = AttributeMap.builder();
+
         for (NamedExpression ne : lowerProjections) {
             // Record the aliases.
             // Projections are just aliases for attributes, so casting is safe.
-            aliases.put(ne.toAttribute(), (Attribute) Alias.unwrap(ne));
+            aliasesBuilder.put(ne.toAttribute(), (Attribute) Alias.unwrap(ne));
         }
 
+        var aliases = aliasesBuilder.build();
         // Propagate any renames from the lower projection into the upper groupings.
         // This can lead to duplicates: e.g.
         // | EVAL x = y | STATS ... BY x, y
@@ -180,7 +177,7 @@ public final class CombineProjections extends OptimizerRules.OptimizerRule<Unary
         List<? extends NamedExpression> oldAggs,
         List<? extends NamedExpression> newAggs
     ) {
-        AttributeMap<Expression> removedAliases = new AttributeMap<>();
+        AttributeMap.Builder<Expression> removedAliasesBuilder = AttributeMap.builder();
         AttributeSet currentAliases = new AttributeSet(Expressions.asAttributes(newAggs));
 
         // record only removed aliases
@@ -188,11 +185,12 @@ public final class CombineProjections extends OptimizerRules.OptimizerRule<Unary
             if (ne instanceof Alias alias) {
                 var attr = ne.toAttribute();
                 if (currentAliases.contains(attr) == false) {
-                    removedAliases.put(attr, alias.child());
+                    removedAliasesBuilder.put(attr, alias.child());
                 }
             }
         }
 
+        var removedAliases = removedAliasesBuilder.build();
         if (removedAliases.isEmpty()) {
             return groupings;
         }

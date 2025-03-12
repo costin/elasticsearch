@@ -54,9 +54,11 @@ public final class ReplaceAliasingEvalWithProject extends Rule<LogicalPlan, Logi
         LogicalPlan plan = eval;
 
         // holds simple aliases such as b = a, c = b, d = c
-        AttributeMap<Expression> basicAliases = new AttributeMap<>();
+        AttributeMap.Builder<Expression> mapBuilder = AttributeMap.builder();
+        AttributeMap<Expression> basicAliases = mapBuilder.build();
         // same as above but keeps the original expression
-        AttributeMap<NamedExpression> basicAliasSources = new AttributeMap<>();
+        AttributeMap.Builder<NamedExpression> sourcesMapBuilder = AttributeMap.builder();
+        AttributeMap<NamedExpression> basicAliasSources = sourcesMapBuilder.build();
 
         List<Alias> keptFields = new ArrayList<>();
 
@@ -67,8 +69,8 @@ public final class ReplaceAliasingEvalWithProject extends Rule<LogicalPlan, Logi
             var attribute = field.toAttribute();
             // put the aliases in a separate map to separate the underlying resolve from other aliases
             if (child instanceof Attribute) {
-                basicAliases.put(attribute, child);
-                basicAliasSources.put(attribute, field);
+                mapBuilder.put(attribute, child);
+                sourcesMapBuilder.put(attribute, field);
             } else {
                 // be lazy and start replacing name aliases only if needed
                 if (basicAliases.size() > 0) {

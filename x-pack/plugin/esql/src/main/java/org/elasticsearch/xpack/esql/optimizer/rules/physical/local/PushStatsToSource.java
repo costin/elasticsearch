@@ -74,13 +74,14 @@ public class PushStatsToSource extends PhysicalOptimizerRules.ParameterizedOptim
         AggregateExec aggregate,
         LocalPhysicalOptimizerContext context
     ) {
-        AttributeMap<EsStatsQueryExec.Stat> stats = new AttributeMap<>();
+        AttributeMap.Builder<EsStatsQueryExec.Stat> statsBuilder = AttributeMap.builder();
+        AttributeMap<EsStatsQueryExec.Stat> stats = statsBuilder.build();
         Tuple<List<Attribute>, List<EsStatsQueryExec.Stat>> tuple = new Tuple<>(new ArrayList<>(), new ArrayList<>());
 
         if (aggregate.groupings().isEmpty()) {
             for (NamedExpression agg : aggregate.aggregates()) {
                 var attribute = agg.toAttribute();
-                EsStatsQueryExec.Stat stat = stats.computeIfAbsent(attribute, a -> {
+                EsStatsQueryExec.Stat stat = statsBuilder.computeIfAbsent(attribute, a -> {
                     if (agg instanceof Alias as) {
                         Expression child = as.child();
                         if (child instanceof Count count) {

@@ -55,17 +55,12 @@ public abstract class QueryPlan<PlanType extends QueryPlan<PlanType>> extends No
             } else if (size == 1) {
                 lazyInputSet = children.get(0).outputSet();
             } else {
-                List<AttributeSet> childOutput = new ArrayList<>();
-                for (PlanType child : children) {
-                    childOutput.add(child.outputSet());
+                AttributeSet[] childOutput = new AttributeSet[children.size()];
+                for (int i = 0; i < children.size(); i++) {
+                    childOutput[i] = children.get(i).outputSet();
                 }
                 lazyInputSet = new AttributeSet(childOutput);
             }
-            List<Attribute> attrs = new ArrayList<>();
-            for (PlanType child : children()) {
-                attrs.addAll(child.output());
-            }
-            lazyInputSet = new AttributeSet(attrs);
         }
         return lazyInputSet;
     }

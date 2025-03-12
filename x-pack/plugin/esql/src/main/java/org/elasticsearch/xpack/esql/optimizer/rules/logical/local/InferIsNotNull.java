@@ -47,13 +47,13 @@ public class InferIsNotNull extends Rule<LogicalPlan, LogicalPlan> {
     @Override
     public LogicalPlan apply(LogicalPlan plan) {
         // the alias map is shared across the whole plan
-        AttributeMap<Expression> aliases = new AttributeMap<>();
+        AttributeMap.Builder<Expression> aliases = AttributeMap.builder();
         // traverse bottom-up to pick up the aliases as we go
         plan = plan.transformUp(p -> inspectPlan(p, aliases));
         return plan;
     }
 
-    private LogicalPlan inspectPlan(LogicalPlan plan, AttributeMap<Expression> aliases) {
+    private LogicalPlan inspectPlan(LogicalPlan plan, AttributeMap.Builder<Expression> aliases) {
         // inspect just this plan properties
         plan.forEachExpression(Alias.class, a -> aliases.put(a.toAttribute(), a.child()));
         // now go about finding isNull/isNotNull
@@ -61,9 +61,9 @@ public class InferIsNotNull extends Rule<LogicalPlan, LogicalPlan> {
         return newPlan;
     }
 
-    private Expression inferNotNullable(IsNotNull inn, AttributeMap<Expression> aliases) {
+    private Expression inferNotNullable(IsNotNull inn, AttributeMap.Builder<Expression> aliases) {
         Expression result = inn;
-        Set<Expression> refs = resolveExpressionAsRootAttributes(inn.field(), aliases);
+        Set<Expression> refs = resolveExpressionAsRootAttributes(inn.field(), aliases.build());
         // no refs found or could not detect - return the original function
         if (refs.size() > 0) {
             // add IsNull for the filters along with the initial inn

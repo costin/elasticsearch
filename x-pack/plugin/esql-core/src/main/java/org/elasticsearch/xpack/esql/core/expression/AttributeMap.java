@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 import static java.util.Collections.emptyMap;
@@ -231,7 +232,7 @@ public final class AttributeMap<E> implements Map<Attribute, E> {
 
     void addAll(AttributeMap<E> other) {
         for (Entry<? extends Attribute, ? extends E> entry : other.entrySet()) {
-            put(entry.getKey(), entry.getValue());
+            add(entry.getKey(), entry.getValue());
         }
     }
 
@@ -425,6 +426,10 @@ public final class AttributeMap<E> implements Map<Attribute, E> {
         public Builder<E> putAll(AttributeMap<E> m) {
             map.addAll(m);
             return this;
+        }
+
+        public E computeIfAbsent(Attribute key, Function<? super Attribute, ? extends E> mappingFunction) {
+            return map.computeIfAbsent(key, mappingFunction);
         }
 
         public AttributeMap<E> build() {

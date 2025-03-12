@@ -23,6 +23,7 @@ import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.AggregateFunction;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.stream.Stream;
@@ -49,9 +50,14 @@ final class AggregateMapper {
     }
 
     private List<NamedExpression> doMapping(List<? extends NamedExpression> aggregates, boolean grouping) {
-        AttributeMap<NamedExpression> attrToExpressions = new AttributeMap<>();
-        aggregates.stream().flatMap(ne -> map(ne, grouping)).forEach(ne -> attrToExpressions.put(ne.toAttribute(), ne));
-        return attrToExpressions.values().stream().toList();
+        AttributeMap.Builder<NamedExpression> attrToExpressions = AttributeMap.builder();
+        for (NamedExpression ne : aggregates) {
+            List<NamedExpression> list = cache.computeIfAbsent(Alias.unwrap(ne), aggKey -> computeEntryForAgg(ne.name(), aggKey, grouping));
+            for (NamedExpression namedExpression : list) {
+                attrToExpressions.put(namedExpression.toAttribute(), namedExpression);
+            }
+        }
+        return new ArrayList<>(attrToExpressions.build().values());
     }
 
     public List<NamedExpression> mapGrouping(NamedExpression aggregate) {

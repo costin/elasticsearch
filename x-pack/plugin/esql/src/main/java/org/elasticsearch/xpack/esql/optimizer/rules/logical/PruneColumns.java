@@ -35,7 +35,7 @@ public final class PruneColumns extends Rule<LogicalPlan, LogicalPlan> {
     @Override
     public LogicalPlan apply(LogicalPlan plan) {
         // track used references
-        var used = plan.outputSet();
+        var used = AttributeSet.builder(plan.outputSet());
         // while going top-to-bottom (upstream)
         var pl = plan.transformDown(p -> {
             // Note: It is NOT required to do anything special for binary plans like JOINs. It is perfectly fine that transformDown descends
@@ -126,14 +126,14 @@ public final class PruneColumns extends Rule<LogicalPlan, LogicalPlan> {
      * Prunes attributes from the list not found in the given set.
      * Returns null if no changed occurred.
      */
-    private static <N extends NamedExpression> List<N> removeUnused(List<N> named, AttributeSet used) {
+    private static <N extends NamedExpression> List<N> removeUnused(List<N> named, AttributeSet.Builder used) {
         var clone = new ArrayList<>(named);
         var it = clone.listIterator(clone.size());
 
         // due to Eval, go in reverse
         while (it.hasPrevious()) {
             N prev = it.previous();
-            if (used.contains(prev.toAttribute()) == false) {
+            if (used.build().contains(prev.toAttribute()) == false) {
                 it.remove();
             } else {
                 used.addAll(prev.references());

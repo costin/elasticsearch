@@ -51,13 +51,15 @@ public final class ReplaceAggregateAggExpressionWithEval extends OptimizerRules.
     @Override
     protected LogicalPlan rule(Aggregate aggregate) {
         // build alias map
-        AttributeMap<Expression> aliases = new AttributeMap<>();
-        aggregate.forEachExpressionUp(Alias.class, a -> aliases.put(a.toAttribute(), a.child()));
+        AttributeMap.Builder<Expression> aliasesBuilder = AttributeMap.builder();
+        AttributeMap<Expression> aliases = aliasesBuilder.build();
+        aggregate.forEachExpressionUp(Alias.class, a -> aliasesBuilder.put(a.toAttribute(), a.child()));
 
         // Build Categorize grouping functions map.
         // Functions like BUCKET() shouldn't reach this point,
         // as they are moved to an early EVAL by ReplaceAggregateNestedExpressionWithEval
         Map<Categorize, Attribute> groupingAttributes = new HashMap<>();
+        // FIXME: this needs to be extracted in its own rule
         aggregate.forEachExpressionUp(Alias.class, a -> {
             if (a.child() instanceof Categorize groupingFunction) {
                 groupingAttributes.put(groupingFunction, a.toAttribute());
