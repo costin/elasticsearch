@@ -158,7 +158,7 @@ import static org.hamcrest.Matchers.notNullValue;
  * <p>
  * To log the results logResults() should return "true".
  */
-@TestLogging(value = "org.elasticsearch.xpack.esql:TRACE,org.elasticsearch.compute:TRACE", reason = "debug")
+//@TestLogging(value = "org.elasticsearch.xpack.esql:TRACE,org.elasticsearch.compute:TRACE", reason = "debug")
 public class CsvTests extends ESTestCase {
 
     private static final Logger LOGGER = LogManager.getLogger(CsvTests.class);
@@ -324,7 +324,10 @@ public class CsvTests extends ESTestCase {
 
     private void doTest() throws Exception {
         BigArrays bigArrays = new MockBigArrays(PageCacheRecycler.NON_RECYCLING_INSTANCE, ByteSizeValue.ofGb(1)).withCircuitBreaking();
-        var actualResults = executePlan(bigArrays);
+        ActualResults actualResults = executePlan(bigArrays);
+        for (int i = 0; i < 100; i++) {
+            executePlan(bigArrays);
+        }
         try {
             var expected = loadCsvSpecValues(testCase.expectedResults);
 
