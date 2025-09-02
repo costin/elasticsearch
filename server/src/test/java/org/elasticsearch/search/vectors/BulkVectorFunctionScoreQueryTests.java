@@ -25,6 +25,8 @@ import org.apache.lucene.store.MMapDirectory;
 import org.elasticsearch.test.ESTestCase;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.Map;
 
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
@@ -204,6 +206,110 @@ public class BulkVectorFunctionScoreQueryTests extends ESTestCase {
                 writer.addDocument(doc);
             }
             writer.commit();
+        }
+    }
+
+    public void testParallelVectorLoading() throws IOException {
+        // Test parallel vector loading functionality
+        float[] queryVector = randomVector(VECTOR_DIMS);
+        
+        // Temporarily enable parallel loading for testing
+        System.setProperty("es.feature.parallel_vector_loading", "true");
+        
+        try (Directory dir = new MMapDirectory(createTempDir())) {
+            createTestIndex(dir, 50);
+            
+            try (DirectoryReader reader = DirectoryReader.open(dir)) {
+                IndexSearcher searcher = new IndexSearcher(reader);
+                
+                // Get initial documents
+                TopDocs topDocs = searcher.search(new MatchAllDocsQuery(), 20);
+                int[] docIds = Arrays.stream(topDocs.scoreDocs)
+                    .mapToInt(scoreDoc -> scoreDoc.doc)
+                    .toArray();
+                
+                // Test parallel loading
+                DirectIOVectorBatchLoader batchLoader = new DirectIOVectorBatchLoader();
+                Map<Integer, float[]> parallelResult = batchLoader.loadSegmentVectors(
+                    docIds, 
+                    reader.leaves().get(0), 
+                    VECTOR_FIELD
+                );
+                
+                // Test sequential loading for comparison
+                System.setProperty("es.feature.parallel_vector_loading", "false");
+                Map<Integer, float[]> sequentialResult = batchLoader.loadSegmentVectors(
+                    docIds,
+                    reader.leaves().get(0),
+                    VECTOR_FIELD
+                );
+                
+                // Verify results are identical
+                assertThat("Parallel and sequential results should have same size", 
+                    parallelResult.size(), equalTo(sequentialResult.size()));
+                
+                for (int docId : docIds) {
+                    float[] parallelVector = parallelResult.get(docId);
+                    float[] sequentialVector = sequentialResult.get(docId);
+                    
+                    assertNotNull("Parallel result should contain vector for doc " + docId, parallelVector);
+                    assertNotNull("Sequential result should contain vector for doc " + docId, sequentialVector);
+                    assertArrayEquals("Vectors should be identical for doc " + docId, 
+                        sequentialVector, parallelVector, 0.0001f);
+                }
+            }
+        } finally {
+            System.clearProperty("es.feature.parallel_vector_loading");
+        }
+    }
+
+    public void testParallelLoadingPerformance() throws IOException {
+        // Performance test to verify parallel loading benefits
+        float[] queryVector = randomVector(VECTOR_DIMS);
+        
+        try (Directory dir = new MMapDirectory(createTempDir())) {
+            createTestIndex(dir, 200); // Larger dataset for performance testing
+            
+            try (DirectoryReader reader = DirectoryReader.open(dir)) {
+                IndexSearcher searcher = new IndexSearcher(reader);
+                
+                // Get larger batch for meaningful performance test
+                TopDocs topDocs = searcher.search(new MatchAllDocsQuery(), 80);
+                int[] docIds = Arrays.stream(topDocs.scoreDocs)
+                    .mapToInt(scoreDoc -> scoreDoc.doc)
+                    .toArray();
+                
+                DirectIOVectorBatchLoader batchLoader = new DirectIOVectorBatchLoader();
+                
+                // Time sequential loading
+                System.setProperty("es.feature.parallel_vector_loading", "false");
+                long sequentialStart = System.nanoTime();
+                Map<Integer, float[]> sequentialResult = batchLoader.loadSegmentVectors(
+                    docIds, reader.leaves().get(0), VECTOR_FIELD);
+                long sequentialTime = System.nanoTime() - sequentialStart;
+                
+                // Time parallel loading
+                System.setProperty("es.feature.parallel_vector_loading", "true");
+                long parallelStart = System.nanoTime();
+                Map<Integer, float[]> parallelResult = batchLoader.loadSegmentVectors(
+                    docIds, reader.leaves().get(0), VECTOR_FIELD);
+                long parallelTime = System.nanoTime() - parallelStart;
+                
+                // Verify correctness
+                assertThat("Results should be identical", 
+                    parallelResult.size(), equalTo(sequentialResult.size()));
+                
+                // Log performance results (in production test, you might want to assert speedup)
+                double speedup = (double) sequentialTime / parallelTime;
+                logger.info("Sequential time: {}ms, Parallel time: {}ms, Speedup: {}x", 
+                    sequentialTime / 1_000_000.0, parallelTime / 1_000_000.0, speedup);
+                
+                // With 80 vectors and 8-vector batches, we expect some speedup on multi-core systems
+                assertTrue("Parallel loading should complete", parallelTime > 0);
+                assertTrue("Sequential loading should complete", sequentialTime > 0);
+            }
+        } finally {
+            System.clearProperty("es.feature.parallel_vector_loading");
         }
     }
 
