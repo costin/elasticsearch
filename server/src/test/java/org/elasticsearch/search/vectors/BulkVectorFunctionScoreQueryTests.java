@@ -15,6 +15,7 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.VectorSimilarityFunction;
+import org.apache.lucene.queries.function.FunctionScoreQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.KnnFloatVectorQuery;
 import org.apache.lucene.search.MatchAllDocsQuery;
@@ -54,25 +55,25 @@ public class BulkVectorFunctionScoreQueryTests extends ESTestCase {
             try (DirectoryReader reader = DirectoryReader.open(dir)) {
                 IndexSearcher searcher = new IndexSearcher(reader);
 
+                // Get top documents
+                TopDocs topDocs = searcher.search(new MatchAllDocsQuery(), 50);
+
                 // Create query vector and value source
                 float[] queryVector = randomVector(VECTOR_DIMS);
                 var valueSource = new AccessibleVectorSimilarityFloatValueSource(
                     VECTOR_FIELD,
                     queryVector,
-                    VectorSimilarityFunction.COSINE
-                );
-
-                // Get top documents
-                TopDocs topDocs = searcher.search(new MatchAllDocsQuery(), 50);
-
-                // Test bulk vector function score query
-                BulkVectorFunctionScoreQuery bulkQuery = new BulkVectorFunctionScoreQuery(
-                    new KnnScoreDocQuery(topDocs.scoreDocs, reader),
-                    valueSource,
+                    VectorSimilarityFunction.COSINE,
                     topDocs.scoreDocs
                 );
 
-                TopDocs bulkResults = searcher.search(bulkQuery, 10);
+                // Test function score query with bulk-enabled value source
+                FunctionScoreQuery functionQuery = new FunctionScoreQuery(
+                    new KnnScoreDocQuery(topDocs.scoreDocs, reader),
+                    valueSource
+                );
+
+                TopDocs bulkResults = searcher.search(functionQuery, 10);
 
                 // Verify results
                 assertThat("Should return results", bulkResults.totalHits.value(), greaterThan(0L));
@@ -177,7 +178,8 @@ public class BulkVectorFunctionScoreQueryTests extends ESTestCase {
                 var valueSource = new AccessibleVectorSimilarityFloatValueSource(
                     VECTOR_FIELD,
                     queryVector,
-                    VectorSimilarityFunction.COSINE
+                    VectorSimilarityFunction.COSINE,
+                    topDocs.scoreDocs
                 );
                 BulkVectorFunctionScoreQuery query = new BulkVectorFunctionScoreQuery(
                     new KnnScoreDocQuery(originalScoreDocs, reader),

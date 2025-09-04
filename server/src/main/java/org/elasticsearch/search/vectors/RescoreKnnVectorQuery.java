@@ -158,26 +158,18 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
 
         @Override
         public Query rewrite(IndexSearcher searcher) throws IOException {
-            var valueSource = new AccessibleVectorSimilarityFloatValueSource(fieldName, floatTarget, vectorSimilarityFunction);
+            // For inline rescoring, we don't know documents upfront, so no bulk loading
+            var valueSource = new AccessibleVectorSimilarityFloatValueSource(fieldName, floatTarget, vectorSimilarityFunction, null);
 
             // Retrieve top k documents from the function score query
             var functionScoreQuery = new FunctionScoreQuery(innerQuery, valueSource);
-            // Retrieve top k documents from the function score query
             var topDocs = searcher.search(functionScoreQuery, k);
-            return createQuery(searcher, topDocs, valueSource);
+            
+            // Now create a new ValueSource with the actual ScoreDocs for the final query
+            var bulkValueSource = new AccessibleVectorSimilarityFloatValueSource(fieldName, floatTarget, vectorSimilarityFunction, topDocs.scoreDocs);
+            return new FunctionScoreQuery(new KnnScoreDocQuery(topDocs.scoreDocs, searcher.getIndexReader()), bulkValueSource);
         }
 
-        private Query createQuery(IndexSearcher searcher, TopDocs topDocs, AccessibleVectorSimilarityFloatValueSource valueSource) {
-            var topDocsQuery = new KnnScoreDocQuery(topDocs.scoreDocs, searcher.getIndexReader());
-            Query query = topDocsQuery;
-
-            // Use bulk processing if feature flag is enabled
-            if (BulkVectorProcessingSettings.BULK_VECTOR_SCORING) {
-                // Create bulk-optimized query with ScoreDoc array
-                query = new BulkVectorFunctionScoreQuery(topDocsQuery, valueSource, topDocs.scoreDocs);
-            }
-            return query;
-        }
 
         @Override
         public boolean equals(Object o) {
@@ -214,14 +206,11 @@ public abstract class RescoreKnnVectorQuery extends Query implements QueryProfil
             topDocs = searcher.search(innerQuery, rescoreK);
             vectorOperations = topDocs.totalHits.value();
 
-            // Retrieve top `k` documents from the top `rescoreK` query
+            // Retrieve top `k` documents from the top `rescoreK` query with bulk processing
             var topDocsQuery = new KnnScoreDocQuery(topDocs.scoreDocs, searcher.getIndexReader());
-            var valueSource = new AccessibleVectorSimilarityFloatValueSource(fieldName, floatTarget, vectorSimilarityFunction);
-
-            // Use bulk processing if feature flag is enabled
-            var rescoreQuery = BulkVectorProcessingSettings.BULK_VECTOR_SCORING
-                ? new BulkVectorFunctionScoreQuery(topDocsQuery, valueSource, topDocs.scoreDocs)
-                : new FunctionScoreQuery(topDocsQuery, valueSource);
+            var valueSource = new AccessibleVectorSimilarityFloatValueSource(fieldName, floatTarget, vectorSimilarityFunction, topDocs.scoreDocs);
+            
+            var rescoreQuery = new FunctionScoreQuery(topDocsQuery, valueSource);
             var rescoreTopDocs = searcher.search(rescoreQuery.rewrite(searcher), k);
             return new KnnScoreDocQuery(rescoreTopDocs.scoreDocs, searcher.getIndexReader());
 

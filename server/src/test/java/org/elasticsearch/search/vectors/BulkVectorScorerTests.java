@@ -16,10 +16,12 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.VectorSimilarityFunction;
+import org.apache.lucene.queries.function.FunctionScoreQuery;
 import org.apache.lucene.search.BulkScorer;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.LeafCollector;
 import org.apache.lucene.search.MatchAllDocsQuery;
+import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.Scorable;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.Weight;
@@ -56,7 +58,8 @@ public class BulkVectorScorerTests extends ESTestCase {
                 var valueSource = new AccessibleVectorSimilarityFloatValueSource(
                     VECTOR_FIELD,
                     queryVector,
-                    VectorSimilarityFunction.COSINE
+                    VectorSimilarityFunction.COSINE,
+                    topDocs.scoreDocs
                 );
 
                 BulkVectorFunctionScoreQuery bulkQuery = new BulkVectorFunctionScoreQuery(
@@ -103,31 +106,27 @@ public class BulkVectorScorerTests extends ESTestCase {
                 var valueSource = new AccessibleVectorSimilarityFloatValueSource(
                     VECTOR_FIELD,
                     queryVector,
-                    VectorSimilarityFunction.DOT_PRODUCT
-                );
-
-                BulkVectorFunctionScoreQuery bulkQuery = new BulkVectorFunctionScoreQuery(
-                    new KnnScoreDocQuery(topDocs.scoreDocs, reader),
-                    valueSource,
+                    VectorSimilarityFunction.DOT_PRODUCT,
                     topDocs.scoreDocs
                 );
 
-                // Execute with custom collector to verify interception
-                TestCollector collector = new TestCollector();
+                // Create FunctionScoreQuery with bulk-enabled ValueSource
+                FunctionScoreQuery functionQuery = new FunctionScoreQuery(
+                    new KnnScoreDocQuery(topDocs.scoreDocs, reader),
+                    valueSource
+                );
 
-                Weight weight = bulkQuery.createWeight(searcher, org.apache.lucene.search.ScoreMode.COMPLETE, 1.0f);
-                LeafReaderContext leafContext = reader.leaves().get(0);
-                BulkScorer bulkScorer = weight.scorerSupplier(leafContext).bulkScorer();
+                // Execute query and verify results
+                TopDocs results = searcher.search(functionQuery, 15);
 
-                bulkScorer.score(collector, null, 0, 50);
+                // Verify we got results with bulk processing
+                assertTrue("Should have received documents", results.scoreDocs.length > 0);
+                assertThat("Should return same number of documents", results.scoreDocs.length, equalTo(topDocs.scoreDocs.length));
 
-                // Verify collector received bulk-processed scores
-                assertTrue("Collector should have received documents", collector.collectedDocs.size() > 0);
-
-                for (CollectedDoc doc : collector.collectedDocs) {
-                    assertTrue("All scores should be finite", Float.isFinite(doc.score));
+                for (ScoreDoc scoreDoc : results.scoreDocs) {
+                    assertTrue("All scores should be finite", Float.isFinite(scoreDoc.score));
                     // For DOT_PRODUCT, scores can be negative, so just check they're computed
-                    assertNotEquals("Score should not be exactly zero (indicating computation)", 0.0f, doc.score, 0.001f);
+                    assertNotEquals("Score should not be exactly zero (indicating computation)", 0.0f, scoreDoc.score, 0.001f);
                 }
             }
         } finally {
