@@ -87,7 +87,7 @@ public class BulkVectorFunctionScoreWeight extends Weight {
                 // Compute explanation for this specific document
                 try {
                     DirectIOVectorBatchLoader batchLoader = new DirectIOVectorBatchLoader();
-                    float[] docVector = batchLoader.loadSingleVector(doc, context, valueSource.field());
+                    float[] docVector = batchLoader.loadSingleVector(doc, () -> context.reader().getFloatVectorValues(valueSource.field()));
                     float similarity = valueSource.similarityFunction().compare(valueSource.target(), docVector);
 
                     return Explanation.match(

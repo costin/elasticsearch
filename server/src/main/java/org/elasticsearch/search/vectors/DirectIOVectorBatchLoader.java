@@ -11,8 +11,8 @@ package org.elasticsearch.search.vectors;
 
 import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.KnnVectorValues;
-import org.apache.lucene.index.LeafReaderContext;
 import org.elasticsearch.ExceptionsHelper;
+import org.elasticsearch.common.CheckedSupplier;
 import org.elasticsearch.common.util.Maps;
 
 import java.io.IOException;
@@ -30,19 +30,26 @@ import java.util.concurrent.Executors;
  */
 public class DirectIOVectorBatchLoader {
 
-    private static final int BATCH_PER_THREAD = 8;
+    private static final int BATCH_PER_THREAD = 4;
     // TODO: hook into a dedicated thread pool or at least name the virtual threads
     private Executor vtExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
-    public Map<Integer, float[]> loadSegmentVectors(int[] docIds, LeafReaderContext context, String field) throws IOException {
-        return loadSegmentVectorsParallel(docIds, context, field);
+    public Map<Integer, float[]> loadSegmentVectors(int[] docIds, CheckedSupplier<FloatVectorValues, IOException> vectorValuesSupplier)
+        throws IOException {
+
+        if (docIds.length >= BulkVectorProcessingSettings.MIN_BULK_PROCESSING_THRESHOLD) {
+            return loadSegmentVectorsParallel(docIds, vectorValuesSupplier);
+        } else {
+            return loadSegmentVectorsSerial(docIds, vectorValuesSupplier);
+        }
     }
 
-    private Map<Integer, float[]> loadSegmentVectorsParallel(int[] docIds, LeafReaderContext context, String field) throws IOException {
-        FloatVectorValues vectorValues = context.reader().getFloatVectorValues(field);
-        if (vectorValues == null) {
-            throw new IllegalArgumentException("No float vector values found for field: " + field);
-        }
+    @SuppressWarnings("rawtypes")
+    protected Map<Integer, float[]> loadSegmentVectorsParallel(
+        int[] docIds,
+        CheckedSupplier<FloatVectorValues, IOException> vectorValuesSupplier
+    ) throws IOException {
+        FloatVectorValues vectorValues = vectorValuesSupplier.get();
 
         Map<Integer, Integer> docToOrdinal = buildDocToOrdinalMapping(vectorValues, docIds);
         List<List<Integer>> batches = createBatches(new ArrayList<>(docToOrdinal.keySet()), BATCH_PER_THREAD);
@@ -51,24 +58,53 @@ public class DirectIOVectorBatchLoader {
         for (List<Integer> batch : batches) {
             futures.add(CompletableFuture.supplyAsync(() -> {
                 try {
-                    return loadVectorBatch(vectorValues, batch, docToOrdinal);
+                    FloatVectorValues vv = vectorValuesSupplier.get();
+                    return loadVectorBatch(vv, batch, docToOrdinal);
                 } catch (IOException e) {
                     throw new RuntimeException("Failed to load vector batch", e);
                 }
             }, vtExecutor));
         }
 
+        CompletableFuture<Void> allComplete = CompletableFuture.allOf(
+            futures.toArray(new CompletableFuture[0])
+        );
+
+
         Map<Integer, float[]> combinedResult = new HashMap<>();
         try {
+            allComplete.get();
             for (CompletableFuture<Map<Integer, float[]>> future : futures) {
                 var results = future.get();
                 combinedResult.putAll(results);
             }
         } catch (Exception e) {
-            ExceptionsHelper.convertToElastic(e);
+            throw ExceptionsHelper.convertToElastic(e);
         }
 
         return combinedResult;
+    }
+
+    protected Map<Integer, float[]> loadSegmentVectorsSerial(
+        int[] docIds,
+        CheckedSupplier<FloatVectorValues, IOException> vectorValuesSupplier
+    ) throws IOException {
+        FloatVectorValues vectorValues = vectorValuesSupplier.get();
+
+        Map<Integer, Integer> docToOrdinal = buildDocToOrdinalMapping(vectorValues, docIds);
+        Map<Integer, float[]> result = new HashMap<>();
+
+        // Load vectors sequentially
+        for (int docId : docIds) {
+            Integer ordinal = docToOrdinal.get(docId);
+            if (ordinal != null) {
+                // clone the vector since the reader reuses the array
+                float[] vector = vectorValues.vectorValue(ordinal).clone();
+                result.put(docId, vector);
+            }
+        }
+
+        return result;
     }
 
     private Map<Integer, float[]> loadVectorBatch(
@@ -117,11 +153,8 @@ public class DirectIOVectorBatchLoader {
     /**
      * TODO: look into removing this method
      */
-    public float[] loadSingleVector(int docId, LeafReaderContext context, String field) throws IOException {
-        FloatVectorValues vectorValues = context.reader().getFloatVectorValues(field);
-        if (vectorValues == null) {
-            throw new IllegalArgumentException("No float vector values found for field: " + field);
-        }
+    public float[] loadSingleVector(int docId, CheckedSupplier<FloatVectorValues, IOException> vectorValuesSupplier) throws IOException {
+        FloatVectorValues vectorValues = vectorValuesSupplier.get();
 
         KnnVectorValues.DocIndexIterator iterator = vectorValues.iterator();
         var next = iterator.advance(docId);

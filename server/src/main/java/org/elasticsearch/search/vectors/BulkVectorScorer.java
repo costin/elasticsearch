@@ -9,11 +9,13 @@
 
 package org.elasticsearch.search.vectors;
 
+import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.BulkScorer;
 import org.apache.lucene.search.LeafCollector;
 import org.apache.lucene.search.Scorable;
 import org.apache.lucene.util.Bits;
+import org.elasticsearch.common.CheckedSupplier;
 
 import java.io.IOException;
 import java.util.Map;
@@ -64,7 +66,9 @@ public class BulkVectorScorer extends BulkScorer {
     private void performBulkVectorProcessing() throws IOException {
         // batch loading
         DirectIOVectorBatchLoader batchLoader = new DirectIOVectorBatchLoader();
-        Map<Integer, float[]> vectorCache = batchLoader.loadSegmentVectors(segmentDocIds, context, valueSource.field());
+        CheckedSupplier<FloatVectorValues, IOException> vectorValuesSupplier = () -> context.reader()
+            .getFloatVectorValues(valueSource.field());
+        Map<Integer, float[]> vectorCache = batchLoader.loadSegmentVectors(segmentDocIds, vectorValuesSupplier);
 
         // batch similarity
         float[] similarities = BatchVectorSimilarity.computeBatchSimilarity(
