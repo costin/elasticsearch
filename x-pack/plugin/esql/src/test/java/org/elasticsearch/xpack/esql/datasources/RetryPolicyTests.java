@@ -62,6 +62,19 @@ public class RetryPolicyTests extends ESTestCase {
         assertTrue(policy.isRetryable(new IOException("Reduce your request rate")));
     }
 
+    public void testHttp500IsRetryable() {
+        RetryPolicy policy = RetryPolicy.DEFAULT;
+        assertTrue(policy.isRetryable(new IOException("Status code: 500")));
+        assertTrue(policy.isRetryable(new IOException("Internal Server Error")));
+        assertTrue(policy.isRetryable(new IOException("InternalError")));
+    }
+
+    public void testWrappedHttp500IsRetryable() {
+        RetryPolicy policy = RetryPolicy.DEFAULT;
+        assertTrue(policy.isRetryable(new RuntimeException("wrapper", new IOException("500 Internal Server Error"))));
+        assertTrue(policy.isRetryable(new IOException("outer", new IOException("InternalError"))));
+    }
+
     public void testNonTransientErrorIsNotRetryable() {
         RetryPolicy policy = RetryPolicy.DEFAULT;
         assertFalse(policy.isRetryable(new IOException("Access Denied")));

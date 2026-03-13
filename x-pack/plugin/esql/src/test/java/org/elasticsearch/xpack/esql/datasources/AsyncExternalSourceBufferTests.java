@@ -292,4 +292,65 @@ public class AsyncExternalSourceBufferTests extends ESTestCase {
         assertNotNull("Completion listener should receive failure", failureRef.get());
         assertEquals("test failure", failureRef.get().getCause().getMessage());
     }
+
+    public void testPageCountBackpressure() {
+        int maxSize = 3;
+        AsyncExternalSourceBuffer buffer = new AsyncExternalSourceBuffer(maxSize);
+
+        buffer.addPage(createTestPage());
+        buffer.addPage(createTestPage());
+        buffer.addPage(createTestPage());
+        assertEquals(3, buffer.size());
+
+        SubscribableListener<Void> spaceListener = buffer.waitForSpace();
+        assertFalse("Should be blocked when buffer is at max size", spaceListener.isDone());
+
+        Page polled = buffer.pollPage();
+        polled.releaseBlocks();
+        assertEquals(2, buffer.size());
+
+        assertTrue("Should be unblocked after polling a page", spaceListener.isDone());
+
+        buffer.finish(true);
+    }
+
+    public void testPageCountResetOnDrain() {
+        AsyncExternalSourceBuffer buffer = new AsyncExternalSourceBuffer(10);
+
+        buffer.addPage(createTestPage());
+        buffer.addPage(createTestPage());
+        assertEquals(2, buffer.size());
+
+        buffer.finish(true);
+        assertEquals("Size should be zero after drain", 0, buffer.size());
+    }
+
+    public void testMultiplePagesAddAndPoll() {
+        int maxSize = 5;
+        AsyncExternalSourceBuffer buffer = new AsyncExternalSourceBuffer(maxSize);
+
+        for (int i = 0; i < maxSize; i++) {
+            buffer.addPage(createTestPage());
+        }
+        assertEquals(maxSize, buffer.size());
+
+        for (int i = 0; i < maxSize; i++) {
+            Page page = buffer.pollPage();
+            assertNotNull("Page " + i + " should not be null", page);
+            page.releaseBlocks();
+        }
+        assertEquals(0, buffer.size());
+        assertNull(buffer.pollPage());
+    }
+
+    public void testWaitForSpaceUnblocksOnFinish() {
+        AsyncExternalSourceBuffer buffer = new AsyncExternalSourceBuffer(1);
+        buffer.addPage(createTestPage());
+
+        SubscribableListener<Void> spaceListener = buffer.waitForSpace();
+        assertFalse("Should be blocked when buffer is full", spaceListener.isDone());
+
+        buffer.finish(true);
+        assertTrue("Should be unblocked after finish", spaceListener.isDone());
+    }
 }

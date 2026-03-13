@@ -132,6 +132,60 @@ public class FaultInjectionRetryTests extends ESTestCase {
         assertEquals(1, calls.get());
     }
 
+    public void testHttp500TransientFaultsRecover() throws IOException {
+        int faultCount = between(1, 2);
+        RetryPolicy policy = new RetryPolicy(3, 1, 10);
+        AtomicInteger calls = new AtomicInteger();
+        StoragePath path = StoragePath.of("s3://bucket/data.parquet");
+
+        String result = policy.execute(() -> {
+            if (calls.incrementAndGet() <= faultCount) {
+                throw new IOException("500 Internal Server Error");
+            }
+            return "data";
+        }, "GET_OBJECT", path);
+
+        assertEquals("data", result);
+        assertEquals(faultCount + 1, calls.get());
+    }
+
+    public void testHttp500PersistentFaultsExhaustBudget() {
+        RetryPolicy policy = new RetryPolicy(3, 1, 10);
+        AtomicInteger calls = new AtomicInteger();
+        StoragePath path = StoragePath.of("s3://bucket/data.parquet");
+
+        IOException ex = expectThrows(IOException.class, () -> policy.execute(() -> {
+            calls.incrementAndGet();
+            throw new IOException("InternalError");
+        }, "GET_OBJECT", path));
+
+        assertTrue(ex.getMessage().contains("InternalError"));
+        assertEquals(4, calls.get());
+    }
+
+    public void testMixedFaultTypesRecover() throws IOException {
+        RetryPolicy policy = new RetryPolicy(4, 1, 10);
+        AtomicInteger calls = new AtomicInteger();
+        StoragePath path = StoragePath.of("s3://bucket/data.parquet");
+
+        String result = policy.execute(() -> {
+            int call = calls.incrementAndGet();
+            if (call == 1) {
+                throw new IOException("500 Internal Server Error");
+            }
+            if (call == 2) {
+                throw new IOException("503 Service Unavailable");
+            }
+            if (call == 3) {
+                throw new SocketTimeoutException("Read timed out");
+            }
+            return "recovered";
+        }, "GET_OBJECT", path);
+
+        assertEquals("recovered", result);
+        assertEquals(4, calls.get());
+    }
+
     public void testRetryPolicyWithZeroRetriesNeverRetries() {
         RetryPolicy policy = RetryPolicy.NONE;
         AtomicInteger calls = new AtomicInteger();

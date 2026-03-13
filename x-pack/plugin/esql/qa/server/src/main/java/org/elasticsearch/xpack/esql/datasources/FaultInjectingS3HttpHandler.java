@@ -22,8 +22,8 @@ import java.util.function.Predicate;
 
 /**
  * HTTP handler wrapper that injects configurable faults into S3 requests.
- * Supports HTTP 503, HTTP 500, and connection reset fault types with
- * countdown-based auto-clearing and path-based filtering.
+ * Supports HTTP 503, HTTP 500, connection reset, slow response, and truncated
+ * response fault types with countdown-based auto-clearing and path-based filtering.
  */
 @SuppressForbidden(reason = "uses HttpServer to emulate a faulty S3 endpoint")
 public class FaultInjectingS3HttpHandler implements HttpHandler {
@@ -41,11 +41,25 @@ public class FaultInjectingS3HttpHandler implements HttpHandler {
     }
 
     public void setFault(FaultType type, int count) {
-        setFault(type, count, path -> true);
+        setFault(type, count, path -> true, 0);
     }
 
     public void setFault(FaultType type, int count, Predicate<String> pathFilter) {
-        this.activeFault = new FaultConfig(type, new AtomicInteger(count), pathFilter);
+        setFault(type, count, pathFilter, 0);
+    }
+
+    /**
+     * Sets a fault with a delay parameter, used by {@link FaultType#SLOW_RESPONSE}.
+     */
+    public void setFault(FaultType type, int count, long delayMs) {
+        setFault(type, count, path -> true, delayMs);
+    }
+
+    public void setFault(FaultType type, int count, Predicate<String> pathFilter, long delayMs) {
+        if (type == FaultType.SLOW_RESPONSE && delayMs < 0) {
+            throw new IllegalArgumentException("delayMs must be >= 0 for SLOW_RESPONSE");
+        }
+        this.activeFault = new FaultConfig(type, new AtomicInteger(count), pathFilter, delayMs);
     }
 
     public void clearFault() {
@@ -64,19 +78,34 @@ public class FaultInjectingS3HttpHandler implements HttpHandler {
             String path = exchange.getRequestURI().getPath();
             if (fault.pathFilter.test(path) && fault.remaining.decrementAndGet() >= 0) {
                 logger.debug("injecting fault [{}] for path [{}], remaining [{}]", fault.type, path, fault.remaining.get());
-                injectFault(exchange, fault.type);
+                injectFault(exchange, fault);
                 return;
             }
         }
         delegate.handle(exchange);
     }
 
-    private static void injectFault(HttpExchange exchange, FaultType type) throws IOException {
-        switch (type) {
+    private void injectFault(HttpExchange exchange, FaultConfig fault) throws IOException {
+        switch (fault.type) {
             case HTTP_503 -> sendErrorResponse(exchange, 503, "Service Unavailable", "SlowDown", "Reduce your request rate");
             case HTTP_500 -> sendErrorResponse(exchange, 500, "Internal Server Error", "InternalError", "Internal server error");
-            case CONNECTION_RESET -> {
-                exchange.close();
+            case CONNECTION_RESET -> exchange.close();
+            case SLOW_RESPONSE -> {
+                try {
+                    Thread.sleep(fault.delayMs);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                delegate.handle(exchange);
+            }
+            case TRUNCATED_RESPONSE -> {
+                byte[] fullBody = "This is a complete response body that will be truncated".getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
+                exchange.sendResponseHeaders(200, fullBody.length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(fullBody, 0, fullBody.length / 3);
+                    os.flush();
+                }
             }
         }
     }
@@ -100,8 +129,12 @@ public class FaultInjectingS3HttpHandler implements HttpHandler {
     public enum FaultType {
         HTTP_503,
         HTTP_500,
-        CONNECTION_RESET
+        CONNECTION_RESET,
+        /** Delays the response by a configurable duration before forwarding to the delegate. */
+        SLOW_RESPONSE,
+        /** Sends a 200 with Content-Length but closes the connection after writing a partial body. */
+        TRUNCATED_RESPONSE
     }
 
-    private record FaultConfig(FaultType type, AtomicInteger remaining, Predicate<String> pathFilter) {}
+    private record FaultConfig(FaultType type, AtomicInteger remaining, Predicate<String> pathFilter, long delayMs) {}
 }

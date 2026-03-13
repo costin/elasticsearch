@@ -19,8 +19,8 @@ import java.net.SocketTimeoutException;
 
 /**
  * Retry policy with exponential backoff and jitter for transient storage failures.
- * Recognizes HTTP 429 (Too Many Requests), 503 (Service Unavailable), connection
- * resets, and socket timeouts as retryable.
+ * Recognizes HTTP 429 (Too Many Requests), 500 (Internal Server Error),
+ * 503 (Service Unavailable), connection resets, and socket timeouts as retryable.
  */
 class RetryPolicy {
 
@@ -119,6 +119,9 @@ class RetryPolicy {
             return false;
         }
         if (message.contains("429") || message.contains("Too Many Requests")) {
+            return true;
+        }
+        if (message.contains("500") || message.contains("Internal Server Error") || message.contains("InternalError")) {
             return true;
         }
         if (message.contains("503") || message.contains("Service Unavailable")) {
