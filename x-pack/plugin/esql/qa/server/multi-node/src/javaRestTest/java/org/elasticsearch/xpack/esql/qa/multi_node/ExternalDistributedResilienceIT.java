@@ -10,7 +10,7 @@ package org.elasticsearch.xpack.esql.qa.multi_node;
 import com.carrotsearch.randomizedtesting.annotations.ThreadLeakFilters;
 
 import org.elasticsearch.client.ResponseException;
-import org.elasticsearch.common.logging.LoggerMessageFormat;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.core.SuppressForbidden;
 import org.elasticsearch.test.TestClustersThreadFilter;
 import org.elasticsearch.xpack.esql.datasources.FaultInjectingS3HttpHandler;
@@ -53,8 +53,8 @@ public class ExternalDistributedResilienceIT extends AbstractExternalDistributed
             Map<String, Object> result = runQueryWithMode(employeesQuery(), mode);
             @SuppressWarnings("unchecked")
             List<List<Object>> values = (List<List<Object>>) result.get("values");
-            assertNotNull(LoggerMessageFormat.format("Expected values in result for mode {}", mode), values);
-            assertFalse(LoggerMessageFormat.format("Expected non-empty results for mode {}", mode), values.isEmpty());
+            assertNotNull(Strings.format("Expected values in result for mode %s", mode), values);
+            assertFalse(Strings.format("Expected non-empty results for mode %s", mode), values.isEmpty());
         }
     }
 
@@ -67,13 +67,9 @@ public class ExternalDistributedResilienceIT extends AbstractExternalDistributed
             Map<String, Object> result = runQueryWithMode(employeesQuery(), mode);
             @SuppressWarnings("unchecked")
             List<List<Object>> values = (List<List<Object>>) result.get("values");
-            assertNotNull(LoggerMessageFormat.format("Expected values after 503 recovery for mode {}", mode), values);
-            assertFalse(LoggerMessageFormat.format("Expected non-empty results after 503 recovery for mode {}", mode), values.isEmpty());
-            assertEquals(
-                LoggerMessageFormat.format("All faults should have been consumed for mode {}", mode),
-                0,
-                faultHandler().remainingFaults()
-            );
+            assertNotNull(Strings.format("Expected values after 503 recovery for mode %s", mode), values);
+            assertFalse(Strings.format("Expected non-empty results after 503 recovery for mode %s", mode), values.isEmpty());
+            assertEquals(Strings.format("All faults should have been consumed for mode %s", mode), 0, faultHandler().remainingFaults());
         }
     }
 
@@ -86,13 +82,9 @@ public class ExternalDistributedResilienceIT extends AbstractExternalDistributed
             Map<String, Object> result = runQueryWithMode(employeesQuery(), mode);
             @SuppressWarnings("unchecked")
             List<List<Object>> values = (List<List<Object>>) result.get("values");
-            assertNotNull(LoggerMessageFormat.format("Expected values after 500 recovery for mode {}", mode), values);
-            assertFalse(LoggerMessageFormat.format("Expected non-empty results after 500 recovery for mode {}", mode), values.isEmpty());
-            assertEquals(
-                LoggerMessageFormat.format("All faults should have been consumed for mode {}", mode),
-                0,
-                faultHandler().remainingFaults()
-            );
+            assertNotNull(Strings.format("Expected values after 500 recovery for mode %s", mode), values);
+            assertFalse(Strings.format("Expected non-empty results after 500 recovery for mode %s", mode), values.isEmpty());
+            assertEquals(Strings.format("All faults should have been consumed for mode %s", mode), 0, faultHandler().remainingFaults());
         }
     }
 
@@ -105,16 +97,9 @@ public class ExternalDistributedResilienceIT extends AbstractExternalDistributed
             Map<String, Object> result = runQueryWithMode(employeesQuery(), mode);
             @SuppressWarnings("unchecked")
             List<List<Object>> values = (List<List<Object>>) result.get("values");
-            assertNotNull(LoggerMessageFormat.format("Expected values after connection reset recovery for mode {}", mode), values);
-            assertFalse(
-                LoggerMessageFormat.format("Expected non-empty results after connection reset recovery for mode {}", mode),
-                values.isEmpty()
-            );
-            assertEquals(
-                LoggerMessageFormat.format("All faults should have been consumed for mode {}", mode),
-                0,
-                faultHandler().remainingFaults()
-            );
+            assertNotNull(Strings.format("Expected values after connection reset recovery for mode %s", mode), values);
+            assertFalse(Strings.format("Expected non-empty results after connection reset recovery for mode %s", mode), values.isEmpty());
+            assertEquals(Strings.format("All faults should have been consumed for mode %s", mode), 0, faultHandler().remainingFaults());
         }
     }
 
@@ -127,7 +112,7 @@ public class ExternalDistributedResilienceIT extends AbstractExternalDistributed
             ResponseException ex = expectThrows(ResponseException.class, () -> runQueryWithMode(employeesQuery(), mode));
             String responseBody = new String(ex.getResponse().getEntity().getContent().readAllBytes(), StandardCharsets.UTF_8);
             assertTrue(
-                LoggerMessageFormat.format("Expected storage error in response for mode {}, got: {}", mode, responseBody),
+                Strings.format("Expected storage error in response for mode %s, got: %s", mode, responseBody),
                 responseBody.contains("503")
                     || responseBody.contains("Service Unavailable")
                     || responseBody.contains("SlowDown")
@@ -148,8 +133,8 @@ public class ExternalDistributedResilienceIT extends AbstractExternalDistributed
             Map<String, Object> result = runQueryWithMode(employeesQuery(), mode);
             @SuppressWarnings("unchecked")
             List<List<Object>> values = (List<List<Object>>) result.get("values");
-            assertNotNull(LoggerMessageFormat.format("Expected values after path-filtered fault recovery for mode {}", mode), values);
-            assertFalse(LoggerMessageFormat.format("Expected non-empty results for mode {}", mode), values.isEmpty());
+            assertNotNull(Strings.format("Expected values after path-filtered fault recovery for mode %s", mode), values);
+            assertFalse(Strings.format("Expected non-empty results for mode %s", mode), values.isEmpty());
         }
     }
 }

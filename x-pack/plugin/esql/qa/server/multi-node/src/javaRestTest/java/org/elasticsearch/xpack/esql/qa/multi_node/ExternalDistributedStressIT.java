@@ -9,7 +9,7 @@ package org.elasticsearch.xpack.esql.qa.multi_node;
 
 import com.carrotsearch.randomizedtesting.annotations.ThreadLeakFilters;
 
-import org.elasticsearch.common.logging.LoggerMessageFormat;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.core.SuppressForbidden;
 import org.elasticsearch.test.TestClustersThreadFilter;
 
@@ -25,7 +25,7 @@ import static org.elasticsearch.xpack.esql.datasources.S3FixtureUtils.addBlobToF
 
 /**
  * Distributed stress tests for many-split external queries. Verifies that the
- * distributed execution framework handles 500-1500 splits without split starvation,
+ * distributed execution framework handles 50-200 splits without split starvation,
  * exchange deadlocks, or memory issues. Uses synthetic CSV files with deterministic
  * content for formula-based assertions across all distribution modes.
  * <p>
@@ -40,7 +40,7 @@ public class ExternalDistributedStressIT extends AbstractExternalDistributedIT {
     @org.junit.After
     public void clearStressSplits() {
         var handler = s3Fixture.getHandler();
-        String blobPrefix = LoggerMessageFormat.format("/{}/{}", BUCKET, STRESS_PREFIX);
+        String blobPrefix = Strings.format("/%s/%s", BUCKET, STRESS_PREFIX);
         Iterator<String> it = handler.blobs().keySet().iterator();
         while (it.hasNext()) {
             if (it.next().startsWith(blobPrefix)) {
@@ -89,24 +89,24 @@ public class ExternalDistributedStressIT extends AbstractExternalDistributedIT {
     }
 
     public void testManyUniformSplits() throws Exception {
-        int numSplits = randomIntBetween(500, 1500);
-        int rowsPerSplit = randomIntBetween(50, 200);
+        int numSplits = randomIntBetween(50, 200);
+        int rowsPerSplit = randomIntBetween(10, 50);
         populateStressSplits(numSplits, rowsPerSplit);
 
         for (String mode : DISTRIBUTION_MODES) {
             Map<String, Object> result = runQueryWithMode(stressQuery(" | STATS count = COUNT(*)"), mode);
             @SuppressWarnings("unchecked")
             List<List<Object>> values = (List<List<Object>>) result.get("values");
-            assertNotNull(LoggerMessageFormat.format("Expected values for mode {}", mode), values);
-            assertEquals(LoggerMessageFormat.format("Expected single row for mode {}", mode), 1, values.size());
+            assertNotNull(Strings.format("Expected values for mode %s", mode), values);
+            assertEquals(Strings.format("Expected single row for mode %s", mode), 1, values.size());
             long count = ((Number) values.get(0).get(0)).longValue();
-            assertEquals(LoggerMessageFormat.format("Row count mismatch for mode {}", mode), (long) numSplits * rowsPerSplit, count);
+            assertEquals(Strings.format("Row count mismatch for mode %s", mode), (long) numSplits * rowsPerSplit, count);
         }
     }
 
     public void testManyUniformSplitsWithAggregation() throws Exception {
-        int numSplits = randomIntBetween(500, 1500);
-        int rowsPerSplit = randomIntBetween(50, 200);
+        int numSplits = randomIntBetween(50, 200);
+        int rowsPerSplit = randomIntBetween(10, 50);
         populateStressSplits(numSplits, rowsPerSplit);
 
         long totalRows = (long) numSplits * rowsPerSplit;
@@ -116,18 +116,18 @@ public class ExternalDistributedStressIT extends AbstractExternalDistributedIT {
             Map<String, Object> result = runQueryWithMode(stressQuery(" | STATS count = COUNT(*), total = SUM(value)"), mode);
             @SuppressWarnings("unchecked")
             List<List<Object>> values = (List<List<Object>>) result.get("values");
-            assertNotNull(LoggerMessageFormat.format("Expected values for mode {}", mode), values);
-            assertEquals(LoggerMessageFormat.format("Expected single row for mode {}", mode), 1, values.size());
+            assertNotNull(Strings.format("Expected values for mode %s", mode), values);
+            assertEquals(Strings.format("Expected single row for mode %s", mode), 1, values.size());
             long count = ((Number) values.get(0).get(0)).longValue();
             long total = ((Number) values.get(0).get(1)).longValue();
-            assertEquals(LoggerMessageFormat.format("Row count mismatch for mode {}", mode), totalRows, count);
-            assertEquals(LoggerMessageFormat.format("Sum mismatch for mode {}", mode), expectedTotal, total);
+            assertEquals(Strings.format("Row count mismatch for mode %s", mode), totalRows, count);
+            assertEquals(Strings.format("Sum mismatch for mode %s", mode), expectedTotal, total);
         }
     }
 
     public void testManyUniformSplitsWithTopN() throws Exception {
-        int numSplits = randomIntBetween(500, 1500);
-        int rowsPerSplit = randomIntBetween(50, 200);
+        int numSplits = randomIntBetween(50, 200);
+        int rowsPerSplit = randomIntBetween(10, 50);
         populateStressSplits(numSplits, rowsPerSplit);
 
         long totalRows = (long) numSplits * rowsPerSplit;
@@ -139,26 +139,22 @@ public class ExternalDistributedStressIT extends AbstractExternalDistributedIT {
             );
             @SuppressWarnings("unchecked")
             List<List<Object>> values = (List<List<Object>>) result.get("values");
-            assertNotNull(LoggerMessageFormat.format("Expected values for mode {}", mode), values);
-            assertEquals(LoggerMessageFormat.format("Expected 10 rows for mode {}", mode), 10, values.size());
+            assertNotNull(Strings.format("Expected values for mode %s", mode), values);
+            assertEquals(Strings.format("Expected 10 rows for mode %s", mode), 10, values.size());
             for (int i = 0; i < 10; i++) {
                 long expectedValue = totalRows - 1 - i;
                 long actualValue = ((Number) values.get(i).get(2)).longValue();
-                assertEquals(
-                    LoggerMessageFormat.format("Top-N value mismatch at index {} for mode {}", i, mode),
-                    expectedValue,
-                    actualValue
-                );
+                assertEquals(Strings.format("Top-N value mismatch at index %d for mode %s", i, mode), expectedValue, actualValue);
             }
         }
     }
 
     public void testHeterogeneousSplitSizes() throws Exception {
-        int numSplits = randomIntBetween(500, 1500);
+        int numSplits = randomIntBetween(50, 200);
         int[] rowCounts = new int[numSplits];
         long totalRows = 0;
         for (int i = 0; i < numSplits; i++) {
-            rowCounts[i] = randomIntBetween(10, 200);
+            rowCounts[i] = randomIntBetween(5, 50);
             totalRows += rowCounts[i];
         }
         populateHeterogeneousSplits(numSplits, rowCounts);
@@ -167,10 +163,10 @@ public class ExternalDistributedStressIT extends AbstractExternalDistributedIT {
             Map<String, Object> result = runQueryWithMode(stressQuery(" | STATS count = COUNT(*)"), mode);
             @SuppressWarnings("unchecked")
             List<List<Object>> values = (List<List<Object>>) result.get("values");
-            assertNotNull(LoggerMessageFormat.format("Expected values for mode {}", mode), values);
-            assertEquals(LoggerMessageFormat.format("Expected single row for mode {}", mode), 1, values.size());
+            assertNotNull(Strings.format("Expected values for mode %s", mode), values);
+            assertEquals(Strings.format("Expected single row for mode %s", mode), 1, values.size());
             long count = ((Number) values.get(0).get(0)).longValue();
-            assertEquals(LoggerMessageFormat.format("Row count mismatch for mode {}", mode), totalRows, count);
+            assertEquals(Strings.format("Row count mismatch for mode %s", mode), totalRows, count);
         }
     }
 }

@@ -7,7 +7,7 @@
 
 package org.elasticsearch.xpack.esql.qa.multi_node;
 
-import org.elasticsearch.common.logging.LoggerMessageFormat;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.test.cluster.ElasticsearchCluster;
 import org.elasticsearch.test.rest.ESRestTestCase;
@@ -64,8 +64,9 @@ public abstract class AbstractExternalDistributedIT extends ESRestTestCase {
      * in-memory S3 fixture.
      */
     protected String externalS3Query(String s3Path) {
-        return LoggerMessageFormat.format(
-            "EXTERNAL \"s3://{}/{}\" WITH { \"endpoint\": \"{}\", \"access_key\": \"{}\", \"secret_key\": \"{}\" }",
+        return Strings.format(
+            """
+                EXTERNAL "s3://%s/%s" WITH { "endpoint": "%s", "access_key": "%s", "secret_key": "%s" }""",
             BUCKET,
             s3Path,
             s3Fixture.getAddress(),
