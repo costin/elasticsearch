@@ -64,8 +64,8 @@ import org.elasticsearch.xpack.esql.datasources.FileSplit;
 import org.elasticsearch.xpack.esql.datasources.OperatorFactoryRegistry;
 import org.elasticsearch.xpack.esql.datasources.spi.ExternalSplit;
 import org.elasticsearch.xpack.esql.datasources.spi.FormatReader;
-import org.elasticsearch.xpack.esql.datasources.spi.SourceOperatorFactoryProvider;
 import org.elasticsearch.xpack.esql.datasources.spi.SourceOperatorContext;
+import org.elasticsearch.xpack.esql.datasources.spi.SourceOperatorFactoryProvider;
 import org.elasticsearch.xpack.esql.datasources.spi.StoragePath;
 import org.elasticsearch.xpack.esql.expression.Order;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Count;
@@ -286,18 +286,10 @@ public class LocalExecutionPlannerTests extends MapperServiceTestCase {
                 }
             };
         };
-        OperatorFactoryRegistry operatorFactoryRegistry = new OperatorFactoryRegistry(
-            Map.of(),
-            Map.of("file", provider),
-            Runnable::run
-        );
+        OperatorFactoryRegistry operatorFactoryRegistry = new OperatorFactoryRegistry(Map.of(), Map.of("file", provider), Runnable::run);
 
         List<Attribute> attrs = List.of(
-            new FieldAttribute(
-                Source.EMPTY,
-                "a",
-                new EsField("a", DataType.INTEGER, Map.of(), true, EsField.TimeSeriesFieldType.NONE)
-            )
+            new FieldAttribute(Source.EMPTY, "a", new EsField("a", DataType.INTEGER, Map.of(), true, EsField.TimeSeriesFieldType.NONE))
         );
         ExternalSplit child1 = new FileSplit(
             "file",
@@ -333,7 +325,13 @@ public class LocalExecutionPlannerTests extends MapperServiceTestCase {
             List.of(coalesced)
         );
 
-        planner(operatorFactoryRegistry).plan("test", FoldContext.small(), PlannerSettings.DEFAULTS, exec, EmptyIndexedByShardId.instance());
+        planner(operatorFactoryRegistry).plan(
+            "test",
+            FoldContext.small(),
+            PlannerSettings.DEFAULTS,
+            exec,
+            EmptyIndexedByShardId.instance()
+        );
 
         assertThat(captured.get(), notNullValue());
         assertThat(captured.get().sliceQueue(), notNullValue());

@@ -900,7 +900,9 @@ final class DataNodeComputeHandler implements TransportRequestHandler<DataNodeRe
             )
         ) {
             var parentListener = computeListener.acquireAvoid();
-            final ActionListener<DriverCompletionInfo> driverCompletionListener = ActionListener.notifyOnce(computeListener.acquireCompute());
+            final ActionListener<DriverCompletionInfo> driverCompletionListener = ActionListener.notifyOnce(
+                computeListener.acquireCompute()
+            );
             try {
                 var externalSink = exchangeService.getSinkHandler(sessionId);
                 String internalSessionId = sessionId + "[n]";
