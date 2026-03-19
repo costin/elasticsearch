@@ -28,9 +28,6 @@ public class ExternalDistributedClusters {
         return Clusters.testCluster(spec -> {
             spec.module("repository-s3");
             spec.module("repository-gcs");
-            spec.module("esql-datasource-csv");
-            spec.module("esql-datasource-parquet");
-            spec.module("esql-datasource-s3");
             spec.setting("xpack.ml.enabled", "false");
             spec.setting("path.repo", fixturesPath());
             spec.setting("s3.client.default.endpoint", s3EndpointSupplier);

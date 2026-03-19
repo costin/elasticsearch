@@ -109,24 +109,12 @@ public class ExternalDistributedSpecIT extends AbstractExternalSourceSpecTestCas
             client().performRequest(request);
             return true;
         } catch (Exception e) {
-            return isExternalSourceConnectorUnavailable(e) == false;
+            String msg = e.getMessage();
+            if (msg != null && msg.contains("Unsupported storage scheme")) {
+                return false;
+            }
+            return true;
         }
-    }
-
-    private static boolean isExternalSourceConnectorUnavailable(Throwable t) {
-        for (Throwable cur = t; cur != null; cur = cur.getCause()) {
-            String msg = cur.getMessage();
-            if (msg == null) {
-                continue;
-            }
-            if (msg.contains("Unsupported storage scheme")) {
-                return true;
-            }
-            if (msg.contains("No SPI storage factory registered for scheme: s3")) {
-                return true;
-            }
-        }
-        return false;
     }
 
     @Override
