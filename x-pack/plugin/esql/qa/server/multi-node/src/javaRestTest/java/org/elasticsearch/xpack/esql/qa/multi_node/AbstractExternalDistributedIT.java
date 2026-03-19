@@ -9,6 +9,7 @@ package org.elasticsearch.xpack.esql.qa.multi_node;
 
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.client.ResponseException;
 import org.elasticsearch.test.cluster.ElasticsearchCluster;
 import org.elasticsearch.test.rest.ESRestTestCase;
 import org.elasticsearch.xpack.esql.AssertWarnings;
@@ -21,6 +22,7 @@ import org.junit.rules.TestRule;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import static org.elasticsearch.xpack.esql.datasources.S3FixtureUtils.ACCESS_KEY;
@@ -50,9 +52,40 @@ public abstract class AbstractExternalDistributedIT extends ESRestTestCase {
         @Override
         public void evaluate() throws Throwable {
             assumeFalse("FIPS mode requires security enabled; this test uses plain HTTP S3 fixtures", inFipsJvm());
+            assumeTrue("External datasources are disabled in serverless", externalDatasourcesEnabled());
             base.evaluate();
         }
     }).around(s3Fixture).around(clusterInstance);
+
+    /**
+     * Serverless disables external datasources (e.g. s3://) on purpose.
+     * When disabled, these tests should be skipped rather than failing with 500s.
+     */
+    static boolean externalDatasourcesEnabled() {
+        try {
+            var request = new RestEsqlTestCase.RequestObjectBuilder().query("EXTERNAL \"s3://probe/test.parquet\"").pragmasOk();
+            RestEsqlTestCase.runEsqlSync(request, new AssertWarnings.NoWarnings(), null);
+            return true;
+        } catch (ResponseException e) {
+            String body = extractBody(e);
+            if (body != null) {
+                if (body.contains("Unsupported storage scheme") || body.contains("No SPI storage factory registered for scheme: s3")) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    private static String extractBody(ResponseException e) {
+        try {
+            return new String(e.getResponse().getEntity().getContent().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception ex) {
+            return e.getMessage();
+        }
+    }
 
     @Override
     protected String getTestRestCluster() {
