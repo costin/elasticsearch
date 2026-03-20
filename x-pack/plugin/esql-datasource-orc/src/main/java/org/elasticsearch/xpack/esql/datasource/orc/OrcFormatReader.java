@@ -15,6 +15,8 @@ import org.apache.hadoop.hive.ql.exec.vector.DoubleColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.TimestampColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
+import org.apache.hadoop.hive.ql.io.sarg.PredicateLeaf;
+import org.apache.hadoop.hive.ql.io.sarg.SearchArgument;
 import org.apache.orc.ColumnStatistics;
 import org.apache.orc.DoubleColumnStatistics;
 import org.apache.orc.IntegerColumnStatistics;
@@ -47,6 +49,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -72,9 +75,23 @@ public class OrcFormatReader implements FormatReader {
     private static final long MILLIS_PER_DAY = Duration.ofDays(1).toMillis();
 
     private final BlockFactory blockFactory;
+    private final SearchArgument pushedFilter;
 
     public OrcFormatReader(BlockFactory blockFactory) {
+        this(blockFactory, null);
+    }
+
+    private OrcFormatReader(BlockFactory blockFactory, SearchArgument pushedFilter) {
         this.blockFactory = blockFactory;
+        this.pushedFilter = pushedFilter;
+    }
+
+    @Override
+    public FormatReader withPushedFilter(Object pushedFilter) {
+        if (pushedFilter == null) {
+            return this;
+        }
+        return new OrcFormatReader(this.blockFactory, (SearchArgument) pushedFilter);
     }
 
     @Override
@@ -223,6 +240,14 @@ public class OrcFormatReader implements FormatReader {
         Reader.Options readOptions = reader.options().rowBatchSize(batchSize);
         if (include != null) {
             readOptions.include(include);
+        }
+        if (pushedFilter != null) {
+            List<PredicateLeaf> leaves = pushedFilter.getLeaves();
+            LinkedHashSet<String> nameSet = new LinkedHashSet<>(leaves.size());
+            for (PredicateLeaf leaf : leaves) {
+                nameSet.add(leaf.getColumnName());
+            }
+            readOptions.searchArgument(pushedFilter, nameSet.toArray(new String[0]));
         }
         RecordReader rows = reader.rows(readOptions);
 

@@ -34,6 +34,7 @@ import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.datasources.CloseableIterator;
+import org.elasticsearch.xpack.esql.datasources.spi.FormatReader;
 import org.elasticsearch.xpack.esql.datasources.spi.SourceMetadata;
 import org.elasticsearch.xpack.esql.datasources.spi.StorageObject;
 import org.elasticsearch.xpack.esql.datasources.spi.StoragePath;
@@ -651,6 +652,113 @@ public class OrcFormatReaderTests extends ESTestCase {
             page3.releaseBlocks();
 
             assertFalse(iterator.hasNext());
+        }
+    }
+
+    // --- Pushdown tests ---
+
+    public void testWithPushedFilterReturnsNewInstance() {
+        OrcFormatReader reader = new OrcFormatReader(blockFactory);
+        org.apache.hadoop.hive.ql.io.sarg.SearchArgument sarg = org.apache.hadoop.hive.ql.io.sarg.SearchArgumentFactory.newBuilder()
+            .startAnd()
+            .equals("id", org.apache.hadoop.hive.ql.io.sarg.PredicateLeaf.Type.LONG, 1L)
+            .end()
+            .build();
+        FormatReader withFilter = reader.withPushedFilter(sarg);
+        assertNotSame("withPushedFilter must return a new instance", reader, withFilter);
+    }
+
+    public void testWithPushedFilterNullReturnsThis() {
+        OrcFormatReader reader = new OrcFormatReader(blockFactory);
+        assertSame("withPushedFilter(null) must return same instance", reader, reader.withPushedFilter(null));
+    }
+
+    public void testReadWithPushedFilterMatchingAll() throws Exception {
+        // Create ORC file with values 1-5, push filter that matches all (id > 0)
+        TypeDescription schema = TypeDescription.createStruct().addField("id", TypeDescription.createLong());
+        byte[] orcData = createOrcFile(schema, batch -> {
+            batch.size = 5;
+            LongColumnVector idCol = (LongColumnVector) batch.cols[0];
+            for (int i = 0; i < 5; i++) {
+                idCol.vector[i] = i + 1;
+            }
+        });
+
+        org.apache.hadoop.hive.ql.io.sarg.SearchArgument sarg = org.apache.hadoop.hive.ql.io.sarg.SearchArgumentFactory.newBuilder()
+            .startNot()
+            .lessThanEquals("id", org.apache.hadoop.hive.ql.io.sarg.PredicateLeaf.Type.LONG, 0L)
+            .end()
+            .build();
+
+        OrcFormatReader reader = (OrcFormatReader) new OrcFormatReader(blockFactory).withPushedFilter(sarg);
+        StorageObject storageObject = createStorageObject(orcData);
+        try (CloseableIterator<Page> iter = reader.read(storageObject, null, 1024)) {
+            assertTrue(iter.hasNext());
+            Page page = iter.next();
+            // All rows should be returned since filter matches all
+            assertEquals(5, page.getPositionCount());
+        }
+    }
+
+    public void testReadWithPushedFilterMatchingNone() throws Exception {
+        // Create ORC file with values 1-5, push filter that matches none (id > 100)
+        TypeDescription schema = TypeDescription.createStruct().addField("id", TypeDescription.createLong());
+        byte[] orcData = createOrcFile(schema, batch -> {
+            batch.size = 5;
+            LongColumnVector idCol = (LongColumnVector) batch.cols[0];
+            for (int i = 0; i < 5; i++) {
+                idCol.vector[i] = i + 1;
+            }
+        });
+
+        // id > 100 → NOT(id <= 100) — file stats have max=5, so entire file is skipped
+        org.apache.hadoop.hive.ql.io.sarg.SearchArgument sarg = org.apache.hadoop.hive.ql.io.sarg.SearchArgumentFactory.newBuilder()
+            .startNot()
+            .lessThanEquals("id", org.apache.hadoop.hive.ql.io.sarg.PredicateLeaf.Type.LONG, 100L)
+            .end()
+            .build();
+
+        OrcFormatReader reader = (OrcFormatReader) new OrcFormatReader(blockFactory).withPushedFilter(sarg);
+        StorageObject storageObject = createStorageObject(orcData);
+        try (CloseableIterator<Page> iter = reader.read(storageObject, null, 1024)) {
+            // File-level stats should show max=5 < 100, so all stripes should be skipped
+            assertFalse("No rows should match the filter", iter.hasNext());
+        }
+    }
+
+    public void testReadWithPushedFilterAndColumnProjection() throws Exception {
+        TypeDescription schema = TypeDescription.createStruct()
+            .addField("id", TypeDescription.createLong())
+            .addField("name", TypeDescription.createString());
+
+        byte[] orcData = createOrcFile(schema, batch -> {
+            batch.size = 3;
+            LongColumnVector idCol = (LongColumnVector) batch.cols[0];
+            BytesColumnVector nameCol = (BytesColumnVector) batch.cols[1];
+            idCol.vector[0] = 1L;
+            nameCol.setVal(0, "Alice".getBytes(StandardCharsets.UTF_8));
+            idCol.vector[1] = 2L;
+            nameCol.setVal(1, "Bob".getBytes(StandardCharsets.UTF_8));
+            idCol.vector[2] = 3L;
+            nameCol.setVal(2, "Charlie".getBytes(StandardCharsets.UTF_8));
+        });
+
+        // Filter id >= 1 (matches all — just testing that filter + projection work together)
+        org.apache.hadoop.hive.ql.io.sarg.SearchArgument sarg = org.apache.hadoop.hive.ql.io.sarg.SearchArgumentFactory.newBuilder()
+            .startNot()
+            .lessThan("id", org.apache.hadoop.hive.ql.io.sarg.PredicateLeaf.Type.LONG, 1L)
+            .end()
+            .build();
+
+        OrcFormatReader reader = (OrcFormatReader) new OrcFormatReader(blockFactory).withPushedFilter(sarg);
+        StorageObject storageObject = createStorageObject(orcData);
+        try (CloseableIterator<Page> iter = reader.read(storageObject, List.of("name"), 1024)) {
+            assertTrue(iter.hasNext());
+            Page page = iter.next();
+            assertEquals(3, page.getPositionCount());
+            assertEquals(1, page.getBlockCount());
+            BytesRefBlock nameBlock = (BytesRefBlock) page.getBlock(0);
+            assertEquals("Alice", nameBlock.getBytesRef(0, new BytesRef()).utf8ToString());
         }
     }
 
