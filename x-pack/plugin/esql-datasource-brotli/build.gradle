@@ -9,14 +9,14 @@ apply plugin: 'elasticsearch.internal-es-plugin'
 apply plugin: 'elasticsearch.publish'
 
 esplugin {
-  name = 'esql-datasource-zstd'
-  description = 'Zstd decompression support for ESQL external data sources'
-  classname = 'org.elasticsearch.xpack.esql.datasource.zstd.ZstdDataSourcePlugin'
-  extendedPlugins = ['x-pack-esql', 'esql-datasource-compression-libs']
+  name = 'esql-datasource-brotli'
+  description = 'Brotli decompression support for ESQL external data sources'
+  classname = 'org.elasticsearch.xpack.esql.datasource.brotli.BrotliDataSourcePlugin'
+  extendedPlugins = ['x-pack-esql']
 }
 
 base {
-  archivesName = 'esql-datasource-zstd'
+  archivesName = 'esql-datasource-brotli'
 }
 
 dependencies {
@@ -26,11 +26,12 @@ dependencies {
   compileOnly project(':server')
   compileOnly project(xpackModule('esql:compute'))
 
-  // zstd-jni provided by esql-datasource-compression-libs parent plugin at runtime;
-  // compileOnly for compilation, testImplementation for test-time resolution
-  compileOnly "com.github.luben:zstd-jni:${versions.zstdJni}"
+  implementation "org.brotli:dec:${versions.brotli}"
 
   testImplementation project(':test:framework')
   testImplementation(testArtifact(project(xpackModule('core'))))
-  testImplementation "com.github.luben:zstd-jni:${versions.zstdJni}"
+}
+
+tasks.withType(org.elasticsearch.gradle.internal.AbstractDependenciesTask).configureEach {
+  mapping from: /dec-.*/, to: 'dec'
 }
