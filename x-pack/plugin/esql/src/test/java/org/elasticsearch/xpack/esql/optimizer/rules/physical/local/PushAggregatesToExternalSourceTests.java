@@ -209,7 +209,8 @@ public class PushAggregatesToExternalSourceTests extends ESTestCase {
             "parquet",
             attributes,
             Map.of(),
-            Map.of()
+            Map.of(),
+            null
         );
     }
 
@@ -226,7 +227,7 @@ public class PushAggregatesToExternalSourceTests extends ESTestCase {
     }
 
     private Alias countStarAlias() {
-        return new Alias(Source.EMPTY, "count", new Count(Source.EMPTY, null, false));
+        return new Alias(Source.EMPTY, "count", new Count(Source.EMPTY, null));
     }
 
     private LocalPhysicalOptimizerContext createContextWithPushdownSupport() {
