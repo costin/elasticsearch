@@ -39,6 +39,7 @@ public class ExternalSourceExecSerializationTests extends AbstractPhysicalPlanSe
             sourceMetadata,
             null,
             FormatReader.NO_LIMIT,
+            null,
             estimatedRowSize,
             null,
             splits
@@ -103,6 +104,7 @@ public class ExternalSourceExecSerializationTests extends AbstractPhysicalPlanSe
             sourceMetadata,
             null,
             FormatReader.NO_LIMIT,
+            null,
             estimatedRowSize,
             null,
             splits

@@ -138,6 +138,7 @@ public class ExternalSourceResolver {
 
         SourceMetadata metadata = resolveSingleSource(path, config);
         ExternalSourceMetadata extMetadata = wrapAsExternalSourceMetadata(metadata, config);
+        extMetadata = enrichSchemaWithFileMetadataColumns(extMetadata);
         return new ExternalSourceResolution.ResolvedSource(extMetadata, FileSet.UNRESOLVED);
     }
 
@@ -177,6 +178,8 @@ public class ExternalSourceResolver {
         if (partitionMetadata != null && partitionMetadata.isEmpty() == false) {
             extMetadata = enrichSchemaWithPartitionColumns(extMetadata, partitionMetadata);
         }
+
+        extMetadata = enrichSchemaWithFileMetadataColumns(extMetadata);
 
         return new ExternalSourceResolution.ResolvedSource(extMetadata, fileSet);
     }
@@ -255,6 +258,54 @@ public class ExternalSourceResolver {
 
         List<Attribute> finalSchema = List.copyOf(enrichedSchema);
 
+        return new ExternalSourceMetadata() {
+            @Override
+            public String location() {
+                return metadata.location();
+            }
+
+            @Override
+            public List<Attribute> schema() {
+                return finalSchema;
+            }
+
+            @Override
+            public String sourceType() {
+                return metadata.sourceType();
+            }
+
+            @Override
+            public Map<String, Object> sourceMetadata() {
+                return metadata.sourceMetadata();
+            }
+
+            @Override
+            public Map<String, Object> config() {
+                return metadata.config();
+            }
+        };
+    }
+
+    static ExternalSourceMetadata enrichSchemaWithFileMetadataColumns(ExternalSourceMetadata metadata) {
+        List<Attribute> originalSchema = metadata.schema();
+        Set<String> existingNames = new LinkedHashSet<>();
+        for (Attribute attr : originalSchema) {
+            existingNames.add(attr.name());
+        }
+
+        List<Attribute> enrichedSchema = new ArrayList<>(originalSchema);
+        for (Map.Entry<String, DataType> entry : FileMetadataColumns.COLUMNS.entrySet()) {
+            String name = entry.getKey();
+            if (existingNames.contains(name) == false) {
+                enrichedSchema.add(new ReferenceAttribute(Source.EMPTY, null, name, entry.getValue(), Nullability.TRUE, null, true));
+            }
+        }
+
+        if (enrichedSchema.size() == originalSchema.size()) {
+            return metadata;
+        }
+
+        List<Attribute> finalSchema = List.copyOf(enrichedSchema);
         return new ExternalSourceMetadata() {
             @Override
             public String location() {

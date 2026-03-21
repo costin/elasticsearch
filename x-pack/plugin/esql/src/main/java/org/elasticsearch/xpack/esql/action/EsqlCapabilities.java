@@ -2329,6 +2329,11 @@ public class EsqlCapabilities {
          */
         FIX_TBUCKET_TARGET_COUNT_WINDOW_VALIDATION,
 
+        /**
+         * Support for METADATA clause on external data sources (_path, _file, _file_size, _last_modified).
+         */
+        EXTERNAL_SOURCE_METADATA_COLUMNS(Build.current().isSnapshot()),
+
         // Last capability should still have a comma for fewer merge conflicts when adding new ones :)
         // This comment prevents the semicolon from being on the previous capability when Spotless formats the file.
         ;

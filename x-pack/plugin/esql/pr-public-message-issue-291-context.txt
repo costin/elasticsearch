@@ -1,0 +1,5 @@
+Assistant (right before drafting the public PR message):
+Are you happy with these changes, or would you like me to adjust anything before creating the PR?
+
+You:
+push the branch to my own repo, create the message for the public PR and the command line but don't trigger it yet.

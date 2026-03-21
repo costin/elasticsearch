@@ -102,11 +102,12 @@ final class VirtualColumnInjector {
 
     private Block createConstantBlock(Attribute attr, Object value, int positions) {
         return switch (value) {
+            case null -> blockFactory.newConstantNullBlock(positions);
             case Integer intVal -> blockFactory.newConstantIntBlockWith(intVal, positions);
             case Long longVal -> blockFactory.newConstantLongBlockWith(longVal, positions);
             case Double doubleVal -> blockFactory.newConstantDoubleBlockWith(doubleVal, positions);
             case Boolean boolVal -> blockFactory.newConstantBooleanBlockWith(boolVal, positions);
-            case null -> blockFactory.newConstantBytesRefBlockWith(new BytesRef(""), positions);
+            case BytesRef bytesRef -> blockFactory.newConstantBytesRefBlockWith(bytesRef, positions);
             default -> blockFactory.newConstantBytesRefBlockWith(new BytesRef(value.toString()), positions);
         };
     }

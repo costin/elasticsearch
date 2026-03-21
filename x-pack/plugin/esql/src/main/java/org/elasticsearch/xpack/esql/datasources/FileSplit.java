@@ -7,6 +7,7 @@
 
 package org.elasticsearch.xpack.esql.datasources;
 
+import org.elasticsearch.TransportVersion;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -32,6 +33,8 @@ public class FileSplit implements ExternalSplit {
         FileSplit::new
     );
 
+    static final TransportVersion ESQL_FILE_METADATA = TransportVersion.fromName("esql_external_source_file_metadata");
+
     private final String sourceType;
     private final StoragePath path;
     private final long offset;
@@ -39,6 +42,7 @@ public class FileSplit implements ExternalSplit {
     private final String format;
     private final Map<String, Object> config;
     private final Map<String, Object> partitionValues;
+    private final Map<String, Object> fileMetadata;
 
     public FileSplit(
         String sourceType,
@@ -48,6 +52,19 @@ public class FileSplit implements ExternalSplit {
         String format,
         Map<String, Object> config,
         Map<String, Object> partitionValues
+    ) {
+        this(sourceType, path, offset, length, format, config, partitionValues, Map.of());
+    }
+
+    public FileSplit(
+        String sourceType,
+        StoragePath path,
+        long offset,
+        long length,
+        String format,
+        Map<String, Object> config,
+        Map<String, Object> partitionValues,
+        Map<String, Object> fileMetadata
     ) {
         if (sourceType == null) {
             throw new IllegalArgumentException("sourceType cannot be null");
@@ -64,6 +81,9 @@ public class FileSplit implements ExternalSplit {
         this.partitionValues = partitionValues != null && partitionValues.isEmpty() == false
             ? Collections.unmodifiableMap(new LinkedHashMap<>(partitionValues))
             : Map.of();
+        this.fileMetadata = fileMetadata != null && fileMetadata.isEmpty() == false
+            ? Collections.unmodifiableMap(new LinkedHashMap<>(fileMetadata))
+            : Map.of();
     }
 
     public FileSplit(StreamInput in) throws IOException {
@@ -74,6 +94,7 @@ public class FileSplit implements ExternalSplit {
         this.format = in.readOptionalString();
         this.config = in.readGenericMap();
         this.partitionValues = in.readGenericMap();
+        this.fileMetadata = in.getTransportVersion().supports(ESQL_FILE_METADATA) ? in.readGenericMap() : Map.of();
     }
 
     @Override
@@ -85,6 +106,9 @@ public class FileSplit implements ExternalSplit {
         out.writeOptionalString(format);
         out.writeGenericMap(config);
         out.writeGenericMap(partitionValues);
+        if (out.getTransportVersion().supports(ESQL_FILE_METADATA)) {
+            out.writeGenericMap(fileMetadata);
+        }
     }
 
     @Override
@@ -121,6 +145,10 @@ public class FileSplit implements ExternalSplit {
         return partitionValues;
     }
 
+    public Map<String, Object> fileMetadata() {
+        return fileMetadata;
+    }
+
     @Override
     public long estimatedSizeInBytes() {
         return length;
@@ -141,16 +169,26 @@ public class FileSplit implements ExternalSplit {
             && Objects.equals(path, that.path)
             && Objects.equals(format, that.format)
             && Objects.equals(config, that.config)
-            && Objects.equals(partitionValues, that.partitionValues);
+            && Objects.equals(partitionValues, that.partitionValues)
+            && Objects.equals(fileMetadata, that.fileMetadata);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(sourceType, path, offset, length, format, config, partitionValues);
+        return Objects.hash(sourceType, path, offset, length, format, config, partitionValues, fileMetadata);
     }
 
     @Override
     public String toString() {
-        return "FileSplit[" + path + ", offset=" + offset + ", length=" + length + ", partitions=" + partitionValues + "]";
+        return "FileSplit["
+            + path
+            + ", offset="
+            + offset
+            + ", length="
+            + length
+            + ", partitions="
+            + partitionValues
+            + (fileMetadata.isEmpty() ? "" : ", metadata=" + fileMetadata)
+            + "]";
     }
 }

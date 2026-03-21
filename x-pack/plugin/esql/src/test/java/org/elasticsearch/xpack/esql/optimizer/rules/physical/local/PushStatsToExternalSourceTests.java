@@ -164,6 +164,7 @@ public class PushStatsToExternalSourceTests extends ESTestCase {
             -1,
             null,
             null,
+            null,
             List.of(
                 new FileSplit("parquet", StoragePath.of("file:///split1.parquet"), 0, 100, "parquet", Map.of(), Map.of()),
                 new FileSplit("parquet", StoragePath.of("file:///split2.parquet"), 0, 100, "parquet", Map.of(), Map.of())
@@ -188,6 +189,7 @@ public class PushStatsToExternalSourceTests extends ESTestCase {
             metadata,
             null,
             -1,
+            null,
             null,
             null,
             List.of(new FileSplit("parquet", StoragePath.of("file:///test.parquet"), 0, 100, "parquet", Map.of(), Map.of()))

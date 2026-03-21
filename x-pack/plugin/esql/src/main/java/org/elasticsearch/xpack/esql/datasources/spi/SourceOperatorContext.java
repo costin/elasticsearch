@@ -34,9 +34,13 @@ import java.util.concurrent.Executor;
  * needs but core doesn't interpret.
  *
  * <p>The {@link #pushedFilter()} contains an opaque filter object that was pushed down
- * during optimization. Since external sources execute on coordinator only, this filter
- * is never serialized - it's created during local physical optimization and consumed
- * immediately by the operator factory in the same JVM.
+ * during optimization. Since external sources execute on the coordinator only, this filter
+ * is never serialized - it's created during local physical optimization on the coordinator
+ * and consumed immediately by the operator factory in the same JVM.
+ *
+ * <p>The {@link #pushedAggregate()} contains an opaque aggregate hint object that was
+ * pushed down during optimization. Like pushedFilter, it is never serialized and is
+ * created and consumed locally on the coordinator by the operator factory.
  */
 public record SourceOperatorContext(
     String sourceType,
@@ -50,6 +54,7 @@ public record SourceOperatorContext(
     Map<String, Object> config,
     Map<String, Object> sourceMetadata,
     Object pushedFilter,
+    Object pushedAggregate,
     FileSet fileSet,
     @Nullable ExternalSplit split,
     Set<String> partitionColumnNames,
@@ -104,6 +109,7 @@ public record SourceOperatorContext(
             config,
             sourceMetadata,
             pushedFilter,
+            null,
             fileSet,
             split,
             null,
@@ -137,6 +143,7 @@ public record SourceOperatorContext(
             config,
             sourceMetadata,
             pushedFilter,
+            null,
             fileSet,
             null,
             null,
@@ -173,6 +180,7 @@ public record SourceOperatorContext(
             null,
             null,
             null,
+            null,
             1
         );
     }
@@ -203,6 +211,7 @@ public record SourceOperatorContext(
             null,
             null,
             null,
+            null,
             1
         );
     }
@@ -223,6 +232,7 @@ public record SourceOperatorContext(
         private Map<String, Object> config;
         private Map<String, Object> sourceMetadata;
         private Object pushedFilter;
+        private Object pushedAggregate;
         private FileSet fileSet;
         private ExternalSplit split;
         private Set<String> partitionColumnNames;
@@ -284,6 +294,11 @@ public record SourceOperatorContext(
             return this;
         }
 
+        public Builder pushedAggregate(Object pushedAggregate) {
+            this.pushedAggregate = pushedAggregate;
+            return this;
+        }
+
         public Builder fileSet(FileSet fileSet) {
             this.fileSet = fileSet;
             return this;
@@ -322,6 +337,7 @@ public record SourceOperatorContext(
                 config,
                 sourceMetadata,
                 pushedFilter,
+                pushedAggregate,
                 fileSet,
                 split,
                 partitionColumnNames,

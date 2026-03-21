@@ -149,6 +149,22 @@ public interface FormatReader extends Closeable {
     }
 
     /**
+     * Returns the aggregate pushdown support for this format.
+     * <p>
+     * Aggregate pushdown allows the optimizer to compute aggregates (COUNT, MIN, MAX) from
+     * file metadata (e.g., Parquet row-group statistics, ORC stripe statistics) without
+     * scanning the actual data. This is useful for reducing I/O on metadata-rich formats.
+     * <p>
+     * Only format readers that maintain statistics in their metadata need to override this.
+     * The default returns unsupported (all aggregates fall through to normal scanning).
+     *
+     * @return AggregatePushdownSupport that can evaluate pushability and produce opaque hints
+     */
+    default AggregatePushdownSupport aggregatePushdownSupport() {
+        return AggregatePushdownSupport.UNSUPPORTED;
+    }
+
+    /**
      * Returns a format reader configured with the schema attributes.
      * <p>
      * The schema is determined during the planning phase (via {@link #metadata(StorageObject)})

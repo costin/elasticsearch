@@ -461,18 +461,13 @@ public class Analyzer extends ParameterizedRuleExecutor<LogicalPlan, AnalyzerCon
 
         @Override
         protected LogicalPlan rule(UnresolvedExternalRelation plan, AnalyzerContext context) {
-            // Extract the table path from the expression
             String tablePath = extractTablePath(plan.tablePath());
             if (tablePath == null) {
-                // Path is not a simple literal (e.g., it's a parameter reference)
-                // Return the plan as-is for now
                 return plan;
             }
 
-            // Get pre-resolved source (metadata + file set) from context
             var resolvedSource = context.externalSourceResolution().resolvedSource(tablePath);
             if (resolvedSource == null) {
-                // Still unresolved - return as-is to keep the error message
                 return plan;
             }
 

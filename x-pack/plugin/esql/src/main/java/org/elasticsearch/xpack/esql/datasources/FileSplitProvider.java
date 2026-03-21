@@ -113,13 +113,16 @@ public class FileSplitProvider implements SplitProvider {
         for (StorageEntry entry : fileSet.files()) {
             StoragePath filePath = entry.path();
 
-            Map<String, Object> partitionValues = Map.of();
+            Map<String, Object> partitionValues = new HashMap<>();
             if (partitionInfo != null && partitionInfo.isEmpty() == false) {
                 Map<String, Object> filePartitions = partitionInfo.filePartitionValues().get(filePath);
                 if (filePartitions != null) {
-                    partitionValues = filePartitions;
+                    partitionValues.putAll(filePartitions);
                 }
             }
+            // Merge file metadata (path, filename, size, modification time) into partition values.
+            // Both are per-file constants injected by VirtualColumnInjector.
+            partitionValues.putAll(FileMetadataColumns.extractValues(entry));
 
             if (partitionValues.isEmpty() == false && filterHints.isEmpty() == false) {
                 if (matchesPartitionFilters(partitionValues, filterHints) == false) {

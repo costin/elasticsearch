@@ -28,6 +28,7 @@ import org.elasticsearch.xpack.esql.datasources.spi.StorageProvider;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -450,6 +451,18 @@ public class AsyncExternalSourceOperatorFactory implements SourceOperator.Source
                     if (buffer.noMoreInputs() || (rowLimit != FormatReader.NO_LIMIT && rowsRemaining <= 0)) {
                         break;
                     }
+                    // Build per-file injector with file-specific metadata values
+                    VirtualColumnInjector fileInjector = injector;
+                    if (partitionColumnNames.isEmpty() == false) {
+                        Map<String, Object> perFileValues = new HashMap<>(partitionValues);
+                        perFileValues.putAll(FileMetadataColumns.extractValues(entry));
+                        fileInjector = new VirtualColumnInjector(
+                            attributes,
+                            partitionColumnNames,
+                            perFileValues,
+                            driverContext.blockFactory()
+                        );
+                    }
                     StorageObject obj = storageProvider.newObject(entry.path(), entry.length(), entry.lastModified());
                     CloseableIterator<Page> pages;
                     if (useParallel) {
@@ -473,7 +486,7 @@ public class AsyncExternalSourceOperatorFactory implements SourceOperator.Source
                         pages = formatReader.read(obj, ctx);
                     }
                     try (pages) {
-                        int consumed = drainPagesWithBudget(pages, buffer, injector);
+                        int consumed = drainPagesWithBudget(pages, buffer, fileInjector);
                         if (rowLimit != FormatReader.NO_LIMIT) {
                             rowsRemaining -= consumed;
                         }

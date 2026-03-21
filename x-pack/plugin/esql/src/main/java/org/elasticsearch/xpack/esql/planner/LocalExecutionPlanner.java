@@ -105,6 +105,7 @@ import org.elasticsearch.xpack.esql.core.type.FunctionEsField;
 import org.elasticsearch.xpack.esql.core.util.Holder;
 import org.elasticsearch.xpack.esql.datasources.ExternalSliceQueue;
 import org.elasticsearch.xpack.esql.datasources.ExternalSourceOperatorFactory;
+import org.elasticsearch.xpack.esql.datasources.FileMetadataColumns;
 import org.elasticsearch.xpack.esql.datasources.FileSet;
 import org.elasticsearch.xpack.esql.datasources.OperatorFactoryRegistry;
 import org.elasticsearch.xpack.esql.datasources.PartitionMetadata;
@@ -169,6 +170,7 @@ import org.elasticsearch.xpack.esql.session.EsqlCCSUtils;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -1273,11 +1275,17 @@ public class LocalExecutionPlanner {
         }
 
         FileSet fileSet = externalSource.fileSet();
-        Set<String> partitionColumnNames = Set.of();
+        Set<String> virtualColumnNames = new LinkedHashSet<>();
         if (fileSet != null) {
             PartitionMetadata pm = fileSet.partitionMetadata();
             if (pm != null && pm.isEmpty() == false) {
-                partitionColumnNames = pm.partitionColumns().keySet();
+                virtualColumnNames.addAll(pm.partitionColumns().keySet());
+            }
+        }
+        // Add file metadata columns that are present in the output attributes
+        for (Attribute attr : externalSource.output()) {
+            if (FileMetadataColumns.isFileMetadataColumn(attr.name())) {
+                virtualColumnNames.add(attr.name());
             }
         }
 
@@ -1294,7 +1302,7 @@ public class LocalExecutionPlanner {
             .sourceMetadata(externalSource.sourceMetadata())
             .pushedFilter(externalSource.pushedFilter())
             .fileSet(fileSet)
-            .partitionColumnNames(partitionColumnNames)
+            .partitionColumnNames(virtualColumnNames)
             .sliceQueue(sliceQueue)
             .parsingParallelism(context.queryPragmas().parsingParallelism())
             .build();
