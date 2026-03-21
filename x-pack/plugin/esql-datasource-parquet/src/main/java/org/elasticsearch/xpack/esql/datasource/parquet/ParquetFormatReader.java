@@ -77,9 +77,15 @@ import java.util.OptionalLong;
 public class ParquetFormatReader implements RangeAwareFormatReader {
 
     private final BlockFactory blockFactory;
+    private final Object pushedAggregate;
 
     public ParquetFormatReader(BlockFactory blockFactory) {
+        this(blockFactory, null);
+    }
+
+    private ParquetFormatReader(BlockFactory blockFactory, Object pushedAggregate) {
         this.blockFactory = blockFactory;
+        this.pushedAggregate = pushedAggregate;
     }
 
     @Override
@@ -241,6 +247,14 @@ public class ParquetFormatReader implements RangeAwareFormatReader {
     @Override
     public void close() throws IOException {
         // No resources to close at the reader level
+    }
+
+    @Override
+    public ParquetFormatReader withPushedAggregate(Object pushedAggregate) {
+        if (pushedAggregate == null) {
+            return this;
+        }
+        return new ParquetFormatReader(blockFactory, pushedAggregate);
     }
 
     @Override

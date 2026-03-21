@@ -64,8 +64,8 @@ public class PushAggregatesToExternalSource extends PhysicalOptimizerRules.Param
         }
 
         // Get format reader for this source type
-        // formatReaderRegistry may be null in test environments or when not configured
-        if (ctx.formatReaderRegistry() == null) {
+        // ctx or formatReaderRegistry may be null in test environments or when not configured
+        if (ctx == null || ctx.formatReaderRegistry() == null) {
             return aggregateExec;
         }
         String sourceType = externalExec.sourceType();
