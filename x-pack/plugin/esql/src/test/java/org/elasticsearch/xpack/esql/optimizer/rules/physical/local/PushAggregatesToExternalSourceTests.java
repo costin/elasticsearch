@@ -14,8 +14,6 @@ import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.expression.ReferenceAttribute;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
-import org.elasticsearch.xpack.esql.datasources.spi.AggregatePushdownSupport;
-import org.elasticsearch.xpack.esql.datasources.spi.FormatReader;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Count;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Max;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Min;
@@ -24,7 +22,6 @@ import org.elasticsearch.xpack.esql.plan.physical.AggregateExec;
 import org.elasticsearch.xpack.esql.plan.physical.ExternalSourceExec;
 import org.elasticsearch.xpack.esql.plan.physical.PhysicalPlan;
 
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -203,27 +200,11 @@ public class PushAggregatesToExternalSourceTests extends ESTestCase {
             new ReferenceAttribute(Source.EMPTY, "id", DataType.LONG),
             new ReferenceAttribute(Source.EMPTY, "name", DataType.KEYWORD)
         );
-        return new ExternalSourceExec(
-            Source.EMPTY,
-            "s3://bucket/data.parquet",
-            "parquet",
-            attributes,
-            Map.of(),
-            Map.of(),
-            null
-        );
+        return new ExternalSourceExec(Source.EMPTY, "s3://bucket/data.parquet", "parquet", attributes, Map.of(), Map.of(), null);
     }
 
     private AggregateExec createAggregateExecWithCount(ExternalSourceExec externalExec) {
-        return new AggregateExec(
-            Source.EMPTY,
-            externalExec,
-            List.of(),
-            List.of(countStarAlias()),
-            AggregatorMode.SINGLE,
-            List.of(),
-            null
-        );
+        return new AggregateExec(Source.EMPTY, externalExec, List.of(), List.of(countStarAlias()), AggregatorMode.SINGLE, List.of(), null);
     }
 
     private Alias countStarAlias() {

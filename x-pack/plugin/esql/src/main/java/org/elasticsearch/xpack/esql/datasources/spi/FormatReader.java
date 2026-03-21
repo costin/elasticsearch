@@ -149,6 +149,20 @@ public interface FormatReader extends Closeable {
     }
 
     /**
+     * Sets the aggregate pushdown hint for this reader.
+     * <p>
+     * The hint is per-query: it applies identically to every file/split in the query.
+     * Implementations should cast the hint to their expected type and return a new reader
+     * instance with the hint stored as an instance field.
+     *
+     * @param pushedAggregate opaque aggregate hint object, or null if no aggregates were pushed
+     * @return a new reader with the hint applied, or {@code this} if the hint is not applicable
+     */
+    default FormatReader withPushedAggregate(Object pushedAggregate) {
+        return this;
+    }
+
+    /**
      * Returns the aggregate pushdown support for this format.
      * <p>
      * Aggregate pushdown allows the optimizer to compute aggregates (COUNT, MIN, MAX) from

@@ -85,13 +85,12 @@ public class FileSplitProviderTests extends ESTestCase {
         List<ExternalSplit> splits = provider.discoverSplits(ctx);
 
         assertEquals(2, splits.size());
-        // Partition values now include both Hive partitions and file metadata
         Map<String, Object> split0Values = ((FileSplit) splits.get(0)).partitionValues();
         assertEquals(2024, split0Values.get("year"));
-        assertTrue(split0Values.containsKey("_path"));
+        assertTrue(split0Values.containsKey("_file.path"));
         Map<String, Object> split1Values = ((FileSplit) splits.get(1)).partitionValues();
         assertEquals(2023, split1Values.get("year"));
-        assertTrue(split1Values.containsKey("_path"));
+        assertTrue(split1Values.containsKey("_file.path"));
     }
 
     public void testNoPartitionMetadataStillHasFileMetadata() {
@@ -103,12 +102,12 @@ public class FileSplitProviderTests extends ESTestCase {
 
         assertEquals(1, splits.size());
         Map<String, Object> values = ((FileSplit) splits.get(0)).partitionValues();
-        // File metadata columns are always present even without partition metadata
-        assertTrue(values.containsKey("_path"));
-        assertTrue(values.containsKey("_file"));
-        assertTrue(values.containsKey("_file_size"));
-        assertTrue(values.containsKey("_last_modified"));
-        assertEquals(100L, values.get("_file_size"));
+        assertTrue(values.containsKey("_file.path"));
+        assertTrue(values.containsKey("_file.name"));
+        assertTrue(values.containsKey("_file.directory"));
+        assertTrue(values.containsKey("_file.size"));
+        assertTrue(values.containsKey("_file.modified"));
+        assertEquals(100L, values.get("_file.size"));
     }
 
     public void testEmptyFileSetProducesNoSplits() {

@@ -130,6 +130,7 @@ final class FileSourceFactory implements ExternalSourceFactory {
 
             FormatReader format = resolveFormatReader(path.objectName(), config).withConfig(config)
                 .withPushedFilter(context.pushedFilter())
+                .withPushedAggregate(context.pushedAggregate())
                 .withSchema(context.attributes());
             ErrorPolicy errorPolicy = resolveErrorPolicy(config, format);
 

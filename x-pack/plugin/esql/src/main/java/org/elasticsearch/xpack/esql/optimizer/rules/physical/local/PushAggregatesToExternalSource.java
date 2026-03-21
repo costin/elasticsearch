@@ -45,7 +45,9 @@ import java.util.Set;
  *   <li>If all aggregates pushed, eliminate AggregateExec entirely</li>
  * </ul>
  */
-public class PushAggregatesToExternalSource extends PhysicalOptimizerRules.ParameterizedOptimizerRule<AggregateExec, LocalPhysicalOptimizerContext> {
+public class PushAggregatesToExternalSource extends PhysicalOptimizerRules.ParameterizedOptimizerRule<
+    AggregateExec,
+    LocalPhysicalOptimizerContext> {
 
     private static final Logger logger = LogManager.getLogger(PushAggregatesToExternalSource.class);
 
@@ -118,10 +120,7 @@ public class PushAggregatesToExternalSource extends PhysicalOptimizerRules.Param
         }
 
         // Otherwise, keep remaining aggregates in AggregateExec
-        List<NamedExpression> remainingAggs = buildRemainderAggregates(
-            aggregateExec.aggregates(),
-            result.remainder()
-        );
+        List<NamedExpression> remainingAggs = buildRemainderAggregates(aggregateExec.aggregates(), result.remainder());
         // Replace the child and update the aggregates
         AggregateExec withPushedChild = aggregateExec.replaceChild(pushed);
         return withPushedChild.withAggregates(remainingAggs);
@@ -143,11 +142,7 @@ public class PushAggregatesToExternalSource extends PhysicalOptimizerRules.Param
 
             // Validate that the extracted expression is an AggregateFunction
             if (!(toCheck instanceof AggregateFunction)) {
-                logger.debug(
-                    "Skipping non-aggregate in aggregates list: {} ({})",
-                    agg.name(),
-                    toCheck.getClass().getSimpleName()
-                );
+                logger.debug("Skipping non-aggregate in aggregates list: {} ({})", agg.name(), toCheck.getClass().getSimpleName());
                 continue;
             }
 
@@ -165,10 +160,7 @@ public class PushAggregatesToExternalSource extends PhysicalOptimizerRules.Param
      * the expression tree is stable. More complex scenarios (filtered aggregates,
      * partial pushdown across mixed formats) may need more sophisticated matching.
      */
-    private List<NamedExpression> buildRemainderAggregates(
-        List<? extends NamedExpression> original,
-        List<Expression> remainder
-    ) {
+    private List<NamedExpression> buildRemainderAggregates(List<? extends NamedExpression> original, List<Expression> remainder) {
         if (remainder.isEmpty()) {
             return List.of();
         }

@@ -244,6 +244,11 @@ public class ParquetFormatReader implements RangeAwareFormatReader {
     }
 
     @Override
+    public org.elasticsearch.xpack.esql.datasources.spi.AggregatePushdownSupport aggregatePushdownSupport() {
+        return new ParquetAggregatePushdownSupport();
+    }
+
+    @Override
     public List<long[]> discoverSplitRanges(StorageObject object) throws IOException {
         InputFile parquetInputFile = new ParquetStorageObjectAdapter(object);
         ParquetReadOptions options = ParquetReadOptions.builder().build();
