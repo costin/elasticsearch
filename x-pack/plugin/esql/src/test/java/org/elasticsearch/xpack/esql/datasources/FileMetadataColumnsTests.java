@@ -20,23 +20,26 @@ import static org.hamcrest.Matchers.instanceOf;
 public class FileMetadataColumnsTests extends ESTestCase {
 
     public void testIsFileMetadataColumn() {
-        assertTrue(FileMetadataColumns.isFileMetadataColumn("_path"));
-        assertTrue(FileMetadataColumns.isFileMetadataColumn("_file"));
-        assertTrue(FileMetadataColumns.isFileMetadataColumn("_file_size"));
-        assertTrue(FileMetadataColumns.isFileMetadataColumn("_last_modified"));
+        assertTrue(FileMetadataColumns.isFileMetadataColumn("_file.path"));
+        assertTrue(FileMetadataColumns.isFileMetadataColumn("_file.name"));
+        assertTrue(FileMetadataColumns.isFileMetadataColumn("_file.directory"));
+        assertTrue(FileMetadataColumns.isFileMetadataColumn("_file.size"));
+        assertTrue(FileMetadataColumns.isFileMetadataColumn("_file.modified"));
 
+        assertFalse(FileMetadataColumns.isFileMetadataColumn("_path"));
+        assertFalse(FileMetadataColumns.isFileMetadataColumn("_file"));
         assertFalse(FileMetadataColumns.isFileMetadataColumn("_source"));
-        assertFalse(FileMetadataColumns.isFileMetadataColumn("_id"));
         assertFalse(FileMetadataColumns.isFileMetadataColumn("revenue"));
         assertFalse(FileMetadataColumns.isFileMetadataColumn(""));
     }
 
     public void testColumnsTypes() {
-        assertEquals(DataType.KEYWORD, FileMetadataColumns.COLUMNS.get("_path"));
-        assertEquals(DataType.KEYWORD, FileMetadataColumns.COLUMNS.get("_file"));
-        assertEquals(DataType.LONG, FileMetadataColumns.COLUMNS.get("_file_size"));
-        assertEquals(DataType.DATETIME, FileMetadataColumns.COLUMNS.get("_last_modified"));
-        assertEquals(4, FileMetadataColumns.COLUMNS.size());
+        assertEquals(DataType.KEYWORD, FileMetadataColumns.COLUMNS.get("_file.path"));
+        assertEquals(DataType.KEYWORD, FileMetadataColumns.COLUMNS.get("_file.name"));
+        assertEquals(DataType.KEYWORD, FileMetadataColumns.COLUMNS.get("_file.directory"));
+        assertEquals(DataType.LONG, FileMetadataColumns.COLUMNS.get("_file.size"));
+        assertEquals(DataType.DATETIME, FileMetadataColumns.COLUMNS.get("_file.modified"));
+        assertEquals(5, FileMetadataColumns.COLUMNS.size());
     }
 
     public void testExtractValuesFromStorageEntry() {
@@ -46,10 +49,11 @@ public class FileMetadataColumnsTests extends ESTestCase {
 
         Map<String, Object> values = FileMetadataColumns.extractValues(entry);
 
-        assertEquals(new BytesRef("s3://my-bucket/data/2024/events.parquet"), values.get("_path"));
-        assertEquals(new BytesRef("events.parquet"), values.get("_file"));
-        assertEquals(52428800L, values.get("_file_size"));
-        assertEquals(modified.toEpochMilli(), values.get("_last_modified"));
+        assertEquals(new BytesRef("s3://my-bucket/data/2024/events.parquet"), values.get("_file.path"));
+        assertEquals(new BytesRef("events.parquet"), values.get("_file.name"));
+        assertEquals(new BytesRef("s3://my-bucket/data/2024"), values.get("_file.directory"));
+        assertEquals(52428800L, values.get("_file.size"));
+        assertEquals(modified.toEpochMilli(), values.get("_file.modified"));
     }
 
     public void testExtractValuesFromComponents() {
@@ -58,21 +62,22 @@ public class FileMetadataColumnsTests extends ESTestCase {
 
         Map<String, Object> values = FileMetadataColumns.extractValues(path, 1024L, modified);
 
-        assertEquals(new BytesRef("gs://bucket/dir/file.csv.gz"), values.get("_path"));
-        assertEquals(new BytesRef("file.csv.gz"), values.get("_file"));
-        assertEquals(1024L, values.get("_file_size"));
-        assertEquals(modified.toEpochMilli(), values.get("_last_modified"));
+        assertEquals(new BytesRef("gs://bucket/dir/file.csv.gz"), values.get("_file.path"));
+        assertEquals(new BytesRef("file.csv.gz"), values.get("_file.name"));
+        assertEquals(new BytesRef("gs://bucket/dir"), values.get("_file.directory"));
+        assertEquals(1024L, values.get("_file.size"));
+        assertEquals(modified.toEpochMilli(), values.get("_file.modified"));
     }
 
     public void testExtractValuesNullLastModified() {
         StoragePath path = StoragePath.of("s3://bucket/file.parquet");
         Map<String, Object> values = FileMetadataColumns.extractValues(path, 100L, null);
 
-        assertEquals(new BytesRef("s3://bucket/file.parquet"), values.get("_path"));
-        assertEquals(new BytesRef("file.parquet"), values.get("_file"));
-        assertEquals(100L, values.get("_file_size"));
-        assertTrue(values.containsKey("_last_modified"));
-        assertNull(values.get("_last_modified"));
+        assertEquals(new BytesRef("s3://bucket/file.parquet"), values.get("_file.path"));
+        assertEquals(new BytesRef("file.parquet"), values.get("_file.name"));
+        assertEquals(100L, values.get("_file.size"));
+        assertTrue(values.containsKey("_file.modified"));
+        assertNull(values.get("_file.modified"));
     }
 
     public void testExtractValuesLargeFileSize() {
@@ -80,25 +85,34 @@ public class FileMetadataColumnsTests extends ESTestCase {
         long largeSize = 5L * 1024 * 1024 * 1024; // 5 GB
         Map<String, Object> values = FileMetadataColumns.extractValues(path, largeSize, Instant.now());
 
-        assertEquals(largeSize, values.get("_file_size"));
+        assertEquals(largeSize, values.get("_file.size"));
     }
 
-    public void testExtractValuesPathTypes() {
-        // Verify BytesRef type for keyword columns
+    public void testExtractValuesRuntimeTypes() {
         StoragePath path = StoragePath.of("s3://bucket/file.parquet");
         Map<String, Object> values = FileMetadataColumns.extractValues(path, 100L, Instant.EPOCH);
 
-        assertThat(values.get("_path"), instanceOf(BytesRef.class));
-        assertThat(values.get("_file"), instanceOf(BytesRef.class));
-        assertThat(values.get("_file_size"), instanceOf(Long.class));
-        assertThat(values.get("_last_modified"), instanceOf(Long.class));
+        assertThat(values.get("_file.path"), instanceOf(BytesRef.class));
+        assertThat(values.get("_file.name"), instanceOf(BytesRef.class));
+        assertThat(values.get("_file.directory"), instanceOf(BytesRef.class));
+        assertThat(values.get("_file.size"), instanceOf(Long.class));
+        assertThat(values.get("_file.modified"), instanceOf(Long.class));
     }
 
     public void testNamesSet() {
-        assertEquals(4, FileMetadataColumns.NAMES.size());
-        assertTrue(FileMetadataColumns.NAMES.contains("_path"));
-        assertTrue(FileMetadataColumns.NAMES.contains("_file"));
-        assertTrue(FileMetadataColumns.NAMES.contains("_file_size"));
-        assertTrue(FileMetadataColumns.NAMES.contains("_last_modified"));
+        assertEquals(5, FileMetadataColumns.NAMES.size());
+        assertTrue(FileMetadataColumns.NAMES.contains("_file.path"));
+        assertTrue(FileMetadataColumns.NAMES.contains("_file.name"));
+        assertTrue(FileMetadataColumns.NAMES.contains("_file.directory"));
+        assertTrue(FileMetadataColumns.NAMES.contains("_file.size"));
+        assertTrue(FileMetadataColumns.NAMES.contains("_file.modified"));
+    }
+
+    public void testDotNamingCannotCollideWithHivePartitions() {
+        // Hive partition keys cannot contain dots (enforced by HivePartitionDetector).
+        // All file metadata column names contain dots, making collision structurally impossible.
+        for (String name : FileMetadataColumns.NAMES) {
+            assertTrue("File metadata column [" + name + "] must contain a dot for Hive collision safety", name.contains("."));
+        }
     }
 }

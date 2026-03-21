@@ -86,7 +86,8 @@ public class ExternalSourceResolverTests extends ESTestCase {
         ExternalSourceResolution.ResolvedSource resolved = resolution.resolvedSource("s3://bucket/data/*.parquet");
         assertNotNull(resolved);
         List<Attribute> resolvedSchema = resolved.metadata().schema();
-        assertEquals(2, resolvedSchema.size());
+        // 2 original columns + 5 file metadata columns (_file.path, _file.name, _file.directory, _file.size, _file.modified)
+        assertEquals(7, resolvedSchema.size());
         assertEquals("emp_no", resolvedSchema.get(0).name());
         assertEquals("name", resolvedSchema.get(1).name());
     }
@@ -114,7 +115,8 @@ public class ExternalSourceResolverTests extends ESTestCase {
         ExternalSourceResolution.ResolvedSource resolved = resolution.resolvedSource("s3://bucket/data/*.parquet");
         assertNotNull(resolved);
         List<Attribute> resolvedSchema = resolved.metadata().schema();
-        assertEquals(2, resolvedSchema.size());
+        // 2 original columns + 5 file metadata columns
+        assertEquals(7, resolvedSchema.size());
         assertEquals("a", resolvedSchema.get(0).name());
         assertEquals("b", resolvedSchema.get(1).name());
     }
@@ -134,7 +136,8 @@ public class ExternalSourceResolverTests extends ESTestCase {
         ExternalSourceResolution.ResolvedSource resolved = resolution.resolvedSource("s3://bucket/data/*.parquet");
         assertNotNull(resolved);
         List<Attribute> resolvedSchema = resolved.metadata().schema();
-        assertEquals(2, resolvedSchema.size());
+        // 2 original columns + 5 file metadata columns
+        assertEquals(7, resolvedSchema.size());
         assertEquals("id", resolvedSchema.get(0).name());
         assertEquals("value", resolvedSchema.get(1).name());
     }
@@ -222,7 +225,8 @@ public class ExternalSourceResolverTests extends ESTestCase {
 
         ExternalSourceResolution.ResolvedSource resolved = resolution.resolvedSource("s3://bucket/data/*.parquet");
         List<Attribute> resolvedSchema = resolved.metadata().schema();
-        assertEquals(5, resolvedSchema.size());
+        // 5 data columns + 5 file metadata columns = 10
+        assertEquals(10, resolvedSchema.size());
         assertEquals(DataType.LONG, resolvedSchema.get(0).dataType());
         assertEquals(DataType.KEYWORD, resolvedSchema.get(1).dataType());
         assertEquals(DataType.DOUBLE, resolvedSchema.get(2).dataType());
@@ -307,7 +311,8 @@ public class ExternalSourceResolverTests extends ESTestCase {
         ExternalSourceResolution.ResolvedSource resolved = resolution.resolvedSource("s3://bucket/data/year=*/*.parquet");
         assertNotNull(resolved);
         List<Attribute> resolvedSchema = resolved.metadata().schema();
-        assertEquals(3, resolvedSchema.size());
+        // 2 data columns + 1 partition column + 5 file metadata columns = 8
+        assertEquals(8, resolvedSchema.size());
         assertEquals("emp_no", resolvedSchema.get(0).name());
         assertEquals("name", resolvedSchema.get(1).name());
         assertEquals("year", resolvedSchema.get(2).name());
@@ -330,7 +335,8 @@ public class ExternalSourceResolverTests extends ESTestCase {
         ExternalSourceResolution.ResolvedSource resolved = resolution.resolvedSource("s3://bucket/data/year=*/*.parquet");
         assertNotNull(resolved);
         List<Attribute> resolvedSchema = resolved.metadata().schema();
-        assertEquals(2, resolvedSchema.size());
+        // 1 data column (name) + 1 partition column (year) + 5 file metadata columns = 7
+        assertEquals(7, resolvedSchema.size());
         assertEquals("name", resolvedSchema.get(0).name());
         assertEquals("year", resolvedSchema.get(1).name());
         // Partition column type should be INTEGER (from path), not KEYWORD (from data)
@@ -353,7 +359,8 @@ public class ExternalSourceResolverTests extends ESTestCase {
         ExternalSourceResolution.ResolvedSource resolved = resolution.resolvedSource("s3://bucket/data/*.parquet");
         assertNotNull(resolved);
         List<Attribute> resolvedSchema = resolved.metadata().schema();
-        assertEquals(2, resolvedSchema.size());
+        // 2 data columns + 5 file metadata columns = 7
+        assertEquals(7, resolvedSchema.size());
         assertEquals("a", resolvedSchema.get(0).name());
         assertEquals("b", resolvedSchema.get(1).name());
     }
@@ -377,7 +384,8 @@ public class ExternalSourceResolverTests extends ESTestCase {
         ExternalSourceResolution.ResolvedSource resolved = resolution.resolvedSource("s3://bucket/data/year=*/month=*/*.parquet");
         assertNotNull(resolved);
         List<Attribute> resolvedSchema = resolved.metadata().schema();
-        assertEquals(3, resolvedSchema.size());
+        // 1 data column + 2 partition columns + 5 file metadata columns = 8
+        assertEquals(8, resolvedSchema.size());
         // Data column is first
         assertEquals("value", resolvedSchema.get(0).name());
         // Partition columns appended at tail in path declaration order

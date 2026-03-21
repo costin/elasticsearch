@@ -5,6 +5,7 @@
 - **v1** (2026-03-20): Initial plan with `_file`-prefix naming and separate WITH config options
 - **v2** (2026-03-20): Revised after deeper research into SPI applicability (Flight/Iceberg), naming debate, config-vs-query architecture, and listing-time filter extraction
 - **v3** (2026-03-20): Addressed review feedback — grammar path verification, serialization/BWC, name conflict strategy, optimizer assumptions, pruning correctness, observability, information disclosure
+- **v4** (2026-03-21): Final naming: `_file.*` dot-namespaced columns (collision-proof against Hive partitions). Always-on (Option A). Removed unused fileMetadata field on FileSplit, TransportVersion CSV, and EsqlCapability. Separated partition values from file metadata in VirtualColumnInjector to fix HashMap overwrite bug.
 
 ---
 
@@ -16,6 +17,55 @@ When querying multiple files via a glob pattern (`FROM "s3://bucket/*.parquet"`)
 3. **Aggregate by source** — "count rows per file", "total size per partition"
 
 Every competing system provides this. ESQL currently does not.
+
+---
+
+## v4 Final Design (supersedes naming in earlier sections)
+
+### Naming: `_file.*` Dot-Namespaced Columns
+
+**Decision:** Use `_file.` prefix with dot separation. This is collision-proof against Hive partition keys (which cannot contain dots per `HivePartitionDetector`) and provides a natural extensible namespace.
+
+**Phase 1 columns:**
+
+| Column | Type | Value | Example |
+|---|---|---|---|
+| `_file.path` | `keyword` | Full URI including scheme | `s3://bucket/dir/events.parquet` |
+| `_file.name` | `keyword` | Basename (object name only) | `events.parquet` |
+| `_file.directory` | `keyword` | Parent directory URI | `s3://bucket/dir/` |
+| `_file.size` | `long` | File size in bytes | `52428800` |
+| `_file.modified` | `datetime` | Last modification timestamp (UTC) | `2024-07-15T10:30:00Z` |
+
+**Phase 2 columns (future, not implemented now):**
+
+| Column | Type | Notes |
+|---|---|---|
+| `_file.format` | `keyword` | `parquet`, `csv`, `ndjson` — known from extension |
+| `_file.offset` | `long` | Split start byte within file (per-split, not per-file) |
+| `_file.split_length` | `long` | Split byte length (per-split) |
+| `_file.row_number` | `long` | Row ordinal within file (per-row, not per-file) |
+
+### Why `_file.*`
+
+1. **Collision-proof against Hive partitions** — dots are rejected by `HivePartitionDetector`
+2. **Consistent with ES** — `_source` is a metadata object, `_file` follows the same pattern
+3. **Industry-aligned** — Flink uses `file.path`, `file.name`, `file.size`, `file.modification-time`
+4. **Extensible** — new properties fit naturally under `_file.*`
+5. **Unquoted in ESQL** — `_file.path` is a valid dotted field reference
+
+### Behavioral Design
+
+- **Always-on** — columns added automatically to every external source query (like Hive partition columns)
+- **Data column wins** — if a source file has a column named `_file.path` (extremely unlikely with dots), the data column takes precedence and the metadata column is silently skipped
+- **PruneColumns removes unused** — zero cost if not referenced in query
+- **Separate from partition values** — file metadata values are NOT merged into partitionValues map. VirtualColumnInjector receives both maps separately to prevent HashMap overwrite bugs
+
+### What Was Removed (from v3)
+
+- **`fileMetadata` field on FileSplit** — unnecessary; file metadata extracted at injection time from StorageEntry
+- **TransportVersion `esql_external_source_file_metadata`** — no new serialization needed
+- **`EXTERNAL_SOURCE_METADATA_COLUMNS` capability** — no grammar change, no client gating needed
+- **Grammar/parser/analyzer changes** — columns are always-on, no METADATA clause
 
 ---
 
