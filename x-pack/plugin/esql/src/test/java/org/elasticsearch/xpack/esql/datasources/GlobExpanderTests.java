@@ -370,4 +370,116 @@ public class GlobExpanderTests extends ESTestCase {
             return path;
         }
     }
+
+    // -- applyFileMetadataFilters --
+
+    public void testFileMetadataFilterByModifiedTime() {
+        Instant cutoff = Instant.parse("2024-06-01T00:00:00Z");
+        List<StorageEntry> entries = List.of(
+            new StorageEntry(StoragePath.of("s3://b/old.parquet"), 100, Instant.parse("2024-01-15T00:00:00Z")),
+            new StorageEntry(StoragePath.of("s3://b/new.parquet"), 200, Instant.parse("2024-07-15T00:00:00Z")),
+            new StorageEntry(StoragePath.of("s3://b/newer.parquet"), 300, Instant.parse("2024-12-01T00:00:00Z"))
+        );
+
+        var hint = new PartitionFilterHintExtractor.PartitionFilterHint(
+            "_file.modified",
+            PartitionFilterHintExtractor.Operator.GREATER_THAN,
+            List.of(cutoff.toEpochMilli())
+        );
+
+        List<StorageEntry> filtered = GlobExpander.applyFileMetadataFilters(entries, List.of(hint));
+        assertEquals(2, filtered.size());
+        assertEquals("s3://b/new.parquet", filtered.get(0).path().toString());
+        assertEquals("s3://b/newer.parquet", filtered.get(1).path().toString());
+    }
+
+    public void testFileMetadataFilterBySize() {
+        List<StorageEntry> entries = List.of(
+            new StorageEntry(StoragePath.of("s3://b/tiny.parquet"), 10, Instant.EPOCH),
+            new StorageEntry(StoragePath.of("s3://b/small.parquet"), 1000, Instant.EPOCH),
+            new StorageEntry(StoragePath.of("s3://b/big.parquet"), 1000000, Instant.EPOCH)
+        );
+
+        var hint = new PartitionFilterHintExtractor.PartitionFilterHint(
+            "_file.size",
+            PartitionFilterHintExtractor.Operator.GREATER_THAN_OR_EQUAL,
+            List.of(1000L)
+        );
+
+        List<StorageEntry> filtered = GlobExpander.applyFileMetadataFilters(entries, List.of(hint));
+        assertEquals(2, filtered.size());
+        assertEquals("s3://b/small.parquet", filtered.get(0).path().toString());
+        assertEquals("s3://b/big.parquet", filtered.get(1).path().toString());
+    }
+
+    public void testFileMetadataFilterByName() {
+        List<StorageEntry> entries = List.of(
+            new StorageEntry(StoragePath.of("s3://b/events_2024.parquet"), 100, Instant.EPOCH),
+            new StorageEntry(StoragePath.of("s3://b/events_2025.parquet"), 100, Instant.EPOCH),
+            new StorageEntry(StoragePath.of("s3://b/other.parquet"), 100, Instant.EPOCH)
+        );
+
+        var hint = new PartitionFilterHintExtractor.PartitionFilterHint(
+            "_file.name",
+            PartitionFilterHintExtractor.Operator.EQUALS,
+            List.of("events_2024.parquet")
+        );
+
+        List<StorageEntry> filtered = GlobExpander.applyFileMetadataFilters(entries, List.of(hint));
+        assertEquals(1, filtered.size());
+        assertEquals("s3://b/events_2024.parquet", filtered.get(0).path().toString());
+    }
+
+    public void testFileMetadataFilterIgnoresNonFileHints() {
+        List<StorageEntry> entries = List.of(new StorageEntry(StoragePath.of("s3://b/file.parquet"), 100, Instant.EPOCH));
+
+        var hint = new PartitionFilterHintExtractor.PartitionFilterHint(
+            "year",
+            PartitionFilterHintExtractor.Operator.EQUALS,
+            List.of(2024)
+        );
+
+        List<StorageEntry> filtered = GlobExpander.applyFileMetadataFilters(entries, List.of(hint));
+        assertEquals(1, filtered.size());
+    }
+
+    public void testFileMetadataFilterNullTimestampIsConservative() {
+        List<StorageEntry> entries = List.of(new StorageEntry(StoragePath.of("s3://b/file.parquet"), 100, null));
+
+        var hint = new PartitionFilterHintExtractor.PartitionFilterHint(
+            "_file.modified",
+            PartitionFilterHintExtractor.Operator.GREATER_THAN,
+            List.of(Instant.parse("2024-06-01T00:00:00Z").toEpochMilli())
+        );
+
+        // Null timestamp → conservative, don't filter
+        List<StorageEntry> filtered = GlobExpander.applyFileMetadataFilters(entries, List.of(hint));
+        assertEquals(1, filtered.size());
+    }
+
+    public void testFileMetadataFilterCombinesMultipleHints() {
+        Instant cutoff = Instant.parse("2024-06-01T00:00:00Z");
+        List<StorageEntry> entries = List.of(
+            new StorageEntry(StoragePath.of("s3://b/old_small.parquet"), 10, Instant.parse("2024-01-01T00:00:00Z")),
+            new StorageEntry(StoragePath.of("s3://b/old_big.parquet"), 1000000, Instant.parse("2024-01-01T00:00:00Z")),
+            new StorageEntry(StoragePath.of("s3://b/new_small.parquet"), 10, Instant.parse("2024-07-01T00:00:00Z")),
+            new StorageEntry(StoragePath.of("s3://b/new_big.parquet"), 1000000, Instant.parse("2024-07-01T00:00:00Z"))
+        );
+
+        var timeHint = new PartitionFilterHintExtractor.PartitionFilterHint(
+            "_file.modified",
+            PartitionFilterHintExtractor.Operator.GREATER_THAN,
+            List.of(cutoff.toEpochMilli())
+        );
+        var sizeHint = new PartitionFilterHintExtractor.PartitionFilterHint(
+            "_file.size",
+            PartitionFilterHintExtractor.Operator.GREATER_THAN,
+            List.of(100L)
+        );
+
+        // Both hints must match: modified > cutoff AND size > 100
+        List<StorageEntry> filtered = GlobExpander.applyFileMetadataFilters(entries, List.of(timeHint, sizeHint));
+        assertEquals(1, filtered.size());
+        assertEquals("s3://b/new_big.parquet", filtered.get(0).path().toString());
+    }
 }

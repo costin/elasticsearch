@@ -9,11 +9,14 @@ package org.elasticsearch.xpack.esql.datasources;
 
 import org.elasticsearch.common.util.Maps;
 import org.elasticsearch.core.Nullable;
+import org.elasticsearch.logging.LogManager;
+import org.elasticsearch.logging.Logger;
 import org.elasticsearch.xpack.esql.datasources.PartitionFilterHintExtractor.PartitionFilterHint;
 import org.elasticsearch.xpack.esql.datasources.spi.StoragePath;
 import org.elasticsearch.xpack.esql.datasources.spi.StorageProvider;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -26,6 +29,8 @@ import java.util.Map;
  * Supports partition-aware glob rewriting when filter hints are provided.
  */
 final class GlobExpander {
+
+    private static final Logger logger = LogManager.getLogger(GlobExpander.class);
 
     private GlobExpander() {}
 
@@ -128,6 +133,12 @@ final class GlobExpander {
                     matched.add(entry);
                 }
             }
+        }
+
+        // Apply file metadata filters from WHERE clause hints (e.g., _file.modified > X, _file.size > Y).
+        // This prunes files at listing time — before any data is read.
+        if (hints != null && hints.isEmpty() == false) {
+            matched = applyFileMetadataFilters(matched, hints);
         }
 
         if (matched.isEmpty()) {
@@ -375,5 +386,137 @@ final class GlobExpander {
             }
         }
         return sb.toString();
+    }
+
+    static List<StorageEntry> applyFileMetadataFilters(List<StorageEntry> entries, List<PartitionFilterHint> hints) {
+        List<PartitionFilterHint> fileHints = new ArrayList<>();
+        for (PartitionFilterHint hint : hints) {
+            if (FileMetadataColumns.isFileMetadataColumn(hint.columnName())) {
+                fileHints.add(hint);
+            }
+        }
+        if (fileHints.isEmpty()) {
+            return entries;
+        }
+
+        int beforeCount = entries.size();
+        List<StorageEntry> filtered = new ArrayList<>(entries.size());
+        for (StorageEntry entry : entries) {
+            if (matchesAllFileHints(entry, fileHints)) {
+                filtered.add(entry);
+            }
+        }
+
+        if (filtered.size() < beforeCount) {
+            logger.debug("File metadata filter pruned {}/{} files from listing", beforeCount - filtered.size(), beforeCount);
+        }
+        return filtered;
+    }
+
+    private static boolean matchesAllFileHints(StorageEntry entry, List<PartitionFilterHint> fileHints) {
+        for (PartitionFilterHint hint : fileHints) {
+            if (matchesFileHint(entry, hint) == false) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean matchesFileHint(StorageEntry entry, PartitionFilterHint hint) {
+        return switch (hint.columnName()) {
+            case FileMetadataColumns.MODIFIED -> evaluateTimestamp(entry.lastModified(), hint);
+            case FileMetadataColumns.SIZE -> evaluateLong(entry.length(), hint);
+            case FileMetadataColumns.PATH -> evaluateString(entry.path().toString(), hint);
+            case FileMetadataColumns.NAME -> evaluateString(entry.path().objectName(), hint);
+            case FileMetadataColumns.DIRECTORY -> {
+                StoragePath parent = entry.path().parentDirectory();
+                yield parent != null ? evaluateString(parent.toString(), hint) : true;
+            }
+            default -> true; // Unknown hint — don't filter (safe fallback)
+        };
+    }
+
+    private static boolean evaluateTimestamp(Instant actual, PartitionFilterHint hint) {
+        if (actual == null) {
+            return true; // Unknown timestamp — don't filter (conservative)
+        }
+        if (hint.values().isEmpty()) {
+            return true;
+        }
+        Object hintValue = hint.values().get(0);
+        long actualMillis = actual.toEpochMilli();
+        long hintMillis;
+        if (hintValue instanceof Long l) {
+            hintMillis = l;
+        } else if (hintValue instanceof String s) {
+            try {
+                hintMillis = Instant.parse(s).toEpochMilli();
+            } catch (Exception e) {
+                return true; // Unparseable — don't filter
+            }
+        } else {
+            return true;
+        }
+        return evaluateComparison(Long.compare(actualMillis, hintMillis), hint.operator());
+    }
+
+    private static boolean evaluateLong(long actual, PartitionFilterHint hint) {
+        if (hint.values().isEmpty()) {
+            return true;
+        }
+        Object hintValue = hint.values().get(0);
+        long hintLong;
+        if (hintValue instanceof Number n) {
+            hintLong = n.longValue();
+        } else if (hintValue instanceof String s) {
+            try {
+                hintLong = Long.parseLong(s);
+            } catch (NumberFormatException e) {
+                return true;
+            }
+        } else {
+            return true;
+        }
+
+        if (hint.operator() == PartitionFilterHintExtractor.Operator.IN) {
+            for (Object v : hint.values()) {
+                long inVal = v instanceof Number n ? n.longValue() : Long.parseLong(v.toString());
+                if (actual == inVal) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return evaluateComparison(Long.compare(actual, hintLong), hint.operator());
+    }
+
+    private static boolean evaluateString(String actual, PartitionFilterHint hint) {
+        if (actual == null || hint.values().isEmpty()) {
+            return true;
+        }
+        Object hintValue = hint.values().get(0);
+        String hintStr = hintValue.toString();
+
+        if (hint.operator() == PartitionFilterHintExtractor.Operator.IN) {
+            for (Object v : hint.values()) {
+                if (actual.equals(v.toString())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return evaluateComparison(actual.compareTo(hintStr), hint.operator());
+    }
+
+    private static boolean evaluateComparison(int cmp, PartitionFilterHintExtractor.Operator operator) {
+        return switch (operator) {
+            case EQUALS -> cmp == 0;
+            case NOT_EQUALS -> cmp != 0;
+            case GREATER_THAN -> cmp > 0;
+            case GREATER_THAN_OR_EQUAL -> cmp >= 0;
+            case LESS_THAN -> cmp < 0;
+            case LESS_THAN_OR_EQUAL -> cmp <= 0;
+            case IN -> false; // Handled separately in caller
+        };
     }
 }

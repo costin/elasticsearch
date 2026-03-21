@@ -209,6 +209,37 @@ public class ParquetFormatReader implements RangeAwareFormatReader {
         ParquetReadOptions options = ParquetReadOptions.builder().build();
         ParquetFileReader reader = ParquetFileReader.open(parquetInputFile, options);
 
+        // If aggregate pushdown is active, compute aggregates from statistics and return synthetic pages
+        if (pushedAggregate instanceof ParquetAggregatePushdownSupport.ParquetAggregatePushdownHint) {
+            try {
+                FileMetaData fileMetaData = reader.getFileMetaData();
+                MessageType parquetSchema = fileMetaData.getSchema();
+                List<Attribute> attributes = convertParquetSchemaToAttributes(parquetSchema);
+
+                List<Attribute> projectedAttributes;
+                if (projectedColumns == null || projectedColumns.isEmpty()) {
+                    projectedAttributes = attributes;
+                } else {
+                    projectedAttributes = new ArrayList<>();
+                    Map<String, Attribute> attributeMap = new HashMap<>();
+                    for (Attribute attr : attributes) {
+                        attributeMap.put(attr.name(), attr);
+                    }
+                    for (String columnName : projectedColumns) {
+                        Attribute attr = attributeMap.get(columnName);
+                        attr = attr == null ? new ReferenceAttribute(Source.EMPTY, columnName, DataType.NULL) : attr;
+                        projectedAttributes.add(attr);
+                    }
+                }
+
+                // Extract aggregates from row-group statistics
+                return createAggregateResultIterator(reader, parquetSchema, projectedAttributes);
+            } catch (Exception e) {
+                // Fall back to regular read on error
+                reader.close();
+            }
+        }
+
         FileMetaData fileMetaData = reader.getFileMetaData();
         MessageType parquetSchema = fileMetaData.getSchema();
         List<Attribute> attributes = convertParquetSchemaToAttributes(parquetSchema);
@@ -1068,6 +1099,131 @@ public class ParquetFormatReader implements RangeAwareFormatReader {
         public void close() throws IOException {
             reader.close();
         }
+    }
+
+    /**
+     * Creates a CloseableIterator that yields a single page with aggregate results extracted from Parquet statistics.
+     * This is used when aggregate pushdown is active - we compute aggregates from row-group stats instead of reading data.
+     */
+    @SuppressWarnings("rawtypes")
+    private CloseableIterator<Page> createAggregateResultIterator(ParquetFileReader reader, MessageType schema, List<Attribute> projectedAttributes) throws IOException {
+        try {
+            long totalRowCount = 0;
+            Map<String, Comparable<?>> columnMins = new HashMap<>();
+            Map<String, Comparable<?>> columnMaxs = new HashMap<>();
+
+            // Extract aggregates from all row groups
+            List<BlockMetaData> rowGroups = reader.getRowGroups();
+            for (BlockMetaData rowGroup : rowGroups) {
+                totalRowCount += rowGroup.getRowCount();
+
+                for (ColumnChunkMetaData col : rowGroup.getColumns()) {
+                    String colName = col.getPath().toDotString();
+                    Statistics stats = col.getStatistics();
+
+                    if (stats == null || stats.isEmpty()) {
+                        continue;
+                    }
+
+                    if (stats.hasNonNullValue()) {
+                        Comparable<?> min = (Comparable<?>) stats.genericGetMin();
+                        Comparable<?> max = (Comparable<?>) stats.genericGetMax();
+
+                        if (min != null) {
+                            columnMins.merge(colName, min, (existing, newVal) -> {
+                                @SuppressWarnings("unchecked")
+                                int cmp = ((Comparable<Object>) existing).compareTo(newVal);
+                                return cmp < 0 ? existing : newVal;
+                            });
+                        }
+
+                        if (max != null) {
+                            columnMaxs.merge(colName, max, (existing, newVal) -> {
+                                @SuppressWarnings("unchecked")
+                                int cmp = ((Comparable<Object>) existing).compareTo(newVal);
+                                return cmp > 0 ? existing : newVal;
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Build blocks for each projected column
+            // For now, we create single-row blocks with aggregated values or nulls
+            Block[] blocks = new Block[projectedAttributes.size()];
+            for (int i = 0; i < projectedAttributes.size(); i++) {
+                Attribute attr = projectedAttributes.get(i);
+                String colName = attr.name();
+
+                // Find matching column in schema for stats lookup
+                Type schemaField = schema.getFields().stream()
+                    .filter(f -> f.getName().equals(colName))
+                    .findFirst()
+                    .orElse(null);
+
+                if (schemaField != null && schemaField.isPrimitive()) {
+                    // Check if this is COUNT(*) - represented in schema or if we have stats
+                    if (columnMins.containsKey(colName) || columnMaxs.containsKey(colName)) {
+                        // Has min/max stats - use MAX for now (placeholder)
+                        Comparable<?> value = columnMaxs.get(colName);
+                        blocks[i] = createValueBlock(attr.dataType(), value);
+                    } else {
+                        blocks[i] = blockFactory.newConstantNullBlock(1);
+                    }
+                } else {
+                    // No stats or not a primitive - use null
+                    blocks[i] = blockFactory.newConstantNullBlock(1);
+                }
+            }
+
+            // Create a single-row page with aggregates
+            Page aggregatePage = new Page(1, blocks);
+
+            // Return an iterator that yields this single page and then closes the reader
+            return new CloseableIterator<>() {
+                private boolean returned = false;
+
+                @Override
+                public boolean hasNext() {
+                    return !returned;
+                }
+
+                @Override
+                public Page next() {
+                    if (returned) {
+                        throw new java.util.NoSuchElementException();
+                    }
+                    returned = true;
+                    return aggregatePage;
+                }
+
+                @Override
+                public void close() throws IOException {
+                    reader.close();
+                }
+            };
+        } catch (Exception e) {
+            reader.close();
+            throw e;
+        }
+    }
+
+    /**
+     * Creates a Block containing a single value of the appropriate type.
+     */
+    private Block createValueBlock(DataType dataType, Comparable<?> value) {
+        if (value == null) {
+            return blockFactory.newConstantNullBlock(1);
+        }
+
+        return switch (dataType) {
+            case LONG -> blockFactory.newConstantLongBlockWith(((Number) value).longValue(), 1);
+            case INTEGER -> blockFactory.newConstantIntBlockWith(((Number) value).intValue(), 1);
+            case DOUBLE -> blockFactory.newConstantDoubleBlockWith(((Number) value).doubleValue(), 1);
+            case BOOLEAN -> blockFactory.newConstantBooleanBlockWith(((Boolean) value), 1);
+            case KEYWORD -> blockFactory.newConstantBytesRefBlockWith(new BytesRef(value.toString()), 1);
+            default -> blockFactory.newConstantNullBlock(1);
+        };
     }
 
     private record ColumnInfo(

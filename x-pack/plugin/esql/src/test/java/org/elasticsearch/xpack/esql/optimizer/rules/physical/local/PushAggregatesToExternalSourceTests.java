@@ -101,7 +101,6 @@ public class PushAggregatesToExternalSourceTests extends ESTestCase {
         return new Alias(Source.EMPTY, "count", new Count(Source.EMPTY, Literal.keyword(Source.EMPTY, "*")));
     }
 
-
     private PhysicalPlan applyRule(AggregateExec aggregateExec, LocalPhysicalOptimizerContext ctx) {
         PushAggregatesToExternalSource rule = new PushAggregatesToExternalSource();
         return rule.rule(aggregateExec, ctx);
