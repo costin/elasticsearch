@@ -7,11 +7,14 @@
 
 package org.elasticsearch.xpack.esql.optimizer.rules.physical.local;
 
+import org.elasticsearch.logging.LogManager;
+import org.elasticsearch.logging.Logger;
 import org.elasticsearch.xpack.esql.core.expression.Alias;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.NamedExpression;
 import org.elasticsearch.xpack.esql.datasources.spi.AggregatePushdownSupport;
 import org.elasticsearch.xpack.esql.datasources.spi.FormatReader;
+import org.elasticsearch.xpack.esql.expression.function.aggregate.AggregateFunction;
 import org.elasticsearch.xpack.esql.optimizer.LocalPhysicalOptimizerContext;
 import org.elasticsearch.xpack.esql.optimizer.PhysicalOptimizerRules;
 import org.elasticsearch.xpack.esql.plan.physical.AggregateExec;
@@ -44,6 +47,8 @@ import java.util.Set;
  */
 public class PushAggregatesToExternalSource extends PhysicalOptimizerRules.ParameterizedOptimizerRule<AggregateExec, LocalPhysicalOptimizerContext> {
 
+    private static final Logger logger = LogManager.getLogger(PushAggregatesToExternalSource.class);
+
     @Override
     protected PhysicalPlan rule(AggregateExec aggregateExec, LocalPhysicalOptimizerContext ctx) {
         // Pattern: AggregateExec → ExternalSourceExec
@@ -57,6 +62,7 @@ public class PushAggregatesToExternalSource extends PhysicalOptimizerRules.Param
         }
 
         // Get format reader for this source type
+        // formatReaderRegistry may be null in test environments or when not configured
         if (ctx.formatReaderRegistry() == null) {
             return aggregateExec;
         }
@@ -64,7 +70,13 @@ public class PushAggregatesToExternalSource extends PhysicalOptimizerRules.Param
         FormatReader formatReader;
         try {
             formatReader = ctx.formatReaderRegistry().byName(sourceType);
+        } catch (IllegalArgumentException e) {
+            // Expected: format reader not registered for this source type, skip optimization
+            logger.debug("Format reader not found for source type: {}", sourceType);
+            return aggregateExec;
         } catch (Exception e) {
+            // Unexpected: log and skip to avoid query failures
+            logger.debug("Failed to lookup format reader for aggregate pushdown on type: {}", sourceType, e);
             return aggregateExec;
         }
 
@@ -89,8 +101,16 @@ public class PushAggregatesToExternalSource extends PhysicalOptimizerRules.Param
         // Get pushed hint + remainder aggregates
         AggregatePushdownSupport.AggregatePushdownResult result = support.pushAggregates(aggs, List.of());
 
+        // Validate that the pushed hint is non-null (SPI contract requirement)
+        Object pushedHint = result.pushedHint();
+        if (pushedHint == null) {
+            throw new IllegalStateException(
+                "AggregatePushdownSupport returned null pushedHint after successful pushdown for format: " + sourceType
+            );
+        }
+
         // Create new ExternalSourceExec with pushedAggregate hint
-        ExternalSourceExec pushed = externalExec.withPushedAggregate(result.pushedHint());
+        ExternalSourceExec pushed = externalExec.withPushedAggregate(pushedHint);
 
         // If all aggregates pushed, return just the external source (no AggregateExec needed)
         if (result.remainder().isEmpty()) {
@@ -110,17 +130,28 @@ public class PushAggregatesToExternalSource extends PhysicalOptimizerRules.Param
     /**
      * Extract AggregateFunction expressions from the aggregates list.
      * Aggregates may be wrapped in Alias, so we extract the function expressions.
+     * Only validates the extracted expressions are actually AggregateFunction instances.
      */
     private List<Expression> extractAggregates(List<? extends NamedExpression> aggregates) {
         List<Expression> result = new ArrayList<>();
         for (NamedExpression agg : aggregates) {
+            Expression toCheck = agg;
             if (agg instanceof Alias alias) {
                 // Extract the child expression from the alias
-                result.add(alias.child());
-            } else {
-                // Use the aggregate directly (in case it's an AggregateFunction)
-                result.add(agg);
+                toCheck = alias.child();
             }
+
+            // Validate that the extracted expression is an AggregateFunction
+            if (!(toCheck instanceof AggregateFunction)) {
+                logger.debug(
+                    "Skipping non-aggregate in aggregates list: {} ({})",
+                    agg.name(),
+                    toCheck.getClass().getSimpleName()
+                );
+                continue;
+            }
+
+            result.add(toCheck);
         }
         return result;
     }
@@ -128,6 +159,11 @@ public class PushAggregatesToExternalSource extends PhysicalOptimizerRules.Param
     /**
      * Build the list of aggregates that remain (not pushed).
      * Keep the NamedExpression wrappers for aggregates in the remainder list.
+     *
+     * <p>Remainder matching relies on Expression.equals() for semantic equivalence.
+     * This works correctly for simple aggregates like COUNT(*), MIN(x), MAX(y) where
+     * the expression tree is stable. More complex scenarios (filtered aggregates,
+     * partial pushdown across mixed formats) may need more sophisticated matching.
      */
     private List<NamedExpression> buildRemainderAggregates(
         List<? extends NamedExpression> original,
@@ -137,7 +173,7 @@ public class PushAggregatesToExternalSource extends PhysicalOptimizerRules.Param
             return List.of();
         }
 
-        // Create a set of remainder expressions for faster lookup
+        // Create a set of remainder expressions for faster lookup by equality
         Set<Expression> remainderSet = new HashSet<>(remainder);
 
         List<NamedExpression> result = new ArrayList<>();
@@ -146,7 +182,7 @@ public class PushAggregatesToExternalSource extends PhysicalOptimizerRules.Param
             if (origAgg instanceof Alias alias) {
                 toCheck = alias.child();
             }
-            // Check if this aggregate is in the remainder list
+            // Check if this aggregate is in the remainder list using semantic equality
             if (remainderSet.contains(toCheck)) {
                 result.add(origAgg);
             }
