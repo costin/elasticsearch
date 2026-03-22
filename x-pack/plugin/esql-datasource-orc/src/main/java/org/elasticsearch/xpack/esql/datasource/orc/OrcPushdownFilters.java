@@ -293,7 +293,10 @@ final class OrcPushdownFilters {
             case INTEGER, LONG -> PredicateLeaf.Type.LONG;
             case DOUBLE -> PredicateLeaf.Type.FLOAT; // ORC names it FLOAT but expects Double.class
             case KEYWORD, TEXT -> PredicateLeaf.Type.STRING;
-            case DATETIME -> PredicateLeaf.Type.TIMESTAMP;
+            // DATETIME/TIMESTAMP_INSTANT pushdown is disabled: ORC's SearchArgument
+            // predicate evaluation produces incorrect results for TIMESTAMP_INSTANT
+            // columns, causing stripes with matching data to be falsely excluded.
+            // The FilterExec still handles timestamp filtering at row level.
             default -> null;
         };
     }

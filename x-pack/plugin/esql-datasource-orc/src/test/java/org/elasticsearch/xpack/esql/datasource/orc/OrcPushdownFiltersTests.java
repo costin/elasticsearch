@@ -88,8 +88,9 @@ public class OrcPushdownFiltersTests extends ESTestCase {
         assertTrue(OrcPushdownFilters.canConvert(eq("active", DataType.BOOLEAN, true)));
     }
 
-    public void testCanConvertDatetime() {
-        assertTrue(OrcPushdownFilters.canConvert(eq("ts", DataType.DATETIME, 1700000000000L)));
+    public void testCannotConvertDatetime() {
+        // DATETIME pushdown disabled due to TIMESTAMP_INSTANT predicate evaluation issues
+        assertFalse(OrcPushdownFilters.canConvert(eq("ts", DataType.DATETIME, 1700000000000L)));
     }
 
     public void testCannotConvertUnsupportedType() {
@@ -248,7 +249,8 @@ public class OrcPushdownFiltersTests extends ESTestCase {
     }
 
     public void testResolveTypeDatetime() {
-        assertEquals(PredicateLeaf.Type.TIMESTAMP, OrcPushdownFilters.resolveType(DataType.DATETIME));
+        // DATETIME pushdown disabled — resolves to null (unsupported)
+        assertNull(OrcPushdownFilters.resolveType(DataType.DATETIME));
     }
 
     public void testResolveTypeBoolean() {
