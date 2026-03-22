@@ -7,6 +7,7 @@
 
 package org.elasticsearch.xpack.esql.datasource.compress;
 
+import org.elasticsearch.plugins.ExtensiblePlugin;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.xpack.esql.datasources.spi.DataSourcePlugin;
 
@@ -22,7 +23,7 @@ import org.elasticsearch.xpack.esql.datasources.spi.DataSourcePlugin;
  * decompression) declare {@code extendedPlugins = ['x-pack-esql', 'esql-datasource-compression-libs']}
  * to inherit these libraries through parent-first classloader delegation.
  */
-public class CompressionLibsPlugin extends Plugin implements DataSourcePlugin {
+public class CompressionLibsPlugin extends Plugin implements DataSourcePlugin, ExtensiblePlugin {
     // Classloader anchor only — no codecs registered, no functionality.
     // The value is in the libraries this plugin bundles on its classloader.
 }
