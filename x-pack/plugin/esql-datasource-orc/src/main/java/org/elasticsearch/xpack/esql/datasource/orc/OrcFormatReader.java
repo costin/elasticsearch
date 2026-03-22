@@ -199,7 +199,20 @@ public class OrcFormatReader implements FormatReader {
 
         OrcStorageObjectAdapter fs = new OrcStorageObjectAdapter(object);
         Path path = new Path(object.path().toString());
-        OrcFile.ReaderOptions readerOptions = OrcFile.readerOptions(new Configuration(false)).filesystem(fs);
+        OrcFile.ReaderOptions readerOptions = OrcFile.readerOptions(new Configuration(false))
+            .filesystem(fs)
+            // Required for correct timestamp predicate pushdown. This is a reader-level
+            // flag (not per-column) that controls how SargApplier reads timestamp column
+            // statistics: true uses getMinimumUTC/getMaximumUTC, false uses getMinimum/
+            // getMaximum which applies a local-timezone shift. Without it, predicates
+            // against TIMESTAMP_INSTANT columns cause false stripe exclusions.
+            //
+            // This is safe because our ORC fixtures only use TIMESTAMP_INSTANT columns
+            // (UTC-anchored). If we ever support files with plain TIMESTAMP columns
+            // (writer-local timezone), this flag would incorrectly treat their statistics
+            // as UTC too — at that point we'd need per-column evaluation by bypassing
+            // SearchArgument and reading stripe statistics directly (the Trino approach).
+            .useUTCTimestamp(true);
         Reader reader = OrcFile.createReader(path, readerOptions);
 
         TypeDescription schema = reader.getSchema();
