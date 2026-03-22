@@ -226,6 +226,15 @@ public class PushFiltersToSource extends PhysicalOptimizerRules.ParameterizedOpt
         ExternalSourceExec externalExec,
         FilterPushdownRegistry registry
     ) {
+        // If the external source already has a pushed filter, don't push again.
+        // With RECHECK semantics the FilterExec remains in the plan for row-level
+        // correctness, so the rule would see the same FilterExec -> ExternalSourceExec
+        // pattern on every iteration. Without this guard, the optimizer loops until
+        // the rule execution limit is reached.
+        if (externalExec.pushedFilter() != null) {
+            return filterExec;
+        }
+
         // Look up pushdown support for this source type, with format-based fallback
         // for file-based sources (which all share sourceType "file")
         String formatName = resolveFormatName(externalExec.config(), externalExec.sourcePath());
@@ -242,20 +251,8 @@ public class PushFiltersToSource extends PhysicalOptimizerRules.ParameterizedOpt
         FilterPushdownSupport.PushdownResult result = pushdownSupport.pushFilters(filters);
 
         if (result.hasPushedFilter()) {
-            // Combine with existing pushed filter if present
-            Object combinedFilter = externalExec.pushedFilter();
-            if (combinedFilter != null) {
-                // The pushdown support should handle combining filters
-                // For now, we create a new pushdown with all filters including existing
-                // This is a simplification - in practice, the existing filter would be
-                // combined by the source-specific implementation
-                combinedFilter = result.pushedFilter();
-            } else {
-                combinedFilter = result.pushedFilter();
-            }
-
-            // Create new ExternalSourceExec with combined filter
-            ExternalSourceExec newExternalExec = externalExec.withPushedFilter(combinedFilter);
+            // Create new ExternalSourceExec with pushed filter
+            ExternalSourceExec newExternalExec = externalExec.withPushedFilter(result.pushedFilter());
 
             // If there are non-pushable filters, keep FilterExec
             if (result.hasRemainder()) {
