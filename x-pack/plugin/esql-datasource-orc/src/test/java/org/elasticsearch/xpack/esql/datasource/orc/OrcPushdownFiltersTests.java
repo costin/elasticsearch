@@ -33,6 +33,7 @@ import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.Not
 
 import java.sql.Timestamp;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
@@ -214,6 +215,18 @@ public class OrcPushdownFiltersTests extends ESTestCase {
         assertEquals(2, leaf.getLiteralList().size());
     }
 
+    public void testBuildDatetimeEquals() {
+        long millis = 1704877200000L; // 2024-01-10T10:00:00Z
+        SearchArgument sarg = OrcPushdownFilters.buildSearchArgument(List.of(eq("ts", DataType.DATETIME, millis)));
+        assertNotNull(sarg);
+        assertEquals(1, sarg.getLeaves().size());
+        PredicateLeaf leaf = sarg.getLeaves().get(0);
+        assertEquals("ts", leaf.getColumnName());
+        assertEquals(PredicateLeaf.Type.TIMESTAMP, leaf.getType());
+        assertEquals(PredicateLeaf.Operator.EQUALS, leaf.getOperator());
+        assertEquals(new Timestamp(millis), leaf.getLiteral());
+    }
+
     public void testBuildEmptyList() {
         assertNull(OrcPushdownFilters.buildSearchArgument(List.of()));
     }
@@ -347,7 +360,7 @@ public class OrcPushdownFiltersTests extends ESTestCase {
 
     private static Expression in(String fieldName, DataType type, Object... values) {
         FieldAttribute f = field(fieldName, type);
-        List<Expression> list = new java.util.ArrayList<>();
+        List<Expression> list = new ArrayList<>();
         for (Object v : values) {
             list.add(literal(v, type));
         }

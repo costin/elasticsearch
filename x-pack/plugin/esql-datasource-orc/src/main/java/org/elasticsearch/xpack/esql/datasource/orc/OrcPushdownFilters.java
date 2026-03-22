@@ -348,14 +348,12 @@ final class OrcPushdownFilters {
                 yield BytesRefs.toString(value);
             }
             case DATETIME -> {
-                // ORC TIMESTAMP type requires java.sql.Timestamp
+                // ORC TIMESTAMP type requires java.sql.Timestamp.
+                // ESQL DATETIME literals are always Long (UTC epoch millis).
                 if (value instanceof Long millis) {
                     yield new Timestamp(millis);
                 }
-                if (value instanceof Number n) {
-                    yield new Timestamp(n.longValue());
-                }
-                yield new Timestamp(Long.parseLong(value.toString()));
+                throw new IllegalArgumentException("Expected Long for DATETIME literal but got: " + value.getClass().getSimpleName());
             }
             default -> throw new IllegalArgumentException("Unsupported data type for ORC literal conversion: " + dataType);
         };
