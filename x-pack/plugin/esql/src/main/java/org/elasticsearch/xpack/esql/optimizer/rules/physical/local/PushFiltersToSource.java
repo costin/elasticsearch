@@ -18,6 +18,7 @@ import org.elasticsearch.xpack.esql.core.expression.predicate.operator.compariso
 import org.elasticsearch.xpack.esql.core.querydsl.query.Query;
 import org.elasticsearch.xpack.esql.core.util.CollectionUtils;
 import org.elasticsearch.xpack.esql.core.util.Queries;
+import org.elasticsearch.xpack.esql.datasources.FilterEvaluationOrderEstimator;
 import org.elasticsearch.xpack.esql.datasources.FilterPushdownRegistry;
 import org.elasticsearch.xpack.esql.datasources.FormatReaderRegistry;
 import org.elasticsearch.xpack.esql.datasources.spi.FilterPushdownSupport;
@@ -257,8 +258,9 @@ public class PushFiltersToSource extends PhysicalOptimizerRules.ParameterizedOpt
             return filterExec;
         }
 
-        // Split filter condition by AND
+        // Split filter condition by AND and reorder by estimated selectivity
         List<Expression> filters = splitAnd(filterExec.condition());
+        filters = FilterEvaluationOrderEstimator.orderByEstimatedCost(filters, externalExec.sourceMetadata());
 
         // Use the SPI to push filters
         FilterPushdownSupport.PushdownResult result = pushdownSupport.pushFilters(filters);
