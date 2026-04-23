@@ -152,207 +152,7 @@ public class AsyncExternalSourceOperatorFactory implements SourceOperator.Source
         this.pushdownSupport = pushdownSupport;
     }
 
-    public AsyncExternalSourceOperatorFactory(
-        StorageProvider storageProvider,
-        FormatReader formatReader,
-        StoragePath path,
-        List<Attribute> attributes,
-        int batchSize,
-        int maxBufferSize,
-        int rowLimit,
-        Executor executor,
-        FileList fileList,
-        Set<String> partitionColumnNames,
-        Map<String, Object> partitionValues,
-        ExternalSliceQueue sliceQueue,
-        ErrorPolicy errorPolicy,
-        int parsingParallelism
-    ) {
-        this(
-            storageProvider,
-            formatReader,
-            path,
-            attributes,
-            batchSize,
-            maxBufferSize,
-            rowLimit,
-            executor,
-            fileList,
-            partitionColumnNames,
-            partitionValues,
-            sliceQueue,
-            errorPolicy,
-            parsingParallelism,
-            null,
-            null
-        );
-    }
-
-    public AsyncExternalSourceOperatorFactory(
-        StorageProvider storageProvider,
-        FormatReader formatReader,
-        StoragePath path,
-        List<Attribute> attributes,
-        int batchSize,
-        int maxBufferSize,
-        int rowLimit,
-        Executor executor,
-        FileList fileList,
-        Set<String> partitionColumnNames,
-        Map<String, Object> partitionValues,
-        ExternalSliceQueue sliceQueue,
-        ErrorPolicy errorPolicy
-    ) {
-        this(
-            storageProvider,
-            formatReader,
-            path,
-            attributes,
-            batchSize,
-            maxBufferSize,
-            rowLimit,
-            executor,
-            fileList,
-            partitionColumnNames,
-            partitionValues,
-            sliceQueue,
-            errorPolicy,
-            1,
-            null,
-            null
-        );
-    }
-
-    public AsyncExternalSourceOperatorFactory(
-        StorageProvider storageProvider,
-        FormatReader formatReader,
-        StoragePath path,
-        List<Attribute> attributes,
-        int batchSize,
-        int maxBufferSize,
-        int rowLimit,
-        Executor executor,
-        FileList fileList,
-        Set<String> partitionColumnNames,
-        Map<String, Object> partitionValues,
-        ExternalSliceQueue sliceQueue
-    ) {
-        this(
-            storageProvider,
-            formatReader,
-            path,
-            attributes,
-            batchSize,
-            maxBufferSize,
-            rowLimit,
-            executor,
-            fileList,
-            partitionColumnNames,
-            partitionValues,
-            sliceQueue,
-            null,
-            1,
-            null,
-            null
-        );
-    }
-
-    public AsyncExternalSourceOperatorFactory(
-        StorageProvider storageProvider,
-        FormatReader formatReader,
-        StoragePath path,
-        List<Attribute> attributes,
-        int batchSize,
-        int maxBufferSize,
-        Executor executor,
-        FileList fileList,
-        Set<String> partitionColumnNames,
-        Map<String, Object> partitionValues,
-        ExternalSliceQueue sliceQueue
-    ) {
-        this(
-            storageProvider,
-            formatReader,
-            path,
-            attributes,
-            batchSize,
-            maxBufferSize,
-            FormatReader.NO_LIMIT,
-            executor,
-            fileList,
-            partitionColumnNames,
-            partitionValues,
-            sliceQueue,
-            null,
-            1,
-            null,
-            null
-        );
-    }
-
-    public AsyncExternalSourceOperatorFactory(
-        StorageProvider storageProvider,
-        FormatReader formatReader,
-        StoragePath path,
-        List<Attribute> attributes,
-        int batchSize,
-        int maxBufferSize,
-        Executor executor,
-        FileList fileList,
-        Set<String> partitionColumnNames,
-        Map<String, Object> partitionValues
-    ) {
-        this(
-            storageProvider,
-            formatReader,
-            path,
-            attributes,
-            batchSize,
-            maxBufferSize,
-            FormatReader.NO_LIMIT,
-            executor,
-            fileList,
-            partitionColumnNames,
-            partitionValues,
-            null,
-            null,
-            1,
-            null,
-            null
-        );
-    }
-
-    public AsyncExternalSourceOperatorFactory(
-        StorageProvider storageProvider,
-        FormatReader formatReader,
-        StoragePath path,
-        List<Attribute> attributes,
-        int batchSize,
-        int maxBufferSize,
-        Executor executor,
-        FileList fileList
-    ) {
-        this(
-            storageProvider,
-            formatReader,
-            path,
-            attributes,
-            batchSize,
-            maxBufferSize,
-            FormatReader.NO_LIMIT,
-            executor,
-            fileList,
-            null,
-            null,
-            null,
-            null,
-            1,
-            null,
-            null
-        );
-    }
-
-    public AsyncExternalSourceOperatorFactory(
+    public static Builder builder(
         StorageProvider storageProvider,
         FormatReader formatReader,
         StoragePath path,
@@ -361,24 +161,118 @@ public class AsyncExternalSourceOperatorFactory implements SourceOperator.Source
         int maxBufferSize,
         Executor executor
     ) {
-        this(
-            storageProvider,
-            formatReader,
-            path,
-            attributes,
-            batchSize,
-            maxBufferSize,
-            FormatReader.NO_LIMIT,
-            executor,
-            null,
-            null,
-            null,
-            null,
-            null,
-            1,
-            null,
-            null
-        );
+        return new Builder(storageProvider, formatReader, path, attributes, batchSize, maxBufferSize, executor);
+    }
+
+    /**
+     * Fluent builder for {@link AsyncExternalSourceOperatorFactory}. Required parameters are captured
+     * via {@link #builder(StorageProvider, FormatReader, StoragePath, List, int, int, Executor)};
+     * optional parameters default to the same values the legacy constructor overloads provided
+     * ({@link FormatReader#NO_LIMIT}, empty collections, {@code null} for opt-in hooks, and a
+     * parsing parallelism of {@code 1}).
+     */
+    public static final class Builder {
+        private final StorageProvider storageProvider;
+        private final FormatReader formatReader;
+        private final StoragePath path;
+        private final List<Attribute> attributes;
+        private final int batchSize;
+        private final int maxBufferSize;
+        private final Executor executor;
+
+        private int rowLimit = FormatReader.NO_LIMIT;
+        private FileList fileList;
+        private Set<String> partitionColumnNames;
+        private Map<String, Object> partitionValues;
+        private ExternalSliceQueue sliceQueue;
+        private ErrorPolicy errorPolicy;
+        private int parsingParallelism = 1;
+        private List<Expression> pushedExpressions;
+        private FilterPushdownSupport pushdownSupport;
+
+        private Builder(
+            StorageProvider storageProvider,
+            FormatReader formatReader,
+            StoragePath path,
+            List<Attribute> attributes,
+            int batchSize,
+            int maxBufferSize,
+            Executor executor
+        ) {
+            this.storageProvider = storageProvider;
+            this.formatReader = formatReader;
+            this.path = path;
+            this.attributes = attributes;
+            this.batchSize = batchSize;
+            this.maxBufferSize = maxBufferSize;
+            this.executor = executor;
+        }
+
+        public Builder rowLimit(int rowLimit) {
+            this.rowLimit = rowLimit;
+            return this;
+        }
+
+        public Builder fileList(FileList fileList) {
+            this.fileList = fileList;
+            return this;
+        }
+
+        public Builder partitionColumnNames(Set<String> partitionColumnNames) {
+            this.partitionColumnNames = partitionColumnNames;
+            return this;
+        }
+
+        public Builder partitionValues(Map<String, Object> partitionValues) {
+            this.partitionValues = partitionValues;
+            return this;
+        }
+
+        public Builder sliceQueue(ExternalSliceQueue sliceQueue) {
+            this.sliceQueue = sliceQueue;
+            return this;
+        }
+
+        public Builder errorPolicy(ErrorPolicy errorPolicy) {
+            this.errorPolicy = errorPolicy;
+            return this;
+        }
+
+        public Builder parsingParallelism(int parsingParallelism) {
+            this.parsingParallelism = parsingParallelism;
+            return this;
+        }
+
+        public Builder pushedExpressions(@Nullable List<Expression> pushedExpressions) {
+            this.pushedExpressions = pushedExpressions;
+            return this;
+        }
+
+        public Builder pushdownSupport(@Nullable FilterPushdownSupport pushdownSupport) {
+            this.pushdownSupport = pushdownSupport;
+            return this;
+        }
+
+        public AsyncExternalSourceOperatorFactory build() {
+            return new AsyncExternalSourceOperatorFactory(
+                storageProvider,
+                formatReader,
+                path,
+                attributes,
+                batchSize,
+                maxBufferSize,
+                rowLimit,
+                executor,
+                fileList,
+                partitionColumnNames,
+                partitionValues,
+                sliceQueue,
+                errorPolicy,
+                parsingParallelism,
+                pushedExpressions,
+                pushdownSupport
+            );
+        }
     }
 
     @Override
