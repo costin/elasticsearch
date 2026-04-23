@@ -100,6 +100,11 @@ public final class ExternalSourceDrainUtils {
      *
      * <p><b>Executor contract:</b> Same as {@link #drainPagesAsync}.
      *
+     * <p><b>Usage note:</b> The file-based factory ({@link AsyncExternalSourceOperatorFactory})
+     * no longer uses this method after the state-machine refactor; only
+     * {@code AsyncConnectorSourceOperatorFactory} still relies on it. Once Phase 6C migrates
+     * the connector factory, this method can be removed.
+     *
      * @param rowLimit maximum rows to drain, or {@link FormatReader#NO_LIMIT} for unlimited
      */
     public static void drainPagesWithBudgetAsync(
