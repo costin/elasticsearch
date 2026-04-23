@@ -500,7 +500,13 @@ public class AsyncExternalSourceOperatorFactory implements SourceOperator.Source
             }
             DrainResult result = drainHotPath(state, completionListener);
             switch (result) {
-                case DONE -> completionListener.onResponse(null);
+                case DONE -> {
+                    // Buffer finished (externally or by row-limit exhaustion) while an iterator is still open:
+                    // close it before reporting completion so no resources leak on cancellation paths.
+                    closeQuietly(state.pages);
+                    state.pages = null;
+                    completionListener.onResponse(null);
+                }
                 case EOF -> {
                     closeQuietly(state.pages);
                     state.pages = null;

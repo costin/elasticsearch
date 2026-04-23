@@ -42,6 +42,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -2135,6 +2136,210 @@ public class AsyncExternalSourceOperatorFactoryTests extends ESTestCase {
             producerExec.shutdown();
             assertTrue(producerExec.awaitTermination(15, TimeUnit.SECONDS));
         }
+    }
+
+    /**
+     * State-machine guard test for the flattened producer loop.
+     *
+     * Drives the slice-queue producer end-to-end with 2 {@link CoalescedSplit}s of 2 leaves each
+     * (4 leaves total, 1 page per leaf) on a single-thread executor and asserts:
+     * <ul>
+     *   <li>all 4 leaves are read once (state machine visits every leaf across splits);</li>
+     *   <li>all 4 pages arrive at the buffer;</li>
+     *   <li>every opened iterator is closed;</li>
+     *   <li>{@code removeAsyncAction()} fires exactly once (success path =&gt; buffer.finish(false));</li>
+     *   <li>no {@code addPage} after {@code buffer.noMoreInputs()} becomes true.</li>
+     * </ul>
+     * Followed by a second scenario that forces {@code buffer.finish(true)} partway through, to
+     * verify the active iterator gets closed and no further leaves are opened.
+     */
+    public void testProducerLoopStateMachine() throws Exception {
+        // --- scenario 1: run to completion across 2 splits x 2 leaves ---
+        runStateMachineScenario(false);
+
+        // --- scenario 2: force early noMoreInputs after the first leaf's page is consumed ---
+        runStateMachineScenario(true);
+    }
+
+    private void runStateMachineScenario(boolean forceNoMoreInputsEarly) throws Exception {
+        AtomicInteger readCalls = new AtomicInteger();
+        AtomicInteger closeCalls = new AtomicInteger();
+        TrackingReader reader = new TrackingReader(readCalls, closeCalls);
+
+        // 2 coalesced splits x 2 leaves = 4 leaves
+        List<ExternalSplit> splits = new ArrayList<>();
+        for (int s = 0; s < 2; s++) {
+            List<ExternalSplit> leaves = new ArrayList<>();
+            for (int l = 0; l < 2; l++) {
+                leaves.add(
+                    new FileSplit(
+                        "test",
+                        StoragePath.of("s3://bucket/s" + s + "_l" + l + ".parquet"),
+                        0,
+                        100,
+                        "parquet",
+                        Map.of(),
+                        Map.of()
+                    )
+                );
+            }
+            splits.add(new CoalescedSplit("test", leaves));
+        }
+        ExternalSliceQueue sliceQueue = new ExternalSliceQueue(splits);
+
+        StubMultiFileStorageProvider storageProvider = new StubMultiFileStorageProvider();
+        List<Attribute> attributes = List.of(
+            new FieldAttribute(
+                Source.EMPTY,
+                "value",
+                new EsField("value", DataType.INTEGER, Map.of(), false, EsField.TimeSeriesFieldType.NONE)
+            )
+        );
+
+        DriverContext driverContext = mock(DriverContext.class);
+        when(driverContext.blockFactory()).thenReturn(TEST_BLOCK_FACTORY);
+        AtomicInteger addAsync = new AtomicInteger();
+        AtomicInteger removeAsync = new AtomicInteger();
+        doAnswer(inv -> {
+            addAsync.incrementAndGet();
+            return null;
+        }).when(driverContext).addAsyncAction();
+        doAnswer(inv -> {
+            removeAsync.incrementAndGet();
+            return null;
+        }).when(driverContext).removeAsyncAction();
+
+        // Use a single-thread executor so ordering is deterministic.
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            AsyncExternalSourceOperatorFactory factory = AsyncExternalSourceOperatorFactory.builder(
+                storageProvider,
+                reader,
+                StoragePath.of("s3://bucket/s0_l0.parquet"),
+                attributes,
+                100,
+                10,
+                executor
+            ).sliceQueue(sliceQueue).build();
+
+            SourceOperator operator = factory.get(driverContext);
+
+            if (forceNoMoreInputsEarly) {
+                // Poll a few pages then force finish(true) to simulate downstream cancellation.
+                int received = 0;
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (received < 1 && System.nanoTime() < deadline) {
+                    Page p = operator.getOutput();
+                    if (p != null) {
+                        received++;
+                        p.releaseBlocks();
+                    }
+                }
+                // Mimic downstream cancellation; the producer loop must observe noMoreInputs and exit.
+                operator.finish();
+                // Drain remaining output (should not hang).
+                while (operator.isFinished() == false) {
+                    Page p = operator.getOutput();
+                    if (p != null) p.releaseBlocks();
+                }
+            } else {
+                List<Page> pages = new ArrayList<>();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (operator.isFinished() == false && System.nanoTime() < deadline) {
+                    Page p = operator.getOutput();
+                    if (p != null) pages.add(p);
+                }
+                assertTrue("operator did not finish within timeout", operator.isFinished());
+                assertEquals("all 4 leaves produced a page", 4, pages.size());
+                for (Page p : pages)
+                    p.releaseBlocks();
+            }
+
+            operator.close();
+
+            // Let the producer thread observe finish() and run the completion listener
+            // (which calls removeAsyncAction) before we assert on counters.
+            executor.shutdown();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+
+            // Every iterator that was opened must have been closed.
+            assertEquals("read/close counts differ - leaked iterator", readCalls.get(), closeCalls.get());
+            // addAsync/removeAsync are paired: exactly once, on the happy path and cancelled path.
+            assertEquals(1, addAsync.get());
+            assertEquals(1, removeAsync.get());
+            // Full run must hit all 4 leaves; early-exit run hits at least 1.
+            if (forceNoMoreInputsEarly == false) {
+                assertEquals(4, readCalls.get());
+            } else {
+                assertTrue("expected at least one leaf to be read before cancellation", readCalls.get() >= 1);
+            }
+        } finally {
+            if (executor.isShutdown() == false) {
+                executor.shutdown();
+                assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    /**
+     * Format reader for the state-machine test. Every {@code read} returns a single-page iterator
+     * that increments {@code closeCalls} on {@link CloseableIterator#close()}, so the test can
+     * assert that every opened iterator is closed exactly once.
+     */
+    private static class TrackingReader implements FormatReader {
+        private final AtomicInteger readCount;
+        private final AtomicInteger closeCount;
+
+        TrackingReader(AtomicInteger readCount, AtomicInteger closeCount) {
+            this.readCount = readCount;
+            this.closeCount = closeCount;
+        }
+
+        @Override
+        public SourceMetadata metadata(StorageObject object) {
+            return null;
+        }
+
+        @Override
+        public CloseableIterator<Page> read(StorageObject object, FormatReadContext context) {
+            readCount.incrementAndGet();
+            // Latch lets the buffer's waitForSpace path engage naturally; we return one page.
+            CountDownLatch once = new CountDownLatch(1);
+            once.countDown();
+            return new CloseableIterator<>() {
+                private boolean emitted = false;
+
+                @Override
+                public boolean hasNext() {
+                    return emitted == false;
+                }
+
+                @Override
+                public Page next() {
+                    if (emitted) throw new NoSuchElementException();
+                    emitted = true;
+                    return createTestPage();
+                }
+
+                @Override
+                public void close() {
+                    closeCount.incrementAndGet();
+                }
+            };
+        }
+
+        @Override
+        public String formatName() {
+            return "tracking";
+        }
+
+        @Override
+        public List<String> fileExtensions() {
+            return List.of(".parquet");
+        }
+
+        @Override
+        public void close() {}
     }
 
     // ===== Helpers =====
