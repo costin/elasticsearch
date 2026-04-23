@@ -94,7 +94,7 @@ public class AsyncExternalSourceOperatorFactory implements SourceOperator.Source
     private final List<Expression> pushedExpressions;
     private final FilterPushdownSupport pushdownSupport;
 
-    public AsyncExternalSourceOperatorFactory(
+    private AsyncExternalSourceOperatorFactory(
         StorageProvider storageProvider,
         FormatReader formatReader,
         StoragePath path,
@@ -166,10 +166,10 @@ public class AsyncExternalSourceOperatorFactory implements SourceOperator.Source
 
     /**
      * Fluent builder for {@link AsyncExternalSourceOperatorFactory}. Required parameters are captured
-     * via {@link #builder(StorageProvider, FormatReader, StoragePath, List, int, int, Executor)};
-     * optional parameters default to the same values the legacy constructor overloads provided
-     * ({@link FormatReader#NO_LIMIT}, empty collections, {@code null} for opt-in hooks, and a
-     * parsing parallelism of {@code 1}).
+     * via {@link #builder(StorageProvider, FormatReader, StoragePath, List, int, int, Executor)}.
+     * Optional parameters default to: {@link FormatReader#NO_LIMIT} for rowLimit, empty collections
+     * for partition/pushed-expression lists, {@code null} for opt-in hooks (sliceQueue,
+     * pushdownSupport, etc.), and {@code 1} for parsingParallelism.
      */
     public static final class Builder {
         private final StorageProvider storageProvider;
@@ -213,27 +213,27 @@ public class AsyncExternalSourceOperatorFactory implements SourceOperator.Source
             return this;
         }
 
-        public Builder fileList(FileList fileList) {
+        public Builder fileList(@Nullable FileList fileList) {
             this.fileList = fileList;
             return this;
         }
 
-        public Builder partitionColumnNames(Set<String> partitionColumnNames) {
+        public Builder partitionColumnNames(@Nullable Set<String> partitionColumnNames) {
             this.partitionColumnNames = partitionColumnNames;
             return this;
         }
 
-        public Builder partitionValues(Map<String, Object> partitionValues) {
+        public Builder partitionValues(@Nullable Map<String, Object> partitionValues) {
             this.partitionValues = partitionValues;
             return this;
         }
 
-        public Builder sliceQueue(ExternalSliceQueue sliceQueue) {
+        public Builder sliceQueue(@Nullable ExternalSliceQueue sliceQueue) {
             this.sliceQueue = sliceQueue;
             return this;
         }
 
-        public Builder errorPolicy(ErrorPolicy errorPolicy) {
+        public Builder errorPolicy(@Nullable ErrorPolicy errorPolicy) {
             this.errorPolicy = errorPolicy;
             return this;
         }
