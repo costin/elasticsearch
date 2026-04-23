@@ -2152,6 +2152,10 @@ public class AsyncExternalSourceOperatorFactoryTests extends ESTestCase {
      * </ul>
      * Followed by a second scenario that forces {@code buffer.finish(true)} partway through, to
      * verify the active iterator gets closed and no further leaves are opened.
+     * <p>
+     * BLOCKED-path coverage (buffer-full backpressure and wakeup correctness) is not exercised here;
+     * it lives in {@code AsyncExternalSourceBufferTests#testNoLostWakeupUnderConcurrentAddAndPoll}
+     * (the Phase 5 stress test).
      */
     public void testProducerLoopStateMachine() throws Exception {
         // --- scenario 1: run to completion across 2 splits x 2 leaves ---

@@ -465,6 +465,9 @@ public class AsyncExternalSourceOperatorFactory implements SourceOperator.Source
             DriverContext driverContext,
             int rowsRemaining
         ) {
+            if ((queue == null) == (fileList == null)) {
+                throw new IllegalArgumentException("ProducerState requires exactly one of queue or fileList");
+            }
             this.queue = queue;
             this.fileList = fileList;
             this.projectedColumns = projectedColumns;
@@ -548,9 +551,15 @@ public class AsyncExternalSourceOperatorFactory implements SourceOperator.Source
                     try {
                         executor.execute(() -> runProducerLoop(state, completionListener));
                     } catch (Exception e) {
+                        closeQuietly(state.pages);
+                        state.pages = null;
                         completionListener.onFailure(e);
                     }
-                }, completionListener::onFailure));
+                }, e -> {
+                    closeQuietly(state.pages);
+                    state.pages = null;
+                    completionListener.onFailure(e);
+                }));
                 return DrainResult.BLOCKED;
             }
             if (buffer.noMoreInputs()) {
