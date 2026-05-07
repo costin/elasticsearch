@@ -354,17 +354,118 @@ public class ParquetPushedExpressionsTests extends ESTestCase {
         assertNull(pushed.toFilterPredicate(schema));
     }
 
-    public void testWildcardLikeCaseInsensitiveDoesNotPushRange() {
-        // Case-insensitive "FoO*" matches "foo", "FOO", "fOo", etc., which lie outside
-        // ["FoO", "FoO~"). Pushing the case-sensitive range would silently prune true matches
-        // — a correctness bug, not just an inefficiency. translateWildcardLikePrefix gates on
-        // wl.caseInsensitive() to keep the filter unpushable here; late-mat alone runs the
-        // case-aware automaton.
+    public void testWildcardLikeCaseInsensitiveLetterPrefixHasEmptyPrefix() {
+        // Case-insensitive "FoO*" matches "foo", "FOO", "fOo", etc. Because every letter
+        // becomes a {lower, upper} branch in the case-aware determinized automaton,
+        // Operations.getCommonPrefix returns the empty string and we push nothing — soundly.
+        // The earlier implementation derived the prefix from the case-*sensitive* automaton and
+        // had to gate explicitly on wl.caseInsensitive(); the current implementation relies on
+        // the case-aware automaton itself to produce the right (empty) prefix, so the absence
+        // of a Parquet predicate falls out of correctness rather than a special-case guard.
         MessageType schema = keywordSchema("s");
         Expression like = new WildcardLike(Source.EMPTY, attr("s", DataType.KEYWORD), new WildcardPattern("FoO*"), true);
         ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(like));
 
-        assertNull("case-insensitive WildcardLike must not push a range predicate", pushed.toFilterPredicate(schema));
+        assertNull("case-insensitive letter-prefix WildcardLike has no extractable prefix", pushed.toFilterPredicate(schema));
+    }
+
+    public void testWildcardLikeCaseInsensitiveNonLetterPrefixPushesRange() {
+        // Case-insensitive "/api/v1*" — the leading "/" is a non-letter and survives the
+        // case-aware getCommonPrefix walk (no upper/lower branching for "/"). The walk stops
+        // at the first letter ("a"), so the extracted prefix is just "/" and the pushed range
+        // is ["/", "0") — modest pruning, but every case-insensitive URL match starts with "/"
+        // so the range is sound. Without this path case-insensitive LIKE got no row-group
+        // pruning at all.
+        MessageType schema = keywordSchema("url");
+        Expression like = new WildcardLike(Source.EMPTY, attr("url", DataType.KEYWORD), new WildcardPattern("/api/v1*"), true);
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(like));
+
+        FilterPredicate fp = pushed.toFilterPredicate(schema);
+        assertNotNull("case-insensitive '/api/v1*' must yield the leading non-letter prefix '/'", fp);
+        String repr = fp.toString();
+        assertThat(repr, containsString("gteq(url, " + binaryRepr("/")));
+        assertThat(repr, containsString("lt(url, " + binaryRepr("0")));
+    }
+
+    public void testWildcardLikeCaseInsensitiveLeadingWhitespacePrefixPushesRange() {
+        // Whitespace is not case-foldable (it has no upper/lower variant), so leading spaces
+        // survive the case-aware getCommonPrefix walk just like digits and punctuation. Pinned
+        // because trimming behavior in Lucene's RegExp would silently regress this if it
+        // changed; values like " API_FOO" must be discoverable even when LIKE is
+        // case-insensitive.
+        MessageType schema = keywordSchema("s");
+        Expression like = new WildcardLike(Source.EMPTY, attr("s", DataType.KEYWORD), new WildcardPattern("   foo*"), true);
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(like));
+        FilterPredicate fp = pushed.toFilterPredicate(schema);
+        assertNotNull(fp);
+        String repr = fp.toString();
+        // Prefix walk stops at 'f'; range is [" ", " !") — three spaces (0x20) lower bound,
+        // two spaces + '!' (0x21) upper bound (incrementing the last code point of " ").
+        assertThat(repr, containsString("gteq(s, " + binaryRepr("   ")));
+        assertThat(repr, containsString("lt(s, " + binaryRepr("  !")));
+    }
+
+    public void testWildcardLikeCaseInsensitiveCaseFoldableUnicodeLetterHasEmptyPrefix() {
+        // Lucene's CASE_INSENSITIVE flag covers the full Unicode case-folding table, not just
+        // ASCII a-z. So a non-ASCII letter at the prefix position (e.g. 'c' in "café*") still
+        // produces a branching transition (c|C) in the case-aware automaton, and the common
+        // prefix is empty. Pinned to lock the soundness story for non-ASCII identifiers.
+        MessageType schema = keywordSchema("s");
+        Expression like = new WildcardLike(Source.EMPTY, attr("s", DataType.KEYWORD), new WildcardPattern("café*"), true);
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(like));
+        assertNull("case-insensitive non-ASCII letter prefix must yield no Parquet predicate", pushed.toFilterPredicate(schema));
+    }
+
+    public void testWildcardLikeCaseInsensitiveCjkPrefixPushesFullRange() {
+        // CJK code points have no case distinction, so case-folding leaves them untouched and
+        // the case-aware getCommonPrefix returns the full literal. The bytes are multi-byte
+        // UTF-8 (中 is U+4E2D → 0xE4 0xB8 0xAD); StringPrefixUtils.nextPrefixUpperBound increments
+        // the last code point in the prefix, so the upper bound is "中" + (文+1). Pin the
+        // multi-byte case so a future tweak to UTF-8 boundary handling can't silently regress.
+        MessageType schema = keywordSchema("s");
+        Expression like = new WildcardLike(Source.EMPTY, attr("s", DataType.KEYWORD), new WildcardPattern("中文*"), true);
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(like));
+        FilterPredicate fp = pushed.toFilterPredicate(schema);
+        assertNotNull("CJK literal prefix must push under case-insensitive LIKE", fp);
+        String repr = fp.toString();
+        // Lower bound is the literal prefix; upper bound increments the last code point.
+        // 文 is U+6587, so the upper bound's last code point is U+6588 ("效").
+        assertThat(repr, containsString("gteq(s, " + binaryRepr("中文")));
+        assertThat(repr, containsString("lt(s, " + binaryRepr("中" + new String(Character.toChars(0x6588)))));
+    }
+
+    public void testWildcardLikeQuestionMarkBeforeFirstLetterTruncatesPrefix() {
+        // "_?a*" — the literal '_' is kept (single-char wildcard '?' has no impact on the leading
+        // run before it), but the '?' itself stops further prefix accumulation. Both case
+        // sensitivities therefore extract just "_". Pinned to lock the question-mark behavior
+        // across the case-sensitivity axis — the determinizer treats '?' the same in both modes.
+        MessageType schema = keywordSchema("s");
+        Expression likeCs = new WildcardLike(Source.EMPTY, attr("s", DataType.KEYWORD), new WildcardPattern("_?a*"));
+        Expression likeCi = new WildcardLike(Source.EMPTY, attr("s", DataType.KEYWORD), new WildcardPattern("_?a*"), true);
+        FilterPredicate fpCs = new ParquetPushedExpressions(List.of(likeCs)).toFilterPredicate(keywordSchema("s"));
+        FilterPredicate fpCi = new ParquetPushedExpressions(List.of(likeCi)).toFilterPredicate(keywordSchema("s"));
+        assertNotNull(fpCs);
+        assertNotNull(fpCi);
+        // Both should produce the same range ["_", "`") because the prefix is just "_".
+        assertEquals("case sensitivity must not affect the prefix when the prefix has no letters", fpCs.toString(), fpCi.toString());
+        assertThat(fpCs.toString(), containsString("gteq(s, " + binaryRepr("_")));
+        assertThat(fpCs.toString(), containsString("lt(s, " + binaryRepr("`"))); // '_' is 0x5F, '`' is 0x60
+    }
+
+    public void testWildcardLikeCaseInsensitiveDigitPrefixPushesFullRange() {
+        // Case-insensitive "1234*" — digits are not letters, so case-folding is a no-op for
+        // them. The case-aware automaton is structurally identical to the case-sensitive one
+        // for the prefix portion, and getCommonPrefix returns the entire literal "1234".
+        // Pinned so a future Lucene change to digit handling doesn't silently regress this.
+        MessageType schema = keywordSchema("id");
+        Expression like = new WildcardLike(Source.EMPTY, attr("id", DataType.KEYWORD), new WildcardPattern("1234*"), true);
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(like));
+
+        FilterPredicate fp = pushed.toFilterPredicate(schema);
+        assertNotNull(fp);
+        String repr = fp.toString();
+        assertThat(repr, containsString("gteq(id, " + binaryRepr("1234")));
+        assertThat(repr, containsString("lt(id, " + binaryRepr("1235")));
     }
 
     public void testWildcardLikePureLiteralBecomesRange() {
@@ -581,9 +682,11 @@ public class ParquetPushedExpressionsTests extends ESTestCase {
     /**
      * Reproduces Parquet's {@code Binary.toString()} format for a byte-string literal so tests
      * can assert against it without depending on a quoted-string representation that the
-     * library does not actually produce. Format: {@code Binary{N constant bytes, [b0, b1, ...]}}
-     * with no closing brace so the substring matcher tolerates the trailing context (e.g. the
-     * predicate's closing parens).
+     * library does not actually produce. Parquet renders each byte as the JVM's <em>signed</em>
+     * decimal value (i.e. the raw {@code int} promotion of {@code byte}, which yields negative
+     * numbers for bytes 0x80..0xff — visible on UTF-8 multi-byte sequences like CJK literals).
+     * Format: {@code Binary{N constant bytes, [b0, b1, ...]}} with no closing brace so the
+     * substring matcher tolerates the trailing context (e.g. the predicate's closing parens).
      */
     private static String binaryRepr(String s) {
         byte[] bytes = s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -592,7 +695,7 @@ public class ParquetPushedExpressionsTests extends ESTestCase {
             if (i > 0) {
                 sb.append(", ");
             }
-            sb.append(bytes[i] & 0xff);
+            sb.append((int) bytes[i]);
         }
         sb.append("]");
         return sb.toString();

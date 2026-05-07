@@ -105,18 +105,32 @@ final class ParquetPushedExpressions {
     private final IdentityHashMap<WildcardLike, CompiledWildcard> automatonCache = new IdentityHashMap<>();
 
     /**
-     * Compiled form of a {@link WildcardLike}: the runnable matcher and a flag indicating that the
-     * source automaton accepts every input. The flag is computed against the case-aware automaton
-     * (the same one passed to {@link ByteRunAutomaton}), so the {@link #matchesAll} fast path in
-     * {@link #evaluateWildcardLike} is consistent with the runtime case-sensitivity setting — it
-     * does not silently fall through to the per-row loop just because the pattern's internal
-     * case-insensitive cache disagrees with the requested flag.
+     * Compiled form of a {@link WildcardLike}: the runnable matcher, a flag indicating that the
+     * source automaton accepts every input, and the longest literal prefix shared by every accepted
+     * string (used by the prefix-range Parquet pushdown). Everything is derived from the same
+     * {@link Automaton} that {@link #matcher} wraps, so we compute it once per pattern per query
+     * and both the late-mat evaluator and the plan-time prefix-range translator read from this cache.
      *
-     * <p>{@code matcher} is {@code null} when the pattern failed to determinize; the caller treats
-     * that as "fall back to FilterExec" (return {@code null} from evaluateWildcardLike).
+     * <p>{@link #matchesAll} is computed against the case-aware automaton (the same one passed to
+     * {@link ByteRunAutomaton}), so the {@link #matchesAll} fast path in {@link #evaluateWildcardLike}
+     * is consistent with the runtime case-sensitivity setting — it does not silently fall through to
+     * the per-row loop just because the pattern's internal case-insensitive cache disagrees with the
+     * requested flag.
+     *
+     * <p>{@link #prefix} comes from {@link Operations#getCommonPrefix} on the case-aware automaton
+     * (after {@link Operations#removeDeadStates}), so case-insensitive LIKEs return only the leading
+     * non-letter run (e.g. {@code "/api/v1*"} case-insensitive → {@code "/"}). This is the key
+     * correctness property that lets {@link #translateWildcardLikePrefix} push a sound range
+     * predicate even for case-insensitive patterns: the prefix matches every accepted string under
+     * the requested case-sensitivity, not just the case-sensitive form.
+     *
+     * <p>{@code matcher} is {@code null} (and {@code prefix} is the empty string) when the pattern
+     * failed to determinize; the caller treats that as "fall back to FilterExec" (return {@code null}
+     * from evaluateWildcardLike) or "no prefix range" (return {@code null} from
+     * translateWildcardLikePrefix).
      */
-    private record CompiledWildcard(ByteRunAutomaton matcher, boolean matchesAll) {
-        static final CompiledWildcard FAILED = new CompiledWildcard(null, false);
+    private record CompiledWildcard(ByteRunAutomaton matcher, boolean matchesAll, String prefix) {
+        static final CompiledWildcard FAILED = new CompiledWildcard(null, false, "");
     }
 
     ParquetPushedExpressions(List<Expression> expressions) {
@@ -324,54 +338,43 @@ final class ParquetPushedExpressions {
      * can be skipped without ever fetching its data. The full LIKE then runs in late-mat over
      * the surviving rows, so the result remains exact.
      *
-     * <p><b>Cost discipline.</b>
-     * {@link org.elasticsearch.xpack.esql.core.expression.predicate.regex.AbstractStringPattern#extractPrefix}
-     * uses the lazily cached <em>case-sensitive</em> automaton on the pattern instance. The
-     * late-mat path in {@link #automatonFor} calls {@code createAutomaton(caseInsensitive)} on
-     * its own and stores the result in this class's {@code automatonCache}; for case-sensitive
-     * LIKE this means the determinize work runs <em>twice</em> per pattern per query (once
-     * here, once for late-mat). The {@code extractPrefix} portion adds a {@code removeDeadStates}
-     * pass and a single-path walk via {@link org.apache.lucene.util.automaton.Operations#getCommonPrefix},
-     * both linear in automaton size — single-digit microseconds for typical patterns. Acceptable
-     * cost for the I/O we save on remote storage; unifying the two automaton caches is a future
-     * cleanup.
+     * <p><b>Cost discipline.</b> The prefix is read from {@link #automatonFor}'s per-query
+     * {@link CompiledWildcard} cache, which builds the case-aware {@link Automaton} exactly
+     * once per pattern per query — the same instance late-mat will wrap into a
+     * {@link ByteRunAutomaton}. Calling this at plan time therefore <em>warms</em> the cache
+     * for execution rather than duplicating its work. The marginal cost on the prefix side is a
+     * {@link Operations#removeDeadStates} pass and a single-path walk via
+     * {@link Operations#getCommonPrefix}, both linear in automaton size — single-digit
+     * microseconds for typical patterns.
      *
-     * <p><b>Why case-insensitive is excluded.</b>
-     * {@link org.elasticsearch.xpack.esql.core.expression.predicate.regex.AbstractStringPattern#extractPrefix}
-     * always operates on the case-sensitive automaton, so
-     * {@code WildcardLike("FoO*", caseInsensitive = true).extractPrefix()} returns
-     * {@code "FoO"} — but the predicate matches {@code "foo"}, {@code "FOO"}, {@code "fOo"},
-     * etc., which are <em>not</em> in {@code ["FoO", "FoO~")}. Pushing that range would
-     * silently prune rows that LIKE accepts. Mirrors the same guard in {@code ReplaceRegexMatch}'s
-     * {@code WildcardLike → StartsWith} rewrite. A case-insensitive prefix range would require
-     * Parquet to support case-folded comparisons, which it does not.
+     * <p><b>Case-insensitive correctness.</b> The automaton built for {@code wl.caseInsensitive()
+     * == true} accepts both upper- and lower-case forms of every letter, so the determinized
+     * automaton has a branching transition at each letter position in the pattern's literal
+     * prefix. {@link Operations#getCommonPrefix} stops at the first branch and returns only the
+     * leading run of non-letter code points (digits, punctuation, etc.). For patterns like
+     * {@code "FoO*"} (case-insensitive) the prefix is empty and we push nothing — soundly. For
+     * patterns like {@code "/api/v1*"} (case-insensitive) the prefix is {@code "/"}, which still
+     * lets Parquet skip row groups whose URLs do not start with {@code "/"}. This is strictly
+     * better than refusing to push at all and is sound by construction: every value the LIKE
+     * accepts (under the requested case-sensitivity) starts with the extracted prefix.
      *
      * <p><b>Interaction with {@code ReplaceRegexMatch}.</b> The logical optimizer already
-     * rewrites {@code WildcardLike("foo*")} (a pure-prefix pattern, case-sensitive) into
-     * {@link StartsWith}, so by the time we see a {@link WildcardLike} here the pattern has
-     * <em>some</em> non-prefix structure (a trailing {@code "*"} followed by literals, an
-     * embedded {@code "?"}, etc.). This branch fires for {@code "foo*bar"},
-     * {@code "foo?bar*"}, {@code "foo*bar*"}, etc. — exactly the cases where {@code StartsWith}
-     * would be unsafe but the prefix range is still sound.
+     * rewrites case-sensitive pure-prefix {@link WildcardLike} (e.g. {@code "foo*"}) into
+     * {@link StartsWith}, so by the time we see a case-sensitive {@link WildcardLike} here the
+     * pattern has <em>some</em> non-prefix structure (trailing literals after a {@code "*"}, an
+     * embedded {@code "?"}, etc.). Case-insensitive {@link WildcardLike} is not rewritten by
+     * that rule (case-folding has no exact {@link StartsWith} equivalent in ESQL), so we are
+     * the only place that can extract row-group pruning out of case-insensitive LIKE.
      */
-    private static FilterPredicate translateWildcardLikePrefix(WildcardLike wl, String columnName) {
-        if (wl.caseInsensitive()) {
-            return null;
-        }
-        String prefix;
-        try {
-            prefix = wl.pattern().extractPrefix();
-        } catch (IllegalArgumentException e) {
-            // AbstractStringPattern#createAutomaton wraps Lucene's TooComplexToDeterminizeException
-            // as IllegalArgumentException with the message "Pattern was too complex to determinize".
-            // ParquetFilterPushdownSupport#canCompileAllPatterns probes the same call at plan time
-            // and downgrades canPush to RECHECK on failure, so a YES-pushed plan will not reach
-            // here with such a pattern; this catch is a defense-in-depth for RECHECK plans, where
-            // the FilterExec safety net re-evaluates LIKE and we just drop the row-group pruning.
-            logger.debug("WildcardLike pattern [{}] could not be determinized for prefix extraction", wl.pattern().pattern(), e);
-            return null;
-        }
-        if (prefix == null || prefix.isEmpty()) {
+    private FilterPredicate translateWildcardLikePrefix(WildcardLike wl, String columnName) {
+        // Plan-time call that warms the per-query CompiledWildcard cache for late-mat: the
+        // Automaton built here is the same one ByteRunAutomaton will wrap during evaluation.
+        // If determinization failed, automatonFor has logged it and stored the FAILED sentinel
+        // (prefix = ""), so we silently skip row-group pruning and rely on the FilterExec
+        // safety net upstream (canPush downgrades such patterns from YES to RECHECK in
+        // canCompileAllPatterns).
+        String prefix = automatonFor(wl).prefix();
+        if (prefix.isEmpty()) {
             return null;
         }
         return prefixRange(columnName, new BytesRef(prefix));
@@ -1219,6 +1222,15 @@ final class ParquetPushedExpressions {
             CompiledWildcard compiled;
             try {
                 Automaton automaton = wl.pattern().createAutomaton(wl.caseInsensitive());
+                // Compute the literal prefix shared by every accepted string. We use the same
+                // case-aware automaton as the matcher so the prefix is sound for both case-sensitive
+                // and case-insensitive LIKE: for case-insensitive patterns, getCommonPrefix returns
+                // only the leading non-letter run (every letter in the pattern produces a {lower,
+                // upper} branch in the determinized automaton, so the common-prefix walk stops
+                // there). Empty string ⇒ no usable prefix; the prefix-range translator treats that
+                // as "no Parquet predicate".
+                Automaton clean = Operations.removeDeadStates(automaton);
+                String prefix = clean.getNumStates() == 0 ? "" : Operations.getCommonPrefix(clean);
                 // Operations.isTotal returns true iff the automaton accepts every code-point sequence
                 // over its alphabet (Unicode 0..0x10FFFF for WildcardPattern's UTF-32 output). After
                 // the implicit UTF-32->UTF-8 conversion in the ByteRunAutomaton ctor, "total" carries
@@ -1228,7 +1240,7 @@ final class ParquetPushedExpressions {
                 // (For invalid UTF-8 — outside the KEYWORD contract — the byte-level automaton would
                 // simply reject the malformed prefix, matching the per-row scalar path's behavior.)
                 boolean matchesAll = Operations.isTotal(automaton);
-                compiled = new CompiledWildcard(new ByteRunAutomaton(automaton), matchesAll);
+                compiled = new CompiledWildcard(new ByteRunAutomaton(automaton), matchesAll, prefix);
             } catch (IllegalArgumentException | TooComplexToDeterminizeException e) {
                 logger.debug(
                     "Cannot push WildcardLike pattern [{}] to Parquet late materialization, falling back to FilterExec",
