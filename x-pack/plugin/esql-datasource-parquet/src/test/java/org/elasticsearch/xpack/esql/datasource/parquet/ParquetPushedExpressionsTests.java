@@ -7,6 +7,7 @@
 
 package org.elasticsearch.xpack.esql.datasource.parquet;
 
+import org.apache.lucene.util.BytesRef;
 import org.apache.parquet.filter2.predicate.FilterPredicate;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
@@ -19,8 +20,10 @@ import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.expression.ReferenceAttribute;
+import org.elasticsearch.xpack.esql.core.expression.predicate.regex.WildcardPattern;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.regex.WildcardLike;
 import org.elasticsearch.xpack.esql.expression.predicate.Range;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Not;
@@ -293,6 +296,306 @@ public class ParquetPushedExpressionsTests extends ESTestCase {
 
     public void testConvertMillisToPhysicalNoAnnotation() {
         assertEquals(5678L, ParquetPushedExpressions.convertMillisToPhysical(5678L, null));
+    }
+
+    // --- WildcardLike → prefix-range translation ---
+    //
+    // Translation makes WildcardLike pushable as a real Parquet FilterPredicate (gtEq AND lt)
+    // when the pattern has a literal prefix, enabling row-group / page-index / dictionary
+    // skipping that the late-mat evaluator alone cannot trigger. The exact LIKE still runs
+    // in late-mat over the surviving rows so the result remains correct (the prefix range is
+    // a sound over-approximation: every match starts with the prefix, but not every value in
+    // the range matches).
+
+    public void testWildcardLikeTrailingLiteralBecomesRange() {
+        // "foo*bar" — prefix is "foo", surviving range is [foo, fop). Late-mat applies "*bar"
+        // on the survivors. ReplaceRegexMatch does NOT rewrite this to StartsWith (the suffix
+        // matters), so this branch fires.
+        assertPrefixRange(wildcardLike("s", "foo*bar"), "s", "foo", "fop");
+    }
+
+    public void testWildcardLikeQuestionMarkPrefixBecomesRange() {
+        // "foo?bar" — '?' is a 1-char wildcard, which terminates the literal-prefix scan.
+        // Prefix is still "foo"; range [foo, fop) is sound (every match starts with "foo").
+        assertPrefixRange(wildcardLike("s", "foo?bar"), "s", "foo", "fop");
+    }
+
+    public void testWildcardLikeMiddleAndTrailingWildcardBecomesRange() {
+        // "https*google*" — the q22/q23-shape pattern. Prefix is "https"; range
+        // [https, httpt). Late-mat then applies the *google* part. This is the
+        // primary motivating case for the optimization.
+        assertPrefixRange(wildcardLike("url", "https*google*"), "url", "https", "httpt");
+    }
+
+    public void testWildcardLikeEscapedStarKeptAsLiteral() {
+        // "\*foo*" — the leading '*' is escaped so it's a literal. Prefix is "*foo".
+        // Pins that escape handling matches AbstractStringPattern#extractPrefix's contract.
+        assertPrefixRange(wildcardLike("s", "\\*foo*"), "s", "*foo", "*fop");
+    }
+
+    public void testWildcardLikeLeadingStarHasNoPrefix() {
+        // "*google*" — no literal prefix; nothing to push as a Parquet FilterPredicate.
+        // Late-mat still runs the LIKE; the only thing missing is row-group skipping.
+        // This is a no-op — translateExpression returns null and the combined predicate
+        // collapses to null too (toFilterPredicate returns null when nothing translates).
+        MessageType schema = keywordSchema("url");
+        Expression like = wildcardLike("url", "*google*");
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(like));
+
+        assertNull("leading wildcard must not translate to a Parquet predicate", pushed.toFilterPredicate(schema));
+    }
+
+    public void testWildcardLikeLeadingQuestionMarkHasNoPrefix() {
+        // "?foo*" — leading '?' (single-char wildcard) means no literal prefix exists.
+        MessageType schema = keywordSchema("s");
+        Expression like = wildcardLike("s", "?foo*");
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(like));
+
+        assertNull(pushed.toFilterPredicate(schema));
+    }
+
+    public void testWildcardLikeCaseInsensitiveDoesNotPushRange() {
+        // Case-insensitive "FoO*" matches "foo", "FOO", "fOo", etc., which lie outside
+        // ["FoO", "FoO~"). Pushing the case-sensitive range would silently prune true matches
+        // — a correctness bug, not just an inefficiency. translateWildcardLikePrefix gates on
+        // wl.caseInsensitive() to keep the filter unpushable here; late-mat alone runs the
+        // case-aware automaton.
+        MessageType schema = keywordSchema("s");
+        Expression like = new WildcardLike(Source.EMPTY, attr("s", DataType.KEYWORD), new WildcardPattern("FoO*"), true);
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(like));
+
+        assertNull("case-insensitive WildcardLike must not push a range predicate", pushed.toFilterPredicate(schema));
+    }
+
+    public void testWildcardLikePureLiteralBecomesRange() {
+        // "exact" (no wildcards) — extractPrefix returns the whole string, so we push
+        // ["exact", "exacu"). This is technically equivalent to Eq("exact") but the
+        // logical-layer ReplaceRegexMatch already rewrites such patterns to Eq via
+        // exactMatch(); we just stay safe here in case a non-rewritten pattern reaches us.
+        assertPrefixRange(wildcardLike("s", "exact"), "s", "exact", "exacu");
+    }
+
+    public void testWildcardLikeNonKeywordDoesNotPushRange() {
+        // The translateWildcardLikePrefix branch is gated on KEYWORD; other column types
+        // wouldn't have reached pushFilters in the first place (canConvert filters them out),
+        // but pin the type-guard at the translation layer too as a defense-in-depth.
+        MessageType schema = Types.buildMessage().required(INT64).named("ts").named("test");
+        // Note: this constructs an "invalid" WildcardLike on a DATETIME column to bypass the
+        // canConvert gate. translateExpression should still refuse to emit a range predicate.
+        Expression like = new WildcardLike(Source.EMPTY, attr("ts", DataType.DATETIME), new WildcardPattern("foo*"));
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(like));
+
+        assertNull(pushed.toFilterPredicate(schema));
+    }
+
+    public void testWildcardLikeRangeCombinesWithOtherPushedFilter() {
+        // When a query has multiple pushable filters, toFilterPredicate ANDs them. Verify the
+        // WildcardLike prefix range composes cleanly with another conjunct — otherwise a
+        // future change to the AND-combining loop could silently drop one side.
+        MessageType schema = Types.buildMessage()
+            .required(INT32)
+            .named("status")
+            .required(org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.BINARY)
+            .as(LogicalTypeAnnotation.stringType())
+            .named("url")
+            .named("test");
+
+        Expression status = eq("status", DataType.INTEGER, 200);
+        Expression like = wildcardLike("url", "https*google*");
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(status, like));
+
+        FilterPredicate fp = pushed.toFilterPredicate(schema);
+        assertNotNull(fp);
+        String repr = fp.toString();
+        assertThat(repr, containsString("eq(status, 200)"));
+        // Range bytes on a binary column are rendered by Parquet as the byte-array literal
+        // form (e.g. "Binary{5 constant bytes, [104, 116, 116, 112, 115]}" for "https").
+        // Match by the stable substring — column name + comparator + the byte array prefix.
+        assertThat(repr, containsString("gteq(url, " + binaryRepr("https")));
+        assertThat(repr, containsString("lt(url, " + binaryRepr("httpt")));
+    }
+
+    public void testNotOverWildcardLikeDoesNotPushAnyPredicate() {
+        // CRITICAL regression test: prefix-range is an *over*-approximation of LIKE matches.
+        // Negating that range yields an *under*-approximation of NOT(LIKE), so pushing
+        // NOT(prefixRange) to Parquet would skip row groups that may contain values which the
+        // LIKE rejects but NOT(LIKE) accepts. Concrete: "food" lies in ["foo", "fop") so
+        // NOT(prefixRange) excludes it, but NOT(LIKE 'foo*bar') accepts "food". Translation
+        // must therefore decline to emit a Parquet predicate; late-mat handles negation
+        // correctly via evaluateNotWildcardLike's TVL-aware path.
+        MessageType schema = keywordSchema("s");
+        Expression notLike = new Not(Source.EMPTY, wildcardLike("s", "foo*bar"));
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(notLike));
+        assertNull(
+            "Not(WildcardLike) must not produce a Parquet predicate (over-approximation flips on negation)",
+            pushed.toFilterPredicate(schema)
+        );
+    }
+
+    public void testNotOverWildcardLikeStillBlocksPushdownEvenForLeadingWildcardPattern() {
+        // The Not branch refuses to translate any Not(WildcardLike), even patterns like "*foo"
+        // where the inner WildcardLike would itself produce no predicate (no literal prefix).
+        // Pin this so a future change that "optimizes" the guard cannot accidentally let the
+        // unsound case slip through.
+        MessageType schema = keywordSchema("s");
+        Expression notLike = new Not(Source.EMPTY, wildcardLike("s", "*foo"));
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(notLike));
+        assertNull(pushed.toFilterPredicate(schema));
+    }
+
+    public void testNotOverAndContainingWildcardLikeDoesNotPush() {
+        // CRITICAL composite case: Not(And(WildcardLike, Eq)) must not produce a Parquet
+        // predicate. Without the recursive contains-check, the And branch would build
+        // and(prefixRange("foo"…"fop"), eq(n, 5)), then the Not branch would wrap it in
+        // FilterApi.not(...). That predicate skips row groups containing values like
+        // ("food", 5) — which NOT(LIKE 'foo*bar' AND n=5) is supposed to keep, since "food"
+        // does NOT match LIKE 'foo*bar'. Late-mat would never see those rows because the row
+        // group would be pruned at I/O time. Refusing to translate keeps FilterExec / late-mat
+        // as the source of truth.
+        MessageType schema = Types.buildMessage()
+            .required(org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.BINARY)
+            .as(LogicalTypeAnnotation.stringType())
+            .named("s")
+            .required(INT32)
+            .named("n")
+            .named("test");
+        Expression and = new And(Source.EMPTY, wildcardLike("s", "foo*bar"), eq("n", DataType.INTEGER, 5));
+        Expression notAnd = new Not(Source.EMPTY, and);
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(notAnd));
+        assertNull("Not(And(WildcardLike, X)) must not push a Parquet predicate", pushed.toFilterPredicate(schema));
+    }
+
+    public void testNotOverOrContainingWildcardLikeDoesNotPush() {
+        // De Morgan's: Not(Or(WL, X)) ≡ And(Not(prefixRange), Not(X)). The And-of-Nots also
+        // contains the unsound Not(prefixRange) factor, so the same blanket refusal applies
+        // even for disjunctions under negation. Pin this so a clever future "optimization"
+        // doesn't rewrite Not(Or(...)) into the And-of-Nots form and bypass the guard.
+        MessageType schema = Types.buildMessage()
+            .required(org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.BINARY)
+            .as(LogicalTypeAnnotation.stringType())
+            .named("s")
+            .required(INT32)
+            .named("n")
+            .named("test");
+        Expression or = new Or(Source.EMPTY, wildcardLike("s", "foo*bar"), eq("n", DataType.INTEGER, 5));
+        Expression notOr = new Not(Source.EMPTY, or);
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(notOr));
+        assertNull("Not(Or(WildcardLike, X)) must not push a Parquet predicate", pushed.toFilterPredicate(schema));
+    }
+
+    public void testDoubleNotOverWildcardLikeDoesNotPush() {
+        // Not(Not(WildcardLike)) is logically WildcardLike, but the optimizer may not have
+        // simplified it by the time we see it. The contains-check catches this too: outer Not
+        // walks the subtree, finds a WildcardLike, refuses to translate. The cost of being
+        // conservative here is at most losing prefix-range pushdown for an already-rare
+        // double-negation; correctness is not at risk because this path returning null just
+        // falls back to the late-mat evaluator (which handles the LIKE correctly).
+        MessageType schema = keywordSchema("s");
+        Expression doubleNot = new Not(Source.EMPTY, new Not(Source.EMPTY, wildcardLike("s", "foo*bar")));
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(doubleNot));
+        assertNull(pushed.toFilterPredicate(schema));
+    }
+
+    public void testAndOfNotWildcardLikeAndEqualsKeepsEqualsPush() {
+        // Sanity: when the WildcardLike is under a Not but the *sibling* of the Not in an And
+        // is a sound, exact predicate (Eq), we should still get the Eq's predicate pushed.
+        // This works because the And-combining loop in toFilterPredicate skips null sides:
+        // the Not(WL) side returns null (correctly), and the And reduces to just the Eq side.
+        MessageType schema = Types.buildMessage()
+            .required(org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.BINARY)
+            .as(LogicalTypeAnnotation.stringType())
+            .named("s")
+            .required(INT32)
+            .named("n")
+            .named("test");
+        Expression and = new And(Source.EMPTY, new Not(Source.EMPTY, wildcardLike("s", "foo*bar")), eq("n", DataType.INTEGER, 5));
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(and));
+        FilterPredicate fp = pushed.toFilterPredicate(schema);
+        assertNotNull("Eq side of the And must still push", fp);
+        assertThat(fp.toString(), containsString("eq(n, 5)"));
+    }
+
+    public void testNotOverEqualsStillTranslates() {
+        // Sanity check that the new Not(WildcardLike) guard doesn't regress unrelated negation
+        // pushdown: NOT(Eq) translates to an exact Parquet NotEq, which is sound (Eq is exact,
+        // not an over-approximation), so the Not branch must continue to recurse for non-LIKE
+        // children.
+        MessageType schema = keywordSchema("s");
+        Expression notEq = new Not(Source.EMPTY, eq("s", DataType.KEYWORD, new BytesRef("foo")));
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(notEq));
+        FilterPredicate fp = pushed.toFilterPredicate(schema);
+        assertNotNull("Not(Equals) must still push as a Parquet not-equals", fp);
+        // Sanity: the predicate references the column.
+        assertThat(fp.toString(), containsString("s"));
+    }
+
+    public void testWildcardLikeRangeMatchesStartsWithRangeForSamePrefix() {
+        // The prefixRange helper is shared by StartsWith and WildcardLike, so for the same
+        // underlying prefix ("foo") both must emit byte-identical FilterPredicates. Pins the
+        // shared-helper invariant — drift would mean a regression in one branch goes unnoticed
+        // by the other branch's tests.
+        MessageType schema = keywordSchema("s");
+        Expression sw = new org.elasticsearch.xpack.esql.expression.function.scalar.string.StartsWith(
+            Source.EMPTY,
+            attr("s", DataType.KEYWORD),
+            lit(new BytesRef("foo"), DataType.KEYWORD)
+        );
+        Expression like = wildcardLike("s", "foo*bar"); // "foo*" alone would be rewritten to StartsWith upstream
+        FilterPredicate fpStartsWith = new ParquetPushedExpressions(List.of(sw)).toFilterPredicate(schema);
+        FilterPredicate fpLike = new ParquetPushedExpressions(List.of(like)).toFilterPredicate(schema);
+        assertNotNull(fpStartsWith);
+        assertNotNull(fpLike);
+        // Both should produce the same gtEq/lt range against "foo" / "fop".
+        assertEquals(fpStartsWith.toString(), fpLike.toString());
+    }
+
+    private static MessageType keywordSchema(String columnName) {
+        return Types.buildMessage()
+            .required(org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.BINARY)
+            .as(LogicalTypeAnnotation.stringType())
+            .named(columnName)
+            .named("test");
+    }
+
+    private static Expression wildcardLike(String column, String pattern) {
+        return new WildcardLike(Source.EMPTY, attr(column, DataType.KEYWORD), new WildcardPattern(pattern));
+    }
+
+    /**
+     * Asserts the predicate translates to {@code col >= lowerInclusive AND col < upperExclusive}.
+     * Parquet renders binary literals as their byte-array decomposition (e.g.
+     * {@code Binary{3 constant bytes, [102, 111, 111]}} for {@code "foo"}), not as quoted
+     * strings, so we cannot match on string literals — we match by the column name, comparator,
+     * and the byte-array form of the bound.
+     */
+    private static void assertPrefixRange(Expression filter, String column, String lowerInclusive, String upperExclusive) {
+        ParquetPushedExpressions pushed = new ParquetPushedExpressions(List.of(filter));
+        FilterPredicate fp = pushed.toFilterPredicate(keywordSchema(column));
+        assertNotNull("expected " + filter + " to translate to a prefix range", fp);
+        String repr = fp.toString();
+        assertThat(repr, containsString("gteq(" + column + ", " + binaryRepr(lowerInclusive)));
+        assertThat(repr, containsString("lt(" + column + ", " + binaryRepr(upperExclusive)));
+        assertThat("must be an AND of the two bounds", repr, containsString("and("));
+    }
+
+    /**
+     * Reproduces Parquet's {@code Binary.toString()} format for a byte-string literal so tests
+     * can assert against it without depending on a quoted-string representation that the
+     * library does not actually produce. Format: {@code Binary{N constant bytes, [b0, b1, ...]}}
+     * with no closing brace so the substring matcher tolerates the trailing context (e.g. the
+     * predicate's closing parens).
+     */
+    private static String binaryRepr(String s) {
+        byte[] bytes = s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        StringBuilder sb = new StringBuilder("Binary{").append(bytes.length).append(" constant bytes, [");
+        for (int i = 0; i < bytes.length; i++) {
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(bytes[i] & 0xff);
+        }
+        sb.append("]");
+        return sb.toString();
     }
 
     // --- predicateColumnNames tests ---

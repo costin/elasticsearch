@@ -230,6 +230,24 @@ final class ParquetPushedExpressions {
             return null;
         }
         if (expr instanceof Not not) {
+            // CRITICAL: an over-approximation under negation flips into an under-approximation,
+            // which is unsound for Parquet pushdown (we'd skip row groups that may contain true
+            // matches, and FilterExec cannot recover rows from groups that were never read).
+            //
+            // The WildcardLike → prefix-range translation is an over-approximation (every LIKE
+            // match lies in [prefix, nextPrefixUpperBound(prefix)), but not every value in that
+            // range matches LIKE). So NOT(prefixRange) is a *subset* of NOT(LIKE), and the same
+            // unsoundness propagates through any composition that places a WildcardLike under a
+            // Not — directly (Not(WL)), through a conjunction (Not(And(WL, X))), or through a
+            // disjunction (Not(Or(WL, X)) ≡ And(Not(prefixRange), Not(X)) by De Morgan). To stay
+            // sound we refuse to emit *any* Parquet predicate for a Not whose inner subtree
+            // contains a WildcardLike anywhere; late-mat handles negation correctly via
+            // evaluateNotWildcardLike's SQL three-valued logic. Other inner expressions
+            // (Eq, Range, IN, …) translate to exact FilterPredicates whose negation is safe, so
+            // recurse for them.
+            if (containsWildcardLike(not.field())) {
+                return null;
+            }
             FilterPredicate inner = translateExpression(not.field(), schema);
             return inner != null ? FilterApi.not(inner) : null;
         }
@@ -239,19 +257,124 @@ final class ParquetPushedExpressions {
                 return null;
             }
             BytesRef prefix = (BytesRef) prefixValue;
-            var col = FilterApi.binaryColumn(ne.name());
-            FilterPredicate lower = FilterApi.gtEq(col, toBinary(prefix));
-            BytesRef upper = StringPrefixUtils.nextPrefixUpperBound(prefix);
-            if (upper != null) {
-                return FilterApi.and(lower, FilterApi.lt(col, toBinary(upper)));
-            }
-            return lower;
+            return prefixRange(ne.name(), prefix);
         }
-        // WildcardLike has no native Parquet FilterPredicate translation: Parquet only supports
-        // ordered comparisons, equality, and IN. The pattern is evaluated during late materialization
-        // by evaluateWildcardLike. A future enhancement could derive a prefix range from
-        // WildcardPattern#extractPrefix to enable row-group skipping for patterns like "https*google*".
+        if (expr instanceof WildcardLike wl && wl.field() instanceof NamedExpression ne && ne.dataType() == DataType.KEYWORD) {
+            return translateWildcardLikePrefix(wl, ne.name());
+        }
         return null;
+    }
+
+    /**
+     * Returns {@code true} if the expression subtree contains a {@link WildcardLike} anywhere.
+     * Used by the {@link Not} branch of {@link #translateExpression} to refuse Parquet
+     * predicate generation when negation would invert the LIKE prefix-range over-approximation
+     * into an unsound under-approximation. The check is intentionally cheap and shape-aware
+     * (it does not enumerate every {@link Expression} subtype); we only need to recognize the
+     * boolean combinators that {@link #translateExpression} itself recurses through, since
+     * other nodes are already either rejected upstream by {@link ParquetFilterPushdownSupport}
+     * or have {@link Expression#anyMatch} as a fallback.
+     */
+    private static boolean containsWildcardLike(Expression expr) {
+        if (expr instanceof WildcardLike) {
+            return true;
+        }
+        if (expr instanceof And and) {
+            return containsWildcardLike(and.left()) || containsWildcardLike(and.right());
+        }
+        if (expr instanceof Or or) {
+            return containsWildcardLike(or.left()) || containsWildcardLike(or.right());
+        }
+        if (expr instanceof Not nested) {
+            return containsWildcardLike(nested.field());
+        }
+        // Fallback for any future combinator we haven't enumerated. Expression#anyMatch walks
+        // the full tree; cost is bounded by the predicate AST size which is tiny in practice.
+        return expr.anyMatch(WildcardLike.class::isInstance);
+    }
+
+    /**
+     * Builds {@code col >= prefix AND col < nextPrefixUpperBound(prefix)} as a Parquet
+     * {@link FilterPredicate} on a binary column. Falls back to {@code col >= prefix} when no
+     * exclusive upper bound exists (the prefix consists only of {@code U+10FFFF} code points).
+     * <p>Shared by {@link StartsWith} and the {@link WildcardLike} prefix-range path so both
+     * derive identical Parquet predicates for the same underlying prefix.
+     */
+    private static FilterPredicate prefixRange(String columnName, BytesRef prefix) {
+        var col = FilterApi.binaryColumn(columnName);
+        FilterPredicate lower = FilterApi.gtEq(col, toBinary(prefix));
+        BytesRef upper = StringPrefixUtils.nextPrefixUpperBound(prefix);
+        if (upper != null) {
+            return FilterApi.and(lower, FilterApi.lt(col, toBinary(upper)));
+        }
+        return lower;
+    }
+
+    /**
+     * Derives a prefix-range {@link FilterPredicate} from a {@link WildcardLike} pattern, or
+     * returns {@code null} if no useful prefix can be extracted.
+     *
+     * <p><b>Why this exists.</b> Parquet has no native LIKE; the late-mat evaluator runs the
+     * automaton per row but cannot influence Parquet's row-group / dictionary / page-index
+     * filters, which is where the I/O wins live (especially on remote storage). For patterns
+     * with a literal prefix like {@code "https*google*"} or {@code "foo?bar*"} we can derive
+     * the range {@code col IN [prefix, nextPrefixUpperBound(prefix))} as a sound
+     * over-approximation: every LIKE match starts with that prefix, so any row group whose
+     * {@code [min, max]} interval lies entirely outside the range cannot contain a match and
+     * can be skipped without ever fetching its data. The full LIKE then runs in late-mat over
+     * the surviving rows, so the result remains exact.
+     *
+     * <p><b>Cost discipline.</b>
+     * {@link org.elasticsearch.xpack.esql.core.expression.predicate.regex.AbstractStringPattern#extractPrefix}
+     * uses the lazily cached <em>case-sensitive</em> automaton on the pattern instance. The
+     * late-mat path in {@link #automatonFor} calls {@code createAutomaton(caseInsensitive)} on
+     * its own and stores the result in this class's {@code automatonCache}; for case-sensitive
+     * LIKE this means the determinize work runs <em>twice</em> per pattern per query (once
+     * here, once for late-mat). The {@code extractPrefix} portion adds a {@code removeDeadStates}
+     * pass and a single-path walk via {@link org.apache.lucene.util.automaton.Operations#getCommonPrefix},
+     * both linear in automaton size — single-digit microseconds for typical patterns. Acceptable
+     * cost for the I/O we save on remote storage; unifying the two automaton caches is a future
+     * cleanup.
+     *
+     * <p><b>Why case-insensitive is excluded.</b>
+     * {@link org.elasticsearch.xpack.esql.core.expression.predicate.regex.AbstractStringPattern#extractPrefix}
+     * always operates on the case-sensitive automaton, so
+     * {@code WildcardLike("FoO*", caseInsensitive = true).extractPrefix()} returns
+     * {@code "FoO"} — but the predicate matches {@code "foo"}, {@code "FOO"}, {@code "fOo"},
+     * etc., which are <em>not</em> in {@code ["FoO", "FoO~")}. Pushing that range would
+     * silently prune rows that LIKE accepts. Mirrors the same guard in {@code ReplaceRegexMatch}'s
+     * {@code WildcardLike → StartsWith} rewrite. A case-insensitive prefix range would require
+     * Parquet to support case-folded comparisons, which it does not.
+     *
+     * <p><b>Interaction with {@code ReplaceRegexMatch}.</b> The logical optimizer already
+     * rewrites {@code WildcardLike("foo*")} (a pure-prefix pattern, case-sensitive) into
+     * {@link StartsWith}, so by the time we see a {@link WildcardLike} here the pattern has
+     * <em>some</em> non-prefix structure (a trailing {@code "*"} followed by literals, an
+     * embedded {@code "?"}, etc.). This branch fires for {@code "foo*bar"},
+     * {@code "foo?bar*"}, {@code "foo*bar*"}, etc. — exactly the cases where {@code StartsWith}
+     * would be unsafe but the prefix range is still sound.
+     */
+    private static FilterPredicate translateWildcardLikePrefix(WildcardLike wl, String columnName) {
+        if (wl.caseInsensitive()) {
+            return null;
+        }
+        String prefix;
+        try {
+            prefix = wl.pattern().extractPrefix();
+        } catch (IllegalArgumentException e) {
+            // AbstractStringPattern#createAutomaton wraps Lucene's TooComplexToDeterminizeException
+            // as IllegalArgumentException with the message "Pattern was too complex to determinize".
+            // ParquetFilterPushdownSupport#canCompileAllPatterns probes the same call at plan time
+            // and downgrades canPush to RECHECK on failure, so a YES-pushed plan will not reach
+            // here with such a pattern; this catch is a defense-in-depth for RECHECK plans, where
+            // the FilterExec safety net re-evaluates LIKE and we just drop the row-group pruning.
+            logger.debug("WildcardLike pattern [{}] could not be determinized for prefix extraction", wl.pattern().pattern(), e);
+            return null;
+        }
+        if (prefix == null || prefix.isEmpty()) {
+            return null;
+        }
+        return prefixRange(columnName, new BytesRef(prefix));
     }
 
     // -----------------------------------------------------------------------------------
