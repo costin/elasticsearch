@@ -83,6 +83,18 @@ public final class BooleanArrayVector extends AbstractVector implements BooleanV
         System.arraycopy(values, srcPosition, dst, dstPosition, length);
     }
 
+    /**
+     * Direct access to the backing array. Package-private contract:
+     * - Length equals {@link #getPositionCount()}.
+     * - Bypasses any null/multi-value guard; only safe for callers that have
+     *   verified the vector has no nulls and is not multi-valued.
+     * - Intended for fused evaluator code paths that consume a tight loop;
+     *   do not expose to user-level operators.
+     */
+    boolean[] rawValues() {
+        return values;
+    }
+
     @Override
     public int valueMaxByteSize() {
         return Byte.BYTES;
