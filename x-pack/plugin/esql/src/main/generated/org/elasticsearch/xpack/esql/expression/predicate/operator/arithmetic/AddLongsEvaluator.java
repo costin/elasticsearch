@@ -159,11 +159,6 @@ public final class AddLongsEvaluator implements ExpressionEvaluator {
     }
 
     @Override
-    public FusionDescriptor fusionDescriptor() {
-      return FUSION_DESCRIPTOR;
-    }
-
-    @Override
     public AddLongsEvaluator get(DriverContext context) {
       return new AddLongsEvaluator(source, lhs.get(context), rhs.get(context), context);
     }
@@ -171,6 +166,11 @@ public final class AddLongsEvaluator implements ExpressionEvaluator {
     @Override
     public String toString() {
       return "AddLongsEvaluator[" + "lhs=" + lhs + ", rhs=" + rhs + "]";
+    }
+
+    @Override
+    public FusionDescriptor fusionDescriptor() {
+      return FUSION_DESCRIPTOR;
     }
   }
 }

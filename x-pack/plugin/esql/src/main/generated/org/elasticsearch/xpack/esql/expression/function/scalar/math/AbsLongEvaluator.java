@@ -132,11 +132,6 @@ public final class AbsLongEvaluator implements ExpressionEvaluator {
     }
 
     @Override
-    public FusionDescriptor fusionDescriptor() {
-      return FUSION_DESCRIPTOR;
-    }
-
-    @Override
     public AbsLongEvaluator get(DriverContext context) {
       return new AbsLongEvaluator(source, fieldVal.get(context), context);
     }
@@ -144,6 +139,11 @@ public final class AbsLongEvaluator implements ExpressionEvaluator {
     @Override
     public String toString() {
       return "AbsLongEvaluator[" + "fieldVal=" + fieldVal + "]";
+    }
+
+    @Override
+    public FusionDescriptor fusionDescriptor() {
+      return FUSION_DESCRIPTOR;
     }
   }
 }

@@ -159,11 +159,6 @@ public final class MulDoublesEvaluator implements ExpressionEvaluator {
     }
 
     @Override
-    public FusionDescriptor fusionDescriptor() {
-      return FUSION_DESCRIPTOR;
-    }
-
-    @Override
     public MulDoublesEvaluator get(DriverContext context) {
       return new MulDoublesEvaluator(source, lhs.get(context), rhs.get(context), context);
     }
@@ -171,6 +166,11 @@ public final class MulDoublesEvaluator implements ExpressionEvaluator {
     @Override
     public String toString() {
       return "MulDoublesEvaluator[" + "lhs=" + lhs + ", rhs=" + rhs + "]";
+    }
+
+    @Override
+    public FusionDescriptor fusionDescriptor() {
+      return FUSION_DESCRIPTOR;
     }
   }
 }

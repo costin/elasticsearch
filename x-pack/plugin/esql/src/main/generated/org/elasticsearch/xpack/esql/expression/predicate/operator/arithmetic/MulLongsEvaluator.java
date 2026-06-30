@@ -159,11 +159,6 @@ public final class MulLongsEvaluator implements ExpressionEvaluator {
     }
 
     @Override
-    public FusionDescriptor fusionDescriptor() {
-      return FUSION_DESCRIPTOR;
-    }
-
-    @Override
     public MulLongsEvaluator get(DriverContext context) {
       return new MulLongsEvaluator(source, lhs.get(context), rhs.get(context), context);
     }
@@ -171,6 +166,11 @@ public final class MulLongsEvaluator implements ExpressionEvaluator {
     @Override
     public String toString() {
       return "MulLongsEvaluator[" + "lhs=" + lhs + ", rhs=" + rhs + "]";
+    }
+
+    @Override
+    public FusionDescriptor fusionDescriptor() {
+      return FUSION_DESCRIPTOR;
     }
   }
 }

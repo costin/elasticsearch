@@ -159,11 +159,6 @@ public final class SubIntsEvaluator implements ExpressionEvaluator {
     }
 
     @Override
-    public FusionDescriptor fusionDescriptor() {
-      return FUSION_DESCRIPTOR;
-    }
-
-    @Override
     public SubIntsEvaluator get(DriverContext context) {
       return new SubIntsEvaluator(source, lhs.get(context), rhs.get(context), context);
     }
@@ -171,6 +166,11 @@ public final class SubIntsEvaluator implements ExpressionEvaluator {
     @Override
     public String toString() {
       return "SubIntsEvaluator[" + "lhs=" + lhs + ", rhs=" + rhs + "]";
+    }
+
+    @Override
+    public FusionDescriptor fusionDescriptor() {
+      return FUSION_DESCRIPTOR;
     }
   }
 }

@@ -121,11 +121,6 @@ public final class AbsDoubleEvaluator implements ExpressionEvaluator {
     }
 
     @Override
-    public FusionDescriptor fusionDescriptor() {
-      return FUSION_DESCRIPTOR;
-    }
-
-    @Override
     public AbsDoubleEvaluator get(DriverContext context) {
       return new AbsDoubleEvaluator(source, fieldVal.get(context), context);
     }
@@ -133,6 +128,11 @@ public final class AbsDoubleEvaluator implements ExpressionEvaluator {
     @Override
     public String toString() {
       return "AbsDoubleEvaluator[" + "fieldVal=" + fieldVal + "]";
+    }
+
+    @Override
+    public FusionDescriptor fusionDescriptor() {
+      return FUSION_DESCRIPTOR;
     }
   }
 }

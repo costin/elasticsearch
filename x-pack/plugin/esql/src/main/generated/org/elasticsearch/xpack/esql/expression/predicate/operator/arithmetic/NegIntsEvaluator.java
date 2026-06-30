@@ -131,11 +131,6 @@ public final class NegIntsEvaluator implements ExpressionEvaluator {
     }
 
     @Override
-    public FusionDescriptor fusionDescriptor() {
-      return FUSION_DESCRIPTOR;
-    }
-
-    @Override
     public NegIntsEvaluator get(DriverContext context) {
       return new NegIntsEvaluator(source, v.get(context), context);
     }
@@ -143,6 +138,11 @@ public final class NegIntsEvaluator implements ExpressionEvaluator {
     @Override
     public String toString() {
       return "NegIntsEvaluator[" + "v=" + v + "]";
+    }
+
+    @Override
+    public FusionDescriptor fusionDescriptor() {
+      return FUSION_DESCRIPTOR;
     }
   }
 }

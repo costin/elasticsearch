@@ -120,11 +120,6 @@ public final class NegDoublesEvaluator implements ExpressionEvaluator {
     }
 
     @Override
-    public FusionDescriptor fusionDescriptor() {
-      return FUSION_DESCRIPTOR;
-    }
-
-    @Override
     public NegDoublesEvaluator get(DriverContext context) {
       return new NegDoublesEvaluator(source, v.get(context), context);
     }
@@ -132,6 +127,11 @@ public final class NegDoublesEvaluator implements ExpressionEvaluator {
     @Override
     public String toString() {
       return "NegDoublesEvaluator[" + "v=" + v + "]";
+    }
+
+    @Override
+    public FusionDescriptor fusionDescriptor() {
+      return FUSION_DESCRIPTOR;
     }
   }
 }

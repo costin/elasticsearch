@@ -159,11 +159,6 @@ public final class AddDoublesEvaluator implements ExpressionEvaluator {
     }
 
     @Override
-    public FusionDescriptor fusionDescriptor() {
-      return FUSION_DESCRIPTOR;
-    }
-
-    @Override
     public AddDoublesEvaluator get(DriverContext context) {
       return new AddDoublesEvaluator(source, lhs.get(context), rhs.get(context), context);
     }
@@ -171,6 +166,11 @@ public final class AddDoublesEvaluator implements ExpressionEvaluator {
     @Override
     public String toString() {
       return "AddDoublesEvaluator[" + "lhs=" + lhs + ", rhs=" + rhs + "]";
+    }
+
+    @Override
+    public FusionDescriptor fusionDescriptor() {
+      return FUSION_DESCRIPTOR;
     }
   }
 }
