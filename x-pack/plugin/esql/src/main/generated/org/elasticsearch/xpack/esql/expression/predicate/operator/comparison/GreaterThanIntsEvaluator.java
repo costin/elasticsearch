@@ -17,6 +17,8 @@ import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.Warnings;
+import org.elasticsearch.compute.operator.fusion.FusionAware;
+import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 
@@ -131,7 +133,9 @@ public final class GreaterThanIntsEvaluator implements ExpressionEvaluator {
     return warnings;
   }
 
-  static class Factory implements ExpressionEvaluator.Factory {
+  static class Factory implements ExpressionEvaluator.Factory, FusionAware {
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(GreaterThan.class, "processInts", "(II)Z", false, true);
+
     private final Source source;
 
     private final ExpressionEvaluator.Factory lhs;
@@ -143,6 +147,11 @@ public final class GreaterThanIntsEvaluator implements ExpressionEvaluator {
       this.source = source;
       this.lhs = lhs;
       this.rhs = rhs;
+    }
+
+    @Override
+    public FusionDescriptor fusionDescriptor() {
+      return FUSION_DESCRIPTOR;
     }
 
     @Override

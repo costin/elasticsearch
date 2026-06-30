@@ -10,6 +10,7 @@ import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.time.DateUtils;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.predicate.Negatable;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
@@ -139,11 +140,15 @@ public class GreaterThan extends EsqlBinaryComparison implements Negatable<EsqlB
         return new LessThan(source(), left(), right(), zoneId());
     }
 
+    // overflowChecked = false: primitive comparison produces a boolean via straight-line code; no throw paths.
+    @Fusable(overflowChecked = false)
     @Evaluator(extraName = "Ints")
     static boolean processInts(int lhs, int rhs) {
         return lhs > rhs;
     }
 
+    // overflowChecked = false: primitive comparison produces a boolean via straight-line code; no throw paths.
+    @Fusable(overflowChecked = false)
     @Evaluator(extraName = "Longs")
     static boolean processLongs(long lhs, long rhs) {
         return lhs > rhs;
@@ -160,6 +165,8 @@ public class GreaterThan extends EsqlBinaryComparison implements Negatable<EsqlB
         return DateUtils.compareNanosToMillis(lhs, rhs) > 0;
     }
 
+    // overflowChecked = false: primitive comparison produces a boolean via straight-line code; no throw paths.
+    @Fusable(overflowChecked = false)
     @Evaluator(extraName = "Doubles")
     static boolean processDoubles(double lhs, double rhs) {
         return lhs > rhs;
