@@ -15,6 +15,7 @@ import com.squareup.javapoet.ParameterSpec;
 import com.squareup.javapoet.TypeName;
 import com.squareup.javapoet.TypeSpec;
 
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.gen.argument.Argument;
 import org.elasticsearch.compute.gen.argument.BlockArgument;
 import org.elasticsearch.compute.gen.argument.BuilderArgument;
@@ -30,6 +31,8 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
+import javax.lang.model.type.ArrayType;
+import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 
@@ -39,6 +42,8 @@ import static org.elasticsearch.compute.gen.Types.CONSTANT_METHOD_RESULT_SPECIAL
 import static org.elasticsearch.compute.gen.Types.DRIVER_CONTEXT;
 import static org.elasticsearch.compute.gen.Types.EXPRESSION_EVALUATOR;
 import static org.elasticsearch.compute.gen.Types.EXPRESSION_EVALUATOR_FACTORY;
+import static org.elasticsearch.compute.gen.Types.FUSION_AWARE;
+import static org.elasticsearch.compute.gen.Types.FUSION_DESCRIPTOR;
 import static org.elasticsearch.compute.gen.Types.PAGE;
 import static org.elasticsearch.compute.gen.Types.RAM_USAGE_ESIMATOR;
 import static org.elasticsearch.compute.gen.Types.SOURCE;
@@ -56,6 +61,7 @@ public class EvaluatorImplementer {
     private final boolean processOutputsMultivalued;
     private final boolean vectorsUnsupported;
     private final boolean allNullsIsNull;
+    private final Fusable fusable;
 
     public EvaluatorImplementer(
         Elements elements,
@@ -77,6 +83,7 @@ public class EvaluatorImplementer {
         boolean returnTypeWithoutVectorSupport = vectorType(elementType(this.processFunction.resultDataType(true))) == null;
         vectorsUnsupported = processOutputsMultivalued || anyParameterNotSupportingVectors || returnTypeWithoutVectorSupport;
         this.allNullsIsNull = allNullsIsNull;
+        this.fusable = processFunction.getAnnotation(Fusable.class);
     }
 
     public JavaFile sourceFile() {
@@ -384,7 +391,35 @@ public class EvaluatorImplementer {
     private TypeSpec factory() {
         TypeSpec.Builder builder = TypeSpec.classBuilder("Factory");
         builder.addSuperinterface(EXPRESSION_EVALUATOR_FACTORY);
+        if (fusable != null) {
+            builder.addSuperinterface(FUSION_AWARE);
+        }
         builder.addModifiers(Modifier.STATIC);
+
+        if (fusable != null) {
+            ClassName kernelClass = ClassName.get(declarationType);
+            builder.addField(
+                FieldSpec.builder(FUSION_DESCRIPTOR, "FUSION_DESCRIPTOR", Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
+                    .initializer(
+                        "new $T($T.class, $S, $S, $L, $L)",
+                        FUSION_DESCRIPTOR,
+                        kernelClass,
+                        processFunction.function.getSimpleName(),
+                        kernelMethodDescriptor(processFunction.function),
+                        fusable.overflowChecked(),
+                        allNullsIsNull
+                    )
+                    .build()
+            );
+            builder.addMethod(
+                MethodSpec.methodBuilder("fusionDescriptor")
+                    .addAnnotation(Override.class)
+                    .addModifiers(Modifier.PUBLIC)
+                    .returns(FUSION_DESCRIPTOR)
+                    .addStatement("return FUSION_DESCRIPTOR")
+                    .build()
+            );
+        }
 
         builder.addField(SOURCE, "source", Modifier.PRIVATE, Modifier.FINAL);
         processFunction.args.forEach(a -> a.declareFactoryField(builder));
@@ -394,6 +429,32 @@ public class EvaluatorImplementer {
         builder.addMethod(processFunction.factoryToStringMethod(implementation));
 
         return builder.build();
+    }
+
+    private static String kernelMethodDescriptor(ExecutableElement method) {
+        StringBuilder sb = new StringBuilder("(");
+        for (VariableElement parameter : method.getParameters()) {
+            sb.append(typeDescriptor(parameter.asType()));
+        }
+        sb.append(")").append(typeDescriptor(method.getReturnType()));
+        return sb.toString();
+    }
+
+    private static String typeDescriptor(TypeMirror type) {
+        return switch (type.getKind()) {
+            case BOOLEAN -> "Z";
+            case BYTE -> "B";
+            case CHAR -> "C";
+            case SHORT -> "S";
+            case INT -> "I";
+            case LONG -> "J";
+            case FLOAT -> "F";
+            case DOUBLE -> "D";
+            case VOID -> "V";
+            case DECLARED -> "L" + ((TypeElement) ((DeclaredType) type).asElement()).getQualifiedName().toString().replace('.', '/') + ";";
+            case ARRAY -> "[" + typeDescriptor(((ArrayType) type).getComponentType());
+            default -> throw new IllegalArgumentException("Unsupported type kind: " + type.getKind() + " for " + type);
+        };
     }
 
     static class ProcessFunction {

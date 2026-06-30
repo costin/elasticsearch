@@ -191,6 +191,8 @@ public class Types {
 
     static final ClassName WARNINGS = ClassName.get("org.elasticsearch.compute.operator", "Warnings");
     static final ClassName WARNING_SOURCE_LOCATION = ClassName.get("org.elasticsearch.compute.operator", "WarningSourceLocation");
+    static final ClassName FUSION_DESCRIPTOR = ClassName.get(OPERATOR_PACKAGE + ".fusion", "FusionDescriptor");
+    static final ClassName FUSION_AWARE = ClassName.get(OPERATOR_PACKAGE + ".fusion", "FusionAware");
 
     static final ClassName SOURCE = ClassName.get("org.elasticsearch.xpack.esql.core.tree", "Source");
 
