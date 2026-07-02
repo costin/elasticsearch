@@ -58,6 +58,19 @@ public final class FusionPlanner {
     private static final Stitcher DEFAULT_STITCHER = new Stitcher(new TemplateRegistry());
 
     /**
+     * Process-wide cache of stitched hidden classes keyed by expression {@linkplain FusedClassCache.Shape shape}. The
+     * {@link #DEFAULT_COMPILER} consults it before invoking the {@link Stitcher}, so repeated identical query shapes
+     * reuse one hidden class. Test-injected compilers ({@link #compilerForTests}) bypass it, so the raw stitch/fallback
+     * seams stay uncached and order-independent across tests.
+     */
+    private static final FusedClassCache CLASS_CACHE = new FusedClassCache();
+
+    /** Package-private accessor so tests in this package can assert cache reuse and reset counters. */
+    static FusedClassCache classCache() {
+        return CLASS_CACHE;
+    }
+
+    /**
      * The stitch entry points the planner uses. Extracted behind an interface so tests (in this package) can inject a
      * failing implementation to exercise the criterion-#5 fallback + telemetry without needing to craft bytecode that
      * fails JVM verification.
@@ -70,23 +83,50 @@ public final class FusionPlanner {
         Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
     }
 
-    /** Production compiler: delegates straight to the shared {@link Stitcher}. */
+    /**
+     * Production compiler: looks the shape up in {@link #CLASS_CACHE} first and only invokes the shared {@link Stitcher}
+     * on a miss (or after a cleared reference). The caller {@link MethodHandles.Lookup} is excluded from the cache key
+     * because production always uses the single {@link FusedExpressionEvaluatorFactory} module lookup; caching by shape
+     * alone is therefore safe here.
+     */
     private static final FusedClassCompiler DEFAULT_COMPILER = new FusedClassCompiler() {
         @Override
         public Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-            return DEFAULT_STITCHER.compileBlockLoop(caller, tree);
+            return CLASS_CACHE.get(shapeKey(tree, FusedClassCache.Path.BLOCK), () -> DEFAULT_STITCHER.compileBlockLoop(caller, tree));
         }
 
         @Override
         public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-            return DEFAULT_STITCHER.compileVectorLoop(caller, tree);
+            return CLASS_CACHE.get(
+                shapeKey(tree, FusedClassCache.Path.PLAIN_VECTOR),
+                () -> DEFAULT_STITCHER.compileVectorLoop(caller, tree)
+            );
         }
 
         @Override
         public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-            return DEFAULT_STITCHER.compileVectorLoopChecked(caller, tree);
+            return CLASS_CACHE.get(
+                shapeKey(tree, FusedClassCache.Path.CHECKED_VECTOR),
+                () -> DEFAULT_STITCHER.compileVectorLoopChecked(caller, tree)
+            );
         }
     };
+
+    /** Builds the binding-independent cache key for {@code tree} on the given emit {@code path}. */
+    private static FusedClassCache.Shape shapeKey(FusionNode tree, FusedClassCache.Path path) {
+        return new FusedClassCache.Shape(shapeOf(tree), rootElement(tree), path);
+    }
+
+    /**
+     * The element kind of a (depth &ge; 2) fused tree, read from its root kernel's return type. The tree is homogeneous
+     * by construction (see {@link #build}), so the root's return primitive is the element kind of the whole subtree.
+     */
+    private static ElementKind rootElement(FusionNode tree) {
+        FusionNode.Kernel root = (FusionNode.Kernel) tree;
+        String descriptor = root.descriptor().kernelType();
+        // build() only ever produces long/int/double homogeneous trees, so elementOf is never null here.
+        return elementOf(descriptor.charAt(descriptor.indexOf(')') + 1));
+    }
 
     /**
      * Test-only override for {@link #DEFAULT_COMPILER}. When non-null, {@link #maybeFuse} stitches through it, letting
@@ -269,9 +309,19 @@ public final class FusionPlanner {
     }
 
     /**
-     * A stable, column-independent signature of the fused shape (operator tree + kernel set), used as the
-     * {@link FusionTelemetry} failure key. Two expressions with the same operators in the same arrangement share a
-     * shape regardless of which columns they read.
+     * A stable, column-independent signature of the fused shape (operator tree + kernel set). It is used both as the
+     * {@link FusedClassCache} key and the {@link FusionTelemetry} failure key. Two expressions with the same operators
+     * in the same arrangement share a shape regardless of which columns they read.
+     *
+     * <p><b>Correctness contract (iter-15 review).</b> Because this signature keys the {@link FusedClassCache} — i.e. it
+     * decides which generated bytecode class is reused — each kernel node is encoded by the <b>full identity that
+     * determines its stitched bytecode</b>, not a friendly short name: the kernel class {@linkplain Class#getName()
+     * fully-qualified name} (not the simple name — two distinct classes can share a simple name and would otherwise
+     * collide onto one cached class), the kernel method name, the kernel's JVM type descriptor
+     * ({@link FusionDescriptor#kernelType()}), and the {@link FusionDescriptor#overflowExceptionType() overflow
+     * exception type} (which changes the emitted try/catch). Any two nodes that would stitch to different bytecode are
+     * therefore guaranteed different signatures. Leaves stay {@code #} so value bindings / column identities are
+     * excluded; {@code element} and {@code Path} live in the {@link FusedClassCache.Shape}, not here.
      */
     static String shapeOf(FusionNode node) {
         StringBuilder sb = new StringBuilder();
@@ -281,7 +331,14 @@ public final class FusionPlanner {
 
     private static void appendShape(FusionNode node, StringBuilder sb) {
         if (node instanceof FusionNode.Kernel kernel) {
-            sb.append(kernel.descriptor().kernelClass().getSimpleName()).append('.').append(kernel.descriptor().kernelMethod()).append('(');
+            FusionDescriptor descriptor = kernel.descriptor();
+            sb.append(descriptor.kernelClass().getName())
+                .append('#')
+                .append(descriptor.kernelMethod())
+                .append(descriptor.kernelType())
+                .append('^')
+                .append(descriptor.overflowExceptionType())
+                .append('(');
             List<FusionNode> children = kernel.children();
             for (int i = 0; i < children.size(); i++) {
                 if (i > 0) {
