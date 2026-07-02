@@ -65,7 +65,7 @@ public class FusionAwareGenerationTests extends ESTestCase {
             import org.elasticsearch.compute.ann.Evaluator;
             import org.elasticsearch.compute.ann.Fusable;
             class FusableKernel {
-                @Evaluator
+                @Evaluator(warnExceptions = { ArithmeticException.class })
                 @Fusable(overflowChecked = true)
                 static long process(long lhs, long rhs) {
                     return lhs + rhs;
@@ -77,8 +77,9 @@ public class FusionAwareGenerationTests extends ESTestCase {
 
         assertThat(generated, containsString("class Factory implements ExpressionEvaluator.Factory, FusionAware"));
         assertThat(generated, containsString("private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor("));
-        // kernel class, method name, JVM descriptor derived from (long, long) -> long, overflowChecked=true, allNullsIsNull=true
-        assertThat(generated, containsString("FusableKernel.class, \"process\", \"(JJ)J\", true, true)"));
+        // kernel class, method, descriptor (long, long) -> long, overflowChecked=true, allNullsIsNull=true, and the
+        // overflow exception type derived from @Evaluator.warnExceptions (binding rule #3).
+        assertThat(generated, containsString("FusableKernel.class, \"process\", \"(JJ)J\", true, true, \"java.lang.ArithmeticException\")"));
         assertThat(generated, containsString("public FusionDescriptor fusionDescriptor()"));
         assertThat(generated, containsString("return FUSION_DESCRIPTOR;"));
     }
@@ -105,7 +106,8 @@ public class FusionAwareGenerationTests extends ESTestCase {
         String generated = generateEvaluator(source, "test.MixedKernelEvaluator");
 
         assertThat(generated, containsString(", FusionAware"));
-        assertThat(generated, containsString("MixedKernel.class, \"process\", \"(DI)D\", false, true)"));
+        // No overflowChecked and no warnExceptions -> empty overflow exception type.
+        assertThat(generated, containsString("MixedKernel.class, \"process\", \"(DI)D\", false, true, \"\")"));
         assertThat(generated, containsString("public FusionDescriptor fusionDescriptor()"));
     }
 

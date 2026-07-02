@@ -115,5 +115,9 @@ public class ArithmeticFactoryFusionAwareTests extends ESTestCase {
         assertEquals(expectedKernelMethod, descriptor.kernelMethod());
         assertEquals(expectedKernelType, descriptor.kernelType());
         assertEquals(expectedOverflowChecked, descriptor.overflowChecked());
+        // binding rule #3: overflow-checked kernels declare the exception type (ArithmeticException) the stitcher
+        // must catch; non-overflow kernels carry the empty string.
+        assertEquals(expectedOverflowChecked ? "java.lang.ArithmeticException" : "", descriptor.overflowExceptionType());
+        assertEquals(expectedOverflowChecked, descriptor.hasOverflowException());
     }
 }

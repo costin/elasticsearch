@@ -108,7 +108,7 @@ public final class NegDoublesEvaluator implements ExpressionEvaluator {
   }
 
   static class Factory implements ExpressionEvaluator.Factory, FusionAware {
-    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Neg.class, "processDoubles", "(D)D", false, true);
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Neg.class, "processDoubles", "(D)D", false, true, "");
 
     private final Source source;
 

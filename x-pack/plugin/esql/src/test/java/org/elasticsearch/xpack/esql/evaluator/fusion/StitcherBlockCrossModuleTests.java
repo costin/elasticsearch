@@ -13,6 +13,7 @@ import org.elasticsearch.common.util.MockBigArrays;
 import org.elasticsearch.common.util.PageCacheRecycler;
 import org.elasticsearch.compute.data.BlockFactory;
 import org.elasticsearch.compute.data.DoubleBlock;
+import org.elasticsearch.compute.operator.Warnings;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
@@ -81,7 +82,14 @@ public class StitcherBlockCrossModuleTests extends ESTestCase {
         // The hidden class is defined into this esql-proper test package so it can link NumericUtils under the loop.
         assertThat(fused.getPackageName(), equalTo(getClass().getPackageName()));
 
-        MethodType type = MethodType.methodType(DoubleBlock.class, BlockFactory.class, int.class, DoubleBlock.class, DoubleBlock.class);
+        MethodType type = MethodType.methodType(
+            DoubleBlock.class,
+            BlockFactory.class,
+            Warnings.class,
+            int.class,
+            DoubleBlock.class,
+            DoubleBlock.class
+        );
         MethodHandle handle = lookup.findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);
 
         // Reference: the real (package-private) Add.processDoubles reflectively. Add and this test share the module
@@ -102,7 +110,7 @@ public class StitcherBlockCrossModuleTests extends ESTestCase {
         try {
             lhsBlock = buildDoubleBlock(positionCount, lhs);
             rhsBlock = buildDoubleBlock(positionCount, rhs);
-            result = (DoubleBlock) handle.invokeWithArguments(blockFactory, positionCount, lhsBlock, rhsBlock);
+            result = (DoubleBlock) handle.invokeWithArguments(blockFactory, Warnings.NOOP_WARNINGS, positionCount, lhsBlock, rhsBlock);
             assertThat(result.getPositionCount(), equalTo(positionCount));
             for (int p = 0; p < positionCount; p++) {
                 boolean nullPos = lhs[p].length != 1 || rhs[p].length != 1;

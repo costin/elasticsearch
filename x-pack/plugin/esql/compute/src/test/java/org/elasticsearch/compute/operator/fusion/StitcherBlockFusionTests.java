@@ -17,6 +17,7 @@ import org.elasticsearch.compute.data.IntBlock;
 import org.elasticsearch.compute.data.LongBlock;
 import org.elasticsearch.compute.data.LongVector;
 import org.elasticsearch.compute.data.Vector;
+import org.elasticsearch.compute.operator.Warnings;
 import org.elasticsearch.core.Releasable;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.indices.breaker.CircuitBreakerService;
@@ -211,12 +212,13 @@ public class StitcherBlockFusionTests extends ESTestCase {
             LongBlock[] blocks = new LongBlock[arity];
             LongBlock result = null;
             try {
-                Object[] args = new Object[2 + arity];
+                Object[] args = new Object[3 + arity];
                 args[0] = blockFactory;
-                args[1] = positionCount;
+                args[1] = Warnings.NOOP_WARNINGS;
+                args[2] = positionCount;
                 for (int i = 0; i < arity; i++) {
                     blocks[i] = buildLongBlock(positionCount, values[i]);
-                    args[2 + i] = blocks[i];
+                    args[3 + i] = blocks[i];
                 }
                 result = (LongBlock) handle.invokeWithArguments(args);
                 assertThat("s=" + s, result.getPositionCount(), equalTo(positionCount));
@@ -280,12 +282,13 @@ public class StitcherBlockFusionTests extends ESTestCase {
             IntBlock[] blocks = new IntBlock[arity];
             IntBlock result = null;
             try {
-                Object[] args = new Object[2 + arity];
+                Object[] args = new Object[3 + arity];
                 args[0] = blockFactory;
-                args[1] = positionCount;
+                args[1] = Warnings.NOOP_WARNINGS;
+                args[2] = positionCount;
                 for (int i = 0; i < arity; i++) {
                     blocks[i] = buildIntBlock(positionCount, values[i]);
-                    args[2 + i] = blocks[i];
+                    args[3 + i] = blocks[i];
                 }
                 result = (IntBlock) handle.invokeWithArguments(args);
                 assertThat("s=" + s, result.getPositionCount(), equalTo(positionCount));
@@ -349,12 +352,13 @@ public class StitcherBlockFusionTests extends ESTestCase {
             DoubleBlock[] blocks = new DoubleBlock[arity];
             DoubleBlock result = null;
             try {
-                Object[] args = new Object[2 + arity];
+                Object[] args = new Object[3 + arity];
                 args[0] = blockFactory;
-                args[1] = positionCount;
+                args[1] = Warnings.NOOP_WARNINGS;
+                args[2] = positionCount;
                 for (int i = 0; i < arity; i++) {
                     blocks[i] = buildDoubleBlock(positionCount, values[i]);
-                    args[2 + i] = blocks[i];
+                    args[3 + i] = blocks[i];
                 }
                 result = (DoubleBlock) handle.invokeWithArguments(args);
                 assertThat("s=" + s, result.getPositionCount(), equalTo(positionCount));
@@ -428,6 +432,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
         MethodType type = MethodType.methodType(
             LongBlock.class,
             BlockFactory.class,
+            Warnings.class,
             int.class,
             LongBlock.class,
             LongBlock.class,
@@ -447,7 +452,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
                 ba = buildLongBlock(positionCount, a);
                 bb = buildLongBlock(positionCount, b);
                 bc = buildLongBlock(positionCount, c);
-                result = (LongBlock) handle.invokeWithArguments(blockFactory, positionCount, ba, bb, bc);
+                result = (LongBlock) handle.invokeWithArguments(blockFactory, Warnings.NOOP_WARNINGS, positionCount, ba, bb, bc);
                 for (int p = 0; p < positionCount; p++) {
                     boolean nullPos = a[p].length != 1 || b[p].length != 1 || c[p].length != 1;
                     if (nullPos) {
@@ -519,6 +524,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
         MethodType type = MethodType.methodType(
             LongBlock.class,
             BlockFactory.class,
+            Warnings.class,
             int.class,
             LongBlock.class,
             LongBlock.class,
@@ -541,7 +547,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
                 bb = buildLongBlock(positionCount, b);
                 bc = buildLongBlock(positionCount, c);
                 bd = buildLongBlock(positionCount, d);
-                result = (LongBlock) handle.invokeWithArguments(blockFactory, positionCount, ba, bb, bc, bd);
+                result = (LongBlock) handle.invokeWithArguments(blockFactory, Warnings.NOOP_WARNINGS, positionCount, ba, bb, bc, bd);
                 for (int p = 0; p < positionCount; p++) {
                     boolean nullPos = a[p].length != 1 || b[p].length != 1 || c[p].length != 1 || d[p].length != 1;
                     if (nullPos) {
@@ -575,6 +581,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
         MethodType type = MethodType.methodType(
             LongBlock.class,
             BlockFactory.class,
+            Warnings.class,
             int.class,
             LongBlock.class,
             LongBlock.class,
@@ -598,7 +605,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
             b0 = buildLongBlock(positionCount, c0);
             b1 = buildLongBlock(positionCount, c1);
             b2 = buildLongBlock(positionCount, c2);
-            result = (LongBlock) handle.invokeWithArguments(blockFactory, positionCount, b0, b1, b2);
+            result = (LongBlock) handle.invokeWithArguments(blockFactory, Warnings.NOOP_WARNINGS, positionCount, b0, b1, b2);
             for (int p = 0; p < positionCount; p++) {
                 assertThat("p=" + p + " must not be nullified by the unused input", result.isNull(p), is(false));
                 assertThat("p=" + p, result.getLong(result.getFirstValueIndex(p)), equalTo(Math.addExact(c0[p][0], c2[p][0])));
@@ -637,11 +644,12 @@ public class StitcherBlockFusionTests extends ESTestCase {
         // The block path touches only public compute.data API, so the hidden class is defined into the caller's own
         // package/module (no privateLookupIn teleport) — here, this test's package.
         assertThat(fused.getPackageName(), equalTo(getClass().getPackageName()));
-        Class<?>[] params = new Class<?>[2 + gen.arity()];
+        Class<?>[] params = new Class<?>[3 + gen.arity()];
         params[0] = BlockFactory.class;
-        params[1] = int.class;
+        params[1] = Warnings.class;
+        params[2] = int.class;
         for (int i = 0; i < gen.arity(); i++) {
-            params[2 + i] = blockType;
+            params[3 + i] = blockType;
         }
         return MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_METHOD_NAME, MethodType.methodType(blockType, params));
     }

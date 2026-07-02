@@ -44,6 +44,31 @@ public class FusionDescriptorTests extends ESTestCase {
         assertThat(fusionAware.fusionDescriptor(), is(expected));
     }
 
+    public void testConvenienceConstructorDerivesOverflowExceptionType() {
+        // Overflow-checked kernels throw ArithmeticException (matching what the APT derives from warnExceptions);
+        // non-overflow kernels carry no exception type.
+        assertThat(descriptor(KERNEL_TYPE, true, true).overflowExceptionType(), is("java.lang.ArithmeticException"));
+        assertThat(descriptor(KERNEL_TYPE, true, true).hasOverflowException(), is(true));
+        assertThat(descriptor(KERNEL_TYPE, false, true).overflowExceptionType(), is(""));
+        assertThat(descriptor(KERNEL_TYPE, false, true).hasOverflowException(), is(false));
+    }
+
+    public void testExplicitOverflowExceptionTypeSurvivesAndAffectsEquals() {
+        FusionDescriptor a = new FusionDescriptor(
+            FusionDescriptorTests.class,
+            "fixtureProcess",
+            KERNEL_TYPE,
+            true,
+            true,
+            "java.lang.ArithmeticException"
+        );
+        FusionDescriptor b = new FusionDescriptor(FusionDescriptorTests.class, "fixtureProcess", KERNEL_TYPE, true, true, "");
+        assertThat(a.overflowExceptionType(), is("java.lang.ArithmeticException"));
+        assertThat(a.hasOverflowException(), is(true));
+        assertThat(b.hasOverflowException(), is(false));
+        assertThat(a, not(b));
+    }
+
     private static FusionDescriptor descriptor(String kernelType, boolean overflowChecked, boolean allNullsIsNull) {
         return new FusionDescriptor(FusionDescriptorTests.class, "fixtureProcess", kernelType, overflowChecked, allNullsIsNull);
     }

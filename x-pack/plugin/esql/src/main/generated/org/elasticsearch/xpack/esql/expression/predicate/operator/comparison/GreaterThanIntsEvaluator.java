@@ -134,7 +134,7 @@ public final class GreaterThanIntsEvaluator implements ExpressionEvaluator {
   }
 
   static class Factory implements ExpressionEvaluator.Factory, FusionAware {
-    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(GreaterThan.class, "processInts", "(II)Z", false, true);
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(GreaterThan.class, "processInts", "(II)Z", false, true, "");
 
     private final Source source;
 

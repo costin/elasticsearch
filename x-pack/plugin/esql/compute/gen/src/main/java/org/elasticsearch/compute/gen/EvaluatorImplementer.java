@@ -63,6 +63,7 @@ public class EvaluatorImplementer {
     private final boolean allNullsIsNull;
     private final boolean fusable;
     private final boolean overflowChecked;
+    private final String overflowExceptionType;
 
     public EvaluatorImplementer(
         Elements elements,
@@ -89,6 +90,13 @@ public class EvaluatorImplementer {
         this.allNullsIsNull = allNullsIsNull;
         this.fusable = fusable;
         this.overflowChecked = overflowChecked;
+        // The overflow exception type the fused stitcher must catch around this kernel's spliced body (binding
+        // rule #3). It is the FQN of the first declared @Evaluator.warnExceptions entry — for every fusable
+        // overflow-checked kernel that is ArithmeticException — and empty when the kernel is not overflow-checked
+        // (or declares no warn exception), so the stitcher only wraps kernels that can actually throw.
+        this.overflowExceptionType = (fusable && overflowChecked && warnExceptions.isEmpty() == false)
+            ? elements.getBinaryName((TypeElement) ((DeclaredType) warnExceptions.get(0)).asElement()).toString()
+            : "";
     }
 
     public JavaFile sourceFile() {
@@ -426,13 +434,14 @@ public class EvaluatorImplementer {
     private FieldSpec fusionDescriptorField() {
         return FieldSpec.builder(FUSION_DESCRIPTOR, "FUSION_DESCRIPTOR", Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
             .initializer(
-                "new $T($T.class, $S, $S, $L, $L)",
+                "new $T($T.class, $S, $S, $L, $L, $S)",
                 FUSION_DESCRIPTOR,
                 ClassName.get(declarationType),
                 processFunction.function.getSimpleName().toString(),
                 kernelTypeDescriptor(),
                 overflowChecked,
-                allNullsIsNull
+                allNullsIsNull,
+                overflowExceptionType
             )
             .build();
     }

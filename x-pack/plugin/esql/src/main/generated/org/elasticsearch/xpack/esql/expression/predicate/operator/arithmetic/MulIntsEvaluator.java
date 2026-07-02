@@ -143,7 +143,7 @@ public final class MulIntsEvaluator implements ExpressionEvaluator {
   }
 
   static class Factory implements ExpressionEvaluator.Factory, FusionAware {
-    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Mul.class, "processInts", "(II)I", true, true);
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Mul.class, "processInts", "(II)I", true, true, "java.lang.ArithmeticException");
 
     private final Source source;
 

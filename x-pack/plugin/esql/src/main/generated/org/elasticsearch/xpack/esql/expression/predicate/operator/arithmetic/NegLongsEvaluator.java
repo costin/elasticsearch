@@ -119,7 +119,7 @@ public final class NegLongsEvaluator implements ExpressionEvaluator {
   }
 
   static class Factory implements ExpressionEvaluator.Factory, FusionAware {
-    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Neg.class, "processLongs", "(J)J", true, true);
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Neg.class, "processLongs", "(J)J", true, true, "java.lang.ArithmeticException");
 
     private final Source source;
 

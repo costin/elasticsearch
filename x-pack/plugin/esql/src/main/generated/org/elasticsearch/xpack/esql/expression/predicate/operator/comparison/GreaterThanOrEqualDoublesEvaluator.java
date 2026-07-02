@@ -134,7 +134,7 @@ public final class GreaterThanOrEqualDoublesEvaluator implements ExpressionEvalu
   }
 
   static class Factory implements ExpressionEvaluator.Factory, FusionAware {
-    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(GreaterThanOrEqual.class, "processDoubles", "(DD)Z", false, true);
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(GreaterThanOrEqual.class, "processDoubles", "(DD)Z", false, true, "");
 
     private final Source source;
 

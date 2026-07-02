@@ -126,5 +126,8 @@ public class ComparisonFactoryFusionAwareTests extends ESTestCase {
         assertEquals(expectedKernelMethod, descriptor.kernelMethod());
         assertEquals(expectedKernelType, descriptor.kernelType());
         assertEquals(expectedOverflowChecked, descriptor.overflowChecked());
+        // Comparison kernels never throw on overflow, so the exception type is empty and there is nothing to catch.
+        assertEquals("", descriptor.overflowExceptionType());
+        assertEquals(false, descriptor.hasOverflowException());
     }
 }
