@@ -125,6 +125,7 @@ import org.elasticsearch.xpack.esql.datasources.spi.FormatSpec;
 import org.elasticsearch.xpack.esql.enrich.EnrichLookupOperator;
 import org.elasticsearch.xpack.esql.enrich.LookupFromIndexOperator;
 import org.elasticsearch.xpack.esql.enrich.StreamingLookupFromIndexOperator;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
 import org.elasticsearch.xpack.esql.execution.PlanExecutor;
 import org.elasticsearch.xpack.esql.expression.ExpressionWritables;
 import org.elasticsearch.xpack.esql.expression.function.EsqlFunctionRegistry;
@@ -313,6 +314,9 @@ public class EsqlPlugin extends Plugin implements ActionPlugin, ExtensiblePlugin
     @Override
     public Collection<?> createComponents(PluginServices services) {
         Settings settings = services.clusterService().getSettings();
+        // Latch the node-level expression-fusion kill switch (esql.fusion.enabled) once at node start; it is not a
+        // dynamic cluster setting, so this single read fixes the node's fusion behavior for its lifetime.
+        FusionSettings.initFromNodeSettings(settings);
         BigArrays bigArrays = services.indicesService().getBigArrays().withCircuitBreaking();
         var blockFactoryProvider = blockFactoryProvider(
             BlockFactory.builder(bigArrays)
@@ -541,7 +545,8 @@ public class EsqlPlugin extends Plugin implements ActionPlugin, ExtensiblePlugin
                 ViewResolver.MAX_VIEW_DEPTH_SETTING,
                 DataSourceService.MAX_DATA_SOURCES_COUNT_SETTING,
                 DatasetService.MAX_DATASETS_COUNT_SETTING,
-                GROK_WATCHDOG_MAX_EXECUTION_TIME
+                GROK_WATCHDOG_MAX_EXECUTION_TIME,
+                FusionSettings.FUSION_ENABLED_SETTING
             )
         );
         settings.addAll(PlannerSettings.settings());
