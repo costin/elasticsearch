@@ -118,14 +118,15 @@ public final class FusionPlanner {
     }
 
     /**
-     * The element kind of a (depth &ge; 2) fused tree, read from its root kernel's return type. The tree is homogeneous
-     * by construction (see {@link #build}), so the root's return primitive is the element kind of the whole subtree.
+     * The OUTPUT element kind of a (depth &ge; 2) fused tree, read from its root kernel's return type. For an
+     * arithmetic root this is the homogeneous numeric element; for a comparison root it is {@link ElementKind#BOOLEAN}.
+     * Part of the {@link FusedClassCache} key (the numeric input element is already implied by the kernel descriptors
+     * encoded in {@link #shapeOf}).
      */
     private static ElementKind rootElement(FusionNode tree) {
         FusionNode.Kernel root = (FusionNode.Kernel) tree;
         String descriptor = root.descriptor().kernelType();
-        // build() only ever produces long/int/double homogeneous trees, so elementOf is never null here.
-        return elementOf(descriptor.charAt(descriptor.indexOf(')') + 1));
+        return outputElementOf(descriptor.charAt(descriptor.indexOf(')') + 1));
     }
 
     /**
@@ -156,8 +157,8 @@ public final class FusionPlanner {
             return null;
         }
         PlanContext ctx = new PlanContext(layout, rawFactory);
-        FusionNode tree = build(exp, ctx);
-        if (tree == null || ctx.element == null) {
+        FusionNode tree = build(exp, ctx, true);
+        if (tree == null || ctx.inputElement == null || ctx.outputElement == null) {
             return null;
         }
         if (depth(tree) < 2) {
@@ -174,7 +175,8 @@ public final class FusionPlanner {
             exp.source(),
             tree,
             channels,
-            ctx.element,
+            ctx.inputElement,
+            ctx.outputElement,
             ctx.overflowChecked,
             unfused,
             compiler,
@@ -187,7 +189,10 @@ public final class FusionPlanner {
         private final Layout layout;
         private final Function<Expression, ExpressionEvaluator.Factory> rawFactory;
         private final List<Integer> channels = new ArrayList<>();
-        private ElementKind element;
+        /** Homogeneous numeric element of every leaf + arithmetic intermediate (kernel argument kind). */
+        private ElementKind inputElement;
+        /** The root kernel's return kind: the numeric input element for an arithmetic root, or BOOLEAN for a comparison root. */
+        private ElementKind outputElement;
         private boolean overflowChecked;
 
         PlanContext(Layout layout, Function<Expression, ExpressionEvaluator.Factory> rawFactory) {
@@ -199,17 +204,25 @@ public final class FusionPlanner {
     /**
      * Recursively builds a {@link FusionNode} for {@code exp}, or returns {@code null} the moment any eligibility rule
      * is violated (which aborts the whole attempt — a partially fusable tree is not fused here).
+     *
+     * <p><b>Typed-tree gate.</b> The INPUT element is the homogeneous numeric kind of every kernel's arguments (and
+     * therefore of every leaf); it must be uniform across the whole tree. The OUTPUT element is the root kernel's
+     * return kind: the same numeric element for an arithmetic root, or {@link ElementKind#BOOLEAN} for a comparison
+     * root (e.g. {@code a > b}). A comparison can only sit at the root, since no in-scope kernel takes a boolean
+     * argument — a non-root kernel must therefore return the numeric input element it feeds into.
+     *
+     * @param root whether {@code exp} is the tree root (only the root may be a boolean-returning comparison)
      */
-    private static FusionNode build(Expression exp, PlanContext ctx) {
+    private static FusionNode build(Expression exp, PlanContext ctx, boolean root) {
         if (exp instanceof Attribute attr) {
             Layout.ChannelAndType channelAndType = ctx.layout.get(attr.id());
             if (channelAndType == null) {
                 return null;
             }
-            // The element type must already be known from an enclosing kernel; a bare attribute cannot be a fused root
-            // (depth-2 requirement) and homogeneity means its declared type must match the element type so no cast is
-            // needed (the fused body reads the column directly).
-            if (ctx.element == null || matches(attr.dataType(), ctx.element) == false) {
+            // The numeric input element must already be known from an enclosing kernel; a bare attribute cannot be a
+            // fused root (depth-2 requirement) and homogeneity means its declared type must match the input element so
+            // no cast is needed (the fused body reads the column directly). Leaves are Attribute-only numeric columns.
+            if (ctx.inputElement == null || matches(attr.dataType(), ctx.inputElement) == false) {
                 return null;
             }
             int index = ctx.channels.size();
@@ -222,16 +235,46 @@ public final class FusionPlanner {
             return null;
         }
         FusionDescriptor descriptor = ((FusionAware) factory).fusionDescriptor();
-        ElementKind element = homogeneousElement(descriptor.kernelType());
-        if (element == null) {
+        String kernelType = descriptor.kernelType();
+        // INPUT-element gate: every argument must be the same primitive long/int/double.
+        ElementKind argElement = homogeneousArgElement(kernelType);
+        if (argElement == null) {
             return null;
         }
-        if (ctx.element == null) {
-            ctx.element = element;
-        } else if (ctx.element != element) {
+        int close = kernelType.indexOf(')');
+        if (close < 0 || close + 2 != kernelType.length()) {
+            // The return must be exactly one descriptor char (a primitive or boolean); anything else is out of scope.
             return null;
         }
-        int argCount = primitiveArgCount(descriptor.kernelType());
+        char returnChar = kernelType.charAt(close + 1);
+        boolean comparison = returnChar == 'Z';
+        ElementKind returnNumeric = elementOf(returnChar); // null for 'Z' or an unsupported return kind
+
+        // Set / verify the homogeneous numeric input element across the whole tree.
+        if (ctx.inputElement == null) {
+            ctx.inputElement = argElement;
+        } else if (ctx.inputElement != argElement) {
+            return null;
+        }
+
+        if (root) {
+            if (comparison) {
+                ctx.outputElement = ElementKind.BOOLEAN;
+            } else if (returnNumeric == argElement) {
+                ctx.outputElement = returnNumeric;
+            } else {
+                // A root whose return differs from its (numeric) inputs (e.g. a cast-like kernel) is out of scope.
+                return null;
+            }
+        } else {
+            // A non-root kernel feeds a numeric argument, so it must return the numeric input element. This naturally
+            // excludes a boolean-returning comparison anywhere but the root.
+            if (returnNumeric != argElement) {
+                return null;
+            }
+        }
+
+        int argCount = primitiveArgCount(kernelType);
         List<Expression> children = exp.children();
         if (children.size() != argCount) {
             return null;
@@ -240,7 +283,7 @@ public final class FusionPlanner {
 
         List<FusionNode> childNodes = new ArrayList<>(children.size());
         for (Expression child : children) {
-            FusionNode childNode = build(child, ctx);
+            FusionNode childNode = build(child, ctx, false);
             if (childNode == null) {
                 return null;
             }
@@ -250,23 +293,24 @@ public final class FusionPlanner {
     }
 
     /**
-     * The uniform element kind of a homogeneous primitive kernel descriptor {@code (TT..)T}, or {@code null} if the
-     * descriptor is not homogeneous, not a supported primitive, or references object/array types.
+     * The uniform primitive element kind of a kernel descriptor's <b>arguments</b> {@code (TT..)?}, or {@code null} if
+     * there are no arguments, they are not all the same {@code long}/{@code int}/{@code double}, or any is an
+     * object/array type. The return kind is validated separately by {@link #build}.
      */
-    private static ElementKind homogeneousElement(String descriptor) {
+    private static ElementKind homogeneousArgElement(String descriptor) {
         int close = descriptor.indexOf(')');
-        if (close < 0 || close + 2 != descriptor.length()) {
-            // The return must be exactly one primitive descriptor char.
+        if (close < 2) {
+            // "()..." — a no-argument kernel is not fusable here.
             return null;
         }
-        char ret = descriptor.charAt(close + 1);
-        ElementKind element = elementOf(ret);
+        char first = descriptor.charAt(1);
+        ElementKind element = elementOf(first);
         if (element == null) {
+            // Not a supported primitive (also rejects an 'L'/'[' object/array first argument).
             return null;
         }
-        for (int i = 1; i < close; i++) {
-            if (descriptor.charAt(i) != ret) {
-                // Any differing char (a second primitive kind, or an 'L'/'[' object/array descriptor) breaks homogeneity.
+        for (int i = 2; i < close; i++) {
+            if (descriptor.charAt(i) != first) {
                 return null;
             }
         }
@@ -288,11 +332,17 @@ public final class FusionPlanner {
         };
     }
 
+    /** The output element for a return descriptor char: BOOLEAN for {@code 'Z'}, else the numeric {@link #elementOf}. */
+    private static ElementKind outputElementOf(char returnChar) {
+        return returnChar == 'Z' ? ElementKind.BOOLEAN : elementOf(returnChar);
+    }
+
     private static boolean matches(DataType type, ElementKind element) {
         return switch (element) {
             case LONG -> type == DataType.LONG;
             case INT -> type == DataType.INTEGER;
             case DOUBLE -> type == DataType.DOUBLE;
+            case BOOLEAN -> type == DataType.BOOLEAN;
         };
     }
 

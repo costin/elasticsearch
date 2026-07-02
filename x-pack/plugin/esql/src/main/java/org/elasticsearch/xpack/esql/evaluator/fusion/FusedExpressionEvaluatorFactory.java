@@ -10,6 +10,9 @@ package org.elasticsearch.xpack.esql.evaluator.fusion;
 import org.apache.lucene.util.RamUsageEstimator;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BlockFactory;
+import org.elasticsearch.compute.data.BooleanArrayVector;
+import org.elasticsearch.compute.data.BooleanBlock;
+import org.elasticsearch.compute.data.BooleanVector;
 import org.elasticsearch.compute.data.DoubleArrayVector;
 import org.elasticsearch.compute.data.DoubleBlock;
 import org.elasticsearch.compute.data.DoubleVector;
@@ -101,7 +104,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
     private final Source source;
     private final int[] inputChannels;
-    private final ElementKind element;
+    /** The numeric input element (long/int/double). Runtime vector-eligibility narrows inputs to this *ArrayVector. */
+    private final ElementKind inputElement;
     private final MethodHandle blockHandle;
     private final MethodHandle vectorHandle;
     private final VectorStrategy vectorStrategy;
@@ -111,7 +115,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     private FusedExpressionEvaluatorFactory(
         Source source,
         int[] inputChannels,
-        ElementKind element,
+        ElementKind inputElement,
         MethodHandle blockHandle,
         MethodHandle vectorHandle,
         VectorStrategy vectorStrategy,
@@ -120,7 +124,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     ) {
         this.source = source;
         this.inputChannels = inputChannels;
-        this.element = element;
+        this.inputElement = inputElement;
         this.blockHandle = blockHandle;
         this.vectorHandle = vectorHandle;
         this.vectorStrategy = vectorStrategy;
@@ -139,7 +143,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         Source source,
         FusionNode tree,
         int[] inputChannels,
-        ElementKind element,
+        ElementKind inputElement,
+        ElementKind outputElement,
         boolean overflowChecked,
         ExpressionEvaluator.Factory unfused,
         FusionPlanner.FusedClassCompiler compiler,
@@ -148,25 +153,42 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         int arity = inputChannels.length;
         try {
             Class<?> blockClass = compiler.compileBlockLoop(LOOKUP, tree);
-            MethodHandle blockHandle = LOOKUP.findStatic(blockClass, Stitcher.FUSED_METHOD_NAME, blockType(element, arity));
+            MethodHandle blockHandle = LOOKUP.findStatic(
+                blockClass,
+                Stitcher.FUSED_METHOD_NAME,
+                blockType(inputElement, outputElement, arity)
+            );
 
             MethodHandle vectorHandle = null;
             VectorStrategy strategy;
             if (overflowChecked == false) {
                 Class<?> vectorClass = compiler.compileVectorLoop(LOOKUP, tree);
-                vectorHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, plainVectorType(element, arity));
+                vectorHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, plainVectorType(outputElement, arity));
                 strategy = VectorStrategy.PLAIN_VECTOR;
-            } else if (element != ElementKind.DOUBLE) {
+            } else if (inputElement != ElementKind.DOUBLE) {
+                // HARD GATE is keyed on the numeric CHILD/INPUT element, not the boolean output: a comparison over
+                // overflow-checked double arithmetic children (e.g. a + b > c over doubles) still calls
+                // NumericUtils.asFiniteNumber, which cannot link on the compute.data-teleported checked-vector path.
+                // Only a non-double numeric input is eligible for the checked-vector path here.
                 Class<?> vectorClass = compiler.compileVectorLoopChecked(LOOKUP, tree);
-                vectorHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, checkedVectorType(element, arity));
+                vectorHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, checkedVectorType(outputElement, arity));
                 strategy = VectorStrategy.CHECKED_VECTOR;
             } else {
-                // HARD GATE: overflow-checked double kernels' non-java.base callees cannot link on the teleported
+                // HARD GATE: overflow-checked double child kernels' non-java.base callees cannot link on the teleported
                 // compute.data vector path, so we never attempt it — the block path (or unfused) serves this shape.
                 strategy = VectorStrategy.NONE;
             }
 
-            return new FusedExpressionEvaluatorFactory(source, inputChannels, element, blockHandle, vectorHandle, strategy, unfused, shape);
+            return new FusedExpressionEvaluatorFactory(
+                source,
+                inputChannels,
+                inputElement,
+                blockHandle,
+                vectorHandle,
+                strategy,
+                unfused,
+                shape
+            );
         } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError e) {
             // Any plan-time stitch failure must fall back to the unfused chain and record the shape (criterion #5):
             // - StitchingException / LinkageError: the stitch failed to verify, link, or define.
@@ -186,7 +208,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         return new FusedExpressionEvaluator(
             source,
             inputChannels,
-            element,
+            inputElement,
             blockHandle,
             vectorHandle,
             vectorStrategy,
@@ -211,36 +233,39 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         return "Fused[shape=" + shape + ", strategy=" + vectorStrategy + ", unfused=" + unfused + "]";
     }
 
-    private static MethodType blockType(ElementKind element, int arity) {
+    private static MethodType blockType(ElementKind inputElement, ElementKind outputElement, int arity) {
         List<Class<?>> params = new ArrayList<>();
         params.add(BlockFactory.class);
         params.add(Warnings.class);
         params.add(int.class);
         for (int i = 0; i < arity; i++) {
-            params.add(element.blockClass);
+            // Input *Blocks are the numeric input element; the produced block is the output element (boolean for a
+            // comparison root).
+            params.add(inputElement.blockClass);
         }
-        return MethodType.methodType(element.blockClass, params);
+        return MethodType.methodType(outputElement.blockClass, params);
     }
 
-    private static MethodType checkedVectorType(ElementKind element, int arity) {
+    private static MethodType checkedVectorType(ElementKind outputElement, int arity) {
         List<Class<?>> params = new ArrayList<>();
         params.add(BlockFactory.class);
         params.add(Warnings.class);
         params.add(int.class);
         for (int i = 0; i < arity; i++) {
+            // Inputs are passed as the generic Vector interface (narrowed once inside the fused method).
             params.add(Vector.class);
         }
-        return MethodType.methodType(element.blockClass, params);
+        return MethodType.methodType(outputElement.blockClass, params);
     }
 
-    private static MethodType plainVectorType(ElementKind element, int arity) {
+    private static MethodType plainVectorType(ElementKind outputElement, int arity) {
         List<Class<?>> params = new ArrayList<>();
         params.add(BlockFactory.class);
         params.add(int.class);
         for (int i = 0; i < arity; i++) {
             params.add(Vector.class);
         }
-        return MethodType.methodType(element.vectorClass, params);
+        return MethodType.methodType(outputElement.vectorClass, params);
     }
 
     /**
@@ -251,7 +276,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     enum ElementKind {
         LONG(LongBlock.class, LongVector.class, LongArrayVector.class),
         INT(IntBlock.class, IntVector.class, IntArrayVector.class),
-        DOUBLE(DoubleBlock.class, DoubleVector.class, DoubleArrayVector.class);
+        DOUBLE(DoubleBlock.class, DoubleVector.class, DoubleArrayVector.class),
+        /** Output-only in this scope: the boolean result of a comparison-rooted tree (a > b, a + b > c, ...). */
+        BOOLEAN(BooleanBlock.class, BooleanVector.class, BooleanArrayVector.class);
 
         private final Class<? extends Block> blockClass;
         private final Class<? extends Vector> vectorClass;
@@ -275,7 +302,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
         private final Source source;
         private final int[] inputChannels;
-        private final ElementKind element;
+        private final ElementKind inputElement;
         private final MethodHandle blockHandle;
         private final MethodHandle vectorHandle;
         private final VectorStrategy vectorStrategy;
@@ -293,7 +320,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         FusedExpressionEvaluator(
             Source source,
             int[] inputChannels,
-            ElementKind element,
+            ElementKind inputElement,
             MethodHandle blockHandle,
             MethodHandle vectorHandle,
             VectorStrategy vectorStrategy,
@@ -303,7 +330,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         ) {
             this.source = source;
             this.inputChannels = inputChannels;
-            this.element = element;
+            this.inputElement = inputElement;
             this.blockHandle = blockHandle;
             this.vectorHandle = vectorHandle;
             this.vectorStrategy = vectorStrategy;
@@ -382,7 +409,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             Vector[] vectors = new Vector[inputs.length];
             for (int i = 0; i < inputs.length; i++) {
                 Vector vector = inputs[i].asVector();
-                if (vector == null || element.arrayVectorClass.isInstance(vector) == false) {
+                if (vector == null || inputElement.arrayVectorClass.isInstance(vector) == false) {
                     return null;
                 }
                 vectors[i] = vector;
