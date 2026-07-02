@@ -29,7 +29,11 @@ import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
 import java.lang.invoke.MethodHandles;
+import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.Consumer;
@@ -249,6 +253,17 @@ public final class Stitcher {
 
     /** Descriptor of {@code Warnings.registerException(Exception)}. */
     private static final String WARNINGS_REGISTER_DESCRIPTOR = "(Ljava/lang/Exception;)V";
+
+    /**
+     * JVM descriptor of a {@code Warnings[]} parameter. The fused block / checked-vector / logical methods take a
+     * <b>per-warning-source</b> {@code Warnings} array (indexed by {@link #warningsSourceIndices}) rather than a single
+     * {@code Warnings}, so each warning-emitting node registers on the {@code Warnings} built from <em>its own</em> node
+     * {@link org.elasticsearch.compute.operator.WarningSourceLocation source} — byte-for-byte the header the generated
+     * unfused evaluator for that node would emit (each generated {@code *Evaluator} carries its own node source). This
+     * keeps the fused warning headers a <b>subset</b> of the unfused chain's (criterion #1): reached warnings are equal;
+     * short-circuit only drops the never-reached ones.
+     */
+    private static final String WARNINGS_ARRAY_DESCRIPTOR = "[L" + WARNINGS + ";";
 
     /** Internal name of {@code java.lang.IllegalArgumentException}, the multi-value warning the unfused evaluator raises. */
     private static final String ILLEGAL_ARGUMENT_EXCEPTION = "java/lang/IllegalArgumentException";
@@ -525,10 +540,10 @@ public final class Stitcher {
         int size = inputElement.type().getSize();
         Set<String> overflowTypes = overflowExceptionInternalNames(tree);
 
-        // Frame: [0] BlockFactory, [1] Warnings, [2] int positionCount, [3 .. 3+arity) input Vectors. The per-input
-        // raw arrays, the builder, loop counter, per-input value slots, built result, and the two exception slots sit
-        // above the parameters; each kernel body then gets a disjoint range above that.
-        int warningsSlot = 1;
+        // Frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input Vectors. The per-input
+        // raw arrays, the builder, loop counter, per-input value slots, built result, the two exception slots and the
+        // current-kernel slot sit above the parameters; each kernel body then gets a disjoint range above that.
+        int warningsArraySlot = 1;
         int pcSlot = 2;
         int inputBase = 3;
         int rawArrayBase = inputBase + arity;
@@ -538,9 +553,16 @@ public final class Stitcher {
         int resultSlot = valueBase + arity * size;
         int excSlot = resultSlot + 1;
         int overflowExcSlot = excSlot + 1;
-        int kernelBase = overflowExcSlot + 1;
+        // Names the overflow-checked kernel currently evaluating; the shared overflow handler reads it to attribute the
+        // caught overflow to that kernel's own warning source.
+        int currentKernelSlot = overflowExcSlot + 1;
+        int kernelBase = currentKernelSlot + 1;
 
-        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";L").append(WARNINGS).append(";I");
+        // Each kernel's warning-source slot into the runtime Warnings[]: its overflow warning registers on
+        // warnings[its slot], matching the unfused per-node evaluator source.
+        Map<FusionNode, Integer> sourceIndices = warningsSourceIndices(tree);
+
+        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
         for (int i = 0; i < arity; i++) {
             desc.append("L").append(VECTOR).append(";");
         }
@@ -614,10 +636,14 @@ public final class Stitcher {
         LabelNode tryStartOverflow = overflowTypes.isEmpty() ? null : new LabelNode();
         LabelNode tryEndOverflow = overflowTypes.isEmpty() ? null : new LabelNode();
         if (tryStartOverflow != null) {
+            // Seed currentKernelSlot (0) OUTSIDE the overflow try so it is definitely int-typed at the handler's frame
+            // merge; the emitter overwrites it with the real kernel slot immediately before each overflow-checked body.
+            insns.add(new InsnNode(Opcodes.ICONST_0));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, currentKernelSlot));
             insns.add(tryStartOverflow);
         }
         insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        BlockLoopEmitter emitter = new BlockLoopEmitter(insns, inputElement, valueBase, size, kernelBase);
+        BlockLoopEmitter emitter = new BlockLoopEmitter(insns, inputElement, valueBase, size, sourceIndices, currentKernelSlot, kernelBase);
         emitter.emit(tree);
         insns.add(
             new MethodInsnNode(
@@ -638,7 +664,11 @@ public final class Stitcher {
             LabelNode overflowHandler = new LabelNode();
             insns.add(overflowHandler);
             insns.add(new VarInsnNode(Opcodes.ASTORE, overflowExcSlot));
-            insns.add(new VarInsnNode(Opcodes.ALOAD, warningsSlot));
+            // Register the overflow on the currently-evaluating kernel's OWN Warnings (warnings[currentKernelSlot]) so
+            // the header matches the unfused chain's per-node evaluator source.
+            insns.add(new VarInsnNode(Opcodes.ALOAD, warningsArraySlot));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, currentKernelSlot));
+            insns.add(new InsnNode(Opcodes.AALOAD));
             insns.add(new VarInsnNode(Opcodes.ALOAD, overflowExcSlot));
             insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, WARNINGS, "registerException", WARNINGS_REGISTER_DESCRIPTOR, false));
             insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
@@ -884,13 +914,14 @@ public final class Stitcher {
         // empty when no kernel is overflow-checked, in which case no per-position try/catch is emitted.
         Set<String> overflowTypes = overflowExceptionInternalNames(tree);
 
-        // Frame layout: [0] BlockFactory, [1] Warnings, [2] int positionCount, [3 .. 3+arity) input *Blocks. The
+        // Frame layout: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input *Blocks. The
         // builder, loop counter, a scratch value-count slot, the built result slot, the per-position root value slot
-        // (OUTPUT element wide), the caught-throwable slot (builder-safety) and the overflow-exception slot sit in the
-        // fixed region above the parameters; each kernel body then gets a disjoint range above that. The DFS emitter
+        // (OUTPUT element wide), the caught-throwable slot (builder-safety), the overflow-exception slot and the
+        // current-kernel slot sit in the fixed region above the parameters; each kernel body then gets a disjoint range
+        // above that. The DFS emitter
         // (see below) reads each consumed leaf inline into the enclosing kernel's operand slots, so there are no
         // separate pre-read leaf value slots.
-        int warningsSlot = 1;
+        int warningsArraySlot = 1;
         int pcSlot = 2;
         int inputBase = 3;
         int builderSlot = inputBase + arity;
@@ -900,11 +931,18 @@ public final class Stitcher {
         int rootValueSlot = resultSlot + 1;
         int excSlot = rootValueSlot + outputElement.type().getSize();
         int overflowExcSlot = excSlot + 1;
-        int kernelBase = overflowExcSlot + 1;
+        // Names the overflow-checked kernel currently evaluating; the shared overflow handler reads it to attribute the
+        // caught overflow to that kernel's own warning source (see below).
+        int currentKernelSlot = overflowExcSlot + 1;
+        int kernelBase = currentKernelSlot + 1;
+
+        // Each kernel's warning-source slot into the runtime Warnings[]: its overflow warning and its direct leaf
+        // operands' multi-value warnings register on warnings[its slot], matching the unfused per-node evaluator source.
+        Map<FusionNode, Integer> sourceIndices = warningsSourceIndices(tree);
 
         // Input *Block params use the INPUT element; the returned block uses the OUTPUT element (BooleanBlock for a
         // comparison root).
-        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";L").append(WARNINGS).append(";I");
+        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
         for (int i = 0; i < arity; i++) {
             desc.append(inputElement.blockDescriptor());
         }
@@ -970,6 +1008,10 @@ public final class Stitcher {
         LabelNode tryStartOverflow = overflowTypes.isEmpty() ? null : new LabelNode();
         LabelNode tryEndOverflow = overflowTypes.isEmpty() ? null : new LabelNode();
         if (tryStartOverflow != null) {
+            // Seed currentKernelSlot (0) OUTSIDE the overflow try so it is definitely int-typed at the handler's frame
+            // merge; the DFS overwrites it with the real kernel slot immediately before each overflow-checked body.
+            insns.add(new InsnNode(Opcodes.ICONST_0));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, currentKernelSlot));
             insns.add(tryStartOverflow);
         }
         // Evaluate the tree for position p in DFS order; the root value is left on the operand stack. A null or
@@ -981,7 +1023,9 @@ public final class Stitcher {
             inputBase,
             pSlot,
             countSlot,
-            warningsSlot,
+            warningsArraySlot,
+            sourceIndices,
+            currentKernelSlot,
             appendNull,
             kernelBase
         );
@@ -1015,7 +1059,11 @@ public final class Stitcher {
             LabelNode overflowHandler = new LabelNode();
             insns.add(overflowHandler);
             insns.add(new VarInsnNode(Opcodes.ASTORE, overflowExcSlot));
-            insns.add(new VarInsnNode(Opcodes.ALOAD, warningsSlot));
+            // Register the overflow on the currently-evaluating kernel's OWN Warnings (warnings[currentKernelSlot]) so
+            // the header matches the unfused chain, where that kernel's generated evaluator would attribute it.
+            insns.add(new VarInsnNode(Opcodes.ALOAD, warningsArraySlot));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, currentKernelSlot));
+            insns.add(new InsnNode(Opcodes.AALOAD));
             insns.add(new VarInsnNode(Opcodes.ALOAD, overflowExcSlot));
             insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, WARNINGS, "registerException", WARNINGS_REGISTER_DESCRIPTOR, false));
             insns.add(new JumpInsnNode(Opcodes.GOTO, appendNull));
@@ -1090,17 +1138,581 @@ public final class Stitcher {
     }
 
     /**
-     * Emits {@code warnings.registerException(new IllegalArgumentException("single-value function encountered
-     * multi-value"))} — the carried-forward multi-value warning the generated unfused evaluator raises when a scalar
-     * kernel meets a multi-valued position.
+     * Fuses a <b>logical</b> tree — a three-valued-logic (3VL) {@code AND}/{@code OR} tree ({@link FusionNode.Logical})
+     * whose operands are boolean-producing comparison {@link FusionNode.Kernel}s (from S3.0) or nested
+     * {@link FusionNode.Logical}s — into a single nullable-boolean block loop, materialised as a hidden class
+     * (iter 20, S3.1). The emitted {@link #FUSED_METHOD_NAME} has the shape
+     * <pre>{@code
+     * static BooleanBlock fused(BlockFactory bf, Warnings warnings, int positionCount,
+     *                           LongBlock b0, LongBlock b1, LongBlock b2, LongBlock b3) {
+     *     BooleanBlock.Builder out = bf.newBooleanBlockBuilder(positionCount);
+     *     try {
+     *         for (int p = 0; p < positionCount; p++) {
+     *             int l = cmp0(warnings, p, b0, b1);       // a > b  -> 0 false / 1 true / 2 null
+     *             int t;
+     *             if (l == 0) { t = 0; }                    // AND short-circuit: left false -> false (skip right)
+     *             else {
+     *                 int r = cmp1(warnings, p, b2, b3);    // c < d
+     *                 if (r == 0)      t = 0;               // right false -> false
+     *                 else if (l == 2 || r == 2) t = 2;     // 3VL null
+     *                 else             t = 1;               // both true -> true
+     *             }
+     *             if (t == 2) out.appendNull(); else out.appendBoolean(t != 0);
+     *         }
+     *         return out.build();
+     *     } finally { out.close(); }
+     * }
+     * }</pre>
+     *
+     * <p><b>Nullable-boolean 3VL (matches {@code BinaryLogicOperation}).</b> Each operand yields a tri-state
+     * {@code int} — {@code 0} false, {@code 1} true, {@code 2} null — from a {@code private static} helper
+     * ({@code cmpN}). A comparison helper returns {@code 2} (null, <em>no</em> warning) when either numeric input is
+     * {@code null} at {@code p}, or {@code 2} after registering the single-value multi-value warning when an input is
+     * multi-valued (byte-for-byte the generated comparison evaluator's block path); otherwise it returns the
+     * comparison's {@code 0}/{@code 1}. The {@link FusionNode.Logical} node then combines the two tri-states with the
+     * exact truth tables of {@code BinaryLogicOperation}: {@code AND} yields false if either side is false, else null if
+     * either side is null, else true; {@code OR} yields true if either side is true, else null if either side is null,
+     * else false.
+     *
+     * <p><b>Short-circuit.</b> The left operand is evaluated first; when it alone decides the result — {@code AND} with
+     * a false left, {@code OR} with a true left — the right operand helper is <b>not called</b>, so any multi-value
+     * warning the right subtree would have registered is suppressed. The unfused {@code BooleanLogicExpressionEvaluator}
+     * evaluates both sides eagerly (over the whole page), so the fused warning set is always a <b>subset</b> of the
+     * unfused set (ratified rule), while the 3VL <em>values and null positions remain identical</em> (short-circuit only
+     * skips work whose result cannot change the answer).
+     *
+     * <p><b>Multi-value on a logical operand → null, no warning.</b> The operands here are single-valued by
+     * construction (a comparison/logical output is one boolean or null), so the logical node itself never sees a
+     * multi-valued operand and never emits a logical-level multi-value warning — matching
+     * {@code BooleanLogicExpressionEvaluator}, which turns a multi-valued operand into null without a warning. The only
+     * multi-value warnings come from the sub-comparisons' own numeric inputs.
+     *
+     * <p><b>Why {@code private static} helpers (criterion #6 budget guard).</b> Inlining the two per-operand
+     * null/multi-value guards (with their multi-value-warning construction) into the loop body pushes even a
+     * single-level {@code a>b AND c<d} over HotSpot's 325-bytecode {@code FreqInlineSize}. Splitting each comparison
+     * operand into a tiny {@code private static} helper keeps the top-level {@code fused} loop method small and
+     * inlinable for arbitrarily nested logical trees; each helper is itself well under the budget. The top-level method
+     * is still measured against {@link #MAX_FUSED_METHOD_BYTECODES} and refuses to fuse (→ unfused fallback) if it ever
+     * exceeds it.
+     *
+     * <p><b>Block path only.</b> A 3VL result is nullable, so — like {@link #compileBlockLoop} — this defines the
+     * hidden class into the caller's own module (only public exported {@code compute} API and the same-class helper
+     * calls are touched; no {@code rawValues()} teleport) and there is no vector fast path.
+     *
+     * @param caller the caller's lookup (from the module that owns the comparison kernels); the fused class is defined here
+     * @param tree   the logical tree to fuse; its root is a {@link FusionNode.Logical}
+     * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME}
+     * @throws StitchingException if the caller lacks the access to define the hidden class, the emitted class fails JVM
+     *                            verification/linking, or the top-level loop exceeds the inlining budget — the caller
+     *                            should fall back to the unfused path
      */
-    private static void emitMultiValueWarning(InsnList insns, int warningsSlot) {
-        insns.add(new VarInsnNode(Opcodes.ALOAD, warningsSlot));
+    public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        byte[] bytecode = emitLogicalBlockLoop(caller, tree);
+        try {
+            return caller.defineHiddenClass(bytecode, true).lookupClass();
+        } catch (LinkageError e) {
+            logger.warn("fused logical block loop failed to link; falling back to unfused", e);
+            throw new StitchingException("failed to define fused logical block-loop class", e);
+        } catch (IllegalAccessException e) {
+            logger.warn("caller lookup [{}] cannot define fused logical block-loop class; falling back to unfused", caller, e);
+            throw new StitchingException("caller lookup cannot define fused logical block-loop class", e);
+        }
+    }
+
+    /**
+     * Builds the class bytes for the fused logical block loop: one {@code private static} {@code cmpN} helper per
+     * comparison operand plus the top-level {@code fused} loop that calls them and combines their tri-states with the
+     * short-circuit 3VL truth tables.
+     */
+    private byte[] emitLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        int arity = arity(tree);
+        // INPUT element: the numeric kind of the comparison operands' columns (long/int/double). OUTPUT: nullable boolean.
+        Element inputElement = Element.of(logicalInputType(tree));
+        Element outputElement = Element.of(Type.BOOLEAN_TYPE);
+
+        String internalName = caller.lookupClass().getPackageName().replace('.', '/') + "/Fused$$LogicalBlockLoop";
+
+        // One helper per comparison operand, in DFS order; the map lets the loop emitter resolve each comparison's call.
+        Map<FusionNode, String> helperNames = new IdentityHashMap<>();
+        List<MethodNode> helpers = new ArrayList<>();
+        assignComparisonHelpers(tree, inputElement, helperNames, helpers);
+        // Each comparison's warning-source slot into the runtime Warnings[]; a comparison registers its multi-value
+        // warning on warnings[its slot] so the header matches the unfused comparison evaluator's node source.
+        Map<FusionNode, Integer> sourceIndices = warningsSourceIndices(tree);
+
+        // Frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input *Blocks. Builder, loop
+        // counter, built result, and caught-throwable slots sit above; the tri-state node slots start at workBase.
+        int warningsArraySlot = 1;
+        int pcSlot = 2;
+        int inputBase = 3;
+        int builderSlot = inputBase + arity;
+        int pSlot = builderSlot + 1;
+        int resultSlot = pSlot + 1;
+        int excSlot = resultSlot + 1;
+        int workBase = excSlot + 1;
+
+        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
+        for (int i = 0; i < arity; i++) {
+            desc.append(inputElement.blockDescriptor());
+        }
+        desc.append(")").append(outputElement.blockDescriptor());
+
+        MethodNode host = new MethodNode(
+            Opcodes.ASM9,
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            FUSED_METHOD_NAME,
+            desc.toString(),
+            null,
+            null
+        );
+        InsnList insns = host.instructions;
+
+        // out = bf.newBooleanBlockBuilder(positionCount);
+        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEVIRTUAL,
+                BLOCK_FACTORY,
+                outputElement.newBlockBuilderMethod(),
+                outputElement.newBlockBuilderDescriptor(),
+                false
+            )
+        );
+        insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
+
+        LabelNode tryStart = new LabelNode();
+        LabelNode tryEnd = new LabelNode();
+        LabelNode handler = new LabelNode();
+        insns.add(tryStart);
+
+        insns.add(new InsnNode(Opcodes.ICONST_0));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
+
+        LabelNode loopStart = new LabelNode();
+        LabelNode loopEnd = new LabelNode();
+        LabelNode doNull = new LabelNode();
+        LabelNode next = new LabelNode();
+        insns.add(loopStart);
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
+        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
+
+        // Evaluate the logical tree for position p into a tri-state (0 false / 1 true / 2 null) in tRoot.
+        LogicalDfsEmitter emitter = new LogicalDfsEmitter(
+            insns,
+            inputElement,
+            inputBase,
+            pSlot,
+            warningsArraySlot,
+            sourceIndices,
+            internalName,
+            helperNames,
+            workBase
+        );
+        int tRoot = emitter.alloc(1);
+        emitter.emit(tree, tRoot);
+
+        insns.add(new VarInsnNode(Opcodes.ILOAD, tRoot));
+        insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
+        insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, doNull));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, tRoot));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEINTERFACE,
+                outputElement.builderInternalName(),
+                outputElement.appendMethod(),
+                outputElement.appendDescriptor(),
+                true
+            )
+        );
+        insns.add(new InsnNode(Opcodes.POP));
+        insns.add(new JumpInsnNode(Opcodes.GOTO, next));
+
+        insns.add(doNull);
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEINTERFACE,
+                outputElement.builderInternalName(),
+                "appendNull",
+                outputElement.appendNullDescriptor(),
+                true
+            )
+        );
+        insns.add(new InsnNode(Opcodes.POP));
+
+        insns.add(next);
+        insns.add(new IincInsnNode(pSlot, 1));
+        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
+
+        insns.add(loopEnd);
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(
+            new MethodInsnNode(Opcodes.INVOKEINTERFACE, outputElement.builderInternalName(), "build", outputElement.buildDescriptor(), true)
+        );
+        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
+        insns.add(tryEnd);
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
+        insns.add(new InsnNode(Opcodes.ARETURN));
+
+        insns.add(handler);
+        insns.add(new VarInsnNode(Opcodes.ASTORE, excSlot));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
+        insns.add(new InsnNode(Opcodes.ATHROW));
+
+        host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
+
+        if (hostMethodInterceptor != null) {
+            hostMethodInterceptor.accept(host);
+        }
+
+        ClassNode classNode = new ClassNode(Opcodes.ASM9);
+        classNode.version = Opcodes.V21;
+        classNode.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER;
+        classNode.name = internalName;
+        classNode.superName = "java/lang/Object";
+        classNode.methods.add(host);
+        classNode.methods.addAll(helpers);
+
+        ClassLoader loader = caller.lookupClass().getClassLoader();
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
+            @Override
+            protected ClassLoader getClassLoader() {
+                return loader != null ? loader : super.getClassLoader();
+            }
+        };
+        // Enforce the inlining budget on the top-level loop method (criterion #6). The helpers keep it small even for
+        // nested trees; if it somehow exceeds the budget we refuse to fuse (→ unfused fallback) rather than emit an
+        // un-inlinable hot body.
+        return serializeWithBudgetGuard(classNode, writer, "logical block loop", true);
+    }
+
+    /**
+     * Assigns each comparison operand ({@link FusionNode.Kernel}) in {@code tree} a {@code private static} helper method
+     * (named {@code cmp0}, {@code cmp1}, … in DFS order) and records the name so the loop emitter can call it.
+     */
+    private void assignComparisonHelpers(FusionNode node, Element inputElement, Map<FusionNode, String> names, List<MethodNode> helpers) {
+        if (node instanceof FusionNode.Logical logical) {
+            assignComparisonHelpers(logical.left(), inputElement, names, helpers);
+            assignComparisonHelpers(logical.right(), inputElement, names, helpers);
+            return;
+        }
+        FusionNode.Kernel comparison = (FusionNode.Kernel) node;
+        String name = "cmp" + helpers.size();
+        names.put(comparison, name);
+        helpers.add(emitComparisonHelper(comparison, inputElement, name));
+    }
+
+    /**
+     * Builds a {@code private static int cmpN(Warnings w, int p, <Block> b0, <Block> b1)} helper that reproduces the
+     * generated comparison evaluator's block path for one position and returns a tri-state: {@code 0} false, {@code 1}
+     * true, {@code 2} null. A {@code null} input ({@code getValueCount == 0}) returns {@code 2} with no warning; a
+     * multi-valued input registers the single-value multi-value warning and returns {@code 2}; otherwise the single
+     * value at {@code getFirstValueIndex(p)} is read and the spliced comparison kernel body's {@code 0}/{@code 1} is
+     * returned.
+     */
+    private MethodNode emitComparisonHelper(FusionNode.Kernel comparison, Element inputElement, String methodName) {
+        MethodNode template = templates.methodNode(comparison.descriptor());
+        Body body = BodyExtractor.extract(template);
+        Type[] argTypes = Type.getMethodType(comparison.descriptor().kernelType()).getArgumentTypes();
+        int nargs = argTypes.length;
+        int size = inputElement.type().getSize();
+
+        StringBuilder desc = new StringBuilder("(L").append(WARNINGS).append(";I");
+        for (int i = 0; i < nargs; i++) {
+            desc.append(inputElement.blockDescriptor());
+        }
+        desc.append(")I");
+
+        MethodNode helper = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, methodName, desc.toString(), null, null);
+        InsnList insns = helper.instructions;
+
+        int warningsSlot = 0;
+        int pSlot = 1;
+        int blockBase = 2;                 // block params occupy [2 .. 2+nargs)
+        int countSlot = blockBase + nargs; // scratch for getValueCount
+        int bodyBase = countSlot + 1;      // the comparison body's shifted locals start here
+        SlotRemapper.shift(body.computation(), bodyBase);
+
+        LabelNode retNull = new LabelNode();
+        int offset = 0;
+        for (int i = 0; i < nargs; i++) {
+            int block = blockBase + i;
+            LabelNode read = new LabelNode();
+            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+            insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getValueCount", "(I)I", true));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, countSlot));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
+            insns.add(new JumpInsnNode(Opcodes.IFEQ, retNull)); // count == 0 -> null, no warning
+            insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
+            insns.add(new InsnNode(Opcodes.ICONST_1));
+            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, read)); // count == 1 -> single value
+            // count > 1 -> register the multi-value warning on this comparison's own Warnings (the caller resolved
+            // warnings[this-comparison's-source-slot] and passed it as the single w parameter), then null.
+            insns.add(new VarInsnNode(Opcodes.ALOAD, warningsSlot));
+            emitMultiValueWarningOn(insns);
+            insns.add(new JumpInsnNode(Opcodes.GOTO, retNull));
+            insns.add(read);
+            // v = block.get*(block.getFirstValueIndex(p)); store into the comparison body's shifted arg slot.
+            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
+            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+            insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getFirstValueIndex", "(I)I", true));
+            insns.add(
+                new MethodInsnNode(
+                    Opcodes.INVOKEINTERFACE,
+                    inputElement.blockInternalName(),
+                    inputElement.getValueMethod(),
+                    inputElement.getValueDescriptor(),
+                    true
+                )
+            );
+            insns.add(new VarInsnNode(inputElement.type().getOpcode(Opcodes.ISTORE), bodyBase + offset));
+            offset += size;
+        }
+        // All operands present and single-valued: run the comparison body (leaves int 0/1) and return it.
+        insns.add(body.computation());
+        insns.add(new InsnNode(Opcodes.IRETURN));
+        insns.add(retNull);
+        insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
+        insns.add(new InsnNode(Opcodes.IRETURN));
+        return helper;
+    }
+
+    /**
+     * The numeric input element of a logical tree: the argument kind of the first comparison operand reached by
+     * descending left spines. Every comparison in a fusable logical tree is homogeneous in the same primitive, so any
+     * one determines the element.
+     */
+    private static Type logicalInputType(FusionNode tree) {
+        if (tree instanceof FusionNode.Kernel kernel) {
+            return Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes()[0];
+        }
+        return logicalInputType(((FusionNode.Logical) tree).left());
+    }
+
+    /**
+     * Post-order emitter for the fused logical block loop. Leaves each node's tri-state ({@code 0} false / {@code 1}
+     * true / {@code 2} null) in an assigned local slot; comparison operands call their {@code private static} helper,
+     * and {@link FusionNode.Logical} nodes combine two child tri-states with the short-circuit 3VL truth tables of
+     * {@code BinaryLogicOperation}.
+     */
+    private final class LogicalDfsEmitter {
+        private final InsnList insns;
+        private final Element inputElement;
+        private final int inputBase;
+        private final int pSlot;
+        private final int warningsArraySlot;
+        private final Map<FusionNode, Integer> sourceIndices;
+        private final String internalName;
+        private final Map<FusionNode, String> helperNames;
+        private int nextSlot;
+
+        LogicalDfsEmitter(
+            InsnList insns,
+            Element inputElement,
+            int inputBase,
+            int pSlot,
+            int warningsArraySlot,
+            Map<FusionNode, Integer> sourceIndices,
+            String internalName,
+            Map<FusionNode, String> helperNames,
+            int workBase
+        ) {
+            this.insns = insns;
+            this.inputElement = inputElement;
+            this.inputBase = inputBase;
+            this.pSlot = pSlot;
+            this.warningsArraySlot = warningsArraySlot;
+            this.sourceIndices = sourceIndices;
+            this.internalName = internalName;
+            this.helperNames = helperNames;
+            this.nextSlot = workBase;
+        }
+
+        /** Claims {@code size} fresh, disjoint local slots and returns the base. */
+        int alloc(int size) {
+            int slot = nextSlot;
+            nextSlot += size;
+            return slot;
+        }
+
+        /** Emits code leaving {@code node}'s tri-state value in {@code tSlot}. */
+        void emit(FusionNode node, int tSlot) {
+            if (node instanceof FusionNode.Logical logical) {
+                emitLogical(logical, tSlot);
+            } else {
+                emitComparisonCall((FusionNode.Kernel) node, tSlot);
+            }
+        }
+
+        private void emitComparisonCall(FusionNode.Kernel comparison, int tSlot) {
+            String name = helperNames.get(comparison);
+            Type[] argTypes = Type.getMethodType(comparison.descriptor().kernelType()).getArgumentTypes();
+            StringBuilder callDesc = new StringBuilder("(L").append(WARNINGS).append(";I");
+            for (int i = 0; i < argTypes.length; i++) {
+                callDesc.append(inputElement.blockDescriptor());
+            }
+            callDesc.append(")I");
+
+            // Pass this comparison's OWN Warnings (warnings[its source slot]) so its multi-value warning is attributed
+            // to the comparison's node source — the same header the unfused comparison evaluator would emit.
+            loadWarnings(insns, warningsArraySlot, sourceIndices.get(comparison));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+            for (FusionNode child : comparison.children()) {
+                FusionNode.Input input = (FusionNode.Input) child;
+                insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + input.index()));
+            }
+            insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, name, callDesc.toString(), false));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, tSlot));
+        }
+
+        private void emitLogical(FusionNode.Logical logical, int tOut) {
+            boolean and = logical.op() == FusionNode.BoolOp.AND;
+            int tLeft = alloc(1);
+            emit(logical.left(), tLeft);
+            int tRight = alloc(1);
+
+            LabelNode setDecisive = new LabelNode(); // AND: result false; OR: result true
+            LabelNode setNull = new LabelNode();
+            LabelNode done = new LabelNode();
+
+            if (and) {
+                // Short-circuit: left == false (0) -> result false, skip the right operand entirely.
+                insns.add(new VarInsnNode(Opcodes.ILOAD, tLeft));
+                insns.add(new JumpInsnNode(Opcodes.IFEQ, setDecisive));
+                emit(logical.right(), tRight);
+                // right == false (0) -> result false.
+                insns.add(new VarInsnNode(Opcodes.ILOAD, tRight));
+                insns.add(new JumpInsnNode(Opcodes.IFEQ, setDecisive));
+                // else 3VL: either side null -> null; otherwise both true -> true.
+                insns.add(new VarInsnNode(Opcodes.ILOAD, tLeft));
+                insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
+                insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setNull));
+                insns.add(new VarInsnNode(Opcodes.ILOAD, tRight));
+                insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
+                insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setNull));
+                insns.add(new InsnNode(Opcodes.ICONST_1));
+                insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
+                insns.add(new JumpInsnNode(Opcodes.GOTO, done));
+                insns.add(setDecisive);
+                insns.add(new InsnNode(Opcodes.ICONST_0));
+                insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
+                insns.add(new JumpInsnNode(Opcodes.GOTO, done));
+            } else {
+                // Short-circuit: left == true (1) -> result true, skip the right operand entirely.
+                insns.add(new VarInsnNode(Opcodes.ILOAD, tLeft));
+                insns.add(new InsnNode(Opcodes.ICONST_1));
+                insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setDecisive));
+                emit(logical.right(), tRight);
+                // right == true (1) -> result true.
+                insns.add(new VarInsnNode(Opcodes.ILOAD, tRight));
+                insns.add(new InsnNode(Opcodes.ICONST_1));
+                insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setDecisive));
+                // else 3VL: either side null -> null; otherwise both false -> false.
+                insns.add(new VarInsnNode(Opcodes.ILOAD, tLeft));
+                insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
+                insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setNull));
+                insns.add(new VarInsnNode(Opcodes.ILOAD, tRight));
+                insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
+                insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setNull));
+                insns.add(new InsnNode(Opcodes.ICONST_0));
+                insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
+                insns.add(new JumpInsnNode(Opcodes.GOTO, done));
+                insns.add(setDecisive);
+                insns.add(new InsnNode(Opcodes.ICONST_1));
+                insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
+                insns.add(new JumpInsnNode(Opcodes.GOTO, done));
+            }
+            insns.add(setNull);
+            insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
+            insns.add(done);
+        }
+    }
+
+    /**
+     * Emits {@code <warnings>.registerException(new IllegalArgumentException("single-value function encountered
+     * multi-value"))} — the carried-forward multi-value warning the generated unfused evaluator raises when a scalar
+     * kernel meets a multi-valued position. The target {@code Warnings} must already be on top of the operand stack
+     * (pushed by {@link #loadWarnings} for the node's own warning-source slot, or a bare {@code ALOAD} of a single
+     * {@code Warnings} local in a {@code cmpN} helper); this method consumes it and leaves the stack unchanged
+     * otherwise.
+     */
+    private static void emitMultiValueWarningOn(InsnList insns) {
         insns.add(new TypeInsnNode(Opcodes.NEW, ILLEGAL_ARGUMENT_EXCEPTION));
         insns.add(new InsnNode(Opcodes.DUP));
         insns.add(new LdcInsnNode(MULTI_VALUE_MESSAGE));
         insns.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, ILLEGAL_ARGUMENT_EXCEPTION, "<init>", "(Ljava/lang/String;)V", false));
         insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, WARNINGS, "registerException", WARNINGS_REGISTER_DESCRIPTOR, false));
+    }
+
+    /**
+     * Pushes {@code warnings[index]} onto the operand stack: {@code ALOAD warningsArraySlot; <push index>; AALOAD}. The
+     * {@code index} is the node's {@linkplain #warningsSourceIndices structural warning-source slot}, so the loaded
+     * {@code Warnings} is the one built from that node's own source.
+     */
+    private static void loadWarnings(InsnList insns, int warningsArraySlot, int index) {
+        insns.add(new VarInsnNode(Opcodes.ALOAD, warningsArraySlot));
+        pushInt(insns, index);
+        insns.add(new InsnNode(Opcodes.AALOAD));
+    }
+
+    /** Pushes a non-negative {@code int} constant using the tightest of {@code ICONST}/{@code BIPUSH}/{@code SIPUSH}/{@code LDC}. */
+    private static void pushInt(InsnList insns, int value) {
+        if (value >= -1 && value <= 5) {
+            insns.add(new InsnNode(Opcodes.ICONST_0 + value));
+        } else if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
+            insns.add(new IntInsnNode(Opcodes.BIPUSH, value));
+        } else if (value >= Short.MIN_VALUE && value <= Short.MAX_VALUE) {
+            insns.add(new IntInsnNode(Opcodes.SIPUSH, value));
+        } else {
+            insns.add(new LdcInsnNode(value));
+        }
+    }
+
+    /**
+     * Assigns every {@link FusionNode.Kernel} in {@code tree} a distinct <b>warning-source slot</b> (an index into the
+     * runtime {@code Warnings[]}), via a stable pre-order walk (a node before its children; a {@link FusionNode.Logical}'s
+     * left subtree before its right). {@link FusionNode.Input} leaves and {@link FusionNode.Logical} nodes are not
+     * warning sources and get no slot. Each kernel's slot is where <em>its</em> overflow warning and <em>its</em> direct
+     * leaf operands' multi-value warnings are registered — mirroring the unfused chain, where every generated
+     * {@code *Evaluator} carries its own node source.
+     *
+     * <p>The assignment is purely structural (it depends only on the tree shape, never on the actual sources or
+     * columns), so the {@link Stitcher} bakes these indices into the emitted bytecode while the plan-time caller builds a
+     * matching {@code Warnings[]} of the same size from each kernel's real {@code Source}. Two trees of the same shape
+     * therefore reuse one cached hidden class and each supplies its own per-source {@code Warnings[]}.
+     */
+    public static Map<FusionNode, Integer> warningsSourceIndices(FusionNode tree) {
+        Map<FusionNode, Integer> indices = new IdentityHashMap<>();
+        assignWarningsSourceIndices(tree, indices);
+        return indices;
+    }
+
+    /** The number of distinct warning-source slots {@code tree} needs, i.e. the size of the runtime {@code Warnings[]}. */
+    public static int warningsSourceCount(FusionNode tree) {
+        return warningsSourceIndices(tree).size();
+    }
+
+    private static void assignWarningsSourceIndices(FusionNode node, Map<FusionNode, Integer> indices) {
+        if (node instanceof FusionNode.Logical logical) {
+            assignWarningsSourceIndices(logical.left(), indices);
+            assignWarningsSourceIndices(logical.right(), indices);
+        } else if (node instanceof FusionNode.Kernel kernel) {
+            indices.put(kernel, indices.size());
+            for (FusionNode child : kernel.children()) {
+                assignWarningsSourceIndices(child, indices);
+            }
+        }
+        // FusionNode.Input: not a warning source, no slot.
     }
 
     /** Distinct JVM internal names of the overflow exceptions the {@code tree}'s kernels can throw (may be empty). */
@@ -1133,13 +1745,25 @@ public final class Stitcher {
         private final Element element;
         private final int valueBase;
         private final int valueSize;
+        private final Map<FusionNode, Integer> sourceIndices;
+        private final int currentKernelSlot;
         private int kernelBase;
 
-        BlockLoopEmitter(InsnList insns, Element element, int valueBase, int valueSize, int kernelBase) {
+        BlockLoopEmitter(
+            InsnList insns,
+            Element element,
+            int valueBase,
+            int valueSize,
+            Map<FusionNode, Integer> sourceIndices,
+            int currentKernelSlot,
+            int kernelBase
+        ) {
             this.insns = insns;
             this.element = element;
             this.valueBase = valueBase;
             this.valueSize = valueSize;
+            this.sourceIndices = sourceIndices;
+            this.currentKernelSlot = currentKernelSlot;
             this.kernelBase = kernelBase;
         }
 
@@ -1180,6 +1804,12 @@ public final class Stitcher {
                 insns.add(new VarInsnNode(argTypes[i].getOpcode(Opcodes.ISTORE), nodeBase + offset));
                 offset += argTypes[i].getSize();
             }
+            if (kernel.descriptor().hasOverflowException()) {
+                // Record which kernel is about to run so the shared overflow handler attributes a caught overflow to
+                // THIS kernel's own source (see emitVectorLoopChecked's handler).
+                pushInt(insns, sourceIndices.get(kernel));
+                insns.add(new VarInsnNode(Opcodes.ISTORE, currentKernelSlot));
+            }
             insns.add(body.computation());
         }
     }
@@ -1205,7 +1835,9 @@ public final class Stitcher {
         private final int inputBase;
         private final int pSlot;
         private final int countSlot;
-        private final int warningsSlot;
+        private final int warningsArraySlot;
+        private final Map<FusionNode, Integer> sourceIndices;
+        private final int currentKernelSlot;
         private final LabelNode appendNull;
         private int kernelBase;
 
@@ -1215,7 +1847,9 @@ public final class Stitcher {
             int inputBase,
             int pSlot,
             int countSlot,
-            int warningsSlot,
+            int warningsArraySlot,
+            Map<FusionNode, Integer> sourceIndices,
+            int currentKernelSlot,
             LabelNode appendNull,
             int kernelBase
         ) {
@@ -1224,17 +1858,27 @@ public final class Stitcher {
             this.inputBase = inputBase;
             this.pSlot = pSlot;
             this.countSlot = countSlot;
-            this.warningsSlot = warningsSlot;
+            this.warningsArraySlot = warningsArraySlot;
+            this.sourceIndices = sourceIndices;
+            this.currentKernelSlot = currentKernelSlot;
             this.appendNull = appendNull;
             this.kernelBase = kernelBase;
+        }
+
+        /** Entry point: the root is a kernel, so the {@code enclosingKernelSlot} passed here is never used by a leaf. */
+        void emit(FusionNode node) {
+            emit(node, -1);
         }
 
         /**
          * Emits the DFS evaluation of {@code node} for the current position {@code p}, leaving its value on the
          * operand stack, or jumping to {@code appendNull} — after registering the single-value multi-value warning
-         * when the input is multi-valued — when the node is null or multi-valued.
+         * when the input is multi-valued — when the node is null or multi-valued. A leaf's multi-value warning is
+         * attributed to {@code enclosingKernelSlot} (the warning source of the kernel that directly consumes the leaf),
+         * matching the unfused chain, where that kernel's generated evaluator inspects the operand and warns at its own
+         * node source.
          */
-        void emit(FusionNode node) {
+        void emit(FusionNode node, int enclosingKernelSlot) {
             if (node instanceof FusionNode.Input input) {
                 int block = inputBase + input.index();
                 // switch (block.getValueCount(p)) { case 0 -> appendNull (null, no warning);
@@ -1249,7 +1893,8 @@ public final class Stitcher {
                 insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
                 insns.add(new InsnNode(Opcodes.ICONST_1));
                 insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, single));
-                emitMultiValueWarning(insns, warningsSlot);
+                loadWarnings(insns, warningsArraySlot, enclosingKernelSlot);
+                emitMultiValueWarningOn(insns);
                 insns.add(new JumpInsnNode(Opcodes.GOTO, appendNull));
                 insns.add(single);
                 // v = block.get*(block.getFirstValueIndex(p)); leave on stack for the enclosing kernel to store.
@@ -1292,12 +1937,21 @@ public final class Stitcher {
             }
             // DFS: evaluate each operand (which may short-circuit to appendNull) and store it before moving to the
             // next, so a later operand's guard — or, for an overflow-checked kernel, the body itself throwing — runs
-            // only after all earlier operands were present and single-valued.
+            // only after all earlier operands were present and single-valued. A leaf child's multi-value warning is
+            // attributed to THIS kernel (its direct consumer), matching the unfused chain.
+            int kernelSlot = sourceIndices.get(kernel);
             int offset = 0;
             for (int i = 0; i < argTypes.length; i++) {
-                emit(children.get(i));
+                emit(children.get(i), kernelSlot);
                 insns.add(new VarInsnNode(argTypes[i].getOpcode(Opcodes.ISTORE), nodeBase + offset));
                 offset += argTypes[i].getSize();
+            }
+            if (kernel.descriptor().hasOverflowException()) {
+                // Record which kernel is about to run so the shared overflow handler can attribute a caught overflow to
+                // THIS kernel's own source. Only overflow-checked kernels can throw the caught exception, and each sets
+                // this immediately before its body, so on any throw currentKernelSlot names the throwing kernel.
+                pushInt(insns, kernelSlot);
+                insns.add(new VarInsnNode(Opcodes.ISTORE, currentKernelSlot));
             }
             insns.add(body.computation());
         }
@@ -1307,6 +1961,9 @@ public final class Stitcher {
     private static int arity(FusionNode tree) {
         if (tree instanceof FusionNode.Input input) {
             return input.index() + 1;
+        }
+        if (tree instanceof FusionNode.Logical logical) {
+            return Math.max(arity(logical.left()), arity(logical.right()));
         }
         int max = 0;
         for (FusionNode child : ((FusionNode.Kernel) tree).children()) {
@@ -1333,6 +1990,9 @@ public final class Stitcher {
     private static void collectInputs(FusionNode node, Set<Integer> used) {
         if (node instanceof FusionNode.Input input) {
             used.add(input.index());
+        } else if (node instanceof FusionNode.Logical logical) {
+            collectInputs(logical.left(), used);
+            collectInputs(logical.right(), used);
         } else {
             for (FusionNode child : ((FusionNode.Kernel) node).children()) {
                 collectInputs(child, used);
@@ -1366,10 +2026,16 @@ public final class Stitcher {
      * emitted {@code fused} loop method's {@code Code} length, measured against {@link #MAX_FUSED_METHOD_BYTECODES}
      * (HotSpot's default {@code FreqInlineSize}).
      *
-     * <p><b>Enforcement scope.</b> {@code enforce} is {@code true} only for the tight <b>plain-vector fast path</b> —
-     * the dense, control-flow-light body criterion #6 targets as the single hot per-position body the JIT should inline
-     * and vectorize; an oversized plain-vector body is refused with a {@link StitchingException} so the caller falls
-     * back (the plan permits "split or refuse-to-fuse"; refusing keeps the guard simple). It is {@code false} for the
+     * <p><b>Enforcement scope.</b> {@code enforce} is {@code true} for the tight <b>plain-vector fast path</b> — the
+     * dense, control-flow-light body criterion #6 targets as the single hot per-position body the JIT should inline and
+     * vectorize; an oversized plain-vector body is refused with a {@link StitchingException} so the caller falls back
+     * (the plan permits "split or refuse-to-fuse"; refusing keeps the guard simple). It is <b>also</b> {@code true} for
+     * the <b>logical block loop</b> ({@link #emitLogicalBlockLoop}): there the per-comparison null/multi-value guards
+     * and their multi-value-warning construction are factored into {@code private static} {@code cmpN} helpers, so the
+     * top-level {@code fused} loop that only calls them and combines their tri-states with the 3VL truth tables stays
+     * small and inlinable even for deeply nested {@code AND}/{@code OR} trees; if it ever exceeds the budget we refuse
+     * to fuse (→ unfused fallback) rather than emit an un-inlinable hot body (the {@code cmpN} helpers are themselves
+     * comfortably under the budget). It is {@code false} for the
      * <b>checked-vector</b> and <b>block</b> paths, whose mandatory overflow try/catch (and, for the block path,
      * per-position null/multi-value guards + builder try/finally) push even a pre-existing depth-4 <em>arithmetic</em>
      * body over 325 bytecodes today. Those paths are correctness fallbacks invoked via {@code MethodHandle} (not a

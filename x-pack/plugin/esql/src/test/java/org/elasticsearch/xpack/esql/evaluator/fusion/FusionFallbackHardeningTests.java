@@ -423,6 +423,11 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
                 return failure.fail();
             }
+
+            @Override
+            public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return failure.fail();
+            }
         };
     }
 

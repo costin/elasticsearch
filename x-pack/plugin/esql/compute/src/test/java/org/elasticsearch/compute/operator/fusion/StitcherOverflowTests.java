@@ -27,6 +27,7 @@ import org.junit.Before;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.hamcrest.Matchers.equalTo;
@@ -101,6 +102,18 @@ public class StitcherOverflowTests extends ESTestCase {
         return Warnings.createWarnings(DriverContext.WarningsMode.COLLECT, new TestWarningsSource("overflow"));
     }
 
+    /**
+     * The per-source {@code Warnings[]} the fused methods now take (one slot per warning-source kernel, indexed by
+     * {@link Stitcher#warningsSourceIndices}). Every slot points at the same collecting instance so these fixtures —
+     * which build all kernels from a single {@code TestWarningsSource("overflow")} — accumulate into one collector and
+     * keep asserting via {@link #assertWarnings}, exactly as before the per-source threading landed.
+     */
+    private static Warnings[] warningsArray(FusionNode tree, Warnings w) {
+        Warnings[] arr = new Warnings[Stitcher.warningsSourceCount(tree)];
+        Arrays.fill(arr, w);
+        return arr;
+    }
+
     // ---------------------------------------------------------------------------------------------------------------
     // Block path: deep expression where an intermediate (and separately the root) kernel overflows.
     // ---------------------------------------------------------------------------------------------------------------
@@ -126,7 +139,7 @@ public class StitcherOverflowTests extends ESTestCase {
             ba = singleValued(a);
             bb = singleValued(b);
             bc = singleValued(c);
-            result = (LongBlock) handle.invokeWithArguments(blockFactory, warnings, positionCount, ba, bb, bc);
+            result = (LongBlock) handle.invokeWithArguments(blockFactory, warningsArray(tree, warnings), positionCount, ba, bb, bc);
             assertThat(result.getPositionCount(), equalTo(positionCount));
             for (int p = 0; p < positionCount; p++) {
                 Long expected = refAddThenMul(a[p], b[p], c[p]);
@@ -177,7 +190,7 @@ public class StitcherOverflowTests extends ESTestCase {
             ba = singleValued(a);
             bb = singleValued(b);
             bc = singleValued(c);
-            result = (LongBlock) handle.invokeWithArguments(blockFactory, warnings, positionCount, ba, bb, bc);
+            result = (LongBlock) handle.invokeWithArguments(blockFactory, warningsArray(tree, warnings), positionCount, ba, bb, bc);
             assertThat(result.getPositionCount(), equalTo(positionCount));
             for (int p = 0; p < positionCount; p++) {
                 Long expected = refAddThenMul(a[p], b[p], c[p]);
@@ -216,7 +229,7 @@ public class StitcherOverflowTests extends ESTestCase {
         try {
             lb = multiValued(lhs);
             rb = multiValued(rhs);
-            result = (LongBlock) handle.invokeWithArguments(blockFactory, warnings, positionCount, lb, rb);
+            result = (LongBlock) handle.invokeWithArguments(blockFactory, warningsArray(tree, warnings), positionCount, lb, rb);
             assertThat(result.getPositionCount(), equalTo(positionCount));
             assertThat("p0 multi-value lhs -> null", result.isNull(0), is(true));
             assertThat("p1 clean", result.isNull(1), is(false));
@@ -242,7 +255,7 @@ public class StitcherOverflowTests extends ESTestCase {
         MethodType type = MethodType.methodType(
             LongBlock.class,
             BlockFactory.class,
-            Warnings.class,
+            Warnings[].class,
             int.class,
             Vector.class,
             Vector.class,
@@ -263,7 +276,7 @@ public class StitcherOverflowTests extends ESTestCase {
             va = blockFactory.newLongArrayVector(a, positionCount);
             vb = blockFactory.newLongArrayVector(b, positionCount);
             vc = blockFactory.newLongArrayVector(c, positionCount);
-            result = (LongBlock) handle.invoke(blockFactory, warnings, positionCount, va, vb, vc);
+            result = (LongBlock) handle.invoke(blockFactory, warningsArray(tree, warnings), positionCount, va, vb, vc);
             assertThat(result.getPositionCount(), equalTo(positionCount));
             for (int p = 0; p < positionCount; p++) {
                 Long expected = refAddThenMul(a[p], b[p], c[p]);
@@ -291,7 +304,7 @@ public class StitcherOverflowTests extends ESTestCase {
         MethodType type = MethodType.methodType(
             LongBlock.class,
             BlockFactory.class,
-            Warnings.class,
+            Warnings[].class,
             int.class,
             Vector.class,
             Vector.class,
@@ -316,7 +329,7 @@ public class StitcherOverflowTests extends ESTestCase {
             va = blockFactory.newLongArrayVector(a, positionCount);
             vb = blockFactory.newLongArrayVector(b, positionCount);
             vc = blockFactory.newLongArrayVector(c, positionCount);
-            result = (LongBlock) handle.invoke(blockFactory, warnings, positionCount, va, vb, vc);
+            result = (LongBlock) handle.invoke(blockFactory, warningsArray(tree, warnings), positionCount, va, vb, vc);
             for (int p = 0; p < positionCount; p++) {
                 // Bounded operands cannot overflow, so the reference is always present.
                 long expected = Math.multiplyExact(Math.addExact(a[p], b[p]), c[p]);
@@ -364,7 +377,7 @@ public class StitcherOverflowTests extends ESTestCase {
         assertThat(fused.getPackageName(), equalTo(getClass().getPackageName()));
         Class<?>[] params = new Class<?>[3 + arity];
         params[0] = BlockFactory.class;
-        params[1] = Warnings.class;
+        params[1] = Warnings[].class;
         params[2] = int.class;
         for (int i = 0; i < arity; i++) {
             params[3 + i] = LongBlock.class;

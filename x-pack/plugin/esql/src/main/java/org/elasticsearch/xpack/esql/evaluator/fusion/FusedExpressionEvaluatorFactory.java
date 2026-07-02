@@ -102,7 +102,14 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         NONE
     }
 
-    private final Source source;
+    /**
+     * One {@link Source} per warning-emitting node ({@link org.elasticsearch.compute.operator.fusion.FusionNode.Kernel}),
+     * indexed by the node's structural warning-source slot
+     * ({@link org.elasticsearch.compute.operator.fusion.Stitcher#warningsSourceIndices}). At eval time a matching
+     * {@code Warnings[]} is built from these so each fused warning is attributed to the SAME node source the unfused
+     * chain's generated evaluator would use — keeping fused warning headers a subset of the unfused ones (criterion #1).
+     */
+    private final Source[] warningSources;
     private final int[] inputChannels;
     /** The numeric input element (long/int/double). Runtime vector-eligibility narrows inputs to this *ArrayVector. */
     private final ElementKind inputElement;
@@ -113,7 +120,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     private final String shape;
 
     private FusedExpressionEvaluatorFactory(
-        Source source,
+        Source[] warningSources,
         int[] inputChannels,
         ElementKind inputElement,
         MethodHandle blockHandle,
@@ -122,7 +129,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         ExpressionEvaluator.Factory unfused,
         String shape
     ) {
-        this.source = source;
+        this.warningSources = warningSources;
         this.inputChannels = inputChannels;
         this.inputElement = inputElement;
         this.blockHandle = blockHandle;
@@ -140,7 +147,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * @param compiler the stitch entry points; the test seam substitutes a failing implementation here
      */
     static ExpressionEvaluator.Factory tryCreate(
-        Source source,
+        Source[] warningSources,
         FusionNode tree,
         int[] inputChannels,
         ElementKind inputElement,
@@ -152,6 +159,26 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     ) {
         int arity = inputChannels.length;
         try {
+            if (tree instanceof FusionNode.Logical) {
+                // A 3VL AND/OR tree is nullable boolean: block path only, no vector fast path (S3.1).
+                Class<?> logicalClass = compiler.compileLogicalBlockLoop(LOOKUP, tree);
+                MethodHandle logicalHandle = LOOKUP.findStatic(
+                    logicalClass,
+                    Stitcher.FUSED_METHOD_NAME,
+                    blockType(inputElement, outputElement, arity)
+                );
+                return new FusedExpressionEvaluatorFactory(
+                    warningSources,
+                    inputChannels,
+                    inputElement,
+                    logicalHandle,
+                    null,
+                    VectorStrategy.NONE,
+                    unfused,
+                    shape
+                );
+            }
+
             Class<?> blockClass = compiler.compileBlockLoop(LOOKUP, tree);
             MethodHandle blockHandle = LOOKUP.findStatic(
                 blockClass,
@@ -180,7 +207,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             }
 
             return new FusedExpressionEvaluatorFactory(
-                source,
+                warningSources,
                 inputChannels,
                 inputElement,
                 blockHandle,
@@ -206,7 +233,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     @Override
     public ExpressionEvaluator get(DriverContext context) {
         return new FusedExpressionEvaluator(
-            source,
+            warningSources,
             inputChannels,
             inputElement,
             blockHandle,
@@ -236,7 +263,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     private static MethodType blockType(ElementKind inputElement, ElementKind outputElement, int arity) {
         List<Class<?>> params = new ArrayList<>();
         params.add(BlockFactory.class);
-        params.add(Warnings.class);
+        params.add(Warnings[].class);
         params.add(int.class);
         for (int i = 0; i < arity; i++) {
             // Input *Blocks are the numeric input element; the produced block is the output element (boolean for a
@@ -249,7 +276,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     private static MethodType checkedVectorType(ElementKind outputElement, int arity) {
         List<Class<?>> params = new ArrayList<>();
         params.add(BlockFactory.class);
-        params.add(Warnings.class);
+        params.add(Warnings[].class);
         params.add(int.class);
         for (int i = 0; i < arity; i++) {
             // Inputs are passed as the generic Vector interface (narrowed once inside the fused method).
@@ -300,7 +327,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
         private static final long BASE_RAM_BYTES_USED = RamUsageEstimator.shallowSizeOfInstance(FusedExpressionEvaluator.class);
 
-        private final Source source;
+        private final Source[] warningSources;
         private final int[] inputChannels;
         private final ElementKind inputElement;
         private final MethodHandle blockHandle;
@@ -310,7 +337,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         private final DriverContext driverContext;
         private final String shape;
 
-        private Warnings warnings;
+        private Warnings[] warnings;
         // Lazily built only if a defensive LinkageError forces a per-page fallback; closed with this evaluator.
         private ExpressionEvaluator unfusedFallback;
         // Latched true after the first eval-time LinkageError so every later page routes straight to the unfused
@@ -318,7 +345,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         private boolean fusionDisabled;
 
         FusedExpressionEvaluator(
-            Source source,
+            Source[] warningSources,
             int[] inputChannels,
             ElementKind inputElement,
             MethodHandle blockHandle,
@@ -328,7 +355,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             DriverContext driverContext,
             String shape
         ) {
-            this.source = source;
+            this.warningSources = warningSources;
             this.inputChannels = inputChannels;
             this.inputElement = inputElement;
             this.blockHandle = blockHandle;
@@ -377,7 +404,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     System.arraycopy(vectors, 0, args, 3, arity);
                     return (Block) vectorHandle.invokeWithArguments(args);
                 }
-                // Block path: null/multi-value tolerant, overflow-aware.
+                // Block path: null/multi-value tolerant, overflow-aware. Also the logical (3VL) path.
                 Object[] args = new Object[3 + arity];
                 args[0] = blockFactory;
                 args[1] = warnings();
@@ -417,9 +444,19 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             return vectors;
         }
 
-        private Warnings warnings() {
+        /**
+         * The per-warning-source {@code Warnings[]} (built lazily, once), indexed by each fusable node's structural
+         * warning-source slot. Entry {@code i} is built from {@code warningSources[i]} — the node's own source — so the
+         * fused method registers each warning against the same source the unfused chain's generated evaluator would,
+         * making reached warnings equal (and, with short-circuit, the fused set a subset).
+         */
+        private Warnings[] warnings() {
             if (warnings == null) {
-                this.warnings = Warnings.createWarnings(driverContext.warningsMode(), source);
+                Warnings[] built = new Warnings[warningSources.length];
+                for (int i = 0; i < built.length; i++) {
+                    built[i] = Warnings.createWarnings(driverContext.warningsMode(), warningSources[i]);
+                }
+                this.warnings = built;
             }
             return warnings;
         }

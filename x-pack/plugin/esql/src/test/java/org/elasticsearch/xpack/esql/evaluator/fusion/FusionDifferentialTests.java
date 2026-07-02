@@ -322,6 +322,84 @@ public class FusionDifferentialTests extends ESTestCase {
         }
     }
 
+    /**
+     * PRIORITY-1 warning-source fidelity for ARITHMETIC overflow (iter-20): {@code (a + b) + (c + d)} over long
+     * columns with DISTINCT NON-EMPTY {@link Source}s on the two inner {@code Add}s and the root {@code Add}. Position 0
+     * overflows the LEFT inner add; position 1 overflows the RIGHT inner add; the root add only ever sees a null
+     * operand at those positions and so never overflows. The unfused chain therefore attributes one overflow warning to
+     * EACH inner add's own source and NONE to the root. Because ESQL warning headers embed the source {@code line:col}
+     * and source text (see {@code Warnings}), the pre-fix single-root-{@code Warnings} behaviour attributed every fused
+     * overflow to the root {@code [OUTER_ADD]} source — a header the unfused set never contains — so the subset
+     * assertion FAILS pre-fix and PASSES once per-source {@code Warnings[]} threading (including the checked-vector
+     * overflow handler this dense-input tree exercises) lands. Values and null positions are unchanged.
+     */
+    public void testArithmeticOverflowWarningsAttributedPerKernel() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        FieldAttribute d = field("d", DataType.LONG);
+        Layout layout = layout(a, b, c, d);
+        // (a+b) + (c+d): distinct non-empty sources on both inner adds and the root add.
+        Expression leftInner = new Add(new Source(1, 1, "a+b"), a, b, EsqlTestUtils.TEST_CFG);
+        Expression rightInner = new Add(new Source(2, 1, "c+d"), c, d, EsqlTestUtils.TEST_CFG);
+        Expression expr = new Add(new Source(3, 1, "OUTER_ADD"), leftInner, rightInner, EsqlTestUtils.TEST_CFG);
+
+        FusionSettings.setEnabledForTests(true);
+        ExpressionEvaluator.Factory fusedFactory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+        FusionSettings.setEnabledForTests(false);
+        ExpressionEvaluator.Factory unfusedFactory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+        FusionSettings.setEnabledForTests(true);
+
+        assertThat("overflow tree must fuse ON", fusedFactory, instanceOf(FusedExpressionEvaluatorFactory.class));
+        assertThat("overflow tree must NOT fuse OFF", unfusedFactory, not(instanceOf(FusedExpressionEvaluatorFactory.class)));
+
+        int positions = 4;
+        // p0: a+b overflows (left inner). p1: c+d overflows (right inner). p2,p3 clean. The root add never overflows —
+        // at p0/p1 it sees a null operand and propagates null — so no warning is ever attributed to OUTER_ADD unfused.
+        long[] av = { Long.MAX_VALUE, 1, 2, 3 };
+        long[] bv = { 1, 1, 3, 4 };
+        long[] cv = { 1, Long.MAX_VALUE, 5, 6 };
+        long[] dv = { 1, 1, 7, 8 };
+
+        ExpressionEvaluator fused = fusedFactory.get(driverContext);
+        ExpressionEvaluator reference = unfusedFactory.get(driverContext);
+        Page page = null;
+        Block fusedResult = null;
+        Block referenceResult = null;
+        try {
+            Block aBlock = blockFactory.newLongArrayVector(av, positions).asBlock();
+            Block bBlock = blockFactory.newLongArrayVector(bv, positions).asBlock();
+            Block cBlock = blockFactory.newLongArrayVector(cv, positions).asBlock();
+            Block dBlock = blockFactory.newLongArrayVector(dv, positions).asBlock();
+            page = new Page(positions, aBlock, bBlock, cBlock, dBlock);
+
+            drainWarnings();
+            fusedResult = fused.eval(page);
+            List<String> fusedWarnings = drainWarnings();
+            referenceResult = reference.eval(page);
+            List<String> referenceWarnings = drainWarnings();
+
+            // Values/nulls unchanged: p0,p1 null in both paths; p2,p3 equal.
+            assertResultsEqual(ElementKind.LONG, fusedResult, referenceResult, positions, "overflow-attribution");
+            assertThat("p0 null (left inner overflow)", fusedResult.isNull(0), is(true));
+            assertThat("p1 null (right inner overflow)", fusedResult.isNull(1), is(true));
+
+            // The subset invariant. Pre-fix, both overflows were attributed to the root "[OUTER_ADD]" source, a header
+            // the unfused set never contains -> subset fails.
+            assertWarningsSubset(fusedWarnings, referenceWarnings, "overflow-attribution");
+            // Attribution is correct (not merely empty): each inner add's own source text appears fused.
+            assertThat("left inner source attribution", fusedWarnings.stream().anyMatch(w -> w.contains("[a+b]")), is(true));
+            assertThat("right inner source attribution", fusedWarnings.stream().anyMatch(w -> w.contains("[c+d]")), is(true));
+            // And the pre-fix root-source misattribution is gone.
+            assertThat("no root-source misattribution", fusedWarnings.stream().anyMatch(w -> w.contains("[OUTER_ADD]")), is(false));
+        } finally {
+            Releasables.closeExpectNoException(fusedResult, referenceResult, fused, reference);
+            if (page != null) {
+                page.releaseBlocks();
+            }
+        }
+    }
+
     private static boolean containsWarning(Set<String> warnings, String substring) {
         return warnings.stream().anyMatch(w -> w.contains(substring));
     }

@@ -15,13 +15,19 @@ import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.compute.operator.fusion.TemplateRegistry;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
+import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
+import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
+import org.elasticsearch.xpack.esql.expression.predicate.logical.BinaryLogic;
+import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
 import org.elasticsearch.xpack.esql.planner.Layout;
 
 import java.lang.invoke.MethodHandles;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
 /**
@@ -81,6 +87,8 @@ public final class FusionPlanner {
         Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
 
         Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
+
+        Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
     }
 
     /**
@@ -110,6 +118,14 @@ public final class FusionPlanner {
                 () -> DEFAULT_STITCHER.compileVectorLoopChecked(caller, tree)
             );
         }
+
+        @Override
+        public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+            return CLASS_CACHE.get(
+                shapeKey(tree, FusedClassCache.Path.LOGICAL_BLOCK),
+                () -> DEFAULT_STITCHER.compileLogicalBlockLoop(caller, tree)
+            );
+        }
     };
 
     /** Builds the binding-independent cache key for {@code tree} on the given emit {@code path}. */
@@ -124,6 +140,10 @@ public final class FusionPlanner {
      * encoded in {@link #shapeOf}).
      */
     private static ElementKind rootElement(FusionNode tree) {
+        if (tree instanceof FusionNode.Logical) {
+            // A 3VL AND/OR tree always produces a nullable boolean.
+            return ElementKind.BOOLEAN;
+        }
         FusionNode.Kernel root = (FusionNode.Kernel) tree;
         String descriptor = root.descriptor().kernelType();
         return outputElementOf(descriptor.charAt(descriptor.indexOf(')') + 1));
@@ -172,7 +192,7 @@ public final class FusionPlanner {
         ExpressionEvaluator.Factory unfused = rawFactory.apply(exp);
         FusedClassCompiler compiler = compilerForTests != null ? compilerForTests : DEFAULT_COMPILER;
         return FusedExpressionEvaluatorFactory.tryCreate(
-            exp.source(),
+            warningSources(tree, ctx),
             tree,
             channels,
             ctx.inputElement,
@@ -184,11 +204,37 @@ public final class FusionPlanner {
         );
     }
 
+    /**
+     * Builds the per-warning-source {@link Source} array indexed by the {@link Stitcher}'s structural warning-source
+     * slot: {@code out[slot]} is the source of the kernel assigned that slot. The {@link Stitcher} bakes those same
+     * structural slots into the emitted bytecode, so the fused method's {@code warnings[slot].registerException(...)}
+     * lands on a {@code Warnings} built from the kernel's real source — matching the unfused chain's per-node
+     * attribution (criterion #1). The assignment is purely structural, so it does not affect the shape-keyed cache.
+     */
+    private static Source[] warningSources(FusionNode tree, PlanContext ctx) {
+        Map<FusionNode, Integer> slots = Stitcher.warningsSourceIndices(tree);
+        Source[] out = new Source[slots.size()];
+        for (Map.Entry<FusionNode, Integer> e : slots.entrySet()) {
+            Source source = ctx.kernelSources.get(e.getKey());
+            // Every Kernel node is recorded during the build walk, so this is always present; default to EMPTY as a
+            // defensive net rather than risk an NPE that would break the query (fusion must never do that).
+            out[e.getValue()] = source != null ? source : Source.EMPTY;
+        }
+        return out;
+    }
+
     /** Mutable accumulators threaded through the recursive walk. */
     private static final class PlanContext {
         private final Layout layout;
         private final Function<Expression, ExpressionEvaluator.Factory> rawFactory;
         private final List<Integer> channels = new ArrayList<>();
+        /**
+         * The {@link Source} of every warning-emitting {@link FusionNode.Kernel} we build (overflow-checked kernels for
+         * overflow warnings; comparison/arithmetic kernels for their direct leaf operands' multi-value warnings). Used
+         * after the walk to build a per-warning-source {@code Source[]} keyed by the {@link Stitcher}'s structural
+         * warning-source slot, so the fused path attributes each warning to the same source the unfused chain would.
+         */
+        private final Map<FusionNode, Source> kernelSources = new IdentityHashMap<>();
         /** Homogeneous numeric element of every leaf + arithmetic intermediate (kernel argument kind). */
         private ElementKind inputElement;
         /** The root kernel's return kind: the numeric input element for an arithmetic root, or BOOLEAN for a comparison root. */
@@ -214,6 +260,16 @@ public final class FusionPlanner {
      * @param root whether {@code exp} is the tree root (only the root may be a boolean-returning comparison)
      */
     private static FusionNode build(Expression exp, PlanContext ctx, boolean root) {
+        if (exp instanceof And || exp instanceof Or) {
+            // A boolean AND/OR node: build a 3VL Logical whose operands are fused comparison/logical subtrees over
+            // homogeneous-primitive column inputs. This is emitted (not templated) by the Stitcher, so no descriptor is
+            // probed here. Its output is always a nullable boolean.
+            FusionNode logical = buildLogical(exp, ctx);
+            if (logical != null) {
+                ctx.outputElement = ElementKind.BOOLEAN;
+            }
+            return logical;
+        }
         if (exp instanceof Attribute attr) {
             Layout.ChannelAndType channelAndType = ctx.layout.get(attr.id());
             if (channelAndType == null) {
@@ -289,7 +345,97 @@ public final class FusionPlanner {
             }
             childNodes.add(childNode);
         }
-        return new FusionNode.Kernel(descriptor, childNodes);
+        FusionNode.Kernel kernel = new FusionNode.Kernel(descriptor, childNodes);
+        // Capture this kernel's own source so the fused path attributes its overflow / leaf multi-value warnings to the
+        // same node source the unfused generated evaluator would.
+        ctx.kernelSources.put(kernel, exp.source());
+        return kernel;
+    }
+
+    /**
+     * Builds a {@link FusionNode.Logical} for an {@code AND}/{@code OR} expression, or {@code null} if either operand is
+     * not a fusable comparison/logical subtree. Both operands must be either a nested {@code AND}/{@code OR} or a
+     * boolean-producing comparison over homogeneous-primitive <b>column</b> inputs (S3.1 scope: no bare boolean-column
+     * operands, no arithmetic-under-comparison, no literals).
+     */
+    private static FusionNode buildLogical(Expression exp, PlanContext ctx) {
+        BinaryLogic bl = (BinaryLogic) exp;
+        FusionNode.BoolOp op = exp instanceof And ? FusionNode.BoolOp.AND : FusionNode.BoolOp.OR;
+        FusionNode left = buildLogicalOperand(bl.left(), ctx);
+        if (left == null) {
+            return null;
+        }
+        FusionNode right = buildLogicalOperand(bl.right(), ctx);
+        if (right == null) {
+            return null;
+        }
+        return new FusionNode.Logical(op, left, right);
+    }
+
+    /** A logical operand is either a nested {@code AND}/{@code OR} or a column-column comparison. */
+    private static FusionNode buildLogicalOperand(Expression exp, PlanContext ctx) {
+        if (exp instanceof And || exp instanceof Or) {
+            return buildLogical(exp, ctx);
+        }
+        return buildComparisonOperand(exp, ctx);
+    }
+
+    /**
+     * Builds a boolean-producing comparison {@link FusionNode.Kernel} whose children are all bare column
+     * {@link Attribute}s of the homogeneous input element (e.g. {@code a > b}). Returns {@code null} if {@code exp} is
+     * not such a comparison — in particular if it is overflow-checked (comparisons never are, but the guard keeps the
+     * logical body free of any overflow try/catch), has a non-boolean return, mixes element types, or has any
+     * non-column child (arithmetic children are out of S3.1 scope).
+     */
+    private static FusionNode buildComparisonOperand(Expression exp, PlanContext ctx) {
+        ExpressionEvaluator.Factory factory = ctx.rawFactory.apply(exp);
+        if ((factory instanceof FusionAware) == false) {
+            return null;
+        }
+        FusionDescriptor descriptor = ((FusionAware) factory).fusionDescriptor();
+        String kernelType = descriptor.kernelType();
+        ElementKind argElement = homogeneousArgElement(kernelType);
+        if (argElement == null) {
+            return null;
+        }
+        int close = kernelType.indexOf(')');
+        if (close < 0 || close + 2 != kernelType.length() || kernelType.charAt(close + 1) != 'Z') {
+            // Must be a comparison: exactly one boolean ('Z') return char.
+            return null;
+        }
+        if (descriptor.overflowChecked()) {
+            return null;
+        }
+        // Set / verify the homogeneous numeric input element across the whole tree.
+        if (ctx.inputElement == null) {
+            ctx.inputElement = argElement;
+        } else if (ctx.inputElement != argElement) {
+            return null;
+        }
+        int argCount = primitiveArgCount(kernelType);
+        List<Expression> children = exp.children();
+        if (children.size() != argCount) {
+            return null;
+        }
+        List<FusionNode> childNodes = new ArrayList<>(children.size());
+        for (Expression child : children) {
+            // S3.1 operands are column-column comparisons: each child must be a column of the input element type.
+            if (child instanceof Attribute == false) {
+                return null;
+            }
+            Attribute attr = (Attribute) child;
+            Layout.ChannelAndType channelAndType = ctx.layout.get(attr.id());
+            if (channelAndType == null || matches(attr.dataType(), ctx.inputElement) == false) {
+                return null;
+            }
+            int index = ctx.channels.size();
+            ctx.channels.add(channelAndType.channel());
+            childNodes.add(new FusionNode.Input(index));
+        }
+        FusionNode.Kernel comparison = new FusionNode.Kernel(descriptor, childNodes);
+        // Capture the comparison's own source so its inputs' multi-value warnings are attributed to it (not the root).
+        ctx.kernelSources.put(comparison, exp.source());
+        return comparison;
     }
 
     /**
@@ -346,8 +492,11 @@ public final class FusionPlanner {
         };
     }
 
-    /** Kernel depth: 0 for a bare input, 1 for a kernel of inputs, ≥2 once a kernel has a kernel child. */
+    /** Kernel depth: 0 for a bare input, 1 for a kernel/logical of inputs, ≥2 once a node has a kernel/logical child. */
     private static int depth(FusionNode node) {
+        if (node instanceof FusionNode.Logical logical) {
+            return 1 + Math.max(depth(logical.left()), depth(logical.right()));
+        }
         if (node instanceof FusionNode.Kernel kernel) {
             int max = 0;
             for (FusionNode child : kernel.children()) {
@@ -380,6 +529,15 @@ public final class FusionPlanner {
     }
 
     private static void appendShape(FusionNode node, StringBuilder sb) {
+        if (node instanceof FusionNode.Logical logical) {
+            // A Logical carries no descriptor; its bytecode is fully determined by the op + operand shapes.
+            sb.append("LOGICAL:").append(logical.op()).append('(');
+            appendShape(logical.left(), sb);
+            sb.append(',');
+            appendShape(logical.right(), sb);
+            sb.append(')');
+            return;
+        }
         if (node instanceof FusionNode.Kernel kernel) {
             FusionDescriptor descriptor = kernel.descriptor();
             sb.append(descriptor.kernelClass().getName())

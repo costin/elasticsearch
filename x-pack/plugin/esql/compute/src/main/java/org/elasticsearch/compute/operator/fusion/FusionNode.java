@@ -12,7 +12,7 @@ import java.util.List;
 /**
  * An expression tree the {@link Stitcher} fuses into a single per-position body.
  *
- * <p>A tree is built from two node kinds:
+ * <p>A tree is built from three node kinds:
  * <ul>
  *   <li>{@link Input} — a leaf that reads position {@code p} of one of the fused method's input
  *       vectors. {@link Input#index()} selects which input (0-based); the fused method takes one
@@ -21,6 +21,12 @@ import java.util.List;
  *       {@link FusionDescriptor}) to its children. The child count and each child's category must
  *       match the kernel's JVM argument descriptor (e.g. a {@code (JJ)J} kernel has exactly two
  *       {@code long}-producing children).</li>
+ *   <li>{@link Logical} — a boolean {@code AND}/{@code OR} node with three-valued-logic (3VL)
+ *       semantics (iter 20, S3.1). Unlike {@link Kernel} it carries <b>no</b> {@link FusionDescriptor}
+ *       or template: the {@link Stitcher} <em>emits</em> the short-circuit 3VL truth tables directly
+ *       (matching {@code BinaryLogicOperation}). Its operands are boolean-producing comparison
+ *       {@link Kernel}s (from S3.0) or nested {@link Logical}s; the output is a nullable boolean, so a
+ *       {@code Logical}-rooted tree is stitched only through the block path.</li>
  * </ul>
  *
  * <p>The stitcher walks this tree in post-order: it evaluates each child before the kernel that
@@ -56,6 +62,33 @@ public sealed interface FusionNode {
                 throw new IllegalArgumentException("kernel descriptor must not be null");
             }
             children = List.copyOf(children);
+        }
+    }
+
+    /** The boolean connective a {@link Logical} node applies with three-valued-logic semantics. */
+    enum BoolOp {
+        AND,
+        OR
+    }
+
+    /**
+     * A three-valued-logic (3VL) boolean {@code AND}/{@code OR} over two boolean-producing operands (comparison
+     * {@link Kernel}s or nested {@link Logical}s). It has no {@link FusionDescriptor}: the {@link Stitcher} emits the
+     * short-circuit truth tables of {@code BinaryLogicOperation} directly ({@code false AND * = false},
+     * {@code true OR * = true}, {@code null} otherwise). The output is a nullable boolean.
+     *
+     * @param op    the connective ({@code AND} or {@code OR})
+     * @param left  the left operand (evaluated first; may short-circuit the right)
+     * @param right the right operand
+     */
+    record Logical(BoolOp op, FusionNode left, FusionNode right) implements FusionNode {
+        public Logical {
+            if (op == null) {
+                throw new IllegalArgumentException("logical op must not be null");
+            }
+            if (left == null || right == null) {
+                throw new IllegalArgumentException("logical operands must not be null");
+            }
         }
     }
 }

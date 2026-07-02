@@ -29,6 +29,7 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -214,7 +215,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
             try {
                 Object[] args = new Object[3 + arity];
                 args[0] = blockFactory;
-                args[1] = Warnings.NOOP_WARNINGS;
+                args[1] = noopWarnings(gen.tree());
                 args[2] = positionCount;
                 for (int i = 0; i < arity; i++) {
                     blocks[i] = buildLongBlock(positionCount, values[i]);
@@ -284,7 +285,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
             try {
                 Object[] args = new Object[3 + arity];
                 args[0] = blockFactory;
-                args[1] = Warnings.NOOP_WARNINGS;
+                args[1] = noopWarnings(gen.tree());
                 args[2] = positionCount;
                 for (int i = 0; i < arity; i++) {
                     blocks[i] = buildIntBlock(positionCount, values[i]);
@@ -354,7 +355,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
             try {
                 Object[] args = new Object[3 + arity];
                 args[0] = blockFactory;
-                args[1] = Warnings.NOOP_WARNINGS;
+                args[1] = noopWarnings(gen.tree());
                 args[2] = positionCount;
                 for (int i = 0; i < arity; i++) {
                     blocks[i] = buildDoubleBlock(positionCount, values[i]);
@@ -432,7 +433,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
         MethodType type = MethodType.methodType(
             LongBlock.class,
             BlockFactory.class,
-            Warnings.class,
+            Warnings[].class,
             int.class,
             LongBlock.class,
             LongBlock.class,
@@ -452,7 +453,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
                 ba = buildLongBlock(positionCount, a);
                 bb = buildLongBlock(positionCount, b);
                 bc = buildLongBlock(positionCount, c);
-                result = (LongBlock) handle.invokeWithArguments(blockFactory, Warnings.NOOP_WARNINGS, positionCount, ba, bb, bc);
+                result = (LongBlock) handle.invokeWithArguments(blockFactory, noopWarnings(tree), positionCount, ba, bb, bc);
                 for (int p = 0; p < positionCount; p++) {
                     boolean nullPos = a[p].length != 1 || b[p].length != 1 || c[p].length != 1;
                     if (nullPos) {
@@ -524,7 +525,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
         MethodType type = MethodType.methodType(
             LongBlock.class,
             BlockFactory.class,
-            Warnings.class,
+            Warnings[].class,
             int.class,
             LongBlock.class,
             LongBlock.class,
@@ -547,7 +548,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
                 bb = buildLongBlock(positionCount, b);
                 bc = buildLongBlock(positionCount, c);
                 bd = buildLongBlock(positionCount, d);
-                result = (LongBlock) handle.invokeWithArguments(blockFactory, Warnings.NOOP_WARNINGS, positionCount, ba, bb, bc, bd);
+                result = (LongBlock) handle.invokeWithArguments(blockFactory, noopWarnings(tree), positionCount, ba, bb, bc, bd);
                 for (int p = 0; p < positionCount; p++) {
                     boolean nullPos = a[p].length != 1 || b[p].length != 1 || c[p].length != 1 || d[p].length != 1;
                     if (nullPos) {
@@ -581,7 +582,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
         MethodType type = MethodType.methodType(
             LongBlock.class,
             BlockFactory.class,
-            Warnings.class,
+            Warnings[].class,
             int.class,
             LongBlock.class,
             LongBlock.class,
@@ -605,7 +606,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
             b0 = buildLongBlock(positionCount, c0);
             b1 = buildLongBlock(positionCount, c1);
             b2 = buildLongBlock(positionCount, c2);
-            result = (LongBlock) handle.invokeWithArguments(blockFactory, Warnings.NOOP_WARNINGS, positionCount, b0, b1, b2);
+            result = (LongBlock) handle.invokeWithArguments(blockFactory, noopWarnings(tree), positionCount, b0, b1, b2);
             for (int p = 0; p < positionCount; p++) {
                 assertThat("p=" + p + " must not be nullified by the unused input", result.isNull(p), is(false));
                 assertThat("p=" + p, result.getLong(result.getFirstValueIndex(p)), equalTo(Math.addExact(c0[p][0], c2[p][0])));
@@ -639,6 +640,17 @@ public class StitcherBlockFusionTests extends ESTestCase {
         return new FusionNode.Kernel(sub, List.of(mulNode, new FusionNode.Input(3)));
     }
 
+    /**
+     * A no-op {@code Warnings[]} sized to the tree's warning-source slots — the per-source array the fused block method
+     * now takes (one {@code Warnings} per kernel node). NOOP so these value/null differential tests don't assert on
+     * headers; correctness only needs each {@code warnings[slot]} index to be in bounds.
+     */
+    private static Warnings[] noopWarnings(FusionNode tree) {
+        Warnings[] w = new Warnings[Stitcher.warningsSourceCount(tree)];
+        Arrays.fill(w, Warnings.NOOP_WARNINGS);
+        return w;
+    }
+
     private MethodHandle blockHandle(GenTree gen, Class<?> blockType) throws Throwable {
         Class<?> fused = stitcher.compileBlockLoop(MethodHandles.lookup(), gen.tree());
         // The block path touches only public compute.data API, so the hidden class is defined into the caller's own
@@ -646,7 +658,7 @@ public class StitcherBlockFusionTests extends ESTestCase {
         assertThat(fused.getPackageName(), equalTo(getClass().getPackageName()));
         Class<?>[] params = new Class<?>[3 + gen.arity()];
         params[0] = BlockFactory.class;
-        params[1] = Warnings.class;
+        params[1] = Warnings[].class;
         params[2] = int.class;
         for (int i = 0; i < gen.arity(); i++) {
             params[3 + i] = blockType;

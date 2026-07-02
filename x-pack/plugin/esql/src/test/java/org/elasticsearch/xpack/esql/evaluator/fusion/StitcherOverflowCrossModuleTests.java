@@ -32,6 +32,7 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.hamcrest.Matchers.equalTo;
@@ -82,6 +83,16 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
     }
 
     /**
+     * The per-source {@code Warnings[]} the fused methods now take, sized by {@link Stitcher#warningsSourceCount} and
+     * all pointing at the single collecting instance so these single-kernel fixtures accumulate into one collector.
+     */
+    private static Warnings[] warningsArray(FusionNode tree, Warnings w) {
+        Warnings[] arr = new Warnings[Stitcher.warningsSourceCount(tree)];
+        Arrays.fill(arr, w);
+        return arr;
+    }
+
+    /**
      * Block path over the real {@code Add.processLongs} ({@code Math.addExact}): overflowing positions are null +
      * warning, clean positions equal the reflectively-invoked unfused kernel. Proves the descriptor's
      * {@code overflowExceptionType} drives a correct cross-module overflow try/catch.
@@ -97,7 +108,7 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
         MethodType type = MethodType.methodType(
             LongBlock.class,
             BlockFactory.class,
-            Warnings.class,
+            Warnings[].class,
             int.class,
             LongBlock.class,
             LongBlock.class
@@ -117,7 +128,7 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
         try {
             lb = singleValuedLong(lhs);
             rb = singleValuedLong(rhs);
-            result = (LongBlock) handle.invokeWithArguments(blockFactory, warnings, positionCount, lb, rb);
+            result = (LongBlock) handle.invokeWithArguments(blockFactory, warningsArray(tree, warnings), positionCount, lb, rb);
             assertThat(result.getPositionCount(), equalTo(positionCount));
             for (int p = 0; p < positionCount; p++) {
                 Long expected = refLong(unfused, lhs[p], rhs[p]);
@@ -153,7 +164,7 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
         MethodType type = MethodType.methodType(
             DoubleBlock.class,
             BlockFactory.class,
-            Warnings.class,
+            Warnings[].class,
             int.class,
             DoubleBlock.class,
             DoubleBlock.class
@@ -173,7 +184,7 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
         try {
             lb = singleValuedDouble(lhs);
             rb = singleValuedDouble(rhs);
-            result = (DoubleBlock) handle.invokeWithArguments(blockFactory, warnings, positionCount, lb, rb);
+            result = (DoubleBlock) handle.invokeWithArguments(blockFactory, warningsArray(tree, warnings), positionCount, lb, rb);
             assertThat(result.getPositionCount(), equalTo(positionCount));
             for (int p = 0; p < positionCount; p++) {
                 Double expected = refDouble(unfused, lhs[p], rhs[p]);
@@ -234,7 +245,7 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
         MethodType type = MethodType.methodType(
             DoubleBlock.class,
             BlockFactory.class,
-            Warnings.class,
+            Warnings[].class,
             int.class,
             org.elasticsearch.compute.data.Vector.class,
             org.elasticsearch.compute.data.Vector.class
@@ -251,7 +262,7 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
         try {
             va = blockFactory.newDoubleArrayVector(lhs, positionCount);
             vb = blockFactory.newDoubleArrayVector(rhs, positionCount);
-            result = (DoubleBlock) handle.invoke(blockFactory, warnings, positionCount, va, vb);
+            result = (DoubleBlock) handle.invoke(blockFactory, warningsArray(tree, warnings), positionCount, va, vb);
             assertThat("p0 Infinity -> null", result.isNull(0), is(true));
             assertThat("p1 value", result.getDouble(result.getFirstValueIndex(1)), equalTo(4.0));
             assertThat("p2 value", result.getDouble(result.getFirstValueIndex(2)), equalTo(7.0));

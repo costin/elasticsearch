@@ -73,7 +73,9 @@ final class FusedClassCache {
     enum Path {
         BLOCK,
         PLAIN_VECTOR,
-        CHECKED_VECTOR
+        CHECKED_VECTOR,
+        /** {@link Stitcher#compileLogicalBlockLoop}: a 3VL {@code AND}/{@code OR} tree; nullable boolean, block-only. */
+        LOGICAL_BLOCK
     }
 
     /**

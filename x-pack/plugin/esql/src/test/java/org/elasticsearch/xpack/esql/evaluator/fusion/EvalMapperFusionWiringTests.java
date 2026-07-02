@@ -256,6 +256,11 @@ public class EvalMapperFusionWiringTests extends ESTestCase {
             public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
                 throw new Stitcher.StitchingException("injected stitch failure", new VerifyError("injected"));
             }
+
+            @Override
+            public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                throw new Stitcher.StitchingException("injected stitch failure", new VerifyError("injected"));
+            }
         };
 
         long before = FusionTelemetry.totalFailures();
@@ -437,6 +442,11 @@ public class EvalMapperFusionWiringTests extends ESTestCase {
 
             @Override
             public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) {
+                throw new AssertionError("Stitcher must not be invoked when esql.fusion.enabled=false");
+            }
+
+            @Override
+            public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) {
                 throw new AssertionError("Stitcher must not be invoked when esql.fusion.enabled=false");
             }
         };

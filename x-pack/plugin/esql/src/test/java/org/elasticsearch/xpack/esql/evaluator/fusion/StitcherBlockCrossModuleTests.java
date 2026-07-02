@@ -29,6 +29,7 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.hamcrest.Matchers.equalTo;
@@ -85,7 +86,7 @@ public class StitcherBlockCrossModuleTests extends ESTestCase {
         MethodType type = MethodType.methodType(
             DoubleBlock.class,
             BlockFactory.class,
-            Warnings.class,
+            Warnings[].class,
             int.class,
             DoubleBlock.class,
             DoubleBlock.class
@@ -110,7 +111,7 @@ public class StitcherBlockCrossModuleTests extends ESTestCase {
         try {
             lhsBlock = buildDoubleBlock(positionCount, lhs);
             rhsBlock = buildDoubleBlock(positionCount, rhs);
-            result = (DoubleBlock) handle.invokeWithArguments(blockFactory, Warnings.NOOP_WARNINGS, positionCount, lhsBlock, rhsBlock);
+            result = (DoubleBlock) handle.invokeWithArguments(blockFactory, noopWarnings(tree), positionCount, lhsBlock, rhsBlock);
             assertThat(result.getPositionCount(), equalTo(positionCount));
             for (int p = 0; p < positionCount; p++) {
                 boolean nullPos = lhs[p].length != 1 || rhs[p].length != 1;
@@ -125,6 +126,13 @@ public class StitcherBlockCrossModuleTests extends ESTestCase {
         } finally {
             Releasables.closeExpectNoException(lhsBlock, rhsBlock, result);
         }
+    }
+
+    /** A no-op {@code Warnings[]} sized to the tree's warning-source slots — this Add tree cannot overflow here. */
+    private static Warnings[] noopWarnings(FusionNode tree) {
+        Warnings[] w = new Warnings[Stitcher.warningsSourceCount(tree)];
+        Arrays.fill(w, Warnings.NOOP_WARNINGS);
+        return w;
     }
 
     /** A random position payload: ~20% null (0 values), ~10% multi-value (2-3), else a single finite value. */
