@@ -23,10 +23,13 @@ import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
+import org.objectweb.asm.tree.TryCatchBlockNode;
 import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
 import java.lang.invoke.MethodHandles;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.Consumer;
 
 /**
@@ -208,6 +211,21 @@ public final class Stitcher {
      * whose {@code rawValues()} it reads (JIT criterion #6: no per-position {@code checkcast}).
      */
     private static final String VECTOR = "org/elasticsearch/compute/data/Vector";
+
+    /**
+     * Internal name of the {@code compute.data} {@code Block} base type. The block-path fused method reads each
+     * input's per-position null/multi-value state through this common interface ({@code getValueCount},
+     * {@code getFirstValueIndex}) before narrowing to the concrete {@code *Block} for the typed value read.
+     */
+    private static final String BLOCK = "org/elasticsearch/compute/data/Block";
+
+    /**
+     * Internal name of {@code org.elasticsearch.core.Releasable}, the interface through which the block-path fused
+     * method closes its output builder. The builder is a resource: {@code build()} transfers its breaker
+     * accounting to the produced block, but on any abnormal exit (e.g. a {@code CircuitBreakingException} while
+     * growing the builder) the try/finally the fused method emits closes it so no breaker bytes leak.
+     */
+    private static final String RELEASABLE = "org/elasticsearch/core/Releasable";
 
     /**
      * Fuses an expression {@code tree} of primitive {@code *ArrayVector} inputs (no nulls) into a single counted
@@ -445,6 +463,324 @@ public final class Stitcher {
         }
     }
 
+    /**
+     * Fuses an expression {@code tree} whose inputs are primitive {@code *Block}s that may carry nulls and/or
+     * multi-valued positions into a single position-by-position loop, and materialises it as a hidden class. This
+     * is the null-tolerant fallback to {@link #compileVectorLoop}: the caller uses the vector fast path when every
+     * input is a no-null single-valued {@code *ArrayVector}, and this block path otherwise. The emitted
+     * {@link #FUSED_METHOD_NAME} method has the shape
+     * <pre>{@code
+     * static LongBlock fused(BlockFactory bf, int positionCount, LongBlock b0, LongBlock b1, LongBlock b2) {
+     *     LongBlock.Builder out = bf.newLongBlockBuilder(positionCount);
+     *     try {
+     *         for (int p = 0; p < positionCount; p++) {
+     *             if (b0.getValueCount(p) != 1 || b1.getValueCount(p) != 1 || b2.getValueCount(p) != 1) {
+     *                 out.appendNull();                       // null-propagation: any null/multi-value input -> null
+     *                 continue;
+     *             }
+     *             long v0 = b0.getLong(b0.getFirstValueIndex(p));
+     *             long v1 = b1.getLong(b1.getFirstValueIndex(p));
+     *             long v2 = b2.getLong(b2.getFirstValueIndex(p));
+     *             out.appendLong((v0 + v1) * v2);             // stitched kernel bodies, inline
+     *         }
+     *         return out.build();
+     *     } finally {
+     *         out.close();                                    // no-op after build(); frees breaker bytes on throw
+     *     }
+     * }
+     * }</pre>
+     *
+     * <p><b>Null / multi-value semantics.</b> This mirrors the generated unfused evaluator's {@code *Block}-path
+     * exactly (e.g. {@code AddLongsEvaluator.eval(int, LongBlock, LongBlock)}): a position is emitted as {@code null}
+     * whenever any consumed input has {@code getValueCount(p) == 0} (null) <em>or</em> {@code > 1} (multi-value, which
+     * a scalar binary kernel cannot accept); otherwise the single value at {@code getFirstValueIndex(p)} is read and
+     * the kernel bodies run. In an unfused chain every leaf null/multi-value propagates up through each kernel to the
+     * root, so the composed result is null at {@code p} iff any leaf is null/multi-value at {@code p} — which is what
+     * the single combined guard here reproduces. (Overflow try/catch and the multi-value warning are iter-12
+     * concerns and are deliberately not emitted yet; the differential test bounds inputs so no kernel throws.)
+     *
+     * <p><b>Why no {@code privateLookupIn} teleport (unlike {@link #compileVectorLoop}).</b> The vector path calls
+     * the package-private {@code rawValues()} accessor and therefore must define its hidden class into the effective
+     * {@code compute.data} package. The block path, by contrast, touches only <b>public exported</b> API —
+     * {@code BlockFactory.new*BlockBuilder}, {@code Block.getValueCount}/{@code getFirstValueIndex}, the typed
+     * {@code *Block.get*}, the {@code *Block.Builder} appenders/{@code build}, and {@code Releasable.close}. So the
+     * fused class is defined directly into the <b>caller's</b> own package/module (as {@link #compile} does for a
+     * depth-1 kernel): the caller's module already reads {@code compute} (for the public block types) and the module
+     * that owns the kernels (for the spliced kernel-body call targets, e.g. {@code NumericUtils.asFiniteNumber} in
+     * {@code Add.processDoubles}). This is precisely what lets an esql-proper caller fuse a non-{@code java.base}
+     * kernel over {@code *Block}s and link it — {@code compute.data} is <i>exported</i> but not <i>opened</i>, so a
+     * cross-module {@code privateLookupIn(compute.data, esqlLookup)} would have failed.
+     *
+     * <p><b>Failure surface (rule #5).</b> Any verification/linkage failure at {@code defineHiddenClass} is rethrown
+     * as a {@link StitchingException} for the caller to fall back to the unfused chain.
+     *
+     * <p><b>JIT discipline (criterion #6).</b> The inner work is primitive-only (values read into
+     * {@code long}/{@code int}/{@code double} locals, kernel bodies spliced verbatim). The per-position null-check
+     * branch is unavoidable for null propagation but is a single compare per <em>consumed</em> input; the concrete
+     * {@code *Block} type is fixed by the method descriptor so there is no per-position {@code checkcast}.
+     *
+     * @param caller the caller's lookup (from the module that owns the kernels); the fused class is defined here
+     * @param tree   the expression tree to fuse; all inputs are homogeneous primitive {@code *Block}s
+     * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME}
+     * @throws StitchingException if the caller lacks the access to define the hidden class, or the emitted class
+     *                            fails JVM verification/linking — the caller should fall back to the unfused path
+     */
+    public Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        byte[] bytecode = emitBlockLoop(caller, tree);
+        try {
+            return caller.defineHiddenClass(bytecode, true).lookupClass();
+        } catch (LinkageError e) {
+            logger.warn("fused block loop failed to link; falling back to unfused", e);
+            throw new StitchingException("failed to define fused block-loop class", e);
+        } catch (IllegalAccessException e) {
+            logger.warn("caller lookup [{}] cannot define fused block-loop class; falling back to unfused", caller, e);
+            throw new StitchingException("caller lookup cannot define fused block-loop class", e);
+        }
+    }
+
+    /**
+     * Builds the class bytes for the fused block loop. Kept separate from {@link #compileBlockLoop} so the
+     * verification boundary is exactly the {@code defineHiddenClass} call — everything here is pure ASM tree
+     * manipulation on cloned kernel bodies.
+     */
+    private byte[] emitBlockLoop(MethodHandles.Lookup caller, FusionNode tree) {
+        int arity = arity(tree);
+        // Only the inputs the tree actually references are null-checked and read. The method still takes one *Block
+        // parameter per index in [0, arity) (so callers bind positionally by leaf index), but guarding an input the
+        // expression never consumes would over-nullify: a null/multi-value in an unused input would wrongly null the
+        // whole position even though no kernel reads it. The unfused chain only inspects operands it actually uses,
+        // so we mirror that by iterating the consumed-input set.
+        int[] consumed = consumedInputs(tree);
+        Element element = Element.of(rootReturnType(tree));
+        int size = element.type().getSize();
+
+        // Frame layout: [0] BlockFactory, [1] int positionCount, [2 .. 2+arity) input *Blocks. The builder, loop
+        // counter, per-input value slots (each `size` wide), the built-result slot, and the caught-throwable slot
+        // sit in the fixed region above the parameters; each kernel body then gets a disjoint range above that.
+        int inputBase = 2;
+        int builderSlot = inputBase + arity;
+        int pSlot = builderSlot + 1;
+        int valueBase = pSlot + 1;
+        int resultSlot = valueBase + arity * size;
+        int excSlot = resultSlot + 1;
+        int kernelBase = excSlot + 1;
+
+        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";I");
+        for (int i = 0; i < arity; i++) {
+            desc.append(element.blockDescriptor());
+        }
+        desc.append(")").append(element.blockDescriptor());
+
+        MethodNode host = new MethodNode(
+            Opcodes.ASM9,
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            FUSED_METHOD_NAME,
+            desc.toString(),
+            null,
+            null
+        );
+        InsnList insns = host.instructions;
+
+        // out = bf.new*BlockBuilder(positionCount);
+        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEVIRTUAL,
+                BLOCK_FACTORY,
+                element.newBlockBuilderMethod(),
+                element.newBlockBuilderDescriptor(),
+                false
+            )
+        );
+        insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
+
+        // The builder is a resource: everything up to and including build() runs inside a try whose catch-all
+        // handler closes it before rethrowing, so a break part-way through does not leak breaker bytes.
+        LabelNode tryStart = new LabelNode();
+        LabelNode tryEnd = new LabelNode();
+        LabelNode handler = new LabelNode();
+        insns.add(tryStart);
+
+        // int p = 0;
+        insns.add(new InsnNode(Opcodes.ICONST_0));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
+
+        LabelNode loopStart = new LabelNode();
+        LabelNode loopEnd = new LabelNode();
+        LabelNode appendNull = new LabelNode();
+        LabelNode next = new LabelNode();
+        insns.add(loopStart);
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
+
+        // Null-propagation guard: if any CONSUMED input is null (getValueCount == 0) or multi-valued (> 1) at p, emit
+        // null. Inputs the tree never references are neither guarded nor read.
+        for (int i : consumed) {
+            insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+            insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getValueCount", "(I)I", true));
+            insns.add(new InsnNode(Opcodes.ICONST_1));
+            insns.add(new JumpInsnNode(Opcodes.IF_ICMPNE, appendNull));
+        }
+
+        // Read each consumed input's single value once: v_i = block_i.get*(block_i.getFirstValueIndex(p)).
+        for (int i : consumed) {
+            insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
+            insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+            insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getFirstValueIndex", "(I)I", true));
+            insns.add(
+                new MethodInsnNode(
+                    Opcodes.INVOKEINTERFACE,
+                    element.blockInternalName(),
+                    element.getValueMethod(),
+                    element.getValueDescriptor(),
+                    true
+                )
+            );
+            insns.add(new VarInsnNode(element.type().getOpcode(Opcodes.ISTORE), valueBase + i * size));
+        }
+
+        // out.append*(<stitched expression>); the builder ref is pushed first, then the fused kernel bodies leave
+        // the computed value on top, so the append call consumes both; the fluent return is discarded.
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        BlockLoopEmitter emitter = new BlockLoopEmitter(insns, element, valueBase, size, kernelBase);
+        emitter.emit(tree);
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEINTERFACE,
+                element.builderInternalName(),
+                element.appendMethod(),
+                element.appendDescriptor(),
+                true
+            )
+        );
+        insns.add(new InsnNode(Opcodes.POP));
+        insns.add(new JumpInsnNode(Opcodes.GOTO, next));
+
+        // out.appendNull();
+        insns.add(appendNull);
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(
+            new MethodInsnNode(Opcodes.INVOKEINTERFACE, element.builderInternalName(), "appendNull", element.appendNullDescriptor(), true)
+        );
+        insns.add(new InsnNode(Opcodes.POP));
+
+        insns.add(next);
+        insns.add(new IincInsnNode(pSlot, 1));
+        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
+
+        insns.add(loopEnd);
+        // result = out.build(); build() transfers the builder's breaker accounting to the produced block.
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, element.builderInternalName(), "build", element.buildDescriptor(), true));
+        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
+        insns.add(tryEnd);
+        // Normal exit: close the builder (a no-op after build()) and return the block.
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
+        insns.add(new InsnNode(Opcodes.ARETURN));
+
+        // Catch-all: close the builder to release its breaker bytes, then rethrow.
+        insns.add(handler);
+        insns.add(new VarInsnNode(Opcodes.ASTORE, excSlot));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
+        insns.add(new InsnNode(Opcodes.ATHROW));
+
+        host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
+
+        if (hostMethodInterceptor != null) {
+            hostMethodInterceptor.accept(host);
+        }
+
+        ClassNode classNode = new ClassNode(Opcodes.ASM9);
+        classNode.version = Opcodes.V21;
+        classNode.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER;
+        classNode.name = caller.lookupClass().getPackageName().replace('.', '/') + "/Fused$$BlockLoop";
+        classNode.superName = "java/lang/Object";
+        classNode.methods.add(host);
+
+        ClassLoader loader = caller.lookupClass().getClassLoader();
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
+            // The loop and the try/finally are control flow, so COMPUTE_FRAMES may need a common-superclass lookup
+            // at a join. Resolve against the caller's class loader (which can see the public block types and, via
+            // java.base, java/lang/Throwable) rather than ASM's own.
+            @Override
+            protected ClassLoader getClassLoader() {
+                return loader != null ? loader : super.getClassLoader();
+            }
+        };
+        classNode.accept(writer);
+        return writer.toByteArray();
+    }
+
+    /**
+     * Post-order emitter for one expression tree into the fused block loop. Identical in structure to
+     * {@link VectorLoopEmitter} except an {@link FusionNode.Input} reads the per-position value already loaded into
+     * its value local (rather than indexing a raw array), so the null/multi-value guard and single-value read done
+     * once per position are shared by every reference to that input.
+     */
+    private final class BlockLoopEmitter {
+        private final InsnList insns;
+        private final Element element;
+        private final int valueBase;
+        private final int valueSize;
+        private int kernelBase;
+
+        BlockLoopEmitter(InsnList insns, Element element, int valueBase, int valueSize, int kernelBase) {
+            this.insns = insns;
+            this.element = element;
+            this.valueBase = valueBase;
+            this.valueSize = valueSize;
+            this.kernelBase = kernelBase;
+        }
+
+        /**
+         * Emits instructions that leave {@code node}'s value for the current position {@code p} on the operand
+         * stack.
+         */
+        void emit(FusionNode node) {
+            if (node instanceof FusionNode.Input input) {
+                insns.add(new VarInsnNode(element.type().getOpcode(Opcodes.ILOAD), valueBase + input.index() * valueSize));
+                return;
+            }
+            FusionNode.Kernel kernel = (FusionNode.Kernel) node;
+            MethodNode template = templates.methodNode(kernel.descriptor());
+            Body body = BodyExtractor.extract(template);
+
+            // Claim this node's disjoint slot range, then shift the body's locals into it. Argument loads inside the
+            // body now read [nodeBase + argOffset]; the stores below feed exactly those slots.
+            int nodeBase = kernelBase;
+            kernelBase += body.maxLocals();
+            SlotRemapper.shift(body.computation(), nodeBase);
+
+            Type[] argTypes = Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes();
+            var children = kernel.children();
+            if (children.size() != argTypes.length) {
+                throw new IllegalArgumentException(
+                    "kernel ["
+                        + kernel.descriptor().kernelMethod()
+                        + "] expects "
+                        + argTypes.length
+                        + " operands but the tree supplied "
+                        + children.size()
+                );
+            }
+            int offset = 0;
+            for (int i = 0; i < argTypes.length; i++) {
+                emit(children.get(i));
+                insns.add(new VarInsnNode(argTypes[i].getOpcode(Opcodes.ISTORE), nodeBase + offset));
+                offset += argTypes[i].getSize();
+            }
+            insns.add(body.computation());
+        }
+    }
+
     /** Number of distinct input vectors the tree references, i.e. one past the maximum {@code Input} index. */
     private static int arity(FusionNode tree) {
         if (tree instanceof FusionNode.Input input) {
@@ -455,6 +791,31 @@ public final class Stitcher {
             max = Math.max(max, arity(child));
         }
         return max;
+    }
+
+    /**
+     * The distinct input indices the {@code tree} actually references, ascending. Used by the block path to guard and
+     * read only the inputs the expression consumes (rule against over-nullifying on an unreferenced input).
+     */
+    private static int[] consumedInputs(FusionNode tree) {
+        TreeSet<Integer> used = new TreeSet<>();
+        collectInputs(tree, used);
+        int[] out = new int[used.size()];
+        int i = 0;
+        for (int index : used) {
+            out[i++] = index;
+        }
+        return out;
+    }
+
+    private static void collectInputs(FusionNode node, Set<Integer> used) {
+        if (node instanceof FusionNode.Input input) {
+            used.add(input.index());
+        } else {
+            for (FusionNode child : ((FusionNode.Kernel) node).children()) {
+                collectInputs(child, used);
+            }
+        }
     }
 
     /** The tree's output element type — the return type of the root kernel. Inputs are homogeneous in this scope. */
@@ -477,6 +838,11 @@ public final class Stitcher {
         String newVectorMethod,
         String newVectorDescriptor,
         int newArrayType,
+        String blockInternalName,
+        String builderInternalName,
+        String newBlockBuilderMethod,
+        String getValueMethod,
+        String appendMethod,
         Type type
     ) {
         static Element of(Type t) {
@@ -488,6 +854,11 @@ public final class Stitcher {
                     "newLongArrayVector",
                     "([JI)Lorg/elasticsearch/compute/data/LongVector;",
                     Opcodes.T_LONG,
+                    "org/elasticsearch/compute/data/LongBlock",
+                    "org/elasticsearch/compute/data/LongBlock$Builder",
+                    "newLongBlockBuilder",
+                    "getLong",
+                    "appendLong",
                     t
                 );
                 case Type.INT -> new Element(
@@ -497,6 +868,11 @@ public final class Stitcher {
                     "newIntArrayVector",
                     "([II)Lorg/elasticsearch/compute/data/IntVector;",
                     Opcodes.T_INT,
+                    "org/elasticsearch/compute/data/IntBlock",
+                    "org/elasticsearch/compute/data/IntBlock$Builder",
+                    "newIntBlockBuilder",
+                    "getInt",
+                    "appendInt",
                     t
                 );
                 case Type.DOUBLE -> new Element(
@@ -506,10 +882,50 @@ public final class Stitcher {
                     "newDoubleArrayVector",
                     "([DI)Lorg/elasticsearch/compute/data/DoubleVector;",
                     Opcodes.T_DOUBLE,
+                    "org/elasticsearch/compute/data/DoubleBlock",
+                    "org/elasticsearch/compute/data/DoubleBlock$Builder",
+                    "newDoubleBlockBuilder",
+                    "getDouble",
+                    "appendDouble",
                     t
                 );
                 default -> throw new IllegalArgumentException("unsupported fused output element type: " + t.getClassName());
             };
+        }
+
+        /** JVM type descriptor of the concrete {@code *Block}, e.g. {@code Lorg/.../LongBlock;}. */
+        String blockDescriptor() {
+            return "L" + blockInternalName + ";";
+        }
+
+        /** JVM type descriptor of the concrete {@code *Block.Builder}, e.g. {@code Lorg/.../LongBlock$Builder;}. */
+        String builderDescriptor() {
+            return "L" + builderInternalName + ";";
+        }
+
+        /** Descriptor of {@code BlockFactory.new*BlockBuilder(int)} -> {@code *Block.Builder}. */
+        String newBlockBuilderDescriptor() {
+            return "(I)" + builderDescriptor();
+        }
+
+        /** Descriptor of {@code *Block.get*(int)} -> primitive, e.g. {@code (I)J} for {@code getLong}. */
+        String getValueDescriptor() {
+            return "(I)" + type.getDescriptor();
+        }
+
+        /** Descriptor of the fluent {@code *Block.Builder.append*(primitive)} -> {@code *Block.Builder}. */
+        String appendDescriptor() {
+            return "(" + type.getDescriptor() + ")" + builderDescriptor();
+        }
+
+        /** Descriptor of the fluent {@code *Block.Builder.appendNull()} -> {@code *Block.Builder}. */
+        String appendNullDescriptor() {
+            return "()" + builderDescriptor();
+        }
+
+        /** Descriptor of {@code *Block.Builder.build()} -> {@code *Block}. */
+        String buildDescriptor() {
+            return "()" + blockDescriptor();
         }
     }
 
