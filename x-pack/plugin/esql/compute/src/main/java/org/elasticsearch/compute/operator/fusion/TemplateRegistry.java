@@ -65,7 +65,10 @@ public final class TemplateRegistry {
      * @throws IllegalStateException if the kernel class bytecode cannot be located on the classpath,
      *                               or no method matches the descriptor's name and type
      */
-    public MethodNode methodNode(FusionDescriptor descriptor) {
+    // Package-private on purpose: the ASM MethodNode return type must not leak across the module
+    // boundary (asm-tree is a non-transitive `implementation` dependency). The only consumer, the
+    // Stitcher, lives in this package.
+    MethodNode methodNode(FusionDescriptor descriptor) {
         TemplateKey key = new TemplateKey(descriptor.kernelClass(), descriptor.kernelMethod(), descriptor.kernelType());
         MethodNode template = templates.computeIfAbsent(key, this::parse);
         return clone(template);
