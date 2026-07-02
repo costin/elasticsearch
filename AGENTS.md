@@ -167,3 +167,9 @@ Stay aligned with `CONTRIBUTING.md`, `BUILDING.md`, and `TESTING.asciidoc`; this
 
 ## Documentation
 When building or editing docs, read `docs/AGENTS.md` first.
+
+## Cursor Cloud specific instructions
+- **Build JVM**: The Gradle wrapper runs on the system JDK 21 (`/usr/lib/jvm/java-21-openjdk-amd64`, exported as `JAVA_HOME` in the agent's `~/.bashrc`). This matches CI (`.ci/java-versions.properties` → `openjdk21`) and takes precedence over the "JDK 25" note in the Toolchain Snapshot for the build JVM. Gradle then auto-provisions its own Adoptium JDK 21 toolchain under `~/.gradle/jdks` for compilation (`org.gradle.java.installations.auto-detect=false`), so no manual JDK install is needed. Internet access is required on first build for the Gradle distribution, toolchain JDKs, and Maven dependencies.
+- **Running the server**: `./gradlew run` builds the full default distribution and then stays in the foreground running a single-node cluster — start it in a tmux/background session, not a blocking foreground call. The first distro build takes several minutes; the node listens on `http://localhost:9200` (transport 9300).
+- **Dev credentials**: `./gradlew run` enables security on a `basic` license and creates user `elastic-admin` / `elastic-password` (role `_es_test_root`), configured in `build-tools-internal/src/main/groovy/elasticsearch.run.gradle`. Authenticate REST calls with `-u elastic-admin:elastic-password`. Add `-Drun.license_type=trial` for a trial license (ML/graph/watcher). ES|QL is available at `POST /_query`.
+- **Quick verification loop** (fast feedback before full builds): compile with `./gradlew :server:compileJava`, lint with `./gradlew :libs:core:spotlessJavaCheck`, run a unit test with `./gradlew :libs:core:test --tests org.elasticsearch.core.ReleasablesTests`.
