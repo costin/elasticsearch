@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.expression.function.scalar.math;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
@@ -101,6 +102,8 @@ public class Floor extends UnaryScalarFunction {
         return NodeInfo.create(this, Floor::new, field());
     }
 
+    // overflowChecked = false: Math.floor is a total java.base function (never throws; NaN/Inf pass through).
+    @Fusable(overflowChecked = false)
     @Evaluator(extraName = "Double")
     static double process(double val) {
         return Math.floor(val);

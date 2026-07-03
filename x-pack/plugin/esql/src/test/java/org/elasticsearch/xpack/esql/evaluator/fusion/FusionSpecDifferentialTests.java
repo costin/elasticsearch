@@ -19,7 +19,14 @@ import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.VectorStrategy;
+import org.elasticsearch.xpack.esql.expression.function.scalar.EsqlScalarFunction;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Abs;
+import org.elasticsearch.xpack.esql.expression.function.scalar.math.Cos;
+import org.elasticsearch.xpack.esql.expression.function.scalar.math.Hypot;
+import org.elasticsearch.xpack.esql.expression.function.scalar.math.Log;
+import org.elasticsearch.xpack.esql.expression.function.scalar.math.Pow;
+import org.elasticsearch.xpack.esql.expression.function.scalar.math.Sin;
+import org.elasticsearch.xpack.esql.expression.function.scalar.math.Sqrt;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.BinaryLogic;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
@@ -44,6 +51,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.Function;
+import java.util.stream.Stream;
 
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
@@ -96,7 +104,16 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
         /** {@code NUMERIC} operands -> {@code BOOLEAN} result (comparison kernels). */
         COMPARISON,
         /** {@code BOOLEAN} operands -> {@code BOOLEAN} result (3VL logical connectives). */
-        LOGICAL
+        LOGICAL,
+        /**
+         * {@code DOUBLE} operands -> {@code DOUBLE} result (iter 26 scalar math functions, e.g. {@code sin}/{@code sqrt}/
+         * {@code pow}). Like {@link #ARITHMETIC} these are numeric-in / numeric-out kernels, but they are a distinct
+         * {@link org.elasticsearch.xpack.esql.expression.function.scalar.EsqlScalarFunction} family (not an
+         * {@code EsqlArithmeticOperation}) whose {@code allowedElements} is {@code {DOUBLE}} only. They are NOT a sweep
+         * root of their own — they are wired UNDER the {@link #ARITHMETIC}/{@link #COMPARISON} roots via the
+         * {@link #ARITH_AND_MATH} palette, so a double tree can mix {@code a + sqrt(b)}, {@code pow(a,b) > c}, etc.
+         */
+        MATH
     }
 
     /** All numeric primitive element kinds an arithmetic/comparison operand may take. */
@@ -109,6 +126,14 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
      * {@link #genBoolean} directly rather than through the numeric {@link #randomNumericTemplate} element filter.
      */
     private static final EnumSet<ElementKind> BOOLEAN_OPERANDS = EnumSet.of(ElementKind.BOOLEAN);
+
+    /**
+     * {@code allowedElements} for the iter-26 scalar math functions. Their kernels are {@code (D)D}/{@code (DD)D}
+     * java.base double kernels, so the generator only ever wires them under a {@code double} subtree — an {@code int}/
+     * {@code long} column feeding one is bridged by the same {@code Cast} the unfused chain inserts (proved by
+     * {@link #testSinOverCastIntComposesCastAndFunction}), but the template itself is only generated for {@code DOUBLE}.
+     */
+    private static final EnumSet<ElementKind> DOUBLE_ONLY = EnumSet.of(ElementKind.DOUBLE);
 
     /**
      * A single fusable operator, declaratively. {@code overflowChecked} records whether the operator's kernel is
@@ -174,7 +199,18 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
         ),
         // --- logical connectives (BOOLEAN operands -> BOOLEAN; allowedElements is the BOOLEAN marker, see above) ---
         op("And", Category.LOGICAL, 2, BOOLEAN_OPERANDS, false, false, a -> new And(Source.EMPTY, a.get(0), a.get(1))),
-        op("Or", Category.LOGICAL, 2, BOOLEAN_OPERANDS, false, false, a -> new Or(Source.EMPTY, a.get(0), a.get(1)))
+        op("Or", Category.LOGICAL, 2, BOOLEAN_OPERANDS, false, false, a -> new Or(Source.EMPTY, a.get(0), a.get(1))),
+        // --- iter 26 scalar math functions (DOUBLE-only; wired under the ARITHMETIC/COMPARISON roots) ---
+        // Sin: a total (D)D java.base kernel (not overflow-checked) -> keeps the plain-vector fast path reachable.
+        op("Sin", Category.MATH, 1, DOUBLE_ONLY, false, false, a -> new Sin(Source.EMPTY, a.get(0))),
+        // Sqrt: (D)D, forwards ArithmeticException on a negative input -> overflow-checked (checked-vector), nulls+warns.
+        op("Sqrt", Category.MATH, 1, DOUBLE_ONLY, true, false, a -> new Sqrt(Source.EMPTY, a.get(0))),
+        // Log (natural, unary): (D)D, forwards ArithmeticException on a non-positive input -> overflow-checked.
+        op("Log", Category.MATH, 1, DOUBLE_ONLY, true, false, a -> new Log(Source.EMPTY, a.get(0), null)),
+        // Hypot: a total (DD)D java.base kernel (not overflow-checked).
+        op("Hypot", Category.MATH, 2, DOUBLE_ONLY, false, false, a -> new Hypot(Source.EMPTY, a.get(0), a.get(1))),
+        // Pow: (DD)D via NumericUtils.asFiniteNumber, which throws ArithmeticException on overflow -> overflow-checked.
+        op("Pow", Category.MATH, 2, DOUBLE_ONLY, true, false, a -> new Pow(Source.EMPTY, a.get(0), a.get(1)))
     );
 
     private static List<OpTemplate> byCategory(Category category) {
@@ -193,6 +229,14 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
         .toList();
     /** The full arithmetic palette including {@code Div} — used only by the divide-by-zero sweep. */
     private static final List<OpTemplate> ARITH_WITH_DIV = byCategory(Category.ARITHMETIC);
+    /** The iter-26 scalar math functions ({@code Sin}/{@code Sqrt}/{@code Log}/{@code Hypot}/{@code Pow}). */
+    private static final List<OpTemplate> MATH_FUNCS = byCategory(Category.MATH);
+    /**
+     * The palette for the {@link #testMathFunctionSpecSweepMatchesUnfused} double sweep: overflow-checked binary
+     * arithmetic ({@code Add}/{@code Sub}/{@code Mul}, no {@code Div}) plus the math functions, so the generator freely
+     * mixes them into double trees like {@code a + sqrt(b)}, {@code sin(a) * c}, {@code pow(a, b) > c}.
+     */
+    private static final List<OpTemplate> ARITH_AND_MATH = Stream.concat(ARITH_NO_DIV.stream(), MATH_FUNCS.stream()).toList();
 
     private static final List<ElementKind> ELEMENTS = List.of(ElementKind.LONG, ElementKind.INT, ElementKind.DOUBLE);
 
@@ -1329,6 +1373,241 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
     }
 
     // ---------------------------------------------------------------------------------------------------------------
+    // iter 26: scalar math-function fusion. The @Fusable (D)D / (DD)D java.base double kernels (Sin/Sqrt/Log/Hypot/Pow
+    // + the rest of Tier A/A'/B) are wired UNDER the arithmetic/comparison roots via the ARITH_AND_MATH palette, so the
+    // sweep generates a + sqrt(b), sin(a) * c, pow(a, b) > c, etc. Domain errors (Sqrt/Log negative-domain, Pow
+    // overflow) null + warn identically to the unfused chain; the pure-java.base functions (Sin/Cos/Hypot/...) also
+    // VECTORIZE (plain-vector), the throwing ones take the checked-vector path (iter-22 VectorUnsafe).
+    // ---------------------------------------------------------------------------------------------------------------
+
+    /**
+     * The iter-26 math-function sweep: double trees mixing overflow-checked binary arithmetic with the scalar math
+     * functions, under both an ARITHMETIC root ({@code a + sqrt(b)}, {@code sin(a) * c}) and a COMPARISON root
+     * ({@code pow(a, b) > c}). Because {@link #nextDouble} spans negatives, {@code Sqrt}/{@code Log} naturally meet
+     * out-of-domain inputs and {@code Pow} can overflow, so the sweep exercises the domain-error null+warn path in
+     * addition to the clean/null/multi-value paths — all asserted fused==unfused (values + null positions) with the
+     * ratified warning subset. Overflow-checked math kernels ({@code Sqrt}/{@code Log}/{@code Pow}) reach the
+     * checked-vector fast path (the iter-22 VectorUnsafe win, now for double math functions).
+     */
+    public void testMathFunctionSpecSweepMatchesUnfused() {
+        Coverage cov = new Coverage();
+        Profile[] cycle = { Profile.CLEAN, Profile.NULLS, Profile.MULTIVALUE, Profile.OVERFLOW };
+        // Arithmetic root: sin(a)+b, sqrt(a)*c, a+pow(b,c), ...
+        sweep(cov, Category.ARITHMETIC, ARITH_AND_MATH, List.of(ElementKind.DOUBLE), cycle, false, 150);
+        // Comparison root: pow(a,b)>c, sqrt(a)+b < d, ...
+        sweep(cov, Category.COMPARISON, ARITH_AND_MATH, List.of(ElementKind.DOUBLE), cycle, false, 150);
+
+        assertShapeMatrixCovered(cov);
+        assertProfilesCovered(cov, Profile.CLEAN, Profile.NULLS, Profile.MULTIVALUE, Profile.OVERFLOW);
+        assertThat(
+            "a double math tree with an overflow-checked kernel must reach the checked-vector fast path",
+            cov.checkedVector,
+            greaterThan(0)
+        );
+        assertThat(
+            "a double math tree (Sqrt/Log/Pow) must reach the checked-vector path (iter-22 VectorUnsafe for math fns)",
+            strategyHits(cov, ElementKind.DOUBLE, VectorStrategy.CHECKED_VECTOR),
+            greaterThan(0)
+        );
+        assertThat("a multi-value input feeding a math function must register a warning", cov.multiValueWarnings, greaterThan(0));
+    }
+
+    /**
+     * {@code sin(intCol)} — a math function over a NON-double column — fuses as {@code Sin(castIntToDouble(intCol))},
+     * composing the iter-25 widening cast kernel with the iter-26 function kernel (kernel depth 2), and matches the
+     * unfused chain (which splices the very same {@code Cast.cast(int -> double)} before {@code SinEvaluator}) exactly.
+     * Proves the per-node typing bridges an {@code int} leaf into a {@code double}-domain function.
+     */
+    public void testSinOverCastIntComposesCastAndFunction() {
+        FieldAttribute a = field("a", DataType.INTEGER);
+        Layout layout = layout(a);
+        Expression expr = new Sin(Source.EMPTY, a); // Sin(castIntToDouble(intCol))
+
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        assertFuses(fused, "sin(intCol) must fuse as Sin(castIntToDouble(intCol)) — cast + function compose");
+        assertDoesNotFuse(unfused, "sin(intCol) kill switch OFF");
+
+        int positions = 1024 + randomIntBetween(0, 64);
+        int[] av = new int[positions];
+        for (int p = 0; p < positions; p++) {
+            av[p] = randomIntBetween(-360, 360);
+        }
+        Block[] inputs = { blockFactory.newIntArrayVector(av, positions).asBlock() };
+        runDifferential(fused, unfused, ElementKind.DOUBLE, inputs, positions, "sin(intCol) cast+function compose");
+    }
+
+    /**
+     * A pure-java.base math tree ({@code hypot(sin(a), cos(b))}, none overflow-checked) over dense double columns
+     * compiles the PLAIN-vector fast path — proving the Tier-A math kernels (Sin/Cos/Hypot) VECTORIZE, not just fuse —
+     * and matches the unfused chain position-by-position.
+     */
+    public void testMathPlainVectorMatchesUnfused() {
+        FieldAttribute a = field("a", DataType.DOUBLE);
+        FieldAttribute b = field("b", DataType.DOUBLE);
+        Layout layout = layout(a, b);
+        Expression expr = new Hypot(Source.EMPTY, new Sin(Source.EMPTY, a), new Cos(Source.EMPTY, b));
+
+        ExpressionEvaluator.Factory fusedFactory = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfusedFactory = unfusedFactory(expr, layout);
+        FusedExpressionEvaluatorFactory fused = assertFuses(fusedFactory, "hypot(sin(a), cos(b)) plain vector");
+        assertThat(
+            "hypot(sin,cos) has no overflow-checked kernel -> plain vector",
+            fused.vectorStrategy(),
+            is(VectorStrategy.PLAIN_VECTOR)
+        );
+        assertDoesNotFuse(unfusedFactory, "hypot(sin(a), cos(b)) kill switch OFF");
+
+        int positions = 1024 + randomIntBetween(0, 64);
+        double[] av = new double[positions];
+        double[] bv = new double[positions];
+        for (int p = 0; p < positions; p++) {
+            av[p] = randomDoubleBetween(-10, 10, true);
+            bv[p] = randomDoubleBetween(-10, 10, true);
+        }
+        Block[] inputs = {
+            blockFactory.newDoubleArrayVector(av, positions).asBlock(),
+            blockFactory.newDoubleArrayVector(bv, positions).asBlock() };
+        runDifferential(fusedFactory, unfusedFactory, ElementKind.DOUBLE, inputs, positions, "hypot(sin(a), cos(b)) plain vector");
+    }
+
+    /**
+     * DETERMINISTIC {@code Sqrt} negative-domain error: {@code sqrt(a) + b} over doubles nulls + warns at every
+     * position where {@code a < 0} ({@code Sqrt.process} throws {@code ArithmeticException}), in BOTH the fused
+     * checked-vector path and the unfused chain. Asserts the fused result is null at exactly the negative positions,
+     * matches the unfused values/nulls, and that the fused path ITSELF emits the "Square root of negative" warning
+     * (parity, not just subset).
+     */
+    public void testSqrtNegativeDomainErrorMatchesUnfused() {
+        FieldAttribute a = field("a", DataType.DOUBLE);
+        FieldAttribute b = field("b", DataType.DOUBLE);
+        Layout layout = layout(a, b);
+        Expression expr = new Add(Source.EMPTY, new Sqrt(Source.EMPTY, a), b, EsqlTestUtils.TEST_CFG);
+
+        double[] av = { 4.0, -1.0, 9.0, -4.0, 0.0 }; // negative at 1 and 3 => sqrt throws => null + warning
+        double[] bv = { 1.0, 2.0, 3.0, 4.0, 5.0 };
+        int positions = av.length;
+        Block[] inputs = {
+            blockFactory.newDoubleArrayVector(av, positions).asBlock(),
+            blockFactory.newDoubleArrayVector(bv, positions).asBlock() };
+        DifferentialWarnings warnings = assertMathDomainError(expr, layout, inputs, positions, Set.of(1, 3), "sqrt(a)+b negative-domain");
+        assertThat(
+            "the unfused chain must warn on the negative sqrt",
+            containsWarning(warnings.reference(), "Square root of negative"),
+            is(true)
+        );
+        assertFusedEmitsWarning(warnings.fused(), "Square root of negative", "sqrt(a)+b negative-domain");
+    }
+
+    /**
+     * DETERMINISTIC {@code Log} non-positive-domain error: {@code log(a) * b} over doubles nulls + warns at every
+     * position where {@code a <= 0} ({@code Log.process} throws {@code ArithmeticException}), in BOTH paths. Same
+     * guarantees as {@link #testSqrtNegativeDomainErrorMatchesUnfused} for the "Log of non-positive number" warning.
+     */
+    public void testLogNonPositiveDomainErrorMatchesUnfused() {
+        FieldAttribute a = field("a", DataType.DOUBLE);
+        FieldAttribute b = field("b", DataType.DOUBLE);
+        Layout layout = layout(a, b);
+        Expression expr = new Mul(Source.EMPTY, new Log(Source.EMPTY, a, null), b);
+
+        double[] av = { Math.E, -2.0, 1.0, 0.0, 10.0 }; // <= 0 at 1 and 3 => log throws => null + warning
+        double[] bv = { 1.0, 2.0, 3.0, 4.0, 5.0 };
+        int positions = av.length;
+        Block[] inputs = {
+            blockFactory.newDoubleArrayVector(av, positions).asBlock(),
+            blockFactory.newDoubleArrayVector(bv, positions).asBlock() };
+        DifferentialWarnings warnings = assertMathDomainError(
+            expr,
+            layout,
+            inputs,
+            positions,
+            Set.of(1, 3),
+            "log(a)*b non-positive-domain"
+        );
+        assertThat(
+            "the unfused chain must warn on the non-positive log",
+            containsWarning(warnings.reference(), "Log of non-positive number"),
+            is(true)
+        );
+        assertFusedEmitsWarning(warnings.fused(), "Log of non-positive number", "log(a)*b non-positive-domain");
+    }
+
+    /**
+     * DETERMINISTIC {@code Pow} overflow: {@code pow(a, b) + c} over doubles nulls + warns at the position where the
+     * result overflows to {@code Infinity} ({@code NumericUtils.asFiniteNumber} throws {@code ArithmeticException}), in
+     * BOTH paths. Proves the {@code Pow}/{@code NumericUtils} kernel — a non-java.base callee — takes the checked-vector
+     * path (iter-22) and its overflow nulls+warns identically to the unfused chain.
+     */
+    public void testPowOverflowMatchesUnfused() {
+        FieldAttribute a = field("a", DataType.DOUBLE);
+        FieldAttribute b = field("b", DataType.DOUBLE);
+        FieldAttribute c = field("c", DataType.DOUBLE);
+        Layout layout = layout(a, b, c);
+        Expression expr = new Add(Source.EMPTY, new Pow(Source.EMPTY, a, b), c, EsqlTestUtils.TEST_CFG);
+
+        double[] av = { 2.0, 10.0, 3.0, 5.0 };
+        double[] bv = { 3.0, 400.0, 2.0, 2.0 }; // 10^400 overflows to +Inf at position 1 => asFiniteNumber throws
+        double[] cv = { 1.0, 1.0, 1.0, 1.0 };
+        int positions = av.length;
+        Block[] inputs = {
+            blockFactory.newDoubleArrayVector(av, positions).asBlock(),
+            blockFactory.newDoubleArrayVector(bv, positions).asBlock(),
+            blockFactory.newDoubleArrayVector(cv, positions).asBlock() };
+        DifferentialWarnings warnings = assertMathDomainError(expr, layout, inputs, positions, Set.of(1), "pow(a,b)+c overflow");
+        assertThat(
+            "the unfused chain must warn on the pow overflow",
+            containsWarning(warnings.reference(), "not a finite double number"),
+            is(true)
+        );
+        assertFusedEmitsWarning(warnings.fused(), "not a finite double number", "pow(a,b)+c overflow");
+    }
+
+    /**
+     * Asserts a DOUBLE math tree {@code expr} fuses, that its fused result is null at exactly {@code expectedNull}
+     * (where the math kernel threw), matches the unfused chain in values + null positions, and returns BOTH warning
+     * lists so the caller can assert the fused path itself emitted the domain-error warning (parity).
+     */
+    private DifferentialWarnings assertMathDomainError(
+        Expression expr,
+        Layout layout,
+        Block[] inputs,
+        int positions,
+        Set<Integer> expectedNull,
+        String ctx
+    ) {
+        ExpressionEvaluator.Factory fusedFactory = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfusedFactory = unfusedFactory(expr, layout);
+        assertFuses(fusedFactory, ctx);
+        assertDoesNotFuse(unfusedFactory, ctx + " kill switch OFF");
+
+        ExpressionEvaluator fused = fusedFactory.get(driverContext);
+        ExpressionEvaluator reference = unfusedFactory.get(driverContext);
+        Page page = null;
+        Block fusedResult = null;
+        Block referenceResult = null;
+        try {
+            page = new Page(positions, inputs);
+            drainWarnings();
+            fusedResult = fused.eval(page);
+            List<String> fusedWarnings = drainWarnings();
+            referenceResult = reference.eval(page);
+            List<String> referenceWarnings = drainWarnings();
+
+            for (int p = 0; p < positions; p++) {
+                assertThat(ctx + " fused null@" + p, fusedResult.isNull(p), is(expectedNull.contains(p)));
+            }
+            assertResultsEqual(ElementKind.DOUBLE, fusedResult, referenceResult, positions, ctx);
+            assertWarningsSubset(fusedWarnings, referenceWarnings, ctx);
+            return new DifferentialWarnings(fusedWarnings, referenceWarnings);
+        } finally {
+            Releasables.closeExpectNoException(fusedResult, referenceResult, fused, reference);
+            if (page != null) {
+                page.releaseBlocks();
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
     // Core sweep: generate a valid fusable tree, build both evaluators through the real kill switch, differential-compare
     // ---------------------------------------------------------------------------------------------------------------
 
@@ -1363,6 +1642,9 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
                 case ARITHMETIC -> genNumeric(numericPalette, 2, randomIntBetween(2, 4), element, cols, usedSet);
                 case COMPARISON -> genComparisonRoot(numericPalette, element, cols, usedSet);
                 case LOGICAL -> genLogicalRoot(randomIntBetween(2, 3), element, cols, usedSet);
+                // MATH is a template FAMILY, not a sweep root: math functions are numeric-in/numeric-out kernels wired
+                // UNDER the ARITHMETIC/COMPARISON roots (via the ARITH_AND_MATH palette), never a root category here.
+                case MATH -> throw new AssertionError("MATH is not a sweep root; math templates are swept under ARITHMETIC/COMPARISON");
             };
             int[] referenced = toArray(usedSet);
 
@@ -1392,6 +1674,8 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
             case ARITHMETIC -> randomIntBetween(1, 4);
             case COMPARISON -> randomIntBetween(2, 4);
             case LOGICAL -> randomIntBetween(4, 6);
+            // MATH is never a sweep root (math templates are wired under ARITHMETIC/COMPARISON), so column-count is n/a.
+            case MATH -> throw new AssertionError("MATH is not a sweep root; math templates are swept under ARITHMETIC/COMPARISON");
         };
     }
 
@@ -1541,6 +1825,8 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
         assertThat("unary arithmetic palette is non-empty", ARITH_UNARY.isEmpty(), is(false));
         assertThat("comparison palette is non-empty", COMPARISONS.isEmpty(), is(false));
         assertThat("logical palette is non-empty", LOGICALS.isEmpty(), is(false));
+        assertThat("math-function palette is non-empty", MATH_FUNCS.isEmpty(), is(false));
+        assertThat("arith+math palette includes the math functions", ARITH_AND_MATH.containsAll(MATH_FUNCS), is(true));
         List<String> problems = new ArrayList<>();
         for (OpTemplate t : TEMPLATES) {
             if (t.arity < 1 || t.arity > 2) {
@@ -1561,6 +1847,8 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
                 case ARITHMETIC -> built instanceof EsqlArithmeticOperation || built instanceof Neg || built instanceof Abs;
                 case COMPARISON -> built instanceof EsqlBinaryComparison;
                 case LOGICAL -> built instanceof BinaryLogic;
+                // A math function is a scalar EsqlScalarFunction (not an arithmetic operator) that returns a double.
+                case MATH -> built instanceof EsqlScalarFunction && built.dataType() == DataType.DOUBLE;
             };
             if (categoryOk == false) {
                 problems.add(t.name + " built a " + built.getClass().getSimpleName() + " that does not match category " + t.category);

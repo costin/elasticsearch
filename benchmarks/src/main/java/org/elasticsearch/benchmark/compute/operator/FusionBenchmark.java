@@ -33,6 +33,8 @@ import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.core.type.EsField;
 import org.elasticsearch.xpack.esql.evaluator.EvalMapper;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
+import org.elasticsearch.xpack.esql.expression.function.scalar.math.Log;
+import org.elasticsearch.xpack.esql.expression.function.scalar.math.Sqrt;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
@@ -312,6 +314,67 @@ public class FusionBenchmark {
                     }
                 }
             }
+        },
+        /**
+         * {@code sqrt(a) + b} over double columns (iter 26): a scalar math function ({@code (D)D} java.base kernel)
+         * under an overflow-checked {@code Add}. {@code a} is kept strictly positive so {@code Sqrt} never hits its
+         * negative-domain error, and the whole tree takes the checked-vector fast path (iter-22 VectorUnsafe lets the
+         * throwing math kernel still vectorize).
+         */
+        SQRT_ADD_DOUBLE("sqrt_add_double") {
+            @Override
+            Built build() {
+                FieldAttribute a = doubleField("a"), b = doubleField("b");
+                Expression expr = new Add(Source.EMPTY, new Sqrt(Source.EMPTY, a), b, configuration());
+                return new Built(expr, layout(a, b));
+            }
+
+            @Override
+            Page page(BlockFactory bf, int size) {
+                return new Page(doubleVector(bf, size, FusionBenchmark::mathA), doubleVector(bf, size, FusionBenchmark::b));
+            }
+
+            @Override
+            void checkExpected(Block out, int size) {
+                DoubleBlock r = (DoubleBlock) out;
+                for (int i = 0; i < size; i++) {
+                    double expected = Math.sqrt(mathA(i)) + (double) b(i);
+                    double actual = r.getDouble(r.getFirstValueIndex(i));
+                    if (Double.doubleToLongBits(actual) != Double.doubleToLongBits(expected)) {
+                        throw new AssertionError("[" + this + "] @" + i + " expected [" + expected + "] but was [" + actual + "]");
+                    }
+                }
+            }
+        },
+        /**
+         * {@code log(a) * b} over double columns (iter 26): the natural-log {@code (D)D} java.base kernel under an
+         * overflow-checked {@code Mul}. {@code a} is kept strictly positive so {@code Log} never hits its
+         * non-positive-domain error; the tree takes the checked-vector fast path.
+         */
+        LOG_MUL_DOUBLE("log_mul_double") {
+            @Override
+            Built build() {
+                FieldAttribute a = doubleField("a"), b = doubleField("b");
+                Expression expr = new Mul(Source.EMPTY, new Log(Source.EMPTY, a, null), b);
+                return new Built(expr, layout(a, b));
+            }
+
+            @Override
+            Page page(BlockFactory bf, int size) {
+                return new Page(doubleVector(bf, size, FusionBenchmark::mathA), doubleVector(bf, size, FusionBenchmark::b));
+            }
+
+            @Override
+            void checkExpected(Block out, int size) {
+                DoubleBlock r = (DoubleBlock) out;
+                for (int i = 0; i < size; i++) {
+                    double expected = Math.log(mathA(i)) * (double) b(i);
+                    double actual = r.getDouble(r.getFirstValueIndex(i));
+                    if (Double.doubleToLongBits(actual) != Double.doubleToLongBits(expected)) {
+                        throw new AssertionError("[" + this + "] @" + i + " expected [" + expected + "] but was [" + actual + "]");
+                    }
+                }
+            }
         };
 
         private final String id;
@@ -512,6 +575,12 @@ public class FusionBenchmark {
 
     private static long d(int i) {
         return i % 7;
+    }
+
+    // Strictly-positive generator for the math-function benchmarks (iter 26): keeps sqrt(a)/log(a) inside their domain
+    // so the dense fast path stays warning-free and checkExpected can compute exact expected values.
+    private static long mathA(int i) {
+        return (i % 1000) + 1;
     }
 
     // Comparison generators: overlapping magnitudes so (a + b) > c is a real mix of true/false.

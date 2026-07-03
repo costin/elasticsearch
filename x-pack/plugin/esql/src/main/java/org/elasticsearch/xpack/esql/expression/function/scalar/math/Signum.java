@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.expression.function.scalar.math;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.EsqlIllegalArgumentException;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
@@ -100,6 +101,9 @@ public class Signum extends UnaryScalarFunction {
         return DataType.DOUBLE;
     }
 
+    // overflowChecked = false: Math.signum on a double is total (never throws; NaN maps to NaN). Only the double
+    // (D)D kernel is fusable; the int/long variants return a double from a differently-typed argument (out of scope).
+    @Fusable(overflowChecked = false)
     @Evaluator(extraName = "Double")
     static double process(double val) {
         return Math.signum(val);
