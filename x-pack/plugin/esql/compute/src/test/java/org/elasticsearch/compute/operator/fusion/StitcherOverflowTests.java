@@ -250,8 +250,9 @@ public class StitcherOverflowTests extends ESTestCase {
     public void testCheckedVectorPathOverflowProducesNullsAndWarnings() throws Throwable {
         FusionNode tree = addThenMulTree();
         Class<?> fused = stitcher.compileVectorLoopChecked(MethodHandles.lookup(), tree);
-        // The checked vector path reads rawValues(), so it is defined into the effective compute.data package.
-        assertThat(fused.getPackageName(), equalTo("org.elasticsearch.compute.data"));
+        // The checked vector path reads backing arrays via the public VectorUnsafe forwarder (no teleport), so the
+        // hidden class is defined into the caller's own package.
+        assertThat(fused.getPackageName(), equalTo(getClass().getPackageName()));
         MethodType type = MethodType.methodType(
             LongBlock.class,
             BlockFactory.class,

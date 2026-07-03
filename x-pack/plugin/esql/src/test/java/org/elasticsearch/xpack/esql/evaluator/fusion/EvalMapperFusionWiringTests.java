@@ -67,9 +67,11 @@ import static org.hamcrest.Matchers.not;
  *   <li><b>non-fusable</b> ({@code (a + 5) * c}, a literal leaf): the unfused path is taken;</li>
  *   <li><b>forced fallback</b>: a test-injected stitch failure makes the query complete via the unfused path with the
  *       failure counter incremented;</li>
- *   <li><b>overflow-checked double</b> {@code (a + b) * c}: the fused factory does <b>not</b> take the checked-vector
- *       path (its {@link VectorStrategy} is {@link VectorStrategy#NONE}), proving the hard gate, and still computes
- *       correctly via the block path.</li>
+ *   <li><b>overflow-checked double</b> {@code (a + b) * c}: the fused factory now <b>does</b> take the checked-vector
+ *       path (its {@link VectorStrategy} is {@link VectorStrategy#CHECKED_VECTOR}) — the old {@code double}+overflow
+ *       hard gate is gone because the fused class is defined in this caller module and reaches the backing array via
+ *       the public {@code VectorUnsafe} forwarder, so {@code NumericUtils} links on the vector path — and it computes
+ *       correctly, matching the unfused chain.</li>
  * </ol>
  */
 public class EvalMapperFusionWiringTests extends ESTestCase {
@@ -304,8 +306,10 @@ public class EvalMapperFusionWiringTests extends ESTestCase {
         }
     }
 
-    // (d) The overflow-checked double tree must NOT route through the checked-vector path (hard gate), and still works.
-    public void testOverflowCheckedDoubleDoesNotUseCheckedVectorPath() {
+    // (d) The overflow-checked double tree now routes through the checked-vector path (the old hard gate is gone), and
+    // still matches the unfused chain. NumericUtils.asFiniteNumber links because the fused class is defined in this
+    // caller module and reads the backing array through the public VectorUnsafe forwarder.
+    public void testOverflowCheckedDoubleUsesCheckedVectorPath() {
         FieldAttribute a = field("a", DataType.DOUBLE);
         FieldAttribute b = field("b", DataType.DOUBLE);
         FieldAttribute c = field("c", DataType.DOUBLE);
@@ -314,11 +318,11 @@ public class EvalMapperFusionWiringTests extends ESTestCase {
         Expression expr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
         ExpressionEvaluator.Factory factory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
         assertThat(factory, instanceOf(FusedExpressionEvaluatorFactory.class));
-        // HARD GATE: overflow-checked double kernels can never take the compute.data-teleported checked-vector path.
+        // The double+overflow tree now takes the checked-vector fast path (defined in this caller module).
         assertThat(
-            "double + overflow must not use the checked-vector path",
+            "double + overflow now uses the checked-vector path",
             ((FusedExpressionEvaluatorFactory) factory).vectorStrategy(),
-            is(VectorStrategy.NONE)
+            is(VectorStrategy.CHECKED_VECTOR)
         );
 
         ExpressionEvaluator.Factory unfused = ((FusedExpressionEvaluatorFactory) factory).unfusedFactory();

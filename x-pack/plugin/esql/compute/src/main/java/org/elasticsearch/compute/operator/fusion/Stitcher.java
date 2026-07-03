@@ -7,7 +7,6 @@
 
 package org.elasticsearch.compute.operator.fusion;
 
-import org.elasticsearch.compute.data.LongArrayVector;
 import org.elasticsearch.compute.operator.fusion.BodyExtractor.Body;
 import org.elasticsearch.logging.LogManager;
 import org.elasticsearch.logging.Logger;
@@ -50,10 +49,11 @@ import java.util.function.Consumer;
  * lookup could not link those targets ({@code IllegalAccessError}/{@code NoClassDefFoundError} at link time).
  * Therefore {@link #compile} takes the <b>caller's</b> {@code Lookup} (from the module that owns the kernels,
  * i.e. esql-proper) and defines the fused class there, so every call the kernel bodies make resolves against a
- * module that can read them. When later stages need package-private access into another package (e.g.
- * {@code compute.data} for {@code rawValues()}), the caller — or this class — will teleport via
- * {@link MethodHandles#privateLookupIn} before defining; depth-1 arithmetic kernels need no such teleport
- * because they only call public targets.
+ * module that can read them. All emit shapes — block, plain-vector and checked-vector — define into the caller's
+ * own module: the vector paths reach a dense {@code *ArrayVector}'s package-private backing array through the public
+ * exported {@link org.elasticsearch.compute.data.VectorUnsafe} forwarder (a plain {@code INVOKESTATIC}), so no
+ * {@code privateLookupIn(compute.data, ...)} teleport is ever needed and every path can link non-{@code java.base}
+ * kernel callees.
  *
  * <p><b>Depth-1 scope.</b> This iteration stitches a single kernel. The seam is post-order-ready for real
  * expression trees (iter 10): fetch the kernel {@link MethodNode} from the {@link TemplateRegistry}, lift its
@@ -221,6 +221,15 @@ public final class Stitcher {
     private static final String BLOCK_FACTORY = "org/elasticsearch/compute/data/BlockFactory";
 
     /**
+     * Internal name of {@code org.elasticsearch.compute.data.VectorUnsafe}, the public static seam through which the
+     * fused vector loops read a dense {@code *ArrayVector}'s backing array. The emitted {@code INVOKESTATIC} to it
+     * (rather than the package-private {@code INVOKEVIRTUAL rawValues()}) is what lets the vector-loop hidden class be
+     * defined in the <b>caller's</b> module — unifying the lookup with the block path and letting non-{@code java.base}
+     * kernels (e.g. {@code NumericUtils}) link on the vector path.
+     */
+    private static final String VECTOR_UNSAFE = "org/elasticsearch/compute/data/VectorUnsafe";
+
+    /**
      * Internal name of the {@code compute.data} {@code Vector} base type. The fused method receives its inputs as
      * this common interface and narrows each once — outside the loop — to the concrete {@code *ArrayVector}
      * whose {@code rawValues()} it reads (JIT criterion #6: no per-position {@code checkcast}).
@@ -280,9 +289,9 @@ public final class Stitcher {
      * method has the shape
      * <pre>{@code
      * static LongVector fused(BlockFactory bf, int positionCount, Vector in0, Vector in1, Vector in2) {
-     *     long[] a0 = ((LongArrayVector) in0).rawValues();   // cast + read once, outside the loop
-     *     long[] a1 = ((LongArrayVector) in1).rawValues();
-     *     long[] a2 = ((LongArrayVector) in2).rawValues();
+     *     long[] a0 = VectorUnsafe.longs((LongArrayVector) in0);   // cast + read once, outside the loop
+     *     long[] a1 = VectorUnsafe.longs((LongArrayVector) in1);
+     *     long[] a2 = VectorUnsafe.longs((LongArrayVector) in2);
      *     long[] out = new long[positionCount];
      *     for (int p = 0; p < positionCount; p++) {
      *         out[p] = (a0[p] + a1[p]) * a2[p];              // stitched kernel bodies, inline
@@ -296,14 +305,15 @@ public final class Stitcher {
      * position). For a tree with overflow-checked kernels the caller must use {@link #compileVectorLoopChecked},
      * which appends through a builder and turns an overflow into a null + warning like the unfused evaluator.
      *
-     * <p><b>Binding rule #2 — {@code rawValues()} access.</b> {@code rawValues()} is package-private in
-     * {@code org.elasticsearch.compute.data}. For the fused body to call it, the hidden class must live in that
-     * effective runtime package. This method teleports the caller's {@link MethodHandles.Lookup} into
-     * {@code compute.data} via {@link MethodHandles#privateLookupIn(Class, MethodHandles.Lookup)} anchored on
-     * {@link LongArrayVector} (a {@code compute.data} class) and defines the hidden class there, so the emitted
-     * {@code INVOKEVIRTUAL rawValues} and the {@code BlockFactory} factory calls all link with package access. The
-     * caller-provided-{@code Lookup} contract from iter 9 is preserved: the caller still supplies the seed lookup;
-     * this method only narrows it to the data package.
+     * <p><b>Backing-array access via {@code VectorUnsafe} (no teleport).</b> {@code rawValues()} is package-private in
+     * {@code org.elasticsearch.compute.data}, so the fused body cannot call it directly from another module. Rather
+     * than teleport the hidden class into {@code compute.data} (which then could not link non-{@code java.base} kernel
+     * callees), the emitter reads each input's backing array through the <b>public exported</b>
+     * {@link org.elasticsearch.compute.data.VectorUnsafe} forwarder with a plain {@code INVOKESTATIC}. Every symbol the
+     * fused method touches ({@code VectorUnsafe}, {@code BlockFactory}, the kernel bodies' call targets) is therefore
+     * resolvable from the <b>caller's</b> own module, so this method defines the hidden class directly with the
+     * caller's {@link MethodHandles.Lookup} — exactly as {@link #compileBlockLoop} does. This unifies the block and
+     * vector lookup and lets the vector path fuse esql-proper/esql-core kernels (e.g. {@code NumericUtils}).
      *
      * <p><b>Tree walk &amp; slot allocation.</b> The tree is emitted post-order. Each {@link FusionNode.Kernel}
      * node is assigned a <em>disjoint</em> local-slot range starting at a running base; the next node's base is
@@ -313,29 +323,22 @@ public final class Stitcher {
      * parent kernel's (shifted) argument slot immediately before the parent body runs — so no per-node result slot
      * is needed and the disjoint ranges guarantee a child's evaluation never clobbers a sibling's stored argument.
      *
-     * @param caller the seed lookup (from the module that owns the kernels); narrowed into {@code compute.data}
+     * @param caller the caller's lookup (from the module that owns the kernels); the fused class is defined here
      * @param tree   the expression tree to fuse; all inputs are homogeneous primitive {@code *ArrayVector}s
      * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME}
-     * @throws StitchingException if the caller cannot be teleported into {@code compute.data}, or the emitted class
+     * @throws StitchingException if the caller lacks the access to define the hidden class, or the emitted class
      *                            fails JVM verification/linking — the caller should fall back to the unfused path
      */
     public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        MethodHandles.Lookup dataLookup;
+        byte[] bytecode = emitVectorLoop(caller, tree);
         try {
-            dataLookup = MethodHandles.privateLookupIn(LongArrayVector.class, caller);
-        } catch (IllegalAccessException e) {
-            logger.warn("caller lookup [{}] cannot be teleported into compute.data; falling back to unfused", caller, e);
-            throw new StitchingException("caller lookup cannot access compute.data for fused vector loop", e);
-        }
-        byte[] bytecode = emitVectorLoop(dataLookup, tree);
-        try {
-            return dataLookup.defineHiddenClass(bytecode, true).lookupClass();
+            return caller.defineHiddenClass(bytecode, true).lookupClass();
         } catch (LinkageError e) {
             logger.warn("fused vector loop failed to link; falling back to unfused", e);
             throw new StitchingException("failed to define fused vector-loop class", e);
         } catch (IllegalAccessException e) {
-            logger.warn("data lookup [{}] cannot define fused vector-loop class; falling back to unfused", dataLookup, e);
-            throw new StitchingException("data lookup cannot define fused vector-loop class", e);
+            logger.warn("caller lookup [{}] cannot define fused vector-loop class; falling back to unfused", caller, e);
+            throw new StitchingException("caller lookup cannot define fused vector-loop class", e);
         }
     }
 
@@ -344,7 +347,7 @@ public final class Stitcher {
      * verification boundary is exactly the {@code defineHiddenClass} call — everything here is pure ASM tree
      * manipulation on cloned kernel bodies.
      */
-    private byte[] emitVectorLoop(MethodHandles.Lookup dataLookup, FusionNode tree) throws StitchingException {
+    private byte[] emitVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         int arity = arity(tree);
         // INPUT element (leaf raw-array reads) vs OUTPUT element (the output array + produced vector). They coincide for
         // an arithmetic root and differ for a comparison root, whose numeric inputs feed a boolean output.
@@ -376,16 +379,18 @@ public final class Stitcher {
         );
         InsnList insns = host.instructions;
 
-        // Cast each input to its concrete *ArrayVector ONCE and read rawValues() into a local array (JIT #6).
+        // Cast each input to its concrete *ArrayVector ONCE and read its backing array into a local (JIT #6). The
+        // array is fetched through the public VectorUnsafe forwarder (INVOKESTATIC) rather than the package-private
+        // rawValues() (INVOKEVIRTUAL), so this hidden class can be defined in the caller's own module.
         for (int i = 0; i < arity; i++) {
             insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
             insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
             insns.add(
                 new MethodInsnNode(
-                    Opcodes.INVOKEVIRTUAL,
-                    inputElement.arrayVectorInternalName(),
-                    "rawValues",
-                    inputElement.rawValuesDescriptor(),
+                    Opcodes.INVOKESTATIC,
+                    VECTOR_UNSAFE,
+                    inputElement.vectorUnsafeMethod(),
+                    inputElement.vectorUnsafeDescriptor(),
                     false
                 )
             );
@@ -444,15 +449,16 @@ public final class Stitcher {
         ClassNode classNode = new ClassNode(Opcodes.ASM9);
         classNode.version = Opcodes.V21;
         classNode.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER;
-        classNode.name = dataLookup.lookupClass().getPackageName().replace('.', '/') + "/Fused$$VectorLoop";
+        classNode.name = caller.lookupClass().getPackageName().replace('.', '/') + "/Fused$$VectorLoop";
         classNode.superName = "java/lang/Object";
         classNode.methods.add(host);
 
-        ClassLoader loader = dataLookup.lookupClass().getClassLoader();
+        ClassLoader loader = caller.lookupClass().getClassLoader();
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
             // The loop is control flow, so COMPUTE_FRAMES may need a common-superclass lookup at the back-edge
-            // join. Resolve against the compute.data class loader (which can see the vector types) rather than
-            // ASM's own; our joins never actually merge incompatible reference types, so this is only a safety net.
+            // join. Resolve against the caller's class loader (which can see both the compute vector types and the
+            // kernel callees) rather than ASM's own; our joins never actually merge incompatible reference types, so
+            // this is only a safety net.
             @Override
             protected ClassLoader getClassLoader() {
                 return loader != null ? loader : super.getClassLoader();
@@ -464,7 +470,7 @@ public final class Stitcher {
     /**
      * Overflow-aware counterpart to {@link #compileVectorLoop}: fuses a tree of no-null single-valued primitive
      * {@code *ArrayVector} inputs whose kernels are <b>overflow-checked</b> into a single counted loop that reads
-     * each input's {@code rawValues()} array (the same fast, guard-free read as the plain vector path) but writes
+     * each input's backing array (the same fast, guard-free read as the plain vector path) but writes
      * through a {@code *Block.Builder} so an overflowing position can become {@code null}. This is the "nulls-capable
      * output" the plain array-vector fast path cannot provide: an {@code ArrayVector} has no null bitmask, whereas
      * the unfused vector-path evaluator (e.g. {@code AddLongsEvaluator.eval(int, LongVector, LongVector)}) already
@@ -472,8 +478,8 @@ public final class Stitcher {
      * emitted {@link #FUSED_METHOD_NAME} has the shape
      * <pre>{@code
      * static LongBlock fused(BlockFactory bf, Warnings warnings, int positionCount, Vector in0, Vector in1) {
-     *     long[] a0 = ((LongArrayVector) in0).rawValues();
-     *     long[] a1 = ((LongArrayVector) in1).rawValues();
+     *     long[] a0 = VectorUnsafe.longs((LongArrayVector) in0);
+     *     long[] a1 = VectorUnsafe.longs((LongArrayVector) in1);
      *     LongBlock.Builder out = bf.newLongBlockBuilder(positionCount);
      *     try {
      *         for (int p = 0; p < positionCount; p++) {
@@ -486,43 +492,33 @@ public final class Stitcher {
      * }
      * }</pre>
      *
-     * <p><b>Vector-path double linkage asymmetry (iter-11 carry-forward; note for the iter-13 caller).</b> Like
-     * {@link #compileVectorLoop}, this path calls the package-private {@code rawValues()} accessor, so the hidden
-     * class must be defined into the effective {@code compute.data} package via
-     * {@link MethodHandles#privateLookupIn(Class, MethodHandles.Lookup)}. A hidden class defined there links only
-     * against modules {@code compute} can read. For {@code long}/{@code int} overflow kernels (whose bodies call
-     * only {@code java.base}'s {@code Math.*Exact}) that is fine. But a {@code double} overflow kernel body calls
-     * {@code NumericUtils.asFiniteNumber} in {@code org.elasticsearch.xpack.esql.core}, which {@code compute.data}
-     * cannot see — so {@code defineHiddenClass} fails with a {@code LinkageError} that this method converts to a
-     * {@link StitchingException} (clean fallback, no crash). <b>The iter-13 caller must therefore route
-     * overflow-checked {@code double} trees through {@link #compileBlockLoop} (which defines into the caller's own
-     * module and links {@code NumericUtils}) or the unfused chain, not through this vector path.</b>
+     * <p><b>Backing-array access via {@code VectorUnsafe} (no teleport; {@code double} now links).</b> Like
+     * {@link #compileVectorLoop}, this path reads each input's backing array through the public exported
+     * {@link org.elasticsearch.compute.data.VectorUnsafe} forwarder ({@code INVOKESTATIC}) rather than the
+     * package-private {@code rawValues()}, so the hidden class is defined with the <b>caller's</b> own
+     * {@link MethodHandles.Lookup} (the module that owns the kernels), not teleported into {@code compute.data}. That
+     * caller module reads both {@code compute} (for the vector/block API) and the kernel modules, so a {@code double}
+     * overflow kernel body's {@code NumericUtils.asFiniteNumber} call (in {@code org.elasticsearch.xpack.esql.core})
+     * links here just as it does on {@link #compileBlockLoop}. This removes the previous {@code double}+overflow hard
+     * gate: overflow-checked {@code double} trees may now use this checked-vector fast path.
      *
-     * @param caller the seed lookup (from the module that owns the kernels); narrowed into {@code compute.data}
+     * @param caller the caller's lookup (from the module that owns the kernels); the fused class is defined here
      * @param tree   the expression tree to fuse; all inputs are homogeneous no-null single-valued {@code *ArrayVector}s
      * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME}
-     * @throws StitchingException if the caller cannot be teleported into {@code compute.data}, or the emitted class
-     *                            fails JVM verification/linking (e.g. a {@code double} kernel's non-{@code java.base}
-     *                            callee) — the caller should fall back to the block path or unfused chain
+     * @throws StitchingException if the caller lacks the access to define the hidden class, or the emitted class
+     *                            fails JVM verification/linking — the caller should fall back to the block path or
+     *                            unfused chain
      */
     public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        MethodHandles.Lookup dataLookup;
+        byte[] bytecode = emitVectorLoopChecked(caller, tree);
         try {
-            dataLookup = MethodHandles.privateLookupIn(LongArrayVector.class, caller);
-        } catch (IllegalAccessException e) {
-            logger.warn("caller lookup [{}] cannot be teleported into compute.data; falling back to unfused", caller, e);
-            throw new StitchingException("caller lookup cannot access compute.data for fused checked vector loop", e);
-        }
-        byte[] bytecode = emitVectorLoopChecked(dataLookup, tree);
-        try {
-            return dataLookup.defineHiddenClass(bytecode, true).lookupClass();
+            return caller.defineHiddenClass(bytecode, true).lookupClass();
         } catch (LinkageError e) {
-            // A double kernel body's non-java.base callee (NumericUtils.asFiniteNumber) cannot link in compute.data.
             logger.warn("fused checked vector loop failed to link; falling back to unfused", e);
             throw new StitchingException("failed to define fused checked vector-loop class", e);
         } catch (IllegalAccessException e) {
-            logger.warn("data lookup [{}] cannot define fused checked vector-loop class; falling back to unfused", dataLookup, e);
-            throw new StitchingException("data lookup cannot define fused checked vector-loop class", e);
+            logger.warn("caller lookup [{}] cannot define fused checked vector-loop class; falling back to unfused", caller, e);
+            throw new StitchingException("caller lookup cannot define fused checked vector-loop class", e);
         }
     }
 
@@ -531,7 +527,7 @@ public final class Stitcher {
      * per-position null/multi-value guard — a vector is dense and single-valued) but appends through a builder and
      * wraps the kernel evaluation in the overflow try/catch, so the only nulls it can produce are overflow nulls.
      */
-    private byte[] emitVectorLoopChecked(MethodHandles.Lookup dataLookup, FusionNode tree) throws StitchingException {
+    private byte[] emitVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         int arity = arity(tree);
         int[] consumed = consumedInputs(tree);
         // INPUT element (numeric raw-array reads + value slots) vs OUTPUT element (the builder + produced block).
@@ -578,16 +574,18 @@ public final class Stitcher {
         );
         InsnList insns = host.instructions;
 
-        // Cast each CONSUMED input to its concrete *ArrayVector ONCE and read rawValues() into a local array.
+        // Cast each CONSUMED input to its concrete *ArrayVector ONCE and read its backing array into a local. As in
+        // the plain vector loop, the array is fetched through the public VectorUnsafe forwarder (INVOKESTATIC) so this
+        // hidden class can be defined in the caller's own module and link non-java.base kernel callees.
         for (int i : consumed) {
             insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
             insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
             insns.add(
                 new MethodInsnNode(
-                    Opcodes.INVOKEVIRTUAL,
-                    inputElement.arrayVectorInternalName(),
-                    "rawValues",
-                    inputElement.rawValuesDescriptor(),
+                    Opcodes.INVOKESTATIC,
+                    VECTOR_UNSAFE,
+                    inputElement.vectorUnsafeMethod(),
+                    inputElement.vectorUnsafeDescriptor(),
                     false
                 )
             );
@@ -718,11 +716,11 @@ public final class Stitcher {
         ClassNode classNode = new ClassNode(Opcodes.ASM9);
         classNode.version = Opcodes.V21;
         classNode.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER;
-        classNode.name = dataLookup.lookupClass().getPackageName().replace('.', '/') + "/Fused$$CheckedVectorLoop";
+        classNode.name = caller.lookupClass().getPackageName().replace('.', '/') + "/Fused$$CheckedVectorLoop";
         classNode.superName = "java/lang/Object";
         classNode.methods.add(host);
 
-        ClassLoader loader = dataLookup.lookupClass().getClassLoader();
+        ClassLoader loader = caller.lookupClass().getClassLoader();
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
             @Override
             protected ClassLoader getClassLoader() {
@@ -856,17 +854,17 @@ public final class Stitcher {
      * of the builder-safety catch-all in the exception table so overflow is matched first and any other throwable
      * (e.g. a {@code CircuitBreakingException} from the builder) still closes the builder.
      *
-     * <p><b>Why no {@code privateLookupIn} teleport (unlike {@link #compileVectorLoop}).</b> The vector path calls
-     * the package-private {@code rawValues()} accessor and therefore must define its hidden class into the effective
-     * {@code compute.data} package. The block path, by contrast, touches only <b>public exported</b> API —
+     * <p><b>Defined in the caller's module (no teleport).</b> The block path touches only <b>public exported</b> API —
      * {@code BlockFactory.new*BlockBuilder}, {@code Block.getValueCount}/{@code getFirstValueIndex}, the typed
      * {@code *Block.get*}, the {@code *Block.Builder} appenders/{@code build}, and {@code Releasable.close}. So the
      * fused class is defined directly into the <b>caller's</b> own package/module (as {@link #compile} does for a
      * depth-1 kernel): the caller's module already reads {@code compute} (for the public block types) and the module
      * that owns the kernels (for the spliced kernel-body call targets, e.g. {@code NumericUtils.asFiniteNumber} in
-     * {@code Add.processDoubles}). This is precisely what lets an esql-proper caller fuse a non-{@code java.base}
-     * kernel over {@code *Block}s and link it — {@code compute.data} is <i>exported</i> but not <i>opened</i>, so a
-     * cross-module {@code privateLookupIn(compute.data, esqlLookup)} would have failed.
+     * {@code Add.processDoubles}). The vector paths ({@link #compileVectorLoop}/{@link #compileVectorLoopChecked}) now
+     * define into the caller's module too — they reach the package-private backing array through the public
+     * {@link org.elasticsearch.compute.data.VectorUnsafe} forwarder rather than teleporting into {@code compute.data}
+     * (which is <i>exported</i> but not <i>opened</i>, so a {@code privateLookupIn(compute.data, esqlLookup)} would
+     * have failed) — so all three paths share one caller-module lookup.
      *
      * <p><b>Failure surface (rule #5).</b> Any verification/linkage failure at {@code defineHiddenClass} is rethrown
      * as a {@link StitchingException} for the caller to fall back to the unfused chain.
@@ -2246,6 +2244,32 @@ public final class Stitcher {
         /** JVM type descriptor of the concrete {@code *Block}, e.g. {@code Lorg/.../LongBlock;}. */
         String blockDescriptor() {
             return "L" + blockInternalName + ";";
+        }
+
+        /**
+         * Name of the {@link org.elasticsearch.compute.data.VectorUnsafe} static forwarder that returns this element's
+         * backing array, e.g. {@code longs} for {@code long[]}. The fused vector loop calls it via {@code INVOKESTATIC}
+         * (instead of the package-private {@code INVOKEVIRTUAL rawValues()}), so the hidden class can be defined in the
+         * caller's own module rather than teleported into {@code compute.data}.
+         */
+        String vectorUnsafeMethod() {
+            return switch (type.getSort()) {
+                case Type.LONG -> "longs";
+                case Type.INT -> "ints";
+                case Type.DOUBLE -> "doubles";
+                case Type.BOOLEAN -> "booleans";
+                default -> throw new IllegalArgumentException("no VectorUnsafe accessor for element type: " + type.getClassName());
+            };
+        }
+
+        /**
+         * Descriptor of the {@link org.elasticsearch.compute.data.VectorUnsafe} forwarder for this element, e.g.
+         * {@code (Lorg/.../LongArrayVector;)[J}: it takes the concrete {@code *ArrayVector} (narrowed once by the
+         * emitted {@code CHECKCAST}) and returns the backing primitive array. Derived from {@link #rawValuesDescriptor}
+         * (a {@code ()[X}) by threading the {@code *ArrayVector} in as the sole argument.
+         */
+        String vectorUnsafeDescriptor() {
+            return "(L" + arrayVectorInternalName + ";)" + rawValuesDescriptor.substring(2);
         }
 
         /** JVM type descriptor of the concrete {@code *Block.Builder}, e.g. {@code Lorg/.../LongBlock$Builder;}. */

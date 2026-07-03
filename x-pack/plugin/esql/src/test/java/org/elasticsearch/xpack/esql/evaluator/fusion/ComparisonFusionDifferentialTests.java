@@ -86,11 +86,12 @@ import static org.hamcrest.Matchers.not;
  * <ul>
  *   <li><b>plain-vector</b> — a comparison over non-overflow {@code double} {@code Neg}/{@code Abs} children (e.g.
  *       {@code abs(a) > abs(b)}) is overflow-free, so the dense {@code BooleanVector}-output fast path is used;</li>
- *   <li><b>checked-vector</b> — a comparison over overflow-checked {@code long}/{@code int} arithmetic children (e.g.
- *       {@code a + b > c}) reads {@code rawValues()} but appends through a {@code BooleanBlock.Builder} so an
- *       overflow in a child nulls the position;</li>
- *   <li><b>block</b> — any tree with null/multi-value inputs, and every {@code double}+overflow tree (hard-gated off the
- *       vector path, keyed on the numeric CHILD element), runs the null/multi-value/overflow-tolerant block path.</li>
+ *   <li><b>checked-vector</b> — a comparison over overflow-checked arithmetic children of <b>any</b> numeric element
+ *       ({@code long}/{@code int}/{@code double}, e.g. {@code a + b > c}) reads each input's backing array via the
+ *       public {@code VectorUnsafe} forwarder but appends through a {@code BooleanBlock.Builder} so an overflow in a
+ *       child nulls the position; {@code double}+overflow is no longer hard-gated (the fused class links
+ *       {@code NumericUtils} from the caller module);</li>
+ *   <li><b>block</b> — any tree with null/multi-value inputs runs the null/multi-value/overflow-tolerant block path.</li>
  * </ul>
  * Everything runs on a real breaker-backed {@link BlockFactory}; a {@code @After} asserts the breaker is balanced.
  */
@@ -150,14 +151,15 @@ public class ComparisonFusionDifferentialTests extends ESTestCase {
     }
 
     public void testDoubleComparisonBinaryFusedMatchesUnfused() {
-        // Add/Sub/Mul double children are overflow-checked (NumericUtils.asFiniteNumber), so the tree is hard-gated off
-        // the vector path (VectorStrategy.NONE) — every page runs the block path with a BOOLEAN output.
+        // Add/Sub/Mul double children are overflow-checked (NumericUtils.asFiniteNumber). The old hard gate is gone:
+        // the fused class is defined in this caller module and reads backing arrays via VectorUnsafe, so NumericUtils
+        // links on the checked-vector path. A dense no-null page therefore takes the checked-vector fast path.
         List<Op> palette = List.of(Op.ADD, Op.SUB, Op.MUL);
         Profile[] cycle = { Profile.CLEAN, Profile.NULLS, Profile.MULTIVALUE };
         Coverage cov = runSweep(ElementKind.DOUBLE, DataType.DOUBLE, palette, cycle, 96);
 
         assertMatrixCovered(cov);
-        assertThat("double+overflow comparison must be hard-gated off the vector path", cov.none, greaterThan(0));
+        assertThat("double+overflow comparison now uses the checked-vector path", cov.checkedVector, greaterThan(0));
         assertThat("a multi-value input must register a warning", cov.multiValueWarnings, greaterThan(0));
     }
 
@@ -289,8 +291,8 @@ public class ComparisonFusionDifferentialTests extends ESTestCase {
      * Deterministic per-operator coverage: every comparison operator ({@code ==}, {@code !=}, {@code <}, {@code <=},
      * {@code >}, {@code >=}) over each supported element kind fuses and matches the unfused chain. Enumerated
      * explicitly rather than relying on a random palette to hit each within N iterations. {@code a + b <cmp> c} keeps
-     * an overflow-checked arithmetic child so long/int route through the checked-vector path and double is hard-gated
-     * onto the block path; the dense input has a spread of values so each operator produces a mix of true/false.
+     * an overflow-checked arithmetic child so long/int/double all route through the checked-vector path (the old
+     * double hard gate is gone); the dense input has a spread of values so each operator produces a mix of true/false.
      */
     public void testAllComparisonOperatorsFusePerElementKind() {
         for (Cmp cmp : Cmp.values()) {

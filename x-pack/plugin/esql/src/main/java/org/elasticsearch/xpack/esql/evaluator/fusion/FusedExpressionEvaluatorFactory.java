@@ -48,24 +48,23 @@ import java.util.List;
  * hidden class(es) once (cold path) and hands each {@link DriverContext} a {@link FusedExpressionEvaluator} bound to
  * the resulting {@link MethodHandle}s.
  *
- * <h2>Routing (load-bearing — the iter-12 review's hard gate)</h2>
+ * <h2>Routing</h2>
  * Three emit shapes exist on the {@link Stitcher}; which are compiled is fixed at plan time:
  * <ul>
  *   <li><b>Block path</b> ({@link Stitcher#compileBlockLoop}) — always compiled. Null/multi-value tolerant and
  *       overflow-aware; it is the general runtime path and the fallback whenever the inputs are not dense vectors.</li>
- *   <li><b>Plain vector fast path</b> ({@link Stitcher#compileVectorLoop}) — compiled only when <b>no</b> kernel is
+ *   <li><b>Plain vector fast path</b> ({@link Stitcher#compileVectorLoop}) — compiled when <b>no</b> kernel is
  *       overflow-checked (so nothing can throw and an {@code ArrayVector} with no null bitmask is a valid output).</li>
- *   <li><b>Checked vector fast path</b> ({@link Stitcher#compileVectorLoopChecked}) — compiled only when the tree is
- *       overflow-checked <b>and</b> the element type is <b>not</b> {@code double}.</li>
+ *   <li><b>Checked vector fast path</b> ({@link Stitcher#compileVectorLoopChecked}) — compiled when the tree is
+ *       overflow-checked, for <b>every</b> numeric element (including {@code double}).</li>
  * </ul>
- * The last bullet is the hard gate. An overflow-checked {@code double} kernel body calls
- * {@code NumericUtils.asFiniteNumber} (in {@code org.elasticsearch.xpack.esql.core}, outside {@code java.base}); the
- * checked <b>vector</b> path defines its hidden class into {@code compute.data} (to reach the package-private
- * {@code rawValues()}), a package whose module cannot see {@code NumericUtils}, so the class would fail to link in a
- * modular runtime. Rather than depend on that link failure (it does <em>not</em> fail on the flat test classpath), we
- * refuse to even attempt the checked-vector path for {@code double}+overflow in code: {@link #vectorStrategy()} is
- * {@link VectorStrategy#NONE} for that case, so such trees are served by the block path (which defines into the
- * caller's own module and links {@code NumericUtils}) — or, if the block stitch itself fails, by the unfused chain.
+ * All three paths define their hidden class in <b>this</b> (esql-proper) caller module. The vector paths reach a dense
+ * {@code *ArrayVector}'s package-private backing array through the public exported
+ * {@link org.elasticsearch.compute.data.VectorUnsafe} forwarder ({@code INVOKESTATIC}) rather than teleporting into
+ * {@code compute.data} — so an overflow-checked {@code double} kernel body's {@code NumericUtils.asFiniteNumber} call
+ * (in {@code org.elasticsearch.xpack.esql.core}, outside {@code java.base}) links on the vector path just as it does on
+ * the block path. The old {@code double}+overflow hard gate is therefore gone; {@link VectorStrategy#NONE} now applies
+ * only to the block-only {@link org.elasticsearch.compute.operator.fusion.FusionNode.Logical} (3VL) trees.
  *
  * <h2>Fallback (acceptance criterion #5)</h2>
  * If any required stitch fails at plan time ({@link Stitcher.StitchingException} / {@link LinkageError}),
@@ -96,9 +95,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     enum VectorStrategy {
         /** {@link Stitcher#compileVectorLoop}: dense no-null {@code ArrayVector} inputs, non-overflow kernels only. */
         PLAIN_VECTOR,
-        /** {@link Stitcher#compileVectorLoopChecked}: dense inputs, overflow-checked, non-{@code double} only. */
+        /** {@link Stitcher#compileVectorLoopChecked}: dense inputs, overflow-checked (any numeric element, incl. double). */
         CHECKED_VECTOR,
-        /** No vector fast path — always use the block path. The {@code double}+overflow hard-gated case lands here. */
+        /** No vector fast path — always use the block path. Only the block-only 3VL {@code Logical} trees land here. */
         NONE
     }
 
@@ -142,7 +141,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     /**
      * Stitches {@code tree} into its runtime path(s) and returns a fused factory, or — on any stitch failure — logs a
      * warning, records the failure, and returns {@code unfused} unchanged (criterion #5). This is the single place the
-     * routing decision (including the {@code double}+overflow hard gate) is made.
+     * routing decision (which vector fast path, if any, to compile) is made.
      *
      * @param compiler the stitch entry points; the test seam substitutes a failing implementation here
      */
@@ -186,24 +185,21 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 blockType(inputElement, outputElement, arity)
             );
 
-            MethodHandle vectorHandle = null;
+            MethodHandle vectorHandle;
             VectorStrategy strategy;
             if (overflowChecked == false) {
                 Class<?> vectorClass = compiler.compileVectorLoop(LOOKUP, tree);
                 vectorHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, plainVectorType(outputElement, arity));
                 strategy = VectorStrategy.PLAIN_VECTOR;
-            } else if (inputElement != ElementKind.DOUBLE) {
-                // HARD GATE is keyed on the numeric CHILD/INPUT element, not the boolean output: a comparison over
-                // overflow-checked double arithmetic children (e.g. a + b > c over doubles) still calls
-                // NumericUtils.asFiniteNumber, which cannot link on the compute.data-teleported checked-vector path.
-                // Only a non-double numeric input is eligible for the checked-vector path here.
+            } else {
+                // Overflow-checked trees (including double, whose kernels call NumericUtils.asFiniteNumber) all use the
+                // checked-vector path now: the fused class is defined in the caller's (esql-proper) module — reaching
+                // the backing array through the public VectorUnsafe forwarder rather than a compute.data teleport — so
+                // it links non-java.base kernel callees just like the block path. The old double+overflow hard gate
+                // (VectorStrategy.NONE) is gone.
                 Class<?> vectorClass = compiler.compileVectorLoopChecked(LOOKUP, tree);
                 vectorHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, checkedVectorType(outputElement, arity));
                 strategy = VectorStrategy.CHECKED_VECTOR;
-            } else {
-                // HARD GATE: overflow-checked double child kernels' non-java.base callees cannot link on the teleported
-                // compute.data vector path, so we never attempt it — the block path (or unfused) serves this shape.
-                strategy = VectorStrategy.NONE;
             }
 
             return new FusedExpressionEvaluatorFactory(
@@ -245,7 +241,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         );
     }
 
-    /** Test hook (package-private): which vector fast path this shape uses. Proves the {@code double}+overflow hard gate. */
+    /** Test hook (package-private): which vector fast path this shape uses (or {@code NONE} for block-only trees). */
     VectorStrategy vectorStrategy() {
         return vectorStrategy;
     }

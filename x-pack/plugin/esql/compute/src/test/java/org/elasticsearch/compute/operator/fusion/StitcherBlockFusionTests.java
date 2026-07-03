@@ -396,7 +396,8 @@ public class StitcherBlockFusionTests extends ESTestCase {
     public void testNonCommutativeDivVectorPath() throws Throwable {
         FusionNode tree = subDivTree();
         Class<?> fused = stitcher.compileVectorLoop(MethodHandles.lookup(), tree);
-        assertThat(fused.getPackageName(), equalTo("org.elasticsearch.compute.data"));
+        // No teleport: the vector path reads backing arrays via VectorUnsafe, so it defines into the caller's package.
+        assertThat(fused.getPackageName(), equalTo(getClass().getPackageName()));
         MethodType type = MethodType.methodType(LongVector.class, BlockFactory.class, int.class, Vector.class, Vector.class, Vector.class);
         MethodHandle handle = MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);
 

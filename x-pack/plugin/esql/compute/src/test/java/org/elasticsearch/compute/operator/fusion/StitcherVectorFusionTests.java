@@ -36,9 +36,9 @@ import static org.hamcrest.Matchers.is;
  * ({@code Math.multiplyExact(Math.addExact(a, b), c)}) would — over many random shapes including empty, single,
  * small, and &ge; 1024 position counts.
  *
- * <p>The crux this test exercises is binding rule #2: the fused hidden class is defined into the effective
- * {@code compute.data} package (via {@link MethodHandles#privateLookupIn}), so its emitted
- * {@code ((LongArrayVector) in).rawValues()} calls link against the package-private {@code rawValues()} accessor.
+ * <p>The fused hidden class is defined into the <b>caller's</b> own package/module (no {@code privateLookupIn}
+ * teleport): it reads each dense {@code *ArrayVector}'s backing array through the public
+ * {@code VectorUnsafe} forwarder ({@code INVOKESTATIC}) rather than the package-private {@code rawValues()}.
  * Everything runs on real breaker-backed {@link BlockFactory} vectors and real emitted bytecode — no mocks — and
  * the {@code @After} breaker-balance assert proves every produced vector is released.
  */
@@ -82,8 +82,8 @@ public class StitcherVectorFusionTests extends ESTestCase {
 
         Stitcher stitcher = new Stitcher(new TemplateRegistry());
         Class<?> fused = stitcher.compileVectorLoop(MethodHandles.lookup(), tree);
-        // Binding rule #2: the hidden class lands in the effective compute.data package so rawValues() links.
-        assertThat(fused.getPackageName(), equalTo("org.elasticsearch.compute.data"));
+        // The hidden class lands in the caller's own package (no teleport); it reads backing arrays via VectorUnsafe.
+        assertThat(fused.getPackageName(), equalTo(getClass().getPackageName()));
 
         MethodType type = MethodType.methodType(LongVector.class, BlockFactory.class, int.class, Vector.class, Vector.class, Vector.class);
         MethodHandle handle = MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);
@@ -129,7 +129,7 @@ public class StitcherVectorFusionTests extends ESTestCase {
 
         Stitcher stitcher = new Stitcher(new TemplateRegistry());
         Class<?> fused = stitcher.compileVectorLoop(MethodHandles.lookup(), tree);
-        assertThat(fused.getPackageName(), equalTo("org.elasticsearch.compute.data"));
+        assertThat(fused.getPackageName(), equalTo(getClass().getPackageName()));
 
         MethodType type = MethodType.methodType(IntVector.class, BlockFactory.class, int.class, Vector.class, Vector.class, Vector.class);
         MethodHandle handle = MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);

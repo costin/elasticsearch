@@ -46,12 +46,13 @@ import static org.hamcrest.Matchers.is;
  * overflowing position becomes {@code null} with a registered warning, byte-for-byte matching the unfused
  * evaluator ({@code AddLongsEvaluator.eval}/{@code AddDoublesEvaluator.eval}).
  *
- * <p>It also pins the iter-11 carry-forward the iter-13 caller must respect: the overflow-aware checked vector path
- * ({@link Stitcher#compileVectorLoopChecked}) cannot be used from esql-proper for these kernels — it must define its
- * hidden class into the effective {@code compute.data} package (for the package-private {@code rawValues()}), which
- * {@code compute} neither opens to esql-proper nor can link {@code NumericUtils.asFiniteNumber} against. Either way
- * the attempt fails cleanly as a {@link Stitcher.StitchingException} (no crash), and the caller must route such trees
- * through {@link Stitcher#compileBlockLoop} (proven here to work) or the unfused chain.
+ * <p>It also pins the iter-22 unification: the overflow-aware checked vector path
+ * ({@link Stitcher#compileVectorLoopChecked}) now works from esql-proper for these kernels too. It reads each dense
+ * {@code *ArrayVector}'s backing array through the public {@code VectorUnsafe} forwarder (an {@code INVOKESTATIC})
+ * instead of the package-private {@code rawValues()}, so its hidden class is defined in the <b>caller's</b> own
+ * (esql-proper) module — which reads {@code org.elasticsearch.xpack.esql.core} — and therefore links
+ * {@code NumericUtils.asFiniteNumber}. The old {@code double}+overflow hard gate (route only through
+ * {@link Stitcher#compileBlockLoop}) is gone: a double overflow tree may now vectorize.
  */
 public class StitcherOverflowCrossModuleTests extends ESTestCase {
 
@@ -210,38 +211,26 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
     }
 
     /**
-     * The overflow-aware checked vector path splices the real {@code Add.processDoubles} body, which invokes
-     * {@code NumericUtils.asFiniteNumber} in {@code org.elasticsearch.xpack.esql.core} — a target outside
-     * {@code java.base}. Because that path defines its hidden class into the effective {@code compute.data} package
-     * (for the package-private {@code rawValues()}), in a real <b>modular</b> runtime the JVM cannot link the
-     * {@code NumericUtils} callee (and {@code privateLookupIn(compute.data, esqlLookup)} would itself be denied,
-     * since {@code compute.data} is exported but not opened). The contract is that either failure is caught and
-     * rethrown as a clean {@link Stitcher.StitchingException} — never an escaping {@link Error} — so the iter-13
-     * caller routes such trees through {@link Stitcher#compileBlockLoop} (proven above) or the unfused chain.
-     *
-     * <p>This unit test runs on the <b>classpath</b> (unnamed module), where those module boundaries do not apply,
-     * so here {@code compileVectorLoopChecked} actually links and runs. The assertion is therefore the environment
-     * -independent invariant that matters for the caller: the call <b>does not crash</b>. Whichever way it goes —
-     * a clean {@code StitchingException} fallback (modular runtime) or a working fused class (classpath) — the
-     * overflow behaviour is exercised and no {@code Error} escapes.
+     * Positive iter-22 proof: the overflow-aware checked <b>vector</b> path fuses the real {@code Add.processDoubles}
+     * body — which invokes {@code NumericUtils.asFiniteNumber} in {@code org.elasticsearch.xpack.esql.core}, a target
+     * outside {@code java.base} — from an esql-proper caller and runs correctly. Because the emitted loop reads each
+     * input's backing array through the public {@code VectorUnsafe} forwarder ({@code INVOKESTATIC}) rather than the
+     * package-private {@code rawValues()}, the hidden class is defined in the <b>caller's</b> own module (asserted via
+     * its package equalling this test's package), which reads esql-core and so links {@code NumericUtils}. This is the
+     * proof that the {@code double}+overflow hard gate is gone and no {@code privateLookupIn(compute.data)} teleport is
+     * involved: an overflowing (Infinity) sum becomes {@code null} + warning and every clean position matches the
+     * reflectively-invoked unfused kernel, byte-for-byte.
      */
-    public void testCheckedVectorPathDoubleDoesNotCrash() throws Throwable {
+    public void testRealAddProcessDoublesCheckedVectorPathMatchesUnfused() throws Throwable {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
         FusionDescriptor descriptor = new FusionDescriptor(Add.class, "processDoubles", "(DD)D", true, true);
         FusionNode tree = new FusionNode.Kernel(descriptor, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
 
-        Class<?> fused;
-        try {
-            fused = stitcher.compileVectorLoopChecked(lookup, tree);
-        } catch (Stitcher.StitchingException e) {
-            // Clean fallback (as in a modular runtime that cannot link NumericUtils into compute.data): cause is
-            // preserved for diagnostics and the caller falls back to the block path / unfused chain. No warning or
-            // block was produced, so the breaker stays balanced and there is nothing to assert on warnings.
-            assertThat(e.getCause(), is(org.hamcrest.Matchers.notNullValue()));
-            return;
-        }
+        // No StitchingException: the vector path now defines into the caller's module and links NumericUtils.
+        Class<?> fused = stitcher.compileVectorLoopChecked(lookup, tree);
+        // The hidden class lives in this esql-proper caller package (NOT compute.data): no teleport happened.
+        assertThat(fused.getPackageName(), equalTo(getClass().getPackageName()));
 
-        // Linked in this classpath environment: prove it still behaves — an Infinity sum overflows to null + warning.
         MethodType type = MethodType.methodType(
             DoubleBlock.class,
             BlockFactory.class,
@@ -253,6 +242,10 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
         MethodHandle handle = lookup.findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);
         Warnings warnings = collectingWarnings();
 
+        Method unfused = Add.class.getDeclaredMethod("processDoubles", double.class, double.class);
+        unfused.setAccessible(true);
+
+        // p0: MAX + MAX = Infinity -> asFiniteNumber throws -> null. p1/p2: clean.
         double[] lhs = { Double.MAX_VALUE, 1.5, 3.0 };
         double[] rhs = { Double.MAX_VALUE, 2.5, 4.0 };
         int positionCount = lhs.length;
@@ -263,6 +256,20 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
             va = blockFactory.newDoubleArrayVector(lhs, positionCount);
             vb = blockFactory.newDoubleArrayVector(rhs, positionCount);
             result = (DoubleBlock) handle.invoke(blockFactory, warningsArray(tree, warnings), positionCount, va, vb);
+            assertThat(result.getPositionCount(), equalTo(positionCount));
+            for (int p = 0; p < positionCount; p++) {
+                Double expected = refDouble(unfused, lhs[p], rhs[p]);
+                if (expected == null) {
+                    assertThat("p=" + p, result.isNull(p), is(true));
+                } else {
+                    assertThat("p=" + p, result.isNull(p), is(false));
+                    assertThat(
+                        "p=" + p,
+                        Double.doubleToLongBits(result.getDouble(result.getFirstValueIndex(p))),
+                        equalTo(Double.doubleToLongBits(expected))
+                    );
+                }
+            }
             assertThat("p0 Infinity -> null", result.isNull(0), is(true));
             assertThat("p1 value", result.getDouble(result.getFirstValueIndex(1)), equalTo(4.0));
             assertThat("p2 value", result.getDouble(result.getFirstValueIndex(2)), equalTo(7.0));

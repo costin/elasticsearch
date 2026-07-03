@@ -177,14 +177,15 @@ public class FusionDifferentialTests extends ESTestCase {
         List<Op> palette = List.of(Op.ADD, Op.SUB, Op.MUL, Op.NEG, Op.ABS);
         List<Op> unaryPalette = List.of(Op.NEG, Op.ABS);
         // CLEAN_UNARY builds a non-overflow (Neg/Abs only) double tree so the plain-vector fast path is exercised;
-        // the binary profiles use overflow-checked double kernels (NumericUtils.asFiniteNumber), which are hard-gated
-        // off the vector path (VectorStrategy.NONE) and therefore always run the block path.
+        // the binary profiles use overflow-checked double kernels (NumericUtils.asFiniteNumber). The old double+overflow
+        // hard gate is gone — the fused class is defined in this caller module and reads backing arrays via VectorUnsafe,
+        // so those trees now take the checked-vector fast path (NumericUtils links there just as on the block path).
         Profile[] cycle = { Profile.CLEAN, Profile.NULLS, Profile.MULTIVALUE, Profile.CLEAN_UNARY };
         Coverage cov = runSweep(ElementKind.DOUBLE, DataType.DOUBLE, palette, unaryPalette, cycle, false, 132);
 
         assertMatrixCovered(cov);
         assertThat("a Neg/Abs-only double tree must use the plain-vector fast path", cov.plainVector, greaterThan(0));
-        assertThat("a double tree with overflow-checked kernels must be hard-gated off the vector path", cov.none, greaterThan(0));
+        assertThat("a double tree with overflow-checked kernels now uses the checked-vector path", cov.checkedVector, greaterThan(0));
         assertThat("some multi-value position must have registered a warning", cov.multiValueWarnings, greaterThan(0));
     }
 
