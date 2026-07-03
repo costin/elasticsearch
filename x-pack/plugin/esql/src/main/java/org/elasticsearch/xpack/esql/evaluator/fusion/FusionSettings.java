@@ -63,4 +63,15 @@ public final class FusionSettings {
     static void setEnabledForTests(boolean value) {
         enabled = value;
     }
+
+    /**
+     * Benchmark/test-only PUBLIC hook that flips the same switch as {@link #setEnabledForTests}, exposed so the JMH
+     * {@code FusionBenchmark} (in the separate {@code :benchmarks} module, which cannot see the package-private test
+     * hook) can build a fused and an unfused evaluator for the same expression in-process and measure both. This is
+     * <b>never</b> called in production — the effective value is otherwise only ever written once at node start by
+     * {@link #initFromNodeSettings(Settings)}.
+     */
+    public static void setEnabledForBenchmarks(boolean value) {
+        enabled = value;
+    }
 }
