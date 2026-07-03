@@ -9,15 +9,26 @@ package org.elasticsearch.compute.operator.fusion;
 
 import org.elasticsearch.test.ESTestCase;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.Handle;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.util.CheckClassAdapter;
 
+import java.io.IOException;
 import java.lang.invoke.MethodHandles;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
@@ -268,6 +279,108 @@ public class StitcherBudgetTests extends ESTestCase {
         );
         assertStructurallyValid(stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), tree));
         assertStructurallyValid(stitcher.blockLoopBytecode(MethodHandles.lookup(), tree));
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // Emission quality (S5.4) — the emitted fused loop must "help the JIT": no boxing, no invokedynamic. Static-method
+    // invocation of the kernel bodies and the ARM inlining budget are already covered above and by the differential
+    // suite; this pins that the hot per-position body carries no autobox/unbox or indy call that would defeat inlining
+    // or allocate per row. (Zero per-row heap allocation is the -prof gc concern of the JMH macro benchmark; here we
+    // prove the bytecode has none of the boxing that would cause it.)
+    // -----------------------------------------------------------------------------------------------------------------
+
+    /** Boxing factory owners whose {@code valueOf} in the hot body would allocate/deopt the primitive fast path. */
+    private static final Set<String> BOXING_OWNERS = Set.of(
+        "java/lang/Long",
+        "java/lang/Integer",
+        "java/lang/Double",
+        "java/lang/Boolean",
+        "java/lang/Float",
+        "java/lang/Short",
+        "java/lang/Byte",
+        "java/lang/Character"
+    );
+
+    /** Unboxing accessor names ({@code x.longValue()} etc.) — the other half of an autobox round-trip. */
+    private static final Set<String> UNBOXING_METHODS = Set.of(
+        "longValue",
+        "intValue",
+        "doubleValue",
+        "booleanValue",
+        "floatValue",
+        "shortValue",
+        "byteValue",
+        "charValue"
+    );
+
+    public void testFusedMethodsHaveNoBoxingOrInvokedynamic() throws Exception {
+        assertNoBoxingOrIndy(stitcher.vectorLoopBytecode(MethodHandles.lookup(), arithmeticTree()), "plain-vector");
+        assertNoBoxingOrIndy(stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), arithmeticTree()), "checked-vector");
+        assertNoBoxingOrIndy(stitcher.blockLoopBytecode(MethodHandles.lookup(), arithmeticTree()), "block");
+        FusionNode logical = new FusionNode.Logical(
+            FusionNode.BoolOp.AND,
+            new FusionNode.Kernel(GT, List.of(new FusionNode.Input(0), new FusionNode.Input(1))),
+            new FusionNode.Kernel(LT, List.of(new FusionNode.Input(2), new FusionNode.Input(3)))
+        );
+        assertNoBoxingOrIndy(stitcher.logicalBlockLoopBytecode(MethodHandles.lookup(), logical), "logical-block");
+    }
+
+    /** Scans EVERY method of the emitted class (the fused loop and any {@code cmpN} helper) for boxing / invokedynamic. */
+    private static void assertNoBoxingOrIndy(byte[] classBytes, String pathName) {
+        List<String> violations = new ArrayList<>();
+        new ClassReader(classBytes).accept(new ClassVisitor(Opcodes.ASM9) {
+            @Override
+            public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                return new MethodVisitor(Opcodes.ASM9) {
+                    @Override
+                    public void visitMethodInsn(int opcode, String owner, String mName, String mDesc, boolean isInterface) {
+                        if (opcode == Opcodes.INVOKESTATIC && BOXING_OWNERS.contains(owner) && mName.equals("valueOf")) {
+                            violations.add(name + ": boxing " + owner + ".valueOf" + mDesc);
+                        }
+                        if (opcode == Opcodes.INVOKEVIRTUAL && UNBOXING_METHODS.contains(mName)) {
+                            violations.add(name + ": unboxing " + owner + "." + mName);
+                        }
+                    }
+
+                    @Override
+                    public void visitInvokeDynamicInsn(String n, String d, Handle bsm, Object... bsmArgs) {
+                        violations.add(name + ": invokedynamic " + n + d);
+                    }
+                };
+            }
+        }, 0);
+        assertThat("fused " + pathName + " method must carry no boxing/unboxing or invokedynamic: " + violations, violations, is(empty()));
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // Debugging aid (S5.3) — a test-only utility to dump a stitched class's bytes for javap/decompilation, and to
+    // base64-encode them (the transport-safe form if they are ever surfaced through a diagnostic response/profile).
+    // Kept test-only on purpose: a production dump-to-disk would need a speculative file-write entitlement, which
+    // AGENTS.md forbids adding without a concrete need. The Stitcher's package-private *Bytecode seams already expose
+    // the raw bytes, so this is the intended way to inspect generated code: dump then `javap -c -p <file>`.
+    // -----------------------------------------------------------------------------------------------------------------
+
+    public void testDumpFusedClassForJavapAndBase64RoundTrips() throws Exception {
+        byte[] bytecode = stitcher.blockLoopBytecode(MethodHandles.lookup(), arithmeticTree());
+        assertThat("emitted non-empty class bytes", bytecode.length, greaterThan(0));
+
+        // Dump to a file a developer can decompile with `javap -c -p <file>` (verified re-readable by ClassReader).
+        Path dumped = dumpForJavap(bytecode, "FusedBlockLoop");
+        byte[] readBack = Files.readAllBytes(dumped);
+        new ClassReader(readBack); // throws if the dumped bytes are not a well-formed class file
+        assertThat("dumped bytes round-trip", readBack.length, is(bytecode.length));
+
+        // Base64 is the transport-safe encoding if the bytes are ever returned through a diagnostic response/profile.
+        String base64 = Base64.getEncoder().encodeToString(bytecode);
+        assertThat("base64 round-trips to the original bytes", Base64.getDecoder().decode(base64), is(bytecode));
+    }
+
+    /** Writes {@code bytecode} to a temp {@code .class} file so a developer can {@code javap -c -p} / decompile it. */
+    private Path dumpForJavap(byte[] bytecode, String className) throws IOException {
+        Path file = createTempDir().resolve(className + ".class");
+        Files.write(file, bytecode);
+        logger.info("dumped fused class [{}] to [{}] for javap/decompile", className, file);
+        return file;
     }
 
     // -----------------------------------------------------------------------------------------------------------------

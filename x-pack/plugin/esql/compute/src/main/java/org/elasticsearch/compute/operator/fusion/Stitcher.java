@@ -74,6 +74,17 @@ import java.util.function.Consumer;
  * spliced verbatim, so there is no autoboxing and no per-position {@code checkcast}. For a depth-1 binary kernel
  * the whole method is a handful of instructions — far below HotSpot's default {@code FreqInlineSize} (325
  * bytecodes).
+ *
+ * <p><b>Trusted-generation contract (verification is test-time, not runtime).</b> The emitted per-position loop
+ * carries only the <em>semantic</em> guards a correct result needs (null / multi-value short-circuiting, overflow
+ * try/catch, div-by-zero) — never any defensive "is this bytecode well-formed / are the slots typed right" checks.
+ * Correctness of the <em>generation</em> is proven exhaustively at test time — {@code StitcherBudgetTests} runs every
+ * emit path through {@code CheckClassAdapter} and asserts no boxing / no {@code invokedynamic},
+ * and the esql-proper differential suites define AND invoke the fused classes over live pages and assert value/null
+ * parity with the unfused chain — plus the JVM's own bytecode verifier runs once per class at {@code
+ * defineHiddenClass}. The few internal invariants the emitter itself relies on (e.g. a constant's element matching its
+ * consuming kernel's) are Java {@code assert}s, enabled under {@code -ea} in tests and elided in production, so the
+ * runtime generate-and-execute path stays fast and adds no per-stitch or per-row validation cost of its own.
  */
 public final class Stitcher {
 
