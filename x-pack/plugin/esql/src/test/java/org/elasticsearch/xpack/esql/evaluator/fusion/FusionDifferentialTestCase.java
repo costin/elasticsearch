@@ -113,6 +113,8 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
     public void tearDownFusion() {
         FusionPlanner.compilerForTests = null;
         FusionSettings.setEnabledForTests(true);
+        FusionSettings.setAdaptiveMinRowsForTests(0);
+        FusionSettings.setSampleFractionForTests(1.0);
         assertThat(breaker.getUsed(), is(0L));
     }
 
@@ -132,6 +134,29 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
         ExpressionEvaluator.Factory factory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
         FusionSettings.setEnabledForTests(true);
         return factory;
+    }
+
+    /**
+     * Builds the evaluator factory with fusion ON <b>and</b> the adaptive threshold armed at {@code minRows == 1}, so
+     * the returned {@link AdaptiveFusionEvaluatorFactory} starts on the unfused chain and switches to the stitched fused
+     * evaluator on the first non-empty page. Driving {@link #runDifferentialWarnings} with this factory proves the
+     * <em>adaptive</em> (Stage-6) path produces identical values/nulls (and a warning subset) to the unfused chain —
+     * the same contract the eager path is held to — while genuinely exercising the runtime unfused→fused switch.
+     */
+    protected ExpressionEvaluator.Factory adaptiveFactory(Expression expr, Layout layout) {
+        FusionSettings.setEnabledForTests(true);
+        FusionSettings.setAdaptiveMinRowsForTests(1);
+        try {
+            return EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+        } finally {
+            FusionSettings.setAdaptiveMinRowsForTests(0);
+        }
+    }
+
+    /** Asserts the ON-switch, adaptive-armed factory really produced an adaptive factory (so the sweep is not vacuous). */
+    protected static AdaptiveFusionEvaluatorFactory assertAdaptive(ExpressionEvaluator.Factory factory, String ctx) {
+        assertThat(ctx + " must be adaptive with min_rows>0", factory, instanceOf(AdaptiveFusionEvaluatorFactory.class));
+        return (AdaptiveFusionEvaluatorFactory) factory;
     }
 
     /** Asserts (and returns) that the ON-switch factory really fused, so the differential comparison is not vacuous. */

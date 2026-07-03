@@ -269,6 +269,27 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
     }
 
     /**
+     * The Stage-6 adaptive-path corpus signal: the same generated arithmetic and comparison trees, but served through
+     * the {@link AdaptiveFusionEvaluatorFactory} (fusion ON, {@code min_rows == 1}) so every non-empty page drives the
+     * runtime unfused→fused switch. Proves the adaptive path is value/null-identical to the unfused chain (warnings a
+     * subset) across the CLEAN / NULLS / MULTIVALUE / OVERFLOW profiles and the shape matrix — the tiered-compilation
+     * analogue of {@link #testArithmeticSpecSweepMatchesUnfused}. Asserts switches actually fired so it is not vacuous.
+     */
+    public void testAdaptiveSpecSweepMatchesUnfused() {
+        Coverage cov = new Coverage();
+        Profile[] cycle = { Profile.CLEAN, Profile.NULLS, Profile.MULTIVALUE, Profile.OVERFLOW };
+        long arithmeticSwitches = adaptiveSweep(cov, Category.ARITHMETIC, ARITH_NO_DIV, cycle, 90);
+        long comparisonSwitches = adaptiveSweep(cov, Category.COMPARISON, ARITH_NO_DIV, cycle, 90);
+
+        assertShapeMatrixCovered(cov);
+        assertProfilesCovered(cov, Profile.CLEAN, Profile.NULLS, Profile.MULTIVALUE, Profile.OVERFLOW);
+        assertThat("the adaptive arithmetic sweep must actually switch to fused at least once", arithmeticSwitches, greaterThan(0L));
+        assertThat("the adaptive comparison sweep must actually switch to fused at least once", comparisonSwitches, greaterThan(0L));
+        assertThat("an overflow position must still null + warn on the adaptive path", cov.overflowWarnings, greaterThan(0));
+        assertThat("a multi-value input must still warn on the adaptive path", cov.multiValueWarnings, greaterThan(0));
+    }
+
+    /**
      * Arithmetic-rooted trees that include {@code Div} over tiny values including {@code 0} divisors. Subsumes the old
      * {@code FusionDifferentialTests} long-division sweep: the {@code / by zero} null + warning is exercised.
      */
@@ -1667,6 +1688,56 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
             List<String> referenceWarnings = runDifferential(fusedFactory, unfusedFactory, outputKind, inputs, positionCount, ctx);
             recordWarnings(cov, profile, referenceWarnings);
         }
+    }
+
+    /**
+     * The Stage-6 <b>adaptive</b> counterpart of {@link #sweep}: builds the same generated trees but through
+     * {@link #adaptiveFactory} (fusion ON, {@code min_rows == 1}) so each tree is served by an
+     * {@link AdaptiveFusionEvaluatorFactory} that starts unfused and switches to the stitched fused evaluator on the
+     * first non-empty page. It asserts the adaptive path's values/nulls are identical to the unfused chain and its
+     * warnings a subset — the same contract the eager path meets — and returns the number of runtime switches observed
+     * so the caller can prove the switch actually fired (not a vacuous unfused-vs-unfused comparison).
+     */
+    private long adaptiveSweep(Coverage cov, Category root, List<OpTemplate> numericPalette, Profile[] cycle, int iterations) {
+        long switchesBefore = FusionTelemetry.adaptiveSwitches();
+        for (int i = 0; i < iterations; i++) {
+            ElementKind element = ELEMENTS.get(i % ELEMENTS.size());
+            DataType type = dataType(element);
+            int positionCount = positionCountFor(i);
+            Profile profile = cycle[i % cycle.length];
+
+            int columns = columnsFor(root);
+            FieldAttribute[] cols = new FieldAttribute[columns];
+            for (int c = 0; c < columns; c++) {
+                cols[c] = field("c" + c, type);
+            }
+            Layout layout = layout(cols);
+
+            Set<Integer> usedSet = new TreeSet<>();
+            Expression expr = switch (root) {
+                case ARITHMETIC -> genNumeric(numericPalette, 2, randomIntBetween(2, 4), element, cols, usedSet);
+                case COMPARISON -> genComparisonRoot(numericPalette, element, cols, usedSet);
+                case LOGICAL -> genLogicalRoot(randomIntBetween(2, 3), element, cols, usedSet);
+                case MATH -> throw new AssertionError("MATH is not a sweep root");
+            };
+            int[] referenced = toArray(usedSet);
+
+            ExpressionEvaluator.Factory adaptive = adaptiveFactory(expr, layout);
+            ExpressionEvaluator.Factory unfusedFactory = unfusedFactory(expr, layout);
+
+            String ctx = "adaptive root=" + root + " element=" + element + " i=" + i + " profile=" + profile + " expr=" + expr;
+            assertAdaptive(adaptive, ctx);
+            assertDoesNotFuse(unfusedFactory, ctx);
+
+            recordShape(cov, positionCount);
+            recordProfile(cov, profile);
+
+            ElementKind outputKind = root == Category.ARITHMETIC ? element : ElementKind.BOOLEAN;
+            Block[] inputs = buildPage(element, columns, positionCount, profile, false, referenced);
+            List<String> referenceWarnings = runDifferential(adaptive, unfusedFactory, outputKind, inputs, positionCount, ctx);
+            recordWarnings(cov, profile, referenceWarnings);
+        }
+        return FusionTelemetry.adaptiveSwitches() - switchesBefore;
     }
 
     private static int columnsFor(Category root) {
