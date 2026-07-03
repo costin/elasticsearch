@@ -414,6 +414,11 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             this.vectorClass = vectorClass;
             this.arrayVectorClass = arrayVectorClass;
         }
+
+        /** The concrete {@code *Block} class for this element, for resolving fused {@link MethodType}s in sibling factories. */
+        Class<? extends Block> blockClass() {
+            return blockClass;
+        }
     }
 
     /**

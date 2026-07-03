@@ -282,6 +282,78 @@ public class StitcherBudgetTests extends ESTestCase {
     }
 
     // -----------------------------------------------------------------------------------------------------------------
+    // Filter + Eval mega-fusion (S3.2a) — the fused WHERE-predicate + EVAL-projection block loop.
+    // -----------------------------------------------------------------------------------------------------------------
+
+    /**
+     * A representative fused filter+eval — predicate {@code (in0 + in1) > in2}, projection {@code (in0 + in1) * in2} —
+     * keeps the top-level {@code fused} loop within the inlining budget: the predicate and projection per-position
+     * bodies are factored into the {@code pred}/{@code projAppend} helpers, so the top-level loop only calls them and
+     * records surviving positions.
+     */
+    public void testFilterEvalRepresentativeWithinBudget() throws Exception {
+        FusionNode predicate = new FusionNode.Kernel(
+            GT,
+            List.of(new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
+        );
+        FusionNode projection = new FusionNode.Kernel(
+            MUL,
+            List.of(new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
+        );
+        int size = Stitcher.fusedMethodCodeLength(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection));
+        assertThat("emitted a fused filter-eval method", size, greaterThan(0));
+        assertThat("filter-eval top-level loop must be inlinable", size, lessThanOrEqualTo(Stitcher.MAX_FUSED_METHOD_BYTECODES));
+    }
+
+    /** A logical-predicate fused filter+eval — {@code (in0 > in1) AND (in2 < in3)} guarding projection {@code in0 + in1}. */
+    public void testFilterEvalLogicalPredicateWithinBudget() throws Exception {
+        FusionNode predicate = new FusionNode.Logical(
+            FusionNode.BoolOp.AND,
+            new FusionNode.Kernel(GT, List.of(new FusionNode.Input(0), new FusionNode.Input(1))),
+            new FusionNode.Kernel(LT, List.of(new FusionNode.Input(2), new FusionNode.Input(3)))
+        );
+        FusionNode projection = new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
+        int size = Stitcher.fusedMethodCodeLength(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection));
+        assertThat("emitted a fused filter-eval (logical predicate) method", size, greaterThan(0));
+        assertThat("filter-eval top-level loop must be inlinable", size, lessThanOrEqualTo(Stitcher.MAX_FUSED_METHOD_BYTECODES));
+    }
+
+    /** Both filter-eval flavours — comparison predicate and logical predicate — emit structurally valid classes. */
+    public void testFilterEvalBlockLoopStructurallyValid() throws Exception {
+        FusionNode comparisonPredicate = new FusionNode.Kernel(
+            GT,
+            List.of(new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
+        );
+        FusionNode projection = new FusionNode.Kernel(
+            MUL,
+            List.of(new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
+        );
+        assertStructurallyValid(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), comparisonPredicate, projection));
+
+        FusionNode logicalPredicate = new FusionNode.Logical(
+            FusionNode.BoolOp.AND,
+            new FusionNode.Kernel(GT, List.of(new FusionNode.Input(0), new FusionNode.Input(1))),
+            new FusionNode.Kernel(LT, List.of(new FusionNode.Input(2), new FusionNode.Input(3)))
+        );
+        FusionNode shallowProjection = new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
+        assertStructurallyValid(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), logicalPredicate, shallowProjection));
+    }
+
+    /** The fused filter+eval body (and its pred/projAppend/cmpN helpers) must carry no boxing or invokedynamic. */
+    public void testFilterEvalHasNoBoxingOrInvokedynamic() throws Exception {
+        FusionNode predicate = new FusionNode.Logical(
+            FusionNode.BoolOp.AND,
+            new FusionNode.Kernel(GT, List.of(new FusionNode.Input(0), new FusionNode.Input(1))),
+            new FusionNode.Kernel(LT, List.of(new FusionNode.Input(2), new FusionNode.Input(3)))
+        );
+        FusionNode projection = new FusionNode.Kernel(
+            MUL,
+            List.of(new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
+        );
+        assertNoBoxingOrIndy(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection), "filter-eval");
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------
     // Emission quality (S5.4) — the emitted fused loop must "help the JIT": no boxing, no invokedynamic. Static-method
     // invocation of the kernel bodies and the ARM inlining budget are already covered above and by the differential
     // suite; this pins that the hot per-position body carries no autobox/unbox or indy call that would defeat inlining

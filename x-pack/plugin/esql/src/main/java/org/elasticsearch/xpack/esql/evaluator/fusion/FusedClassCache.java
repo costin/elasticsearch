@@ -95,7 +95,13 @@ final class FusedClassCache {
         PLAIN_VECTOR,
         CHECKED_VECTOR,
         /** {@link Stitcher#compileLogicalBlockLoop}: a 3VL {@code AND}/{@code OR} tree; nullable boolean, block-only. */
-        LOGICAL_BLOCK
+        LOGICAL_BLOCK,
+        /**
+         * {@link Stitcher#compileFilterEvalBlockLoop}: a fused WHERE predicate + single EVAL projection; nullable,
+         * block-only. Its signature encodes BOTH the predicate and projection sub-shapes (see
+         * {@link FusionPlanner#filterEvalShapeOf}).
+         */
+        FILTER_EVAL_BLOCK
     }
 
     /**

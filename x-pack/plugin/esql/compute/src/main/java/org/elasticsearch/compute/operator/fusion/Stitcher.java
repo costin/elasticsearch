@@ -1435,6 +1435,520 @@ public final class Stitcher {
         return serializeWithBudgetGuard(classNode, writer, "logical block loop", true);
     }
 
+    // -----------------------------------------------------------------------------------------------------------------
+    // Filter + Eval mega-fusion (S3.2a): fuse a WHERE predicate + a single EVAL projection into ONE per-position pass.
+    // -----------------------------------------------------------------------------------------------------------------
+
+    /**
+     * Fuses a WHERE {@code predicateTree} and a single EVAL {@code projectionTree} into ONE per-position block loop,
+     * eliminating the intermediate full-width predicate {@code BooleanBlock} and the {@code Filter → Eval} operator
+     * boundary. The emitted {@link #FUSED_METHOD_NAME} method has the shape
+     * <pre>{@code
+     * static LongBlock fused(BlockFactory bf, Warnings[] warnings, int positionCount, int[] positions,
+     *                        <predicate input *Blocks...>, <projection input *Blocks...>,
+     *                        <predicate constants...>, <projection constants...>) {
+     *     LongBlock.Builder out = bf.newLongBlockBuilder(positionCount);   // COMPACT: one entry per surviving row
+     *     int rowCount = 0;
+     *     try {
+     *         for (int p = 0; p < positionCount; p++) {
+     *             int t = pred(warnings, p, <predBlocks>, <predConsts>);   // 3VL: 0 false / 1 true / 2 null
+     *             if (t != 1) continue;                                    // false OR null ⇒ row dropped (like Filter)
+     *             projAppend(out, warnings, p, <projBlocks>, <projConsts>);// evaluate + append projection (survivors only)
+     *             positions[rowCount++] = p;                               // record the surviving source position
+     *         }
+     *         return out.build();
+     *     } finally { out.close(); }
+     * }
+     * }</pre>
+     *
+     * <p>The surviving row SET, values and null positions are byte-for-byte those of the unfused
+     * {@code FilterOperator(predicate) → EvalOperator(projection)} chain: a position survives iff the predicate is
+     * TRUE (3VL {@code false}/{@code null} drop it, exactly as {@link org.elasticsearch.compute.operator.FilterOperator}
+     * treats null/multi-value as false), and the projection is evaluated <b>only</b> for surviving rows — so a dropped
+     * row emits NO projection warnings, matching the unfused {@code Eval}, which only ever sees survivors. Predicate
+     * warnings, by contrast, fire for every position (the {@code pred} helper runs per position), matching the unfused
+     * {@code Filter}, which evaluates the predicate over the whole page.
+     *
+     * <p><b>Reuse of the existing emit machinery.</b> The predicate is evaluated by the same block/logical DFS the
+     * standalone predicate paths use — {@link LogicalDfsEmitter} (for a 3VL {@code AND}/{@code OR} tree, with one
+     * {@code cmpN} helper per comparison) or {@link BlockDfsEmitter} (for a comparison {@link FusionNode.Kernel}, incl.
+     * comparison-over-arithmetic). The projection is evaluated by the arithmetic {@link BlockDfsEmitter} kernel DFS that
+     * {@link #emitBlockLoop} uses. To keep the top-level {@code fused} loop small and inlinable (criterion #6 budget
+     * guard, ENFORCED here) the two per-position bodies are factored into {@code private static} helpers ({@code pred}
+     * returning the tri-state, {@code projAppend} evaluating + appending the projection value-or-null), so the top-level
+     * loop only calls them and records survivors. The helpers are themselves below the budget for the representative
+     * shapes; the guard refuses to fuse (→ unfused fallback) if the top-level loop ever exceeds it.
+     *
+     * <p><b>Per-source warnings threading.</b> The runtime {@code Warnings[]} is the predicate's warning sources
+     * followed by the projection's (each offset by {@code predWarnCount}), so every kernel registers on the same node
+     * source its unfused generated evaluator would — keeping the fused warning set a subset of the unfused chain's.
+     *
+     * <p><b>Block path only.</b> A 3VL predicate is nullable, so — like {@link #compileBlockLoop} /
+     * {@link #compileLogicalBlockLoop} — this defines the hidden class into the caller's own module and there is no
+     * vector fast path.
+     *
+     * @param caller         the caller's lookup (from the module that owns the kernels); the fused class is defined here
+     * @param predicateTree  the WHERE predicate tree; a boolean-returning comparison {@link FusionNode.Kernel} or a 3VL
+     *                       {@link FusionNode.Logical}
+     * @param projectionTree the EVAL projection tree; an arithmetic {@link FusionNode.Kernel} at the root
+     * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME}
+     * @throws StitchingException if the caller lacks the access to define the hidden class, the emitted class fails JVM
+     *                            verification/linking, or the top-level loop exceeds the inlining budget — the caller
+     *                            should fall back to the unfused {@code Filter → Eval} chain
+     */
+    public Class<?> compileFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
+        throws StitchingException {
+        byte[] bytecode = emitFilterEvalBlockLoop(caller, predicateTree, projectionTree);
+        try {
+            return caller.defineHiddenClass(bytecode, true).lookupClass();
+        } catch (LinkageError e) {
+            logger.warn("fused filter-eval block loop failed to link; falling back to unfused", e);
+            throw new StitchingException("failed to define fused filter-eval block-loop class", e);
+        } catch (IllegalAccessException e) {
+            logger.warn("caller lookup [{}] cannot define fused filter-eval block-loop class; falling back to unfused", caller, e);
+            throw new StitchingException("caller lookup cannot define fused filter-eval block-loop class", e);
+        }
+    }
+
+    /**
+     * Builds the class bytes for the fused filter+eval block loop: the {@code pred} helper (predicate tri-state), any
+     * {@code cmpN} comparison helpers a logical predicate needs, the {@code projAppend} helper (projection value/null
+     * append) and the top-level {@code fused} loop that calls them and records surviving positions. Kept separate from
+     * {@link #compileFilterEvalBlockLoop} so the verification boundary is exactly the {@code defineHiddenClass} call.
+     */
+    private byte[] emitFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
+        throws StitchingException {
+        // Shape guards: the projection root must be a kernel (a bare column/constant EVAL is not fused here), and the
+        // predicate must be a boolean-returning comparison kernel or a 3VL logical tree. An ill-shaped tree throws a
+        // bare RuntimeException before the define boundary, which the plan-time caller treats as a fusion failure and
+        // falls back to the unfused chain (criterion #5).
+        if ((projectionTree instanceof FusionNode.Kernel) == false) {
+            throw new IllegalArgumentException("fused filter-eval requires a kernel projection root, not " + projectionTree);
+        }
+        boolean predicateIsLogical = predicateTree instanceof FusionNode.Logical;
+        if (predicateIsLogical == false) {
+            if ((predicateTree instanceof FusionNode.Kernel) == false) {
+                throw new IllegalArgumentException("fused filter-eval requires a kernel/logical predicate root, not " + predicateTree);
+            }
+            if (rootReturnType(predicateTree).getSort() != Type.BOOLEAN) {
+                throw new IllegalArgumentException("fused filter-eval predicate root must return boolean");
+            }
+        }
+
+        int predArity = arity(predicateTree);
+        int projArity = arity(projectionTree);
+        Element[] predInputElements = inputElements(predicateTree, predArity);
+        Element predLogicalElement = predicateIsLogical ? Element.of(logicalInputType(predicateTree)) : null;
+        Element[] projInputElements = inputElements(projectionTree, projArity);
+        Element projOutputElement = Element.of(rootReturnType(projectionTree));
+
+        List<FusionNode.Constant> predConstants = constantsInEmitOrder(predicateTree);
+        List<FusionNode.Constant> projConstants = constantsInEmitOrder(projectionTree);
+
+        // Per-source warning slots: the predicate's sources first, then the projection's (offset by predWarnCount), so
+        // the single runtime Warnings[] holds both and each kernel registers against its own node source.
+        Map<FusionNode, Integer> predSources = warningsSourceIndices(predicateTree);
+        int predWarnCount = predSources.size();
+        Map<FusionNode, Integer> projSourcesLocal = warningsSourceIndices(projectionTree);
+        Map<FusionNode, Integer> mergedProjSources = new IdentityHashMap<>();
+        for (Map.Entry<FusionNode, Integer> e : projSourcesLocal.entrySet()) {
+            mergedProjSources.put(e.getKey(), predWarnCount + e.getValue());
+        }
+
+        String internalName = caller.lookupClass().getPackageName().replace('.', '/') + "/Fused$$FilterEvalBlockLoop";
+
+        // Build the helper methods. A logical predicate additionally needs one cmpN helper per comparison operand.
+        List<MethodNode> methods = new ArrayList<>();
+        Map<FusionNode, String> comparisonHelperNames = new IdentityHashMap<>();
+        if (predicateIsLogical) {
+            List<MethodNode> comparisonHelpers = new ArrayList<>();
+            assignComparisonHelpers(predicateTree, predLogicalElement, comparisonHelperNames, comparisonHelpers);
+            methods.addAll(comparisonHelpers);
+        }
+        MethodNode predHelper = buildPredicateHelper(
+            predicateTree,
+            predArity,
+            predInputElements,
+            predLogicalElement,
+            predConstants,
+            predSources,
+            internalName,
+            comparisonHelperNames
+        );
+        MethodNode projHelper = buildProjectionAppendHelper(
+            projectionTree,
+            projArity,
+            projInputElements,
+            projOutputElement,
+            projConstants,
+            mergedProjSources
+        );
+        methods.add(predHelper);
+        methods.add(projHelper);
+
+        // Top-level fused loop frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3] int[] positions,
+        // [4 .. 4+predArity) predicate input *Blocks, then the projection input *Blocks, then the predicate constant
+        // params, then the projection constant params, then the scratch region.
+        int warningsArraySlot = 1;
+        int pcSlot = 2;
+        int positionsSlot = 3;
+        int predInputBase = 4;
+        int projInputBase = predInputBase + predArity;
+        int constParamBase = projInputBase + projArity;
+        Map<FusionNode.Constant, Integer> topPredConstantSlots = constantParamSlots(predConstants, constParamBase);
+        int projConstBase = constParamBase + constantParamSize(predConstants);
+        Map<FusionNode.Constant, Integer> topProjConstantSlots = constantParamSlots(projConstants, projConstBase);
+        int scratchBase = projConstBase + constantParamSize(projConstants);
+        int builderSlot = scratchBase;
+        int pSlot = builderSlot + 1;
+        int rowCountSlot = pSlot + 1;
+        int resultSlot = rowCountSlot + 1;
+        int excSlot = resultSlot + 1;
+        int tSlot = excSlot + 1;
+
+        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I[I");
+        for (int i = 0; i < predArity; i++) {
+            desc.append(predInputElements[i].blockDescriptor());
+        }
+        for (int i = 0; i < projArity; i++) {
+            desc.append(projInputElements[i].blockDescriptor());
+        }
+        appendConstantParamDescriptors(desc, predConstants);
+        appendConstantParamDescriptors(desc, projConstants);
+        desc.append(")").append(projOutputElement.blockDescriptor());
+
+        MethodNode host = new MethodNode(
+            Opcodes.ASM9,
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            FUSED_METHOD_NAME,
+            desc.toString(),
+            null,
+            null
+        );
+        InsnList insns = host.instructions;
+
+        // out = bf.new<Proj>BlockBuilder(positionCount) — a COMPACT builder that receives one entry per surviving row.
+        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEVIRTUAL,
+                BLOCK_FACTORY,
+                projOutputElement.newBlockBuilderMethod(),
+                projOutputElement.newBlockBuilderDescriptor(),
+                false
+            )
+        );
+        insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
+
+        LabelNode tryStart = new LabelNode();
+        LabelNode tryEnd = new LabelNode();
+        LabelNode handler = new LabelNode();
+        insns.add(tryStart);
+
+        insns.add(new InsnNode(Opcodes.ICONST_0));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, rowCountSlot));
+        insns.add(new InsnNode(Opcodes.ICONST_0));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
+
+        LabelNode loopStart = new LabelNode();
+        LabelNode loopEnd = new LabelNode();
+        LabelNode next = new LabelNode();
+        insns.add(loopStart);
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
+        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
+
+        // t = pred(warnings, p, <predBlocks...>, <predConsts...>);
+        StringBuilder predCallDesc = new StringBuilder("(").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
+        insns.add(new VarInsnNode(Opcodes.ALOAD, warningsArraySlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        for (int i = 0; i < predArity; i++) {
+            insns.add(new VarInsnNode(Opcodes.ALOAD, predInputBase + i));
+            predCallDesc.append(predInputElements[i].blockDescriptor());
+        }
+        for (FusionNode.Constant constant : predConstants) {
+            pushConstantArg(insns, constant.element(), topPredConstantSlots.get(constant));
+        }
+        appendConstantParamDescriptors(predCallDesc, predConstants);
+        predCallDesc.append(")I");
+        insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, "pred", predCallDesc.toString(), false));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, tSlot));
+
+        // if (t != 1) skip this position entirely (false OR null ⇒ dropped, no projection evaluated).
+        insns.add(new VarInsnNode(Opcodes.ILOAD, tSlot));
+        insns.add(new InsnNode(Opcodes.ICONST_1));
+        insns.add(new JumpInsnNode(Opcodes.IF_ICMPNE, next));
+
+        // projAppend(out, warnings, p, <projBlocks...>, <projConsts...>); — evaluates + appends the projection value/null.
+        StringBuilder projCallDesc = new StringBuilder("(").append(projOutputElement.builderDescriptor())
+            .append(WARNINGS_ARRAY_DESCRIPTOR)
+            .append("I");
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, warningsArraySlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        for (int i = 0; i < projArity; i++) {
+            insns.add(new VarInsnNode(Opcodes.ALOAD, projInputBase + i));
+            projCallDesc.append(projInputElements[i].blockDescriptor());
+        }
+        for (FusionNode.Constant constant : projConstants) {
+            pushConstantArg(insns, constant.element(), topProjConstantSlots.get(constant));
+        }
+        appendConstantParamDescriptors(projCallDesc, projConstants);
+        projCallDesc.append(")V");
+        insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, "projAppend", projCallDesc.toString(), false));
+
+        // positions[rowCount] = p; rowCount++;
+        insns.add(new VarInsnNode(Opcodes.ALOAD, positionsSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, rowCountSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        insns.add(new InsnNode(Opcodes.IASTORE));
+        insns.add(new IincInsnNode(rowCountSlot, 1));
+
+        insns.add(next);
+        insns.add(new IincInsnNode(pSlot, 1));
+        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
+
+        insns.add(loopEnd);
+        // result = out.build(); the compact projection block's positionCount is exactly the surviving row count.
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEINTERFACE,
+                projOutputElement.builderInternalName(),
+                "build",
+                projOutputElement.buildDescriptor(),
+                true
+            )
+        );
+        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
+        insns.add(tryEnd);
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
+        insns.add(new InsnNode(Opcodes.ARETURN));
+
+        insns.add(handler);
+        insns.add(new VarInsnNode(Opcodes.ASTORE, excSlot));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
+        insns.add(new InsnNode(Opcodes.ATHROW));
+
+        host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
+
+        if (hostMethodInterceptor != null) {
+            hostMethodInterceptor.accept(host);
+        }
+
+        ClassNode classNode = new ClassNode(Opcodes.ASM9);
+        classNode.version = Opcodes.V21;
+        classNode.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER;
+        classNode.name = internalName;
+        classNode.superName = "java/lang/Object";
+        classNode.methods.add(host);
+        classNode.methods.addAll(methods);
+
+        ClassLoader loader = caller.lookupClass().getClassLoader();
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
+            @Override
+            protected ClassLoader getClassLoader() {
+                return loader != null ? loader : super.getClassLoader();
+            }
+        };
+        // The two per-position bodies are factored into the pred/projAppend (and cmpN) helpers, so the top-level fused
+        // loop stays small and inlinable; enforce the budget on it (→ unfused fallback if a pathological shape exceeds).
+        return serializeWithBudgetGuard(classNode, writer, "filter-eval block loop", true);
+    }
+
+    /**
+     * Builds the {@code private static int pred(Warnings[] w, int p, <input *Blocks>, <constants>)} helper that
+     * evaluates the WHERE predicate for one position and returns its tri-state: {@code 0} false, {@code 1} true,
+     * {@code 2} null. A {@link FusionNode.Logical} predicate reuses {@link LogicalDfsEmitter} (calling the {@code cmpN}
+     * comparison helpers); a comparison {@link FusionNode.Kernel} (incl. comparison-over-arithmetic) reuses
+     * {@link BlockDfsEmitter}, returning its boolean value when present and {@code 2} otherwise. Predicate warnings are
+     * attributed to each kernel's own source (indices {@code [0, predWarnCount)} of the shared {@code Warnings[]}).
+     */
+    private MethodNode buildPredicateHelper(
+        FusionNode predicateTree,
+        int predArity,
+        Element[] predInputElements,
+        Element predLogicalElement,
+        List<FusionNode.Constant> predConstants,
+        Map<FusionNode, Integer> predSources,
+        String internalName,
+        Map<FusionNode, String> comparisonHelperNames
+    ) {
+        StringBuilder desc = new StringBuilder("(").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
+        for (int i = 0; i < predArity; i++) {
+            desc.append(predInputElements[i].blockDescriptor());
+        }
+        appendConstantParamDescriptors(desc, predConstants);
+        desc.append(")I");
+
+        MethodNode pred = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "pred", desc.toString(), null, null);
+        InsnList insns = pred.instructions;
+
+        int warningsArraySlot = 0;
+        int pSlot = 1;
+        int inputBase = 2;
+        int constParamBase = inputBase + predArity;
+        Map<FusionNode.Constant, Integer> constantSlots = constantParamSlots(predConstants, constParamBase);
+        int countSlot = constParamBase + constantParamSize(predConstants);
+        int liveSlot = countSlot + 1;
+        int overflowExcSlot = liveSlot + 1;
+        int workBase = overflowExcSlot + 1;
+
+        if (predicateTree instanceof FusionNode.Logical) {
+            LogicalDfsEmitter emitter = new LogicalDfsEmitter(
+                insns,
+                predLogicalElement,
+                inputBase,
+                pSlot,
+                warningsArraySlot,
+                predSources,
+                internalName,
+                comparisonHelperNames,
+                workBase,
+                constantSlots
+            );
+            int tRoot = emitter.alloc(1);
+            emitter.emit(predicateTree, tRoot);
+            insns.add(new VarInsnNode(Opcodes.ILOAD, tRoot));
+            insns.add(new InsnNode(Opcodes.IRETURN));
+        } else {
+            // A comparison kernel (possibly over arithmetic): reset the value-path live flag, run the block DFS, and
+            // map its present/value to a tri-state (present ? value(0/1) : null(2)).
+            insns.add(new InsnNode(Opcodes.ICONST_1));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
+            BlockDfsEmitter emitter = new BlockDfsEmitter(
+                insns,
+                pred,
+                predInputElements,
+                inputBase,
+                pSlot,
+                countSlot,
+                warningsArraySlot,
+                predSources,
+                liveSlot,
+                overflowExcSlot,
+                workBase,
+                constantSlots
+            );
+            NodeSlots root = emitter.emit(predicateTree, Element.of(Type.BOOLEAN_TYPE));
+            LabelNode retNull = new LabelNode();
+            insns.add(new VarInsnNode(Opcodes.ILOAD, root.present()));
+            insns.add(new JumpInsnNode(Opcodes.IFEQ, retNull));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, root.value()));
+            insns.add(new InsnNode(Opcodes.IRETURN));
+            insns.add(retNull);
+            insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
+            insns.add(new InsnNode(Opcodes.IRETURN));
+        }
+        return pred;
+    }
+
+    /**
+     * Builds the {@code private static void projAppend(<Proj>Block.Builder out, Warnings[] w, int p, <input *Blocks>,
+     * <constants>)} helper that evaluates the EVAL projection for one (surviving) position with the arithmetic
+     * {@link BlockDfsEmitter} kernel DFS and appends its value — or {@code appendNull()} when the projection is not
+     * present at {@code p} (a null / multi-value leaf or an overflow short-circuited it), exactly as the unfused
+     * {@code Eval} would for that row. Projection warnings are attributed to each kernel's own source, offset into the
+     * shared {@code Warnings[]} after the predicate's sources.
+     */
+    private MethodNode buildProjectionAppendHelper(
+        FusionNode projectionTree,
+        int projArity,
+        Element[] projInputElements,
+        Element projOutputElement,
+        List<FusionNode.Constant> projConstants,
+        Map<FusionNode, Integer> mergedProjSources
+    ) {
+        StringBuilder desc = new StringBuilder("(").append(projOutputElement.builderDescriptor())
+            .append(WARNINGS_ARRAY_DESCRIPTOR)
+            .append("I");
+        for (int i = 0; i < projArity; i++) {
+            desc.append(projInputElements[i].blockDescriptor());
+        }
+        appendConstantParamDescriptors(desc, projConstants);
+        desc.append(")V");
+
+        MethodNode proj = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "projAppend", desc.toString(), null, null);
+        InsnList insns = proj.instructions;
+
+        int builderSlot = 0;
+        int warningsArraySlot = 1;
+        int pSlot = 2;
+        int inputBase = 3;
+        int constParamBase = inputBase + projArity;
+        Map<FusionNode.Constant, Integer> constantSlots = constantParamSlots(projConstants, constParamBase);
+        int countSlot = constParamBase + constantParamSize(projConstants);
+        int liveSlot = countSlot + 1;
+        int overflowExcSlot = liveSlot + 1;
+        int workBase = overflowExcSlot + 1;
+
+        insns.add(new InsnNode(Opcodes.ICONST_1));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
+        BlockDfsEmitter emitter = new BlockDfsEmitter(
+            insns,
+            proj,
+            projInputElements,
+            inputBase,
+            pSlot,
+            countSlot,
+            warningsArraySlot,
+            mergedProjSources,
+            liveSlot,
+            overflowExcSlot,
+            workBase,
+            constantSlots
+        );
+        NodeSlots root = emitter.emit(projectionTree, projOutputElement);
+        LabelNode doNull = new LabelNode();
+        LabelNode done = new LabelNode();
+        insns.add(new VarInsnNode(Opcodes.ILOAD, root.present()));
+        insns.add(new JumpInsnNode(Opcodes.IFEQ, doNull));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(new VarInsnNode(projOutputElement.type().getOpcode(Opcodes.ILOAD), root.value()));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEINTERFACE,
+                projOutputElement.builderInternalName(),
+                projOutputElement.appendMethod(),
+                projOutputElement.appendDescriptor(),
+                true
+            )
+        );
+        insns.add(new InsnNode(Opcodes.POP));
+        insns.add(new JumpInsnNode(Opcodes.GOTO, done));
+        insns.add(doNull);
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEINTERFACE,
+                projOutputElement.builderInternalName(),
+                "appendNull",
+                projOutputElement.appendNullDescriptor(),
+                true
+            )
+        );
+        insns.add(new InsnNode(Opcodes.POP));
+        insns.add(done);
+        insns.add(new InsnNode(Opcodes.RETURN));
+        return proj;
+    }
+
+    /** Type-correct {@code xLOAD} of a constant argument (by its {@code J}/{@code I}/{@code D} element) from {@code slot}. */
+    private static void pushConstantArg(InsnList insns, char element, int slot) {
+        int opcode = switch (element) {
+            case 'J' -> Opcodes.LLOAD;
+            case 'I' -> Opcodes.ILOAD;
+            case 'D' -> Opcodes.DLOAD;
+            default -> throw new IllegalArgumentException("unsupported fused constant element [" + element + "]");
+        };
+        insns.add(new VarInsnNode(opcode, slot));
+    }
+
     /**
      * Assigns each comparison operand ({@link FusionNode.Kernel}) in {@code tree} a {@code private static} helper method
      * (named {@code cmp0}, {@code cmp1}, … in DFS order) and records the name so the loop emitter can call it.
@@ -2466,6 +2980,11 @@ public final class Stitcher {
 
     byte[] logicalBlockLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         return emitLogicalBlockLoop(caller, tree);
+    }
+
+    byte[] filterEvalBlockLoopBytecode(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
+        throws StitchingException {
+        return emitFilterEvalBlockLoop(caller, predicateTree, projectionTree);
     }
 
     /**
