@@ -52,9 +52,26 @@ public final class FusionSettings {
     );
 
     /**
-     * {@code esql.fusion.adaptive.min_rows}: node-scoped, non-dynamic; default {@code 0} (eager plan-time stitch). When
-     * {@code > 0}, a fusable subtree is served adaptively — unfused until an evaluator has seen this many rows, then
-     * stitched and switched. Bounded at {@link Integer#MAX_VALUE}.
+     * A warmup-informed <b>recommended</b> value for {@link #FUSION_ADAPTIVE_MIN_ROWS_SETTING} when a deployment opts
+     * into adaptive mode — <b>not</b> the hard default (which stays {@code 0}/eager; see below). It matches Trino's
+     * {@code PageProcessor.MAX_BATCH_SIZE} (8×1024), i.e. one compiled batch worth of rows.
+     *
+     * <p>Rationale: the fused method runs once per page with the row loop inside it, so its JIT back-edge count equals
+     * the rows it processes, and a fresh per-shape hidden class starts interpreted and needs ~15k–40k rows (HotSpot JDK
+     * 21 {@code Tier4CompileThreshold=15000}/{@code Tier4BackEdgeThreshold=40000}) to reach C2. Eager stitching
+     * therefore gives the <em>most</em> warmup runway; the adaptive threshold's real purpose is only to skip the stitch
+     * on trivially small queries while switching early enough to leave the rest of a large query as warmup runway.
+     * {@code 8192} skips sub-page queries without meaningfully delaying warmup. Our own {@code FusionBenchmark} (warmed,
+     * steady-state) refines this later.
+     */
+    public static final int RECOMMENDED_ADAPTIVE_MIN_ROWS = 8 * 1024;
+
+    /**
+     * {@code esql.fusion.adaptive.min_rows}: node-scoped, non-dynamic; default {@code 0} (eager plan-time stitch, which
+     * is also warmup-optimal — see {@link #RECOMMENDED_ADAPTIVE_MIN_ROWS}). When {@code > 0}, a fusable subtree is
+     * served adaptively — unfused until an evaluator has seen this many rows, then stitched and switched;
+     * {@link #RECOMMENDED_ADAPTIVE_MIN_ROWS} is the suggested starting value for that mode. Bounded at
+     * {@link Integer#MAX_VALUE}.
      */
     public static final Setting<Integer> FUSION_ADAPTIVE_MIN_ROWS_SETTING = Setting.intSetting(
         "esql.fusion.adaptive.min_rows",
