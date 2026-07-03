@@ -192,6 +192,11 @@ public final class FusionPlanner {
             // the Stitcher is never touched.
             return null;
         }
+        if (FusionSettings.shouldAttemptFusion() == false) {
+            // A/B sampling (Stage 6): this subtree was not drawn into the fusion sample, so run it unfused. Returning
+            // null keeps the fraction genuinely additive — the caller uses the ordinary unfused factory tree.
+            return null;
+        }
         PlanContext ctx = new PlanContext(layout, rawFactory);
         FusionNode tree = build(exp, ctx, null, null, true);
         if (tree == null || ctx.outputElement == null || ctx.inputElements.isEmpty()) {
@@ -213,16 +218,43 @@ public final class FusionPlanner {
             : "planner must populate every input element densely; got " + java.util.Arrays.toString(inputElements);
         ExpressionEvaluator.Factory unfused = rawFactory.apply(exp);
         FusedClassCompiler compiler = compilerForTests != null ? compilerForTests : DEFAULT_COMPILER;
+        Source[] warningSources = warningSources(tree, ctx);
+        ElementKind outputElement = ctx.outputElement;
+        boolean overflowChecked = ctx.overflowChecked;
+        String shape = shapeOf(tree);
+
+        long minRows = FusionSettings.adaptiveMinRows();
+        if (minRows > 0) {
+            // Adaptive path (Stage 6): defer the stitch. Serve the unfused chain until an evaluator has seen minRows
+            // rows, then stitch once (memoised) and switch. The supplier returns the fused factory or null on failure.
+            return new AdaptiveFusionEvaluatorFactory(
+                unfused,
+                () -> FusedExpressionEvaluatorFactory.tryCreateFusedOrNull(
+                    warningSources,
+                    tree,
+                    channels,
+                    inputElements,
+                    outputElement,
+                    overflowChecked,
+                    unfused,
+                    compiler,
+                    shape
+                ),
+                minRows,
+                shape
+            );
+        }
+        // Eager path (default, minRows == 0): stitch now at plan time, falling back to the unfused factory on failure.
         return FusedExpressionEvaluatorFactory.tryCreate(
-            warningSources(tree, ctx),
+            warningSources,
             tree,
             channels,
             inputElements,
-            ctx.outputElement,
-            ctx.overflowChecked,
+            outputElement,
+            overflowChecked,
             unfused,
             compiler,
-            shapeOf(tree)
+            shape
         );
     }
 

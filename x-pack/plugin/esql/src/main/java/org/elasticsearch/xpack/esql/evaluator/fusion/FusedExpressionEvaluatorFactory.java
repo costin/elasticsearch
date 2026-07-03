@@ -160,6 +160,39 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         FusionPlanner.FusedClassCompiler compiler,
         String shape
     ) {
+        FusedExpressionEvaluatorFactory fused = tryCreateFusedOrNull(
+            warningSources,
+            tree,
+            inputChannels,
+            inputElements,
+            outputElement,
+            overflowChecked,
+            unfused,
+            compiler,
+            shape
+        );
+        return fused != null ? fused : unfused;
+    }
+
+    /**
+     * Stitches {@code tree} and returns the fused factory, or {@code null} on any stitch failure (logging a warning and
+     * recording the failure, exactly as {@link #tryCreate}). Unlike {@link #tryCreate} this does <b>not</b> substitute
+     * the unfused factory on failure — it returns {@code null} — so the caller can distinguish "fused" from "could not
+     * fuse". The adaptive path ({@link AdaptiveFusionEvaluatorFactory}) uses this so a deferred stitch that fails is
+     * abandoned (the evaluator stays on its already-running unfused chain) rather than swapped for a fresh unfused
+     * factory.
+     */
+    static FusedExpressionEvaluatorFactory tryCreateFusedOrNull(
+        Source[] warningSources,
+        FusionNode tree,
+        int[] inputChannels,
+        ElementKind[] inputElements,
+        ElementKind outputElement,
+        boolean overflowChecked,
+        ExpressionEvaluator.Factory unfused,
+        FusionPlanner.FusedClassCompiler compiler,
+        String shape
+    ) {
         int arity = inputChannels.length;
         try {
             if (tree instanceof FusionNode.Logical) {
@@ -226,7 +259,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             // same way — fusion is an optimization and must never break the query.
             logger.warn(() -> "fusion stitch failed for shape [" + shape + "]; falling back to unfused evaluator chain", e);
             FusionTelemetry.recordFailure(shape);
-            return unfused;
+            return null;
         }
     }
 

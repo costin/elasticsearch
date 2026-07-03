@@ -48,6 +48,18 @@ public final class FusionTelemetry {
     private static final LongAdder TOTAL_FAILURES = new LongAdder();
 
     /**
+     * Number of adaptive evaluators that crossed their row threshold and successfully switched from the unfused chain
+     * to a stitched fused evaluator (Stage-6 {@code esql.fusion.adaptive.min_rows}). Diagnostic side-channel only.
+     */
+    private static final LongAdder ADAPTIVE_SWITCHES = new LongAdder();
+
+    /**
+     * Number of adaptive evaluators that crossed their row threshold but whose deferred stitch failed, so they stayed
+     * on the unfused chain for the rest of their life. Diagnostic side-channel only.
+     */
+    private static final LongAdder ADAPTIVE_ABANDONED = new LongAdder();
+
+    /**
      * Records one stitching failure for {@code shape} (the {@link FusionPlanner} shape signature). The aggregate is
      * always incremented; the per-shape counter is incremented for an already-tracked shape, or for a new shape only
      * while the map is below {@link #MAX_TRACKED_SHAPES} — beyond the cap a new shape counts only in the aggregate.
@@ -76,6 +88,26 @@ public final class FusionTelemetry {
         return TOTAL_FAILURES.sum();
     }
 
+    /** Records one adaptive evaluator successfully switching to its stitched fused evaluator after the row threshold. */
+    public static void recordAdaptiveSwitch() {
+        ADAPTIVE_SWITCHES.increment();
+    }
+
+    /** Records one adaptive evaluator whose deferred stitch failed, so it stayed unfused. */
+    public static void recordAdaptiveAbandoned() {
+        ADAPTIVE_ABANDONED.increment();
+    }
+
+    /** Number of adaptive unfused-to-fused switches recorded. */
+    public static long adaptiveSwitches() {
+        return ADAPTIVE_SWITCHES.sum();
+    }
+
+    /** Number of adaptive evaluators that crossed the threshold but abandoned fusion after a failed stitch. */
+    public static long adaptiveAbandoned() {
+        return ADAPTIVE_ABANDONED.sum();
+    }
+
     /** An immutable snapshot of the per-shape counters, for diagnostics or assertions. */
     public static Map<String, Long> snapshot() {
         return FAILURES_BY_SHAPE.entrySet().stream().collect(java.util.stream.Collectors.toMap(Map.Entry::getKey, e -> e.getValue().sum()));
@@ -85,5 +117,7 @@ public final class FusionTelemetry {
     static void resetForTests() {
         FAILURES_BY_SHAPE.clear();
         TOTAL_FAILURES.reset();
+        ADAPTIVE_SWITCHES.reset();
+        ADAPTIVE_ABANDONED.reset();
     }
 }
