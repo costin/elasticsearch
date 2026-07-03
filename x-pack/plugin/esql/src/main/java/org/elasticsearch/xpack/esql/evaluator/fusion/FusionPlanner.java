@@ -398,6 +398,18 @@ public final class FusionPlanner {
             return null;
         }
         FusionDescriptor descriptor = ((FusionAware) factory).fusionDescriptor();
+        // The @Fusable kernel must be THIS expression's own kernel — i.e. declared on this expression's class (Add
+        // declares Add#processLongs, Floor declares Floor#..., etc.), so exp.children() ARE the kernel's operands.
+        // A DELEGATING function breaks that: e.g. BUCKET(field, span).toEvaluator builds Mul(Floor(Div(field, span)),
+        // span) and returns that Mul's (FusionAware) evaluator, so the factory reports the Mul kernel while exp is a
+        // Bucket whose children are [field, span] — NOT Mul's operands. Fusing here would mis-map them, silently
+        // dropping the delegate's real sub-tree (the Floor/Div) and computing field*span instead of the bucket. Refuse
+        // to fuse whenever the kernel is not declared on exp's own class, so such functions fall back to the (correct)
+        // unfused chain. (This is why a Bucket, Round, etc. never fuse today; a future stage could fuse their LOWERED
+        // expression tree directly instead.)
+        if (descriptor.kernelClass() != exp.getClass()) {
+            return null;
+        }
         String kernelType = descriptor.kernelType();
         // Every argument of THIS kernel must be the same primitive long/int/double (binary ops are homogeneous; a
         // unary cast kernel is trivially homogeneous). Children of different elements are bridged by casts, not here.
@@ -569,6 +581,11 @@ public final class FusionPlanner {
             return null;
         }
         FusionDescriptor descriptor = ((FusionAware) factory).fusionDescriptor();
+        // As in build(): only fuse when the kernel is declared on exp's own class, so a DELEGATING function (whose
+        // FusionAware evaluator is really some other expression's kernel) cannot mis-map its children here.
+        if (descriptor.kernelClass() != exp.getClass()) {
+            return null;
+        }
         String kernelType = descriptor.kernelType();
         ElementKind argElement = homogeneousArgElement(kernelType);
         if (argElement == null) {
