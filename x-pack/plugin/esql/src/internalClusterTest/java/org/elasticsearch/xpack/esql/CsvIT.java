@@ -280,12 +280,24 @@ public class CsvIT extends ESTestCase {
             new NodeConfigurationSource() {
                 @Override
                 public Settings nodeSettings(int nodeOrdinal, Settings otherSettings) {
-                    return Settings.builder()
+                    Settings.Builder builder = Settings.builder()
                         .put("xpack.security.enabled", false)
                         .put("xpack.license.self_generated.type", "trial")
                         .put("ingest.geoip.downloader.enabled", false)
-                        .put(PlannerSettings.PARALLEL_OPERATOR_PROMOTION_THRESHOLD_ROWS.getKey(), 0)
-                        .build();
+                        .put(PlannerSettings.PARALLEL_OPERATOR_PROMOTION_THRESHOLD_ROWS.getKey(), 0);
+                    // Additive test hook: expression fusion is node-scoped and defaults ON, so the whole corpus already
+                    // runs fused. These two -D-guarded overrides let a corpus run flip fusion off, or force the adaptive
+                    // (tiered) path, to prove result/warning parity across every csv-spec regardless of fusion mode.
+                    // Unset by default, so an ordinary run is unchanged.
+                    String fusionEnabled = System.getProperty("esql.fusion.enabled");
+                    if (fusionEnabled != null) {
+                        builder.put("esql.fusion.enabled", fusionEnabled);
+                    }
+                    String adaptiveMinRows = System.getProperty("esql.fusion.adaptive.min_rows");
+                    if (adaptiveMinRows != null) {
+                        builder.put("esql.fusion.adaptive.min_rows", adaptiveMinRows);
+                    }
+                    return builder.build();
                 }
 
                 @Override
