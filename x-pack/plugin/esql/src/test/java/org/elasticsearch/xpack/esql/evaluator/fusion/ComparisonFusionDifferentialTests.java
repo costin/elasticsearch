@@ -12,10 +12,12 @@ import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
+import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.VectorStrategy;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Sub;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.Equals;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
@@ -260,6 +262,140 @@ public class ComparisonFusionDifferentialTests extends FusionDifferentialTestCas
             blockFactory.newLongArrayVector(new long[] { 1L }, positions).asBlock(),
             multiValueLong(new long[] { 1L, 2L }) };
         runDifferential(fused, unfused, ElementKind.LONG, inputs, positions, "arith-root overflow+mv same position");
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // MV-warning PARITY across an ancestor short-circuit (the lookup-join corpus gap). Unlike the subset regressions
+    // above, here the fused path MUST emit the SAME multi-value warning the unfused chain does: the unfused chain runs
+    // every generated evaluator's loop FULLY, so a leaf's mv warning fires per its own consuming kernel's operand
+    // order, INDEPENDENT of whether an ancestor kernel short-circuited the position. The fused block path must match
+    // that (per-kernel operand-order gating), not drop the warning when the ancestor short-circuits.
+    // ---------------------------------------------------------------------------------------------------------------
+
+    /**
+     * The lookup-join csv-spec shape {@code other2 > id_int + 5000} where {@code other2} is NULL exactly at the
+     * positions where {@code id_int} is MULTI-VALUE. The comparison's left operand ({@code other2}) is null, so the
+     * whole-tree value short-circuit nulls the position before it reaches the {@code Add} subtree — yet the unfused
+     * chain still runs the {@code Add} evaluator fully and emits the "single-value function encountered multi-value"
+     * warning for {@code id_int + 5000} (id_int is the Add's operand 0, always inspected). The fused path MUST emit the
+     * SAME warning, attributed to the Add's own source, matching the unfused chain — this is the corpus warning gap.
+     */
+    public void testComparisonNullLeftLeafDoesNotSuppressArithmeticChildMultiValueWarning() {
+        FieldAttribute other2 = field("other2", DataType.LONG);
+        FieldAttribute idInt = field("id_int", DataType.LONG);
+        Layout layout = layout(other2, idInt); // other2 = channel 0 (comparison operand 0), id_int = channel 1
+        // Distinct sources so the mv warning's attribution ([id_int + 5000], the Add) can be asserted exactly.
+        Source addSource = new Source(3, 18, "id_int + 5000");
+        Source gtSource = new Source(2, 3, "other2 > id_int + 5000");
+        Expression expr = new GreaterThan(
+            gtSource,
+            other2,
+            new Add(addSource, idInt, new Literal(Source.EMPTY, 5000L, DataType.LONG), EsqlTestUtils.TEST_CFG)
+        );
+
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        assertFuses(fused, "other2 > id_int + 5000");
+        assertDoesNotFuse(unfused, "other2 > id_int + 5000");
+
+        int positionCount = 6;
+        // other2 is NULL exactly at the positions where id_int is multi-valued (p=1, p=4), so the comparison's left
+        // operand short-circuits the position to null before the Add subtree is reached on the value path.
+        Block other2Block;
+        try (var builder = blockFactory.newLongBlockBuilder(positionCount)) {
+            for (int p = 0; p < positionCount; p++) {
+                if (p == 1 || p == 4) {
+                    builder.appendNull();
+                } else {
+                    builder.appendLong(1000L + p);
+                }
+            }
+            other2Block = builder.build();
+        }
+        Block idIntBlock;
+        try (var builder = blockFactory.newLongBlockBuilder(positionCount)) {
+            for (int p = 0; p < positionCount; p++) {
+                if (p == 1 || p == 4) {
+                    builder.beginPositionEntry();
+                    builder.appendLong(p);
+                    builder.appendLong(p + 100);
+                    builder.endPositionEntry();
+                } else {
+                    builder.appendLong(p);
+                }
+            }
+            idIntBlock = builder.build();
+        }
+        Block[] inputs = { other2Block, idIntBlock };
+        DifferentialWarnings warnings = runDifferentialWarnings(
+            fused,
+            unfused,
+            ElementKind.BOOLEAN,
+            inputs,
+            positionCount,
+            "other2(null) > id_int(mv) + 5000"
+        );
+        // Sanity: the unfused chain emits the mv warning attributed to the Add ([id_int + 5000]).
+        assertThat("unfused must emit the mv warning (sanity)", containsWarning(warnings.reference(), MULTI_VALUE_MSG), is(true));
+        assertThat("unfused attributes it to the Add (sanity)", containsWarning(warnings.reference(), "id_int + 5000"), is(true));
+        // The crux: the fused path must ALSO emit it (parity, not just subset), attributed to the Add's source — even
+        // though the comparison's null left operand short-circuited the value path before the Add subtree.
+        assertFusedEmitsWarning(warnings.fused(), MULTI_VALUE_MSG, "other2(null) > id_int(mv) + 5000");
+        assertThat(
+            "fused mv warning must be attributed to the Add source [id_int + 5000] despite the null-left short-circuit; fused="
+                + warnings.fused(),
+            containsWarning(warnings.fused(), "id_int + 5000"),
+            is(true)
+        );
+    }
+
+    /**
+     * Companion proving the fix is per-kernel operand-order gating and NOT a naive "warn for every multi-valued leaf up
+     * front" scan: {@code a * b} over longs at a single position where {@code a} (the {@code Mul}'s operand 0) is NULL
+     * and {@code b} (operand 1) is MULTI-VALUE. The unfused {@code Mul} evaluator inspects operand 0 first, finds it
+     * null and short-circuits WITHIN its own operand order — it never inspects {@code b}, so it emits NO mv warning.
+     * The fused path must match: gating {@code b}'s mv check on {@code Mul}'s earlier operand ({@code a}) being present,
+     * it must NOT emit the multi-value warning here.
+     */
+    public void testArithmeticNullOperandBeforeMultiValueOperandSuppressesWarningWithinKernel() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        Layout layout = layout(a, b); // a = channel 0 (Mul operand 0), b = channel 1 (Mul operand 1)
+        Expression expr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, lit(0L), EsqlTestUtils.TEST_CFG), b);
+
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        assertFuses(fused, "(a+0) * b");
+        assertDoesNotFuse(unfused, "(a+0) * b");
+
+        int positionCount = 1;
+        Block[] inputs = {
+            nullLong(positionCount),                 // a: null (Mul operand 0 is null -> short-circuit before b)
+            multiValueLong(new long[] { 1L, 2L }) };  // b: multi-value (never inspected by the unfused Mul)
+        DifferentialWarnings warnings = runDifferentialWarnings(
+            fused,
+            unfused,
+            ElementKind.LONG,
+            inputs,
+            positionCount,
+            "(a=null) * (b=mv)"
+        );
+        // The unfused Mul short-circuits on the null operand 0 and never inspects b, so neither side warns.
+        assertThat(
+            "unfused must NOT emit the mv warning (operand-0-null short-circuit; sanity)",
+            containsWarning(warnings.reference(), MULTI_VALUE_MSG),
+            is(false)
+        );
+        assertThat(
+            "fused must NOT warn for b: per-kernel operand-order gating suppresses it (a, Mul's operand 0, is null); fused="
+                + warnings.fused(),
+            containsWarning(warnings.fused(), MULTI_VALUE_MSG),
+            is(false)
+        );
+    }
+
+    private static Literal lit(long v) {
+        return new Literal(Source.EMPTY, v, DataType.LONG);
     }
 
     /** The comparison operators, enumerated for the deterministic per-operator coverage test. */

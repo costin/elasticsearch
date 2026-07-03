@@ -968,17 +968,12 @@ public final class Stitcher {
         // produced block). Each *Block parameter is typed to its input's own element.
         Element[] inputElements = inputElements(tree, arity);
         Element outputElement = Element.of(rootReturnType(tree));
-        // Distinct overflow exception types the tree's kernels can throw (uniformly ArithmeticException in scope);
-        // empty when no kernel is overflow-checked, in which case no per-position try/catch is emitted.
-        Set<String> overflowTypes = overflowExceptionInternalNames(tree);
-
         // Frame layout: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input *Blocks. The
-        // builder, loop counter, a scratch value-count slot, the built result slot, the per-position root value slot
-        // (OUTPUT element wide), the caught-throwable slot (builder-safety), the overflow-exception slot and the
-        // current-kernel slot sit in the fixed region above the parameters; each kernel body then gets a disjoint range
-        // above that. The DFS emitter
-        // (see below) reads each consumed leaf inline into the enclosing kernel's operand slots, so there are no
-        // separate pre-read leaf value slots.
+        // builder, loop counter, a scratch value-count slot, the built result slot, the caught-throwable slot
+        // (builder-safety), the per-kernel overflow-exception slot and the value-path {@code live} flag sit in the
+        // fixed region above the parameters; each node then gets a disjoint present/value/body range above that
+        // (allocated by the DFS emitter from {@code workBase}). The DFS emitter (see below) reads each consumed leaf
+        // inline into the enclosing kernel's operand slots, so there are no separate pre-read leaf value slots.
         // One trailing primitive parameter per embedded constant (canonical emit order) sits between the input *Blocks
         // and the scratch region, so every scratch base is shifted up by the constant parameters' total slot size.
         List<FusionNode.Constant> constants = constantsInEmitOrder(tree);
@@ -991,13 +986,18 @@ public final class Stitcher {
         int pSlot = builderSlot + 1;
         int countSlot = pSlot + 1;
         int resultSlot = countSlot + 1;
-        int rootValueSlot = resultSlot + 1;
-        int excSlot = rootValueSlot + outputElement.type().getSize();
+        int excSlot = resultSlot + 1;
+        // A scratch slot for the exception caught by any single kernel's overflow handler (handlers never overlap in
+        // execution, so one slot is shared).
         int overflowExcSlot = excSlot + 1;
-        // Names the overflow-checked kernel currently evaluating; the shared overflow handler reads it to attribute the
-        // caught overflow to that kernel's own warning source (see below).
-        int currentKernelSlot = overflowExcSlot + 1;
-        int kernelBase = currentKernelSlot + 1;
+        // The per-position value-path flag: {@code true} until the whole-tree short-circuit fires (the first null /
+        // multi-value / overflow the value DFS meets), then {@code false}. It gates ONLY the value-dependent overflow /
+        // div-by-zero warning registration to the ratified short-circuit subset — an off-value-path kernel body still
+        // runs (its result feeds a sibling's per-kernel multi-value gate) but its overflow is caught silently. Leaf
+        // multi-value warnings are NOT gated by {@code live}: each kernel emits them in its own operand order so they
+        // match the unfused chain (which runs every kernel's loop fully), independent of ancestor short-circuits.
+        int liveSlot = overflowExcSlot + 1;
+        int workBase = liveSlot + 1;
 
         // Each kernel's warning-source slot into the runtime Warnings[]: its overflow warning and its direct leaf
         // operands' multi-value warnings register on warnings[its slot], matching the unfused per-node evaluator source.
@@ -1056,53 +1056,42 @@ public final class Stitcher {
         insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
         insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
 
-        // Per-position DFS evaluation that reproduces the unfused kernel chain's short-circuit ORDER, so the fused
-        // block path's warnings are ALWAYS a SUBSET of the unfused chain's (criterion #1). The unfused chain
-        // evaluates operands depth-first and, at each kernel, checks its earlier operand before its later one: a null
-        // (getValueCount == 0), a multi-value (> 1, which also registers the single-value warning) or an intermediate
-        // overflow short-circuits the position to null WITHOUT inspecting — or warning about — the not-yet-reached
-        // operands. A naive fused loop that hoists every leaf's null/multi-value guard to the front instead would emit
-        // a multi-value warning for a leaf the unfused chain never reaches (e.g. a sibling subtree overflowed, or an
-        // earlier-in-DFS operand was null first), so the fused warning set would NOT be a subset of the unfused one.
-        // Emitting the guards inline in DFS order — and letting an intermediate overflow throw out of the shared
-        // per-position overflow try before any later leaf's guard runs — reproduces that short-circuit exactly: a
-        // leaf's multi-value warning fires only when the unfused evaluation would actually reach that input's check.
-        // Values and null positions are unchanged (a position is still null iff any consumed leaf is null/multi-value
-        // or any kernel overflows); only the never-reached warnings are (correctly) not emitted.
-        LabelNode tryStartOverflow = overflowTypes.isEmpty() ? null : new LabelNode();
-        LabelNode tryEndOverflow = overflowTypes.isEmpty() ? null : new LabelNode();
-        if (tryStartOverflow != null) {
-            // Seed currentKernelSlot (0) OUTSIDE the overflow try so it is definitely int-typed at the handler's frame
-            // merge; the DFS overwrites it with the real kernel slot immediately before each overflow-checked body.
-            insns.add(new InsnNode(Opcodes.ICONST_0));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, currentKernelSlot));
-            insns.add(tryStartOverflow);
-        }
-        // Evaluate the tree for position p in DFS order; the root value is left on the operand stack. A null or
-        // multi-value leaf jumps to appendNull (registering the multi-value warning first when applicable); a kernel
-        // overflow is caught by the handler(s) below.
+        // Per-position DFS evaluation. Each node computes a {@code present} flag (did this node produce a value at
+        // {@code p}?) and, when present, its value, both into disjoint local slots. The tree VALUE / null position is
+        // exactly today's whole-tree short-circuit — a position is null iff the root is not present, i.e. iff any
+        // consumed leaf is null / multi-value or any kernel on the value path overflows.
+        //
+        // The difference from a single unified short-circuit DFS is WARNING fidelity: the unfused chain runs every
+        // generated evaluator's loop FULLY, so a leaf's multi-value warning fires iff, WITHIN its own consuming
+        // kernel's operand order, that kernel's earlier operands are present — INDEPENDENT of whether an ancestor
+        // kernel already short-circuited the position. So each kernel here emits its own leaf operands' multi-value
+        // warnings gated only by its OWN running {@code present} flag (never by an ancestor's), and every kernel body
+        // whose own operands are present is still run (its result feeds a sibling's per-kernel gate) even off the
+        // value path. Value-DEPENDENT warnings (overflow / div-by-zero) stay the ratified short-circuit subset: a
+        // body's overflow is registered only while {@code live} is true (the value path has not yet short-circuited),
+        // and caught silently otherwise. {@code live} is reset true here for each position.
+        insns.add(new InsnNode(Opcodes.ICONST_1));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
         BlockDfsEmitter emitter = new BlockDfsEmitter(
             insns,
+            host,
             inputElements,
             inputBase,
             pSlot,
             countSlot,
             warningsArraySlot,
             sourceIndices,
-            currentKernelSlot,
-            appendNull,
-            kernelBase,
+            liveSlot,
+            overflowExcSlot,
+            workBase,
             constantSlots
         );
-        emitter.emit(tree, outputElement);
-        // Stash the root value in a slot, then append it once past the overflow-guarded region (the append itself
-        // cannot overflow, so it stays outside the try).
-        insns.add(new VarInsnNode(outputElement.type().getOpcode(Opcodes.ISTORE), rootValueSlot));
-        if (tryEndOverflow != null) {
-            insns.add(tryEndOverflow);
-        }
+        NodeSlots root = emitter.emit(tree, outputElement);
+        // if (root not present) appendNull; else append the root value.
+        insns.add(new VarInsnNode(Opcodes.ILOAD, root.present()));
+        insns.add(new JumpInsnNode(Opcodes.IFEQ, appendNull));
         insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new VarInsnNode(outputElement.type().getOpcode(Opcodes.ILOAD), rootValueSlot));
+        insns.add(new VarInsnNode(outputElement.type().getOpcode(Opcodes.ILOAD), root.value()));
         insns.add(
             new MethodInsnNode(
                 Opcodes.INVOKEINTERFACE,
@@ -1115,28 +1104,8 @@ public final class Stitcher {
         insns.add(new InsnNode(Opcodes.POP));
         insns.add(new JumpInsnNode(Opcodes.GOTO, next));
 
-        // Overflow handler(s): register the thrown exception and route to appendNull. One handler per distinct
-        // exception type keeps each handler's incoming frame a single concrete type (no supertype merge), and they are
-        // added to the exception table BEFORE the builder-safety catch-all so overflow is matched first. Because the
-        // handler is reached only after the DFS emit began, any leaf whose guard the overflow preempted is (correctly)
-        // never inspected, matching the unfused chain's short-circuit.
-        for (String exType : overflowTypes) {
-            LabelNode overflowHandler = new LabelNode();
-            insns.add(overflowHandler);
-            insns.add(new VarInsnNode(Opcodes.ASTORE, overflowExcSlot));
-            // Register the overflow on the currently-evaluating kernel's OWN Warnings (warnings[currentKernelSlot]) so
-            // the header matches the unfused chain, where that kernel's generated evaluator would attribute it.
-            insns.add(new VarInsnNode(Opcodes.ALOAD, warningsArraySlot));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, currentKernelSlot));
-            insns.add(new InsnNode(Opcodes.AALOAD));
-            insns.add(new VarInsnNode(Opcodes.ALOAD, overflowExcSlot));
-            insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, WARNINGS, "registerException", WARNINGS_REGISTER_DESCRIPTOR, false));
-            insns.add(new JumpInsnNode(Opcodes.GOTO, appendNull));
-            host.tryCatchBlocks.add(new TryCatchBlockNode(tryStartOverflow, tryEndOverflow, overflowHandler, exType));
-        }
-
-        // out.appendNull(); reached by a null/multi-value leaf (warning, if any, already registered) or after an
-        // overflow warning above.
+        // out.appendNull(); reached when the root is not present (a null / multi-value leaf or an overflow on the value
+        // path short-circuited the position; any warning was already registered inline by the emitter).
         insns.add(appendNull);
         insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
         insns.add(
@@ -2035,124 +2004,96 @@ public final class Stitcher {
         }
     }
 
+    /** The disjoint local slots a {@link BlockDfsEmitter} node evaluates into: a {@code present} flag and its value. */
+    private record NodeSlots(int present, int value) {}
+
     /**
-     * Depth-first emitter for the nullable/multi-valued <b>block</b> loop that reproduces the unfused kernel chain's
-     * short-circuit ORDER (see {@link #emitBlockLoop} for why this is required by the {@code fused ⊆ unfused} warning
-     * invariant). Unlike {@link BlockLoopEmitter} (dense vectors: values pre-read into slots, no guards), each
-     * {@link FusionNode.Input} here inlines the per-position null / multi-value guard against its {@code *Block} and
-     * reads the value only when the position is single-valued. A leaf's multi-value warning is therefore registered
-     * exactly when the unfused evaluation would reach that input's check: a null ({@code getValueCount == 0}), a
-     * multi-value ({@code > 1}) or — via the enclosing per-position overflow try — an intermediate overflow
-     * short-circuits the position to {@code appendNull} before any later-in-DFS-order operand is inspected.
+     * Depth-first emitter for the nullable/multi-valued <b>block</b> loop. Each node evaluates into two disjoint local
+     * slots for the current position {@code p}: a {@code present} flag ({@code 1} iff the node produced a value) and,
+     * when present, its value. The tree's VALUE / null position is exactly today's whole-tree short-circuit — the root
+     * is not present (⇒ {@code appendNull}) iff any consumed leaf is null / multi-value or any kernel on the value path
+     * overflows — so values and null positions are byte-for-byte unchanged.
      *
-     * <p>Each node leaves its value on the operand stack; a parent stores every child into an operand slot
-     * immediately after emitting it, so at every jump to {@code appendNull} the operand stack is empty (all
-     * intermediate results live in slots). This keeps {@code appendNull} a clean control-flow merge regardless of how
-     * deep in the tree the short-circuit fired.
+     * <p><b>Per-kernel multi-value warnings (match the unfused chain).</b> The unfused chain runs every generated
+     * evaluator's loop FULLY, so a leaf's {@code single-value function encountered multi-value} warning fires iff,
+     * within its own consuming kernel's operand order, that kernel's earlier operands are present at {@code p} —
+     * INDEPENDENT of whether an ancestor kernel already short-circuited the position. This emitter reproduces that
+     * exactly: it does NOT stop the DFS at the first not-present operand. Each kernel walks its operands in order,
+     * tracking its OWN running {@code present} flag; a leaf operand's multi-value warning is emitted iff that kernel's
+     * earlier operands were present (its own {@code present} still {@code true}), attributed to that kernel's warning
+     * source. A nested-kernel operand is always emitted (so its own subtree's per-kernel warnings fire regardless of an
+     * ancestor short-circuit), and every kernel body whose own operands are present is still run — its result feeds a
+     * consuming kernel's per-kernel gate even when that consumer is off the value path.
+     *
+     * <p><b>Value-dependent warnings stay the ratified subset.</b> A kernel body's overflow / div-by-zero warning is
+     * registered only while {@code live} (the value path has not yet short-circuited); a body that overflows off the
+     * value path is caught silently (its {@code present} still goes {@code false}, so a consuming kernel's per-kernel
+     * gate matches the unfused chain, but no warning is emitted — exactly today's behaviour).
+     *
+     * <p><b>Slots.</b> Each node claims a {@code present} slot, a value slot (its element's width) and a disjoint body
+     * range (the kernel body's {@code maxLocals}); the value + argument slots are pre-initialised to a typed zero so
+     * the verifier sees them definitely assigned (they are read only on the present path, but that correlation is
+     * value-level, not type-level, so an explicit zero-init is required).
      */
     private final class BlockDfsEmitter {
         private final InsnList insns;
+        private final MethodNode host;
         private final Element[] inputElements;
         private final int inputBase;
         private final int pSlot;
         private final int countSlot;
         private final int warningsArraySlot;
         private final Map<FusionNode, Integer> sourceIndices;
-        private final int currentKernelSlot;
-        private final LabelNode appendNull;
-        private int kernelBase;
+        private final int liveSlot;
+        private final int overflowExcSlot;
         private final Map<FusionNode.Constant, Integer> constantSlots;
+        private int next;
 
         BlockDfsEmitter(
             InsnList insns,
+            MethodNode host,
             Element[] inputElements,
             int inputBase,
             int pSlot,
             int countSlot,
             int warningsArraySlot,
             Map<FusionNode, Integer> sourceIndices,
-            int currentKernelSlot,
-            LabelNode appendNull,
-            int kernelBase,
+            int liveSlot,
+            int overflowExcSlot,
+            int workBase,
             Map<FusionNode.Constant, Integer> constantSlots
         ) {
             this.insns = insns;
+            this.host = host;
             this.inputElements = inputElements;
             this.inputBase = inputBase;
             this.pSlot = pSlot;
             this.countSlot = countSlot;
             this.warningsArraySlot = warningsArraySlot;
             this.sourceIndices = sourceIndices;
-            this.currentKernelSlot = currentKernelSlot;
-            this.appendNull = appendNull;
-            this.kernelBase = kernelBase;
+            this.liveSlot = liveSlot;
+            this.overflowExcSlot = overflowExcSlot;
             this.constantSlots = constantSlots;
-        }
-
-        /** Entry point: the root produces {@code expected}; the {@code enclosingKernelSlot} passed here is unused. */
-        void emit(FusionNode node, Element expected) {
-            emit(node, expected, -1);
+            this.next = workBase;
         }
 
         /**
-         * Emits the DFS evaluation of {@code node} for the current position {@code p}, leaving its value on the
-         * operand stack, or jumping to {@code appendNull} — after registering the single-value multi-value warning
-         * when the input is multi-valued — when the node is null or multi-valued. {@code expected} is the element
-         * {@code node} must produce (used to type a constant push). A leaf's multi-value warning is attributed to
-         * {@code enclosingKernelSlot} (the warning source of the kernel that directly consumes the leaf), matching the
-         * unfused chain, where that kernel's generated evaluator inspects the operand and warns at its own node source.
+         * Emits the DFS evaluation of the kernel {@code node} for the current position {@code p} into freshly claimed
+         * present/value slots, and returns them. {@code expected} is the element the node must produce (its consuming
+         * kernel's argument element, or the output element at the root); it types the value slot.
          */
-        void emit(FusionNode node, Element expected, int enclosingKernelSlot) {
-            if (node instanceof FusionNode.Constant constant) {
-                // Embedded literal: load it from its trailing method-parameter slot, with no null / multi-value guard
-                // (a constant is always present and single-valued), so it never short-circuits the position to
-                // appendNull.
-                loadConstantParam(insns, expected, constant, constantSlots.get(constant));
-                return;
-            }
-            if (node instanceof FusionNode.Input input) {
-                Element inputElement = inputElements[input.index()];
-                int block = inputBase + input.index();
-                // switch (block.getValueCount(p)) { case 0 -> appendNull (null, no warning);
-                // case 1 -> read the single value; default -> register multi-value warning, then appendNull }
-                insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-                insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-                insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getValueCount", "(I)I", true));
-                insns.add(new VarInsnNode(Opcodes.ISTORE, countSlot));
-                insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-                insns.add(new JumpInsnNode(Opcodes.IFEQ, appendNull));
-                LabelNode single = new LabelNode();
-                insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-                insns.add(new InsnNode(Opcodes.ICONST_1));
-                insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, single));
-                loadWarnings(insns, warningsArraySlot, enclosingKernelSlot);
-                emitMultiValueWarningOn(insns);
-                insns.add(new JumpInsnNode(Opcodes.GOTO, appendNull));
-                insns.add(single);
-                // v = block.get*(block.getFirstValueIndex(p)); leave on stack for the enclosing kernel to store.
-                insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-                insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-                insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-                insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getFirstValueIndex", "(I)I", true));
-                insns.add(
-                    new MethodInsnNode(
-                        Opcodes.INVOKEINTERFACE,
-                        inputElement.blockInternalName(),
-                        inputElement.getValueMethod(),
-                        inputElement.getValueDescriptor(),
-                        true
-                    )
-                );
-                return;
-            }
+        NodeSlots emit(FusionNode node, Element expected) {
             FusionNode.Kernel kernel = (FusionNode.Kernel) node;
             MethodNode template = templates.methodNode(kernel.descriptor());
             Body body = BodyExtractor.extract(template);
 
-            // Claim this node's disjoint slot range, then shift the body's locals into it. Argument loads inside the
-            // body now read [nodeBase + argOffset]; the stores below feed exactly those slots.
-            int nodeBase = kernelBase;
-            kernelBase += body.maxLocals();
+            // Claim this node's disjoint slots: a present flag, an expected-wide value slot, then the body's local
+            // range (arguments + temps). Children recurse and claim strictly higher slots, so no ranges collide.
+            int presentSlot = next++;
+            int valueSlot = next;
+            next += expected.type().getSize();
+            int nodeBase = next;
+            next += body.maxLocals();
             SlotRemapper.shift(body.computation(), nodeBase);
 
             Type[] argTypes = Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes();
@@ -2167,25 +2108,174 @@ public final class Stitcher {
                         + children.size()
                 );
             }
-            // DFS: evaluate each operand (which may short-circuit to appendNull) and store it before moving to the
-            // next, so a later operand's guard — or, for an overflow-checked kernel, the body itself throwing — runs
-            // only after all earlier operands were present and single-valued. A leaf child's multi-value warning is
-            // attributed to THIS kernel (its direct consumer), matching the unfused chain.
             int kernelSlot = sourceIndices.get(kernel);
+
+            // Pre-init value slot + argument slots to a typed zero for verifier definite-assignment (they are read only
+            // on the present path, but the verifier cannot prove that value-level correlation).
+            storeZero(valueSlot, expected);
+            int initOffset = 0;
+            for (Type argType : argTypes) {
+                storeZero(nodeBase + initOffset, Element.of(argType));
+                initOffset += argType.getSize();
+            }
+
+            // present = true; each not-present operand (in this kernel's own order) sets it false.
+            insns.add(new InsnNode(Opcodes.ICONST_1));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, presentSlot));
+
             int offset = 0;
             for (int i = 0; i < argTypes.length; i++) {
-                emit(children.get(i), Element.of(argTypes[i]), kernelSlot);
-                insns.add(new VarInsnNode(argTypes[i].getOpcode(Opcodes.ISTORE), nodeBase + offset));
-                offset += argTypes[i].getSize();
+                Type argType = argTypes[i];
+                Element argElem = Element.of(argType);
+                int argSlot = nodeBase + offset;
+                FusionNode child = children.get(i);
+                if (child instanceof FusionNode.Constant constant) {
+                    // A constant is always present and single-valued: load it into the argument slot unconditionally
+                    // (harmless when this kernel already short-circuited — the body will not run).
+                    loadConstantParam(insns, argElem, constant, constantSlots.get(constant));
+                    insns.add(new VarInsnNode(argType.getOpcode(Opcodes.ISTORE), argSlot));
+                } else if (child instanceof FusionNode.Input input) {
+                    emitLeaf(input, argElem, argSlot, presentSlot, kernelSlot);
+                } else {
+                    // Nested kernel: ALWAYS emit it (so its own subtree's per-kernel warnings fire even when THIS
+                    // kernel already short-circuited), then fold its presence into this kernel's own present flag.
+                    NodeSlots childSlots = emit(child, argElem);
+                    LabelNode afterChild = new LabelNode();
+                    LabelNode childFail = new LabelNode();
+                    insns.add(new VarInsnNode(Opcodes.ILOAD, presentSlot));
+                    insns.add(new JumpInsnNode(Opcodes.IFEQ, afterChild)); // this kernel already short-circuited: ignore
+                    insns.add(new VarInsnNode(Opcodes.ILOAD, childSlots.present()));
+                    insns.add(new JumpInsnNode(Opcodes.IFEQ, childFail));
+                    insns.add(new VarInsnNode(argType.getOpcode(Opcodes.ILOAD), childSlots.value()));
+                    insns.add(new VarInsnNode(argType.getOpcode(Opcodes.ISTORE), argSlot));
+                    insns.add(new JumpInsnNode(Opcodes.GOTO, afterChild));
+                    insns.add(childFail);
+                    // A not-present operand on the value path short-circuits the position (live=false); it is idempotent
+                    // otherwise. present=false stops later operands of THIS kernel from warning.
+                    insns.add(new InsnNode(Opcodes.ICONST_0));
+                    insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
+                    insns.add(new InsnNode(Opcodes.ICONST_0));
+                    insns.add(new VarInsnNode(Opcodes.ISTORE, presentSlot));
+                    insns.add(afterChild);
+                }
+                offset += argType.getSize();
             }
+
+            // Run the body iff every operand of THIS kernel was present. An overflow-checked body is wrapped so an
+            // overflow (a) registers its warning only while live (ratified subset), (b) marks this kernel not present
+            // and short-circuits the value path.
+            LabelNode kDone = new LabelNode();
+            insns.add(new VarInsnNode(Opcodes.ILOAD, presentSlot));
+            insns.add(new JumpInsnNode(Opcodes.IFEQ, kDone));
             if (kernel.descriptor().hasOverflowException()) {
-                // Record which kernel is about to run so the shared overflow handler can attribute a caught overflow to
-                // THIS kernel's own source. Only overflow-checked kernels can throw the caught exception, and each sets
-                // this immediately before its body, so on any throw currentKernelSlot names the throwing kernel.
-                pushInt(insns, kernelSlot);
-                insns.add(new VarInsnNode(Opcodes.ISTORE, currentKernelSlot));
+                String exType = kernel.descriptor().overflowExceptionType().replace('.', '/');
+                LabelNode tryStart = new LabelNode();
+                LabelNode tryEnd = new LabelNode();
+                LabelNode handler = new LabelNode();
+                LabelNode skipRegister = new LabelNode();
+                insns.add(tryStart);
+                insns.add(body.computation());
+                insns.add(new VarInsnNode(expected.type().getOpcode(Opcodes.ISTORE), valueSlot));
+                insns.add(tryEnd);
+                insns.add(new JumpInsnNode(Opcodes.GOTO, kDone));
+                insns.add(handler);
+                insns.add(new VarInsnNode(Opcodes.ASTORE, overflowExcSlot));
+                // Register on THIS kernel's own Warnings only while the value path is still live (matches the ratified
+                // short-circuit subset for value-dependent warnings); off the value path the overflow is caught
+                // silently but still marks the kernel not present.
+                insns.add(new VarInsnNode(Opcodes.ILOAD, liveSlot));
+                insns.add(new JumpInsnNode(Opcodes.IFEQ, skipRegister));
+                loadWarnings(insns, warningsArraySlot, kernelSlot);
+                insns.add(new VarInsnNode(Opcodes.ALOAD, overflowExcSlot));
+                insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, WARNINGS, "registerException", WARNINGS_REGISTER_DESCRIPTOR, false));
+                insns.add(skipRegister);
+                insns.add(new InsnNode(Opcodes.ICONST_0));
+                insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
+                insns.add(new InsnNode(Opcodes.ICONST_0));
+                insns.add(new VarInsnNode(Opcodes.ISTORE, presentSlot));
+                // fall through to kDone
+                host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, exType));
+            } else {
+                insns.add(body.computation());
+                insns.add(new VarInsnNode(expected.type().getOpcode(Opcodes.ISTORE), valueSlot));
             }
-            insns.add(body.computation());
+            insns.add(kDone);
+            return new NodeSlots(presentSlot, valueSlot);
+        }
+
+        /**
+         * Emits the null / multi-value guard for a leaf {@link FusionNode.Input} consumed by the kernel whose warning
+         * source is {@code kernelSlot} and whose running present flag is {@code presentSlot}. When the leaf is single-
+         * valued its value is read into {@code argSlot}; a multi-value ({@code getValueCount > 1}) leaf registers the
+         * single-value multi-value warning on {@code kernelSlot} — but ONLY when this kernel's earlier operands were
+         * present (its {@code presentSlot} still {@code true}), matching the unfused kernel's own operand-order
+         * short-circuit — and a null ({@code getValueCount == 0}) leaf registers no warning; both mark the kernel not
+         * present and short-circuit the value path ({@code live=false}).
+         */
+        private void emitLeaf(FusionNode.Input input, Element argElem, int argSlot, int presentSlot, int kernelSlot) {
+            Element inputElement = inputElements[input.index()];
+            int block = inputBase + input.index();
+            LabelNode afterOperand = new LabelNode();
+            LabelNode leafFail = new LabelNode();
+            LabelNode leafSingle = new LabelNode();
+            // If this kernel already short-circuited, skip the leaf entirely: the unfused kernel never inspects (nor
+            // warns about) an operand past its own short-circuit.
+            insns.add(new VarInsnNode(Opcodes.ILOAD, presentSlot));
+            insns.add(new JumpInsnNode(Opcodes.IFEQ, afterOperand));
+            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+            insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getValueCount", "(I)I", true));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, countSlot));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
+            insns.add(new JumpInsnNode(Opcodes.IFEQ, leafFail)); // count == 0 -> null, no warning
+            insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
+            insns.add(new InsnNode(Opcodes.ICONST_1));
+            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, leafSingle)); // count == 1 -> read the single value
+            // count > 1 -> register the multi-value warning on THIS kernel's own Warnings, then fail.
+            loadWarnings(insns, warningsArraySlot, kernelSlot);
+            emitMultiValueWarningOn(insns);
+            insns.add(leafFail);
+            insns.add(new InsnNode(Opcodes.ICONST_0));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
+            insns.add(new InsnNode(Opcodes.ICONST_0));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, presentSlot));
+            insns.add(new JumpInsnNode(Opcodes.GOTO, afterOperand));
+            insns.add(leafSingle);
+            // v = block.get*(block.getFirstValueIndex(p)); store into this kernel's argument slot.
+            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
+            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+            insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getFirstValueIndex", "(I)I", true));
+            insns.add(
+                new MethodInsnNode(
+                    Opcodes.INVOKEINTERFACE,
+                    inputElement.blockInternalName(),
+                    inputElement.getValueMethod(),
+                    inputElement.getValueDescriptor(),
+                    true
+                )
+            );
+            insns.add(new VarInsnNode(argElem.type().getOpcode(Opcodes.ISTORE), argSlot));
+            insns.add(afterOperand);
+        }
+
+        /** Stores a type-correct zero into {@code slot} (verifier definite-assignment for the present-path-only reads). */
+        private void storeZero(int slot, Element element) {
+            switch (element.type().getSort()) {
+                case Type.LONG -> {
+                    insns.add(new InsnNode(Opcodes.LCONST_0));
+                    insns.add(new VarInsnNode(Opcodes.LSTORE, slot));
+                }
+                case Type.DOUBLE -> {
+                    insns.add(new InsnNode(Opcodes.DCONST_0));
+                    insns.add(new VarInsnNode(Opcodes.DSTORE, slot));
+                }
+                default -> {
+                    // int / boolean (one slot, int category).
+                    insns.add(new InsnNode(Opcodes.ICONST_0));
+                    insns.add(new VarInsnNode(Opcodes.ISTORE, slot));
+                }
+            }
         }
     }
 
