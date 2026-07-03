@@ -30,18 +30,28 @@ import java.util.concurrent.atomic.LongAdder;
  * the module boundary.
  *
  * <h2>Cache key — {@link Shape}</h2>
- * The key is the <b>structure</b> of the fused subtree, deliberately <b>excluding value bindings and column
- * identities</b>:
+ * The key is the <b>structure</b> of the fused subtree. It deliberately <b>excludes column bindings</b> (which columns a
+ * leaf reads) but <b>includes embedded literal constants</b> (their element and value), because a constant is baked into
+ * the emitted bytecode and so changes the generated class:
  * <ul>
- *   <li><b>op-tree structure + kernel set</b> — {@link FusionPlanner#shapeOf} renders every leaf as {@code #} and every
- *       kernel as {@code KernelClass.method(...)}, so {@code (a+b)*c} and {@code (x+y)*z} collapse to one signature;</li>
+ *   <li><b>op-tree structure + kernel set</b> — {@link FusionPlanner#shapeOf} renders every <em>column</em> leaf as
+ *       {@code #} and every kernel as {@code KernelClass.method(...)}, so {@code (a+b)*c} and {@code (x+y)*z} collapse to
+ *       one signature;</li>
+ *   <li><b>embedded literal constants</b> — a {@link org.elasticsearch.compute.operator.fusion.FusionNode.Constant} leaf
+ *       is <em>not</em> rendered as {@code #}; {@link FusionPlanner#shapeOf} emits {@code #C:<element>:<value>} for it.
+ *       Because the constant is pushed as a bytecode constant (not read from a per-position vector), {@code (a+b)>5} and
+ *       {@code (a+b)>6} produce <em>different</em> classes and therefore <em>must</em> map to different shapes — folding
+ *       the value into the key is what prevents a stale-cached class returning results for the wrong constant;</li>
  *   <li><b>element type</b> — the uniform primitive of the homogeneous tree (already implied by the kernel method names
- *       such as {@code processLongs} vs {@code processDoubles}, but pinned explicitly for clarity);</li>
+ *       such as {@code processLongs} vs {@code processDoubles}, but pinned explicitly for clarity). It also keeps a long
+ *       tree with constant {@code 5} distinct from a double tree with constant {@code 5.0};</li>
  *   <li><b>{@link Path}</b> — which of the {@link Stitcher}'s three emit shapes this class is (block / plain-vector /
  *       checked-vector). One shape maps to up to three distinct classes, so the path is part of the key.</li>
  * </ul>
- * Excluding bindings is what makes the cache useful: a dashboard that runs {@code metric_a + metric_b} against a
- * thousand different column pairs stitches once, not a thousand times.
+ * Excluding <em>column</em> bindings is what makes the cache useful: a dashboard that runs {@code metric_a + metric_b}
+ * against a thousand different column pairs stitches once, not a thousand times. Constants, by contrast, are part of the
+ * key: {@code N} distinct literal values in an otherwise-identical shape are {@code N} distinct classes (the cardinality
+ * cost of embedding a constant rather than reading it as a column).
  *
  * <h2>Reference type — {@link SoftReference} default, {@link WeakReference} toggle</h2>
  * Entries hold the {@link Class} through a {@link Reference}. By default a {@link SoftReference} keeps the class alive
@@ -79,10 +89,14 @@ final class FusedClassCache {
     }
 
     /**
-     * The binding-independent identity of a stitched class. Two expressions with the same operator tree, kernel set,
-     * element type, and emit {@link Path} share a {@link Shape} regardless of which columns they read.
+     * The column-binding-independent identity of a stitched class. Two expressions with the same operator tree, kernel
+     * set, embedded constants, element type, and emit {@link Path} share a {@link Shape} regardless of which columns
+     * they read — but differing embedded constant values yield different shapes, since the constant is baked into the
+     * emitted bytecode.
      *
-     * @param signature the {@link FusionPlanner#shapeOf} op-tree + kernel-set signature (leaves rendered as {@code #})
+     * @param signature the {@link FusionPlanner#shapeOf} op-tree + kernel-set signature: column leaves rendered as
+     *                  {@code #}, but embedded literal constants rendered as {@code #C:<element>:<value>} so distinct
+     *                  constant values never share a class
      * @param element   the uniform primitive element kind of the homogeneous tree
      * @param path      which emit shape this class is
      */

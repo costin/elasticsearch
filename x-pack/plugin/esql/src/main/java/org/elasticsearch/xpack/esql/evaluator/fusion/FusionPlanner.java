@@ -15,6 +15,7 @@ import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.compute.operator.fusion.TemplateRegistry;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
+import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
@@ -46,9 +47,10 @@ import java.util.function.Function;
  *       {@code long}/{@code int}/{@code double} — the element type is uniform across the whole tree, matching the
  *       {@link Stitcher}'s single-element-type assumption. This naturally excludes comparisons (boolean result) and
  *       any type-mixing cast boundary;</li>
- *   <li>every leaf is an {@link Attribute} whose declared type equals that element type (so the unfused chain would
- *       apply no cast — the fused body reads the column directly, exactly as an identity cast would), resolvable to a
- *       page channel via the {@link Layout};</li>
+ *   <li>every leaf is either an {@link Attribute} whose declared type equals that element type (so the unfused chain
+ *       would apply no cast — the fused body reads the column directly, exactly as an identity cast would), resolvable
+ *       to a page channel via the {@link Layout}, or a {@link Literal} of that element type (embedded as a bytecode
+ *       constant — it reads no channel and does not count towards the depth/arity of the tree);</li>
  *   <li>the kernel depth is &ge; 2 (a kernel whose child is itself a kernel). A lone kernel gains nothing from fusion,
  *       so we leave it to the generated evaluator.</li>
  * </ul>
@@ -285,6 +287,11 @@ public final class FusionPlanner {
             ctx.channels.add(channelAndType.channel());
             return new FusionNode.Input(index);
         }
+        if (exp instanceof Literal literal) {
+            // A literal operand embeds as a bytecode constant (no page channel, no input vector). It cannot establish
+            // the tree's element (an enclosing kernel always sets it first), and its type must match that element.
+            return buildConstant(literal, ctx);
+        }
 
         ExpressionEvaluator.Factory factory = ctx.rawFactory.apply(exp);
         if ((factory instanceof FusionAware) == false) {
@@ -355,8 +362,9 @@ public final class FusionPlanner {
     /**
      * Builds a {@link FusionNode.Logical} for an {@code AND}/{@code OR} expression, or {@code null} if either operand is
      * not a fusable comparison/logical subtree. Both operands must be either a nested {@code AND}/{@code OR} or a
-     * boolean-producing comparison over homogeneous-primitive <b>column</b> inputs (S3.1 scope: no bare boolean-column
-     * operands, no arithmetic-under-comparison, no literals).
+     * boolean-producing comparison over homogeneous-primitive <b>column</b> and/or <b>literal-constant</b> inputs (S3.1
+     * scope: no bare boolean-column operands, no arithmetic-under-comparison; literal constants ARE allowed as
+     * comparison children — e.g. {@code a > 5 AND b < 10}).
      */
     private static FusionNode buildLogical(Expression exp, PlanContext ctx) {
         BinaryLogic bl = (BinaryLogic) exp;
@@ -381,11 +389,12 @@ public final class FusionPlanner {
     }
 
     /**
-     * Builds a boolean-producing comparison {@link FusionNode.Kernel} whose children are all bare column
-     * {@link Attribute}s of the homogeneous input element (e.g. {@code a > b}). Returns {@code null} if {@code exp} is
-     * not such a comparison — in particular if it is overflow-checked (comparisons never are, but the guard keeps the
-     * logical body free of any overflow try/catch), has a non-boolean return, mixes element types, or has any
-     * non-column child (arithmetic children are out of S3.1 scope).
+     * Builds a boolean-producing comparison {@link FusionNode.Kernel} whose children are column {@link Attribute}s of
+     * the homogeneous input element and/or literal constants of that element (e.g. {@code a > b}, {@code a > 5}).
+     * Returns {@code null} if {@code exp} is not such a comparison — in particular if it is overflow-checked
+     * (comparisons never are, but the guard keeps the logical body free of any overflow try/catch), has a non-boolean
+     * return, mixes element types, or has a child that is neither a matching column nor a matching-typed literal
+     * (arithmetic children are still out of the S3.1 logical scope).
      */
     private static FusionNode buildComparisonOperand(Expression exp, PlanContext ctx) {
         ExpressionEvaluator.Factory factory = ctx.rawFactory.apply(exp);
@@ -419,23 +428,60 @@ public final class FusionPlanner {
         }
         List<FusionNode> childNodes = new ArrayList<>(children.size());
         for (Expression child : children) {
-            // S3.1 operands are column-column comparisons: each child must be a column of the input element type.
-            if (child instanceof Attribute == false) {
+            // A logical comparison operand's children are columns of the input element type OR literal constants (the
+            // constant is embedded in the comparison helper; column children still carry the null/multi-value guard).
+            if (child instanceof Attribute attr) {
+                Layout.ChannelAndType channelAndType = ctx.layout.get(attr.id());
+                if (channelAndType == null || matches(attr.dataType(), ctx.inputElement) == false) {
+                    return null;
+                }
+                int index = ctx.channels.size();
+                ctx.channels.add(channelAndType.channel());
+                childNodes.add(new FusionNode.Input(index));
+            } else if (child instanceof Literal literal) {
+                FusionNode constant = buildConstant(literal, ctx);
+                if (constant == null) {
+                    return null;
+                }
+                childNodes.add(constant);
+            } else {
                 return null;
             }
-            Attribute attr = (Attribute) child;
-            Layout.ChannelAndType channelAndType = ctx.layout.get(attr.id());
-            if (channelAndType == null || matches(attr.dataType(), ctx.inputElement) == false) {
-                return null;
-            }
-            int index = ctx.channels.size();
-            ctx.channels.add(channelAndType.channel());
-            childNodes.add(new FusionNode.Input(index));
         }
         FusionNode.Kernel comparison = new FusionNode.Kernel(descriptor, childNodes);
         // Capture the comparison's own source so its inputs' multi-value warnings are attributed to it (not the root).
         ctx.kernelSources.put(comparison, exp.source());
         return comparison;
+    }
+
+    /**
+     * Builds a {@link FusionNode.Constant} from a numeric {@link Literal}, or {@code null} if it cannot be fused into
+     * the current tree: the tree's homogeneous element must already be known (a constant never establishes it), the
+     * literal's declared type must equal that element (so the unfused chain would apply no cast), and its value must be
+     * non-{@code null}. A {@code null} literal is <b>refused</b> (returns {@code null}), so a subtree containing one
+     * falls back to the unfused chain — the correct + simplest handling (ESQL normally folds null literals away, and a
+     * per-position "constant is null" would just null every row, which the unfused evaluator already does).
+     */
+    private static FusionNode buildConstant(Literal literal, PlanContext ctx) {
+        if (ctx.inputElement == null) {
+            return null;
+        }
+        Object value = literal.value();
+        if (value == null || value instanceof Number == false) {
+            return null;
+        }
+        if (matches(literal.dataType(), ctx.inputElement) == false) {
+            return null;
+        }
+        Number number = (Number) value;
+        return switch (ctx.inputElement) {
+            case LONG -> new FusionNode.Constant(number.longValue(), 'J');
+            case INT -> new FusionNode.Constant(number.intValue(), 'I');
+            case DOUBLE -> new FusionNode.Constant(number.doubleValue(), 'D');
+            // The element of a fusable tree is always numeric (kernel argument kind); BOOLEAN is output-only, so a
+            // boolean-typed constant leaf never arises. Refuse defensively rather than emit an ill-typed constant.
+            case BOOLEAN -> null;
+        };
     }
 
     /**
@@ -555,7 +601,15 @@ public final class FusionPlanner {
                 appendShape(children.get(i), sb);
             }
             sb.append(')');
+        } else if (node instanceof FusionNode.Constant constant) {
+            // The constant's VALUE is baked into the emitted bytecode, so it MUST be part of the cache key: `a > 5`
+            // and `a > 6` stitch to distinct classes. (An Input leaf, by contrast, stays `#` — its column binding is
+            // NOT in the bytecode.) Cardinality implication: each distinct literal value in a fusable shape produces
+            // its own hidden class, so a query family that varies a threshold over many values will stitch (and cache)
+            // one class per value; this is bounded by the FusedClassCache's soft-reference eviction like any other shape.
+            sb.append("#C:").append(constant.element()).append(':').append(constant.value());
         } else {
+            // FusionNode.Input: rendered as a bare '#' so column identities are excluded from the shape.
             sb.append('#');
         }
     }

@@ -149,6 +149,9 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
     // Core differential runner: evaluate both, drain warnings, assert values/nulls equal + warnings subset
     // ---------------------------------------------------------------------------------------------------------------
 
+    /** The fused and unfused warning lists drained separately for one differential run (see {@link #runDifferentialWarnings}). */
+    protected record DifferentialWarnings(List<String> fused, List<String> reference) {}
+
     /**
      * Runs the fused and unfused evaluators over the same {@link Page} built from {@code inputs}, asserts identical
      * values + null positions (via {@link #assertResultsEqual} on {@code outputKind}) and the ratified warning-subset
@@ -156,6 +159,23 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
      * result blocks are released before returning.
      */
     protected List<String> runDifferential(
+        ExpressionEvaluator.Factory fusedFactory,
+        ExpressionEvaluator.Factory unfusedFactory,
+        ElementKind outputKind,
+        Block[] inputs,
+        int positionCount,
+        String ctx
+    ) {
+        return runDifferentialWarnings(fusedFactory, unfusedFactory, outputKind, inputs, positionCount, ctx).reference();
+    }
+
+    /**
+     * As {@link #runDifferential}, but returns BOTH the fused and the unfused warning lists (drained separately) so a
+     * caller can assert warning <b>parity</b> — not just the subset — for a deterministic no-short-circuit shape where
+     * the fused path MUST emit the same warning as the unfused chain (a silently-dropped fused warning would still pass
+     * the subset rule, so these shapes need the fused side observed directly).
+     */
+    protected DifferentialWarnings runDifferentialWarnings(
         ExpressionEvaluator.Factory fusedFactory,
         ExpressionEvaluator.Factory unfusedFactory,
         ElementKind outputKind,
@@ -178,7 +198,7 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
 
             assertResultsEqual(outputKind, fusedResult, referenceResult, positionCount, ctx);
             assertWarningsSubset(fusedWarnings, referenceWarnings, ctx);
-            return referenceWarnings;
+            return new DifferentialWarnings(fusedWarnings, referenceWarnings);
         } finally {
             Releasables.closeExpectNoException(fusedResult, referenceResult, fused, reference);
             if (page != null) {
@@ -231,6 +251,40 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
     }
 
     /**
+     * Asserts both result blocks are <b>non-null</b> at position {@code p} and hold <b>different</b> values there. Used
+     * by the distinct-constant proof: two fused trees that differ only in an embedded constant value MUST produce
+     * different results at a crafted position, so a stale cache that returned the wrong-valued class would fail here.
+     * Double comparison uses {@code doubleToLongBits} so {@code -0.0}/{@code +0.0} compare as distinct only if the bits
+     * differ.
+     */
+    protected static void assertResultsDifferAt(ElementKind kind, Block x, Block y, int p, String ctx) {
+        assertThat(ctx + " x must be non-null@" + p, x.isNull(p), is(false));
+        assertThat(ctx + " y must be non-null@" + p, y.isNull(p), is(false));
+        switch (kind) {
+            case LONG -> {
+                long xv = ((LongBlock) x).getLong(x.getFirstValueIndex(p));
+                long yv = ((LongBlock) y).getLong(y.getFirstValueIndex(p));
+                assertThat(ctx + " values must differ@" + p, xv, not(equalTo(yv)));
+            }
+            case INT -> {
+                int xv = ((IntBlock) x).getInt(x.getFirstValueIndex(p));
+                int yv = ((IntBlock) y).getInt(y.getFirstValueIndex(p));
+                assertThat(ctx + " values must differ@" + p, xv, not(equalTo(yv)));
+            }
+            case DOUBLE -> {
+                double xv = ((DoubleBlock) x).getDouble(x.getFirstValueIndex(p));
+                double yv = ((DoubleBlock) y).getDouble(y.getFirstValueIndex(p));
+                assertThat(ctx + " values must differ@" + p, Double.doubleToLongBits(xv), not(equalTo(Double.doubleToLongBits(yv))));
+            }
+            case BOOLEAN -> {
+                boolean xv = ((BooleanBlock) x).getBoolean(x.getFirstValueIndex(p));
+                boolean yv = ((BooleanBlock) y).getBoolean(y.getFirstValueIndex(p));
+                assertThat(ctx + " values must differ@" + p, xv, not(equalTo(yv)));
+            }
+        }
+    }
+
+    /**
      * Asserts the ratified warning contract: the fused path's registered warnings must be a <b>subset</b> of the
      * unfused path's warnings for the same page — never a superset. Equality is the common case; the strict-subset case
      * arises when the fused per-position loop short-circuits a position to null on the first abnormal condition it meets
@@ -249,6 +303,24 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
     /** True if any warning header contains {@code substring}. */
     protected static boolean containsWarning(List<String> warnings, String substring) {
         return warnings.stream().anyMatch(w -> w.contains(substring));
+    }
+
+    /**
+     * Strict warning <b>parity</b> for a deterministic, no-short-circuit, single-warning shape: the <b>fused</b> path
+     * must ITSELF emit a warning containing {@code substring}. The subset rule ({@link #assertWarningsSubset}) is not
+     * enough here — a fused path that silently dropped the warning would still be a subset of the unfused warnings, so
+     * for these shapes the fused side is observed directly (via {@link #runDifferentialWarnings}) and asserted here.
+     */
+    protected static void assertFusedEmitsWarning(List<String> fusedWarnings, String substring, String ctx) {
+        assertThat(
+            ctx
+                + " the FUSED path must itself emit a warning containing ["
+                + substring
+                + "] (parity, not just subset); fused="
+                + fusedWarnings,
+            containsWarning(fusedWarnings, substring),
+            is(true)
+        );
     }
 
     /**

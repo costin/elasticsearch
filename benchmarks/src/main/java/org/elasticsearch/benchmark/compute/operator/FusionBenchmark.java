@@ -27,6 +27,7 @@ import org.elasticsearch.xpack.esql.analysis.AnalyzerSettings;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
 import org.elasticsearch.xpack.esql.core.expression.FoldContext;
+import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.core.type.EsField;
@@ -73,7 +74,8 @@ import java.util.concurrent.TimeUnit;
  * <h2>Dimensions</h2>
  * <ul>
  *   <li>{@code expression} — {@link Expr}: {@code (a+b)*c} over long and over double, {@code ((a+b)*c)-d} (deeper,
- *       under budget), {@code a+b>c} (comparison → boolean), and {@code a>b AND c<d} (3VL logical, block path);</li>
+ *       under budget), {@code a+b>c} (comparison → boolean), {@code a>b AND c<d} (3VL logical, block path), and
+ *       {@code a>25 AND b<25} (3VL logical with embedded literal thresholds — the common WHERE shape, iter 24);</li>
  *   <li>{@code size} — the page position count. QUICK defaults to {@code {1024, 8192}}; the FULL matrix adds
  *       {@code {1, 64, 65536}} (all powers of two dividing {@link #TARGET_POSITIONS}, so ns/op stays ns/position);</li>
  *   <li>{@code fusion} — {@code true}/{@code false}, flipped in-process via {@link FusionSettings#setEnabledForBenchmarks}
@@ -269,6 +271,41 @@ public class FusionBenchmark {
                 BooleanBlock r = (BooleanBlock) out;
                 for (int i = 0; i < size; i++) {
                     boolean expected = (logA(i) > logB(i)) && (logC(i) < logD(i));
+                    boolean actual = r.getBoolean(r.getFirstValueIndex(i));
+                    if (actual != expected) {
+                        throw new AssertionError("[" + this + "] @" + i + " expected [" + expected + "] but was [" + actual + "]");
+                    }
+                }
+            }
+        },
+        /**
+         * {@code a > 25 AND b < 25} over long columns — the common WHERE shape with embedded literal thresholds (iter
+         * 24): a 3VL logical whose two comparison operands each bake a constant into their {@code cmpN} helper (block
+         * path only, nullable boolean output). Proves the constant-leaf fusion carries the vector-to-fused speedup on
+         * the shape queries most often use.
+         */
+        AND_CMP_CONST_LONG("and_cmp_const_long") {
+            @Override
+            Built build() {
+                FieldAttribute a = longField("a"), b = longField("b");
+                Expression expr = new And(
+                    Source.EMPTY,
+                    new GreaterThan(Source.EMPTY, a, new Literal(Source.EMPTY, CONST_K1, DataType.LONG)),
+                    new LessThan(Source.EMPTY, b, new Literal(Source.EMPTY, CONST_K2, DataType.LONG))
+                );
+                return new Built(expr, layout(a, b));
+            }
+
+            @Override
+            Page page(BlockFactory bf, int size) {
+                return new Page(longVector(bf, size, FusionBenchmark::constA), longVector(bf, size, FusionBenchmark::constB));
+            }
+
+            @Override
+            void checkExpected(Block out, int size) {
+                BooleanBlock r = (BooleanBlock) out;
+                for (int i = 0; i < size; i++) {
+                    boolean expected = (constA(i) > CONST_K1) && (constB(i) < CONST_K2);
                     boolean actual = r.getBoolean(r.getFirstValueIndex(i));
                     if (actual != expected) {
                         throw new AssertionError("[" + this + "] @" + i + " expected [" + expected + "] but was [" + actual + "]");
@@ -488,6 +525,19 @@ public class FusionBenchmark {
 
     private static long cmpC(int i) {
         return i % 70;
+    }
+
+    // Constant-threshold logical generators (iter 24): columns straddle the fixed thresholds so both a > K1 and b < K2
+    // yield a genuine mix of true/false.
+    private static final long CONST_K1 = 25;
+    private static final long CONST_K2 = 25;
+
+    private static long constA(int i) {
+        return i % 50;
+    }
+
+    private static long constB(int i) {
+        return i % 50;
     }
 
     // Logical generators: overlapping magnitudes so both (a > b) and (c < d) vary.

@@ -8,10 +8,13 @@
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.elasticsearch.compute.data.Block;
+import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.core.Releasables;
 import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
+import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.VectorStrategy;
@@ -41,9 +44,11 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.Function;
 
+import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 
 /**
  * The unified, <b>spec-driven</b> generative differential harness (iter 23, Stage 4). One declarative palette of
@@ -369,6 +374,525 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
             blockFactory.newLongArrayVector(dv, positions).asBlock(),
             blockFactory.newLongArrayVector(ev, positions).asBlock() };
         runDifferential(fused, unfused, ElementKind.BOOLEAN, inputs, positions, "arith-under-comp-under-logical additive fallback");
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // iter 24: literal/constant leaves (embedded as bytecode constants) — (a+b)>K, a*K+b, a>K1 AND b<K2
+    // ---------------------------------------------------------------------------------------------------------------
+
+    /**
+     * Which constant-leaf shape a sweep iteration builds. Each embeds one or two literal constants (see
+     * {@link #constant}) into a depth &ge; 2 tree so it fuses, exercising the three emit paths a constant reaches:
+     * checked-vector (arithmetic-rooted / comparison-rooted with an overflow-checked child) and the block-only logical
+     * path (its {@code cmpN} comparison helpers embed the constant operand).
+     */
+    private enum ConstShape {
+        /** {@code (a + b) > K} — comparison root over overflow-checked arithmetic; boolean output, checked-vector. */
+        ADD_GT_CONST,
+        /** {@code a * K + b} — arithmetic root with an embedded multiplier constant; numeric output, checked-vector. */
+        MUL_CONST_ADD,
+        /** {@code a > K1 AND b < K2} — the common WHERE shape: a 3VL logical over two constant-threshold comparisons. */
+        AND_CONST_CMP
+    }
+
+    /**
+     * The iter-24 constant-leaf sweep: for each numeric element and profile it builds one of the three
+     * {@link ConstShape}s with <b>random</b> constant values and asserts the fused body (which embeds each literal as a
+     * bytecode constant, never a per-position read) matches the unfused chain in values, null positions and the
+     * ratified warning subset. Proves constants reach both the checked-vector and the block-only logical paths, and
+     * that overflow / multi-value warnings still fire identically when a column operand is abnormal.
+     */
+    public void testConstantLeafSpecSweepMatchesUnfused() {
+        Coverage cov = new Coverage();
+        Profile[] cycle = { Profile.CLEAN, Profile.NULLS, Profile.MULTIVALUE, Profile.OVERFLOW };
+        ConstShape[] shapes = ConstShape.values();
+        int iterations = 180;
+        int[] referenced = { 0, 1 };
+        for (int i = 0; i < iterations; i++) {
+            // Independent strides (element%3, profile%4, shape%3; period 36) so every (element × profile × shape) combo
+            // is swept — otherwise a shared i%3 would lock each shape to a single element.
+            ElementKind element = ELEMENTS.get(i % ELEMENTS.size());
+            DataType type = dataType(element);
+            int positionCount = positionCountFor(i);
+            Profile profile = cycle[(i / ELEMENTS.size()) % cycle.length];
+            ConstShape shape = shapes[(i / (ELEMENTS.size() * cycle.length)) % shapes.length];
+
+            FieldAttribute a = field("c0", type);
+            FieldAttribute b = field("c1", type);
+            Layout layout = layout(a, b);
+
+            // Small magnitudes so non-OVERFLOW profiles stay overflow-free (the OVERFLOW profile seeds MAX/MIN inputs,
+            // so a * K or a + b overflows there regardless of K).
+            long k1 = randomLongBetween(-5, 5);
+            long k2 = randomLongBetween(-5, 5);
+            ElementKind outputKind;
+            Expression expr;
+            switch (shape) {
+                case ADD_GT_CONST -> {
+                    expr = new GreaterThan(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), constant(element, k1));
+                    outputKind = ElementKind.BOOLEAN;
+                }
+                case MUL_CONST_ADD -> {
+                    expr = new Add(Source.EMPTY, new Mul(Source.EMPTY, a, constant(element, k1)), b, EsqlTestUtils.TEST_CFG);
+                    outputKind = element;
+                }
+                default -> {
+                    expr = new And(
+                        Source.EMPTY,
+                        new GreaterThan(Source.EMPTY, a, constant(element, k1)),
+                        new LessThan(Source.EMPTY, b, constant(element, k2))
+                    );
+                    outputKind = ElementKind.BOOLEAN;
+                }
+            }
+
+            ExpressionEvaluator.Factory fusedFactory = fusedFactory(expr, layout);
+            ExpressionEvaluator.Factory unfusedFactory = unfusedFactory(expr, layout);
+
+            String ctx = "constShape=" + shape + " element=" + element + " i=" + i + " profile=" + profile + " expr=" + expr;
+            FusedExpressionEvaluatorFactory fused = assertFuses(fusedFactory, ctx);
+            assertDoesNotFuse(unfusedFactory, ctx);
+
+            recordStrategy(cov, fused.vectorStrategy(), element);
+            recordShape(cov, positionCount);
+            recordProfile(cov, profile);
+
+            Block[] inputs = buildPage(element, 2, positionCount, profile, false, referenced);
+            List<String> referenceWarnings = runDifferential(fusedFactory, unfusedFactory, outputKind, inputs, positionCount, ctx);
+            recordWarnings(cov, profile, referenceWarnings);
+        }
+
+        assertShapeMatrixCovered(cov);
+        assertProfilesCovered(cov, Profile.CLEAN, Profile.NULLS, Profile.MULTIVALUE, Profile.OVERFLOW);
+        assertThat("constant arithmetic/comparison trees must reach the checked-vector fast path", cov.checkedVector, greaterThan(0));
+        assertThat("logical-of-constant-comparisons must compile the block-only VectorStrategy.NONE", cov.none, greaterThan(0));
+        assertThat("an overflow in a constant arithmetic tree must null a position (warning)", cov.overflowWarnings, greaterThan(0));
+        assertThat("a multi-value column operand next to a constant must register a warning", cov.multiValueWarnings, greaterThan(0));
+    }
+
+    /**
+     * The canonical WHERE shape, deterministic: {@code a > 5 AND b < 10} over longs fuses (a 3VL logical whose two
+     * comparison operands each embed a constant threshold) and matches the unfused chain position-by-position.
+     */
+    public void testConstantLogicalDeterministic() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        Layout layout = layout(a, b);
+        Expression expr = new And(
+            Source.EMPTY,
+            new GreaterThan(Source.EMPTY, a, constant(ElementKind.LONG, 5)),
+            new LessThan(Source.EMPTY, b, constant(ElementKind.LONG, 10))
+        );
+
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        FusedExpressionEvaluatorFactory fusedFactory = assertFuses(fused, "a>5 AND b<10");
+        assertThat("a 3VL logical tree is block-path only", fusedFactory.vectorStrategy(), is(VectorStrategy.NONE));
+        assertDoesNotFuse(unfused, "a>5 AND b<10 kill switch OFF");
+
+        // pos0: 3>5 F -> false; pos1: 6>5 T && 12<10 F -> false; pos2: 10>5 T && 9<10 T -> true; pos3: 5>5 F -> false.
+        long[] av = { 3, 6, 10, 5 };
+        long[] bv = { 8, 12, 9, 10 };
+        int positions = av.length;
+        Block[] inputs = {
+            blockFactory.newLongArrayVector(av, positions).asBlock(),
+            blockFactory.newLongArrayVector(bv, positions).asBlock() };
+        runDifferential(fused, unfused, ElementKind.BOOLEAN, inputs, positions, "a>5 AND b<10 deterministic");
+    }
+
+    /**
+     * The depth gate is consistent for constant leaves: a bare {@code a > K} or {@code a + K} is kernel-depth 1 and so
+     * does NOT fuse (a lone kernel gains nothing), while {@code (a + b) > K} is depth 2 and DOES. Constants do not count
+     * towards depth (they are embedded, not read), so a constant can only ever be the child that keeps a tree at the
+     * depth its column subtree already reached.
+     */
+    public void testConstantLeafDepthGate() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+
+        Expression bareCmp = new GreaterThan(Source.EMPTY, a, constant(ElementKind.LONG, 5));
+        assertDoesNotFuse(fusedFactory(bareCmp, layout(a)), "bare a>5 (depth 1) must not fuse");
+        assertDoesNotFuse(unfusedFactory(bareCmp, layout(a)), "bare a>5 kill switch OFF");
+
+        Expression bareAdd = new Add(Source.EMPTY, a, constant(ElementKind.LONG, 3), EsqlTestUtils.TEST_CFG);
+        assertDoesNotFuse(fusedFactory(bareAdd, layout(a)), "bare a+3 (depth 1) must not fuse");
+
+        Expression deep = new GreaterThan(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), constant(ElementKind.LONG, 3));
+        assertFuses(fusedFactory(deep, layout(a, b)), "(a+b)>3 (depth 2) must fuse");
+    }
+
+    /**
+     * The <b>non-vacuous</b> distinct-constant proof: two trees that differ only in an embedded constant value must
+     * evaluate differently, and each must equal its own unfused reference. The constant is baked into the bytecode, so
+     * {@link FusionPlanner#shapeOf} (the {@link FusedClassCache} key) folds the value into the key; if it did not, the
+     * two would collide onto one process-cached class and the second query would silently evaluate the first's
+     * threshold — which this test would catch, because it builds BOTH through the real {@link org.elasticsearch.xpack
+     * .esql.evaluator.EvalMapper} (populating the shared cache with the first, then resolving the second) and asserts
+     * the two fused results DIFFER at a crafted position where the two constants force different answers. It also
+     * asserts each fused result equals its own unfused reference, so a wrong-valued cached class fails loudly rather
+     * than passing a vacuous {@code toString()} comparison. Finally it pins that same-value trees over different columns
+     * DO share a shape (column bindings are excluded from the key).
+     */
+    public void testDifferentConstantValuesEvaluateDistinctly() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        Layout layout = layout(a, b);
+
+        // (a+b)>5 vs (a+b)>6 over the SAME input. a+b == 6 at pos0 => >5 is true, >6 is false (the crafted divergence);
+        // the other positions agree, so only a wrong-constant cached class would make the two results equal at pos0.
+        long[] av1 = { 3, 4, 5, 1 };
+        long[] bv1 = { 3, 1, 5, 1 }; // a+b = {6, 5, 10, 2}
+        assertConstantValueDrivesResult(
+            new GreaterThan(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), constant(ElementKind.LONG, 5)),
+            new GreaterThan(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), constant(ElementKind.LONG, 6)),
+            layout,
+            ElementKind.BOOLEAN,
+            av1,
+            bv1,
+            0,
+            "(a+b)>5 vs (a+b)>6"
+        );
+
+        // a*2+b vs a*3+b over the SAME input: at pos0 (a=1,b=0) the multiplier constant forces 2 vs 3.
+        long[] av2 = { 1, 0, 2, -1 };
+        long[] bv2 = { 0, 5, 1, 0 }; // a*2+b = {2,5,5,-2}; a*3+b = {3,5,7,-3}
+        assertConstantValueDrivesResult(
+            new Add(Source.EMPTY, new Mul(Source.EMPTY, a, constant(ElementKind.LONG, 2)), b, EsqlTestUtils.TEST_CFG),
+            new Add(Source.EMPTY, new Mul(Source.EMPTY, a, constant(ElementKind.LONG, 3)), b, EsqlTestUtils.TEST_CFG),
+            layout,
+            ElementKind.LONG,
+            av2,
+            bv2,
+            0,
+            "a*2+b vs a*3+b"
+        );
+
+        // Same constant, different columns -> same shape (column bindings are excluded from the shape key).
+        FusedExpressionEvaluatorFactory five = assertFuses(
+            fusedFactory(
+                new GreaterThan(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), constant(ElementKind.LONG, 5)),
+                layout
+            ),
+            "(a+b)>5"
+        );
+        FieldAttribute c = field("c", DataType.LONG);
+        FieldAttribute d = field("d", DataType.LONG);
+        FusedExpressionEvaluatorFactory fiveCd = assertFuses(
+            fusedFactory(
+                new GreaterThan(Source.EMPTY, new Add(Source.EMPTY, c, d, EsqlTestUtils.TEST_CFG), constant(ElementKind.LONG, 5)),
+                layout(c, d)
+            ),
+            "(c+d)>5"
+        );
+        assertThat("same constant over different columns must share a shape", five.toString(), equalTo(fiveCd.toString()));
+    }
+
+    /**
+     * Builds {@code exprA} and {@code exprB} (which differ only in an embedded constant) BOTH through the real
+     * kill-switch-ON path so they resolve against the shared process {@link FusedClassCache}, evaluates each — plus its
+     * unfused reference — over ONE page built from {@code av}/{@code bv}, and asserts (i) each fused result equals its
+     * own unfused reference and (ii) the two fused results differ at {@code mustDifferAt}. A stale cache that returned
+     * A's class for B (constant value dropped from the key) would make the two fused results equal at {@code
+     * mustDifferAt} and fail assertion (ii).
+     */
+    private void assertConstantValueDrivesResult(
+        Expression exprA,
+        Expression exprB,
+        Layout layout,
+        ElementKind outputKind,
+        long[] av,
+        long[] bv,
+        int mustDifferAt,
+        String ctx
+    ) {
+        int positions = av.length;
+        ExpressionEvaluator.Factory fusedA = fusedFactory(exprA, layout);
+        ExpressionEvaluator.Factory fusedB = fusedFactory(exprB, layout);
+        ExpressionEvaluator.Factory unfusedA = unfusedFactory(exprA, layout);
+        ExpressionEvaluator.Factory unfusedB = unfusedFactory(exprB, layout);
+        assertFuses(fusedA, ctx + " A");
+        assertFuses(fusedB, ctx + " B");
+        assertDoesNotFuse(unfusedA, ctx + " A off");
+        assertDoesNotFuse(unfusedB, ctx + " B off");
+
+        ExpressionEvaluator evalA = fusedA.get(driverContext);
+        ExpressionEvaluator evalB = fusedB.get(driverContext);
+        ExpressionEvaluator refA = unfusedA.get(driverContext);
+        ExpressionEvaluator refB = unfusedB.get(driverContext);
+        Page page = null;
+        Block resultA = null;
+        Block resultB = null;
+        Block referenceA = null;
+        Block referenceB = null;
+        try {
+            // Both evaluators borrow (never close) the page's blocks, so one shared page feeds all four evals.
+            page = new Page(
+                positions,
+                blockFactory.newLongArrayVector(av, positions).asBlock(),
+                blockFactory.newLongArrayVector(bv, positions).asBlock()
+            );
+            resultA = evalA.eval(page);
+            resultB = evalB.eval(page);
+            referenceA = refA.eval(page);
+            referenceB = refB.eval(page);
+            assertResultsEqual(outputKind, resultA, referenceA, positions, ctx + " A fused==unfused");
+            assertResultsEqual(outputKind, resultB, referenceB, positions, ctx + " B fused==unfused");
+            assertResultsDifferAt(outputKind, resultA, resultB, mustDifferAt, ctx + " A vs B (constant value must matter)");
+        } finally {
+            Releasables.closeExpectNoException(resultA, resultB, referenceA, referenceB, evalA, evalB, refA, refB);
+            if (page != null) {
+                page.releaseBlocks();
+            }
+        }
+    }
+
+    /**
+     * A constant leaf on the <b>plain-vector</b> fast path: {@code Abs(a) > K} over doubles has no overflow-checked
+     * kernel, so it compiles the plain-vector loop (not checked-vector). Over dense no-null inputs the fused
+     * plain-vector body — which pushes {@code K} as an embedded {@code LDC2_W} — must match the unfused chain.
+     */
+    public void testConstantPlainVectorMatchesUnfused() {
+        FieldAttribute a = field("a", DataType.DOUBLE);
+        Layout layout = layout(a);
+        Expression expr = new GreaterThan(Source.EMPTY, new Abs(Source.EMPTY, a), constant(ElementKind.DOUBLE, 3));
+
+        ExpressionEvaluator.Factory fusedFactory = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfusedFactory = unfusedFactory(expr, layout);
+        FusedExpressionEvaluatorFactory fused = assertFuses(fusedFactory, "Abs(a) > 3 (plain vector)");
+        assertThat("Abs(a) > K has no overflow-checked kernel -> plain vector", fused.vectorStrategy(), is(VectorStrategy.PLAIN_VECTOR));
+        assertDoesNotFuse(unfusedFactory, "Abs(a) > 3 kill switch OFF");
+
+        int positions = 1024 + randomIntBetween(0, 64);
+        double[] av = new double[positions];
+        for (int p = 0; p < positions; p++) {
+            av[p] = randomDoubleBetween(-10, 10, true);
+        }
+        Block[] inputs = { blockFactory.newDoubleArrayVector(av, positions).asBlock() };
+        runDifferential(fusedFactory, unfusedFactory, ElementKind.BOOLEAN, inputs, positions, "Abs(a) > 3 plain vector");
+    }
+
+    /**
+     * Deterministic constant <b>edge values</b> embedded as bytecode constants must match the unfused chain. For each
+     * numeric element it builds {@code (a + b) > K} (comparison root, checked-vector) at the type's boundary constants —
+     * {@code MIN_VALUE}, {@code MAX_VALUE}, a negative, {@code 0}, plus fractional / {@code -0.0} for double — proving
+     * the exact bits are pushed ({@code LDC2_W}/{@code SIPUSH}/{@code ICONST}/&hellip;), not truncated or defaulted.
+     */
+    public void testConstantEdgeValuesMatchUnfused() {
+        for (long k : new long[] { Long.MIN_VALUE, Long.MAX_VALUE, -7L, 0L, 1L }) {
+            assertAddGreaterThanConstantMatches(ElementKind.LONG, constant(ElementKind.LONG, k), "long K=" + k);
+        }
+        for (int k : new int[] { Integer.MIN_VALUE, Integer.MAX_VALUE, -7, 0, 1 }) {
+            assertAddGreaterThanConstantMatches(ElementKind.INT, new Literal(Source.EMPTY, k, DataType.INTEGER), "int K=" + k);
+        }
+        // Double edges: extremes, a fractional value (LDC2_W of exact bits), and -0.0 (whose bits differ from +0.0).
+        for (double k : new double[] { -Double.MAX_VALUE, Double.MAX_VALUE, -2.5, 0.0, -0.0, 3.5 }) {
+            assertAddGreaterThanConstantMatches(ElementKind.DOUBLE, new Literal(Source.EMPTY, k, DataType.DOUBLE), "double K=" + k);
+        }
+    }
+
+    /** Builds {@code (a + b) > K} of {@code element}, asserts it fuses, and differential-checks it over a dense page. */
+    private void assertAddGreaterThanConstantMatches(ElementKind element, Literal k, String ctx) {
+        FieldAttribute a = field("a", dataType(element));
+        FieldAttribute b = field("b", dataType(element));
+        Layout layout = layout(a, b);
+        Expression expr = new GreaterThan(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), k);
+        int positions = 128;
+        Block[] inputs = { denseColumn(element, positions, 1), denseColumn(element, positions, 2) };
+        runConstantDifferential(expr, layout, ElementKind.BOOLEAN, inputs, positions, "(a+b)>K " + ctx);
+    }
+
+    /**
+     * A {@code long} tree with constant {@code 5} and a {@code double} tree with constant {@code 5.0} must NOT be
+     * conflated: the shape key carries both the element and the constant's element char ({@code #C:J:5} vs
+     * {@code #C:D:5.0}), so they resolve to distinct cached classes. Each is also differential-checked against its own
+     * unfused reference on its own typed page.
+     */
+    public void testLongAndDoubleConstantsAreNotConflated() {
+        FieldAttribute la = field("a", DataType.LONG);
+        FieldAttribute lb = field("b", DataType.LONG);
+        Layout longLayout = layout(la, lb);
+        Expression longExpr = new GreaterThan(
+            Source.EMPTY,
+            new Add(Source.EMPTY, la, lb, EsqlTestUtils.TEST_CFG),
+            constant(ElementKind.LONG, 5)
+        );
+
+        FieldAttribute da = field("a", DataType.DOUBLE);
+        FieldAttribute db = field("b", DataType.DOUBLE);
+        Layout doubleLayout = layout(da, db);
+        Expression doubleExpr = new GreaterThan(
+            Source.EMPTY,
+            new Add(Source.EMPTY, da, db, EsqlTestUtils.TEST_CFG),
+            constant(ElementKind.DOUBLE, 5)
+        );
+
+        FusedExpressionEvaluatorFactory longFused = assertFuses(fusedFactory(longExpr, longLayout), "(a+b)>5 long");
+        FusedExpressionEvaluatorFactory doubleFused = assertFuses(fusedFactory(doubleExpr, doubleLayout), "(a+b)>5.0 double");
+        assertThat(
+            "a long tree with constant 5 and a double tree with constant 5.0 must have distinct shapes: "
+                + longFused
+                + " vs "
+                + doubleFused,
+            longFused.toString(),
+            not(equalTo(doubleFused.toString()))
+        );
+
+        int positions = 128;
+        runConstantDifferential(
+            longExpr,
+            longLayout,
+            ElementKind.BOOLEAN,
+            new Block[] { denseColumn(ElementKind.LONG, positions, 1), denseColumn(ElementKind.LONG, positions, 2) },
+            positions,
+            "(a+b)>5 long"
+        );
+        runConstantDifferential(
+            doubleExpr,
+            doubleLayout,
+            ElementKind.BOOLEAN,
+            new Block[] { denseColumn(ElementKind.DOUBLE, positions, 1), denseColumn(ElementKind.DOUBLE, positions, 2) },
+            positions,
+            "(a+b)>5.0 double"
+        );
+    }
+
+    /**
+     * A constant that <b>drives an overflow</b>: {@code (a + b) + K} with {@code K = Long.MAX_VALUE} overflows at every
+     * position where {@code a + b > 0}, so those positions null out and register the {@code long overflow} warning in
+     * BOTH paths. The embedded {@code LDC2_W} of {@code MAX_VALUE} feeds the checked-vector kernel exactly as the
+     * unfused chain's constant operand does.
+     */
+    public void testConstantDrivenOverflowMatchesUnfused() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        Layout layout = layout(a, b);
+        Expression expr = new Add(
+            Source.EMPTY,
+            new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG),
+            constant(ElementKind.LONG, Long.MAX_VALUE),
+            EsqlTestUtils.TEST_CFG
+        );
+
+        long[] av = { 1, 2, -5, 0 };
+        long[] bv = { 1, 3, -5, 0 }; // a+b = {2, 5, -10, 0}; +MAX_VALUE overflows at pos0 and pos1
+        int positions = av.length;
+        Block[] inputs = {
+            blockFactory.newLongArrayVector(av, positions).asBlock(),
+            blockFactory.newLongArrayVector(bv, positions).asBlock() };
+        DifferentialWarnings warnings = runConstantDifferential(expr, layout, ElementKind.LONG, inputs, positions, "(a+b)+MAX overflow");
+        // This shape has no short-circuit, so parity (not just subset) is required: BOTH paths must emit the overflow
+        // warning. Asserting the fused side directly fails if the fused loop silently dropped it.
+        assertThat("the unfused reference must register the overflow warning", containsWarning(warnings.reference(), "overflow"), is(true));
+        assertFusedEmitsWarning(warnings.fused(), "overflow", "(a+b)+MAX overflow");
+    }
+
+    /**
+     * A constant that <b>drives a divide-by-zero</b>: {@code (a + b) / K} with the literal divisor {@code K = 0}
+     * nulls every position and registers the {@code / by zero} warning in BOTH paths. The embedded {@code LCONST_0}
+     * divisor exercises the checked-vector div kernel's ArithmeticException guard identically to the unfused chain.
+     */
+    public void testConstantDrivenDivideByZeroMatchesUnfused() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        Layout layout = layout(a, b);
+        Expression expr = new Div(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), constant(ElementKind.LONG, 0));
+
+        long[] av = { 10, 20, 30, 40 };
+        long[] bv = { 1, 2, 3, 4 };
+        int positions = av.length;
+        Block[] inputs = {
+            blockFactory.newLongArrayVector(av, positions).asBlock(),
+            blockFactory.newLongArrayVector(bv, positions).asBlock() };
+        DifferentialWarnings warnings = runConstantDifferential(expr, layout, ElementKind.LONG, inputs, positions, "(a+b)/0 div-zero");
+        // Every position divides by the embedded 0 (no short-circuit), so parity is required: BOTH paths must emit the
+        // / by zero warning. Asserting the fused side directly fails if the fused loop silently dropped it.
+        assertThat(
+            "the unfused reference must register the / by zero warning",
+            containsWarning(warnings.reference(), DIV_ZERO_MSG),
+            is(true)
+        );
+        assertFusedEmitsWarning(warnings.fused(), DIV_ZERO_MSG, "(a+b)/0 div-zero");
+    }
+
+    /**
+     * A {@code null} literal in a constant position of an otherwise depth-&ge;2 fusable tree must <b>refuse to fuse</b>
+     * (the planner cannot embed a {@code null} as a typed bytecode constant, so it bails and defers to the unfused
+     * fallback, where the null literal folds to a null block). Covered in each constant position — arithmetic,
+     * comparison and logical — and both kill-switch ON and OFF evaluate identically (all-null / 3VL) via that fallback.
+     */
+    public void testNullLiteralRefusesToFuse() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        Layout layout = layout(a, b);
+        Literal nullLiteral = new Literal(Source.EMPTY, null, DataType.LONG);
+
+        // arithmetic: (a + b) * null
+        assertNullLiteralFallsBack(
+            new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), nullLiteral),
+            layout,
+            ElementKind.LONG,
+            "arithmetic (a+b)*null"
+        );
+        // comparison root: (a + b) > null
+        assertNullLiteralFallsBack(
+            new GreaterThan(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), nullLiteral),
+            layout,
+            ElementKind.BOOLEAN,
+            "comparison (a+b)>null"
+        );
+        // logical operand: (a > null) AND (b < 10)
+        assertNullLiteralFallsBack(
+            new And(
+                Source.EMPTY,
+                new GreaterThan(Source.EMPTY, a, nullLiteral),
+                new LessThan(Source.EMPTY, b, constant(ElementKind.LONG, 10))
+            ),
+            layout,
+            ElementKind.BOOLEAN,
+            "logical (a>null) AND (b<10)"
+        );
+    }
+
+    /** Asserts {@code expr} does NOT fuse (ON and OFF) and that both evaluate identically via the unfused fallback. */
+    private void assertNullLiteralFallsBack(Expression expr, Layout layout, ElementKind outputKind, String ctx) {
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        assertDoesNotFuse(fused, "null-literal " + ctx + " must refuse to fuse");
+        assertDoesNotFuse(unfused, "null-literal " + ctx + " kill switch OFF");
+        int positions = 64;
+        Block[] inputs = { denseColumn(ElementKind.LONG, positions, 1), denseColumn(ElementKind.LONG, positions, 2) };
+        runDifferential(fused, unfused, outputKind, inputs, positions, "null-literal " + ctx);
+    }
+
+    /**
+     * Asserts {@code expr} fuses with the kill switch ON, does not with it OFF, and that the fused body (embedding each
+     * literal as a bytecode constant) matches the unfused chain over the given page. Returns BOTH the fused and unfused
+     * warning lists so a caller can assert an expected warning (overflow / div-zero) fired on the fused side too
+     * (parity), not only on the unfused reference.
+     */
+    private DifferentialWarnings runConstantDifferential(
+        Expression expr,
+        Layout layout,
+        ElementKind outputKind,
+        Block[] inputs,
+        int positions,
+        String ctx
+    ) {
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        assertFuses(fused, ctx);
+        assertDoesNotFuse(unfused, ctx + " kill switch OFF");
+        return runDifferentialWarnings(fused, unfused, outputKind, inputs, positions, ctx);
+    }
+
+    /** Builds a numeric literal of the given {@code element} carrying {@code raw} (widened/narrowed to the element). */
+    private static Literal constant(ElementKind element, long raw) {
+        return switch (element) {
+            case LONG -> new Literal(Source.EMPTY, raw, DataType.LONG);
+            case INT -> new Literal(Source.EMPTY, (int) raw, DataType.INTEGER);
+            case DOUBLE -> new Literal(Source.EMPTY, (double) raw, DataType.DOUBLE);
+            case BOOLEAN -> throw new AssertionError("boolean constant leaves are not generated");
+        };
     }
 
     // ---------------------------------------------------------------------------------------------------------------

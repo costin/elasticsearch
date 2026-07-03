@@ -761,6 +761,11 @@ public final class Stitcher {
                 insns.add(new InsnNode(element.type().getOpcode(Opcodes.IALOAD)));
                 return;
             }
+            if (node instanceof FusionNode.Constant constant) {
+                // Embedded literal: push it as a bytecode constant (no array read, no input slot).
+                pushConstant(insns, element, constant);
+                return;
+            }
             FusionNode.Kernel kernel = (FusionNode.Kernel) node;
             MethodNode template = templates.methodNode(kernel.descriptor());
             Body body = BodyExtractor.extract(template);
@@ -1418,12 +1423,19 @@ public final class Stitcher {
     private MethodNode emitComparisonHelper(FusionNode.Kernel comparison, Element inputElement, String methodName) {
         MethodNode template = templates.methodNode(comparison.descriptor());
         Body body = BodyExtractor.extract(template);
-        Type[] argTypes = Type.getMethodType(comparison.descriptor().kernelType()).getArgumentTypes();
-        int nargs = argTypes.length;
         int size = inputElement.type().getSize();
+        List<FusionNode> children = comparison.children();
+        // Only column ({@link FusionNode.Input}) operands become *Block parameters; a {@link FusionNode.Constant}
+        // operand is embedded as a bytecode constant in the body's argument slot and needs no parameter or guard.
+        int columnOperands = 0;
+        for (FusionNode child : children) {
+            if (child instanceof FusionNode.Input) {
+                columnOperands++;
+            }
+        }
 
         StringBuilder desc = new StringBuilder("(L").append(WARNINGS).append(";I");
-        for (int i = 0; i < nargs; i++) {
+        for (int i = 0; i < columnOperands; i++) {
             desc.append(inputElement.blockDescriptor());
         }
         desc.append(")I");
@@ -1433,15 +1445,25 @@ public final class Stitcher {
 
         int warningsSlot = 0;
         int pSlot = 1;
-        int blockBase = 2;                 // block params occupy [2 .. 2+nargs)
-        int countSlot = blockBase + nargs; // scratch for getValueCount
-        int bodyBase = countSlot + 1;      // the comparison body's shifted locals start here
+        int blockBase = 2;                          // block params occupy [2 .. 2+columnOperands)
+        int countSlot = blockBase + columnOperands; // scratch for getValueCount
+        int bodyBase = countSlot + 1;               // the comparison body's shifted locals start here
         SlotRemapper.shift(body.computation(), bodyBase);
 
         LabelNode retNull = new LabelNode();
-        int offset = 0;
-        for (int i = 0; i < nargs; i++) {
-            int block = blockBase + i;
+        int offset = 0;         // running offset into the comparison body's argument slots (one per operand, in order)
+        int blockParam = 0;     // running index of the next *Block parameter (column operands only)
+        for (FusionNode child : children) {
+            if (child instanceof FusionNode.Constant constant) {
+                // Embedded literal operand: push it straight into the body's shifted argument slot; no null / multi-
+                // value guard (a constant is always present and single-valued).
+                pushConstant(insns, inputElement, constant);
+                insns.add(new VarInsnNode(inputElement.type().getOpcode(Opcodes.ISTORE), bodyBase + offset));
+                offset += size;
+                continue;
+            }
+            int block = blockBase + blockParam;
+            blockParam++;
             LabelNode read = new LabelNode();
             insns.add(new VarInsnNode(Opcodes.ALOAD, block));
             insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
@@ -1553,10 +1575,13 @@ public final class Stitcher {
 
         private void emitComparisonCall(FusionNode.Kernel comparison, int tSlot) {
             String name = helperNames.get(comparison);
-            Type[] argTypes = Type.getMethodType(comparison.descriptor().kernelType()).getArgumentTypes();
+            // Only column ({@link FusionNode.Input}) operands are passed as *Block arguments; a constant operand is
+            // baked into the helper's body, so the call descriptor and the pushed arguments cover columns only.
             StringBuilder callDesc = new StringBuilder("(L").append(WARNINGS).append(";I");
-            for (int i = 0; i < argTypes.length; i++) {
-                callDesc.append(inputElement.blockDescriptor());
+            for (FusionNode child : comparison.children()) {
+                if (child instanceof FusionNode.Input) {
+                    callDesc.append(inputElement.blockDescriptor());
+                }
             }
             callDesc.append(")I");
 
@@ -1565,8 +1590,9 @@ public final class Stitcher {
             loadWarnings(insns, warningsArraySlot, sourceIndices.get(comparison));
             insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
             for (FusionNode child : comparison.children()) {
-                FusionNode.Input input = (FusionNode.Input) child;
-                insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + input.index()));
+                if (child instanceof FusionNode.Input input) {
+                    insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + input.index()));
+                }
             }
             insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, name, callDesc.toString(), false));
             insns.add(new VarInsnNode(Opcodes.ISTORE, tSlot));
@@ -1661,6 +1687,58 @@ public final class Stitcher {
         insns.add(new VarInsnNode(Opcodes.ALOAD, warningsArraySlot));
         pushInt(insns, index);
         insns.add(new InsnNode(Opcodes.AALOAD));
+    }
+
+    /**
+     * Pushes a {@link FusionNode.Constant}'s value onto the operand stack as a primitive bytecode constant typed to
+     * {@code element}, so a constant leaf reads no array and occupies no {@link FusionNode.Input} slot on any emit path.
+     * An {@code int} uses the tightest of {@code ICONST}/{@code BIPUSH}/{@code SIPUSH}/{@code LDC}; a {@code long}/
+     * {@code double} uses {@code LDC2_W} (via {@link LdcInsnNode} with a {@link Long}/{@link Double} operand), the cheap
+     * {@code xCONST_0/1} where applicable.
+     *
+     * <p>{@code element} is the ambient element of the tree the constant sits in (the consuming kernel's argument
+     * kind). It <b>must</b> equal {@code constant.element()} — the planner guarantees this — so a defensive assertion
+     * fails loud here rather than silently emitting a wrong-category push (e.g. an {@code LDC2_W} of a {@code long}
+     * where the kernel wants an {@code int}), which would only surface downstream as an opaque {@link VerifyError}.
+     */
+    private static void pushConstant(InsnList insns, Element element, FusionNode.Constant constant) {
+        assert elementSortMatches(element, constant.element())
+            : "constant element ["
+                + constant.element()
+                + "] does not match the ambient tree element ["
+                + element.type().getClassName()
+                + "]";
+        Object value = constant.value();
+        switch (element.type().getSort()) {
+            case Type.INT -> pushInt(insns, ((Number) value).intValue());
+            case Type.LONG -> {
+                long v = ((Number) value).longValue();
+                if (v == 0L) {
+                    insns.add(new InsnNode(Opcodes.LCONST_0));
+                } else if (v == 1L) {
+                    insns.add(new InsnNode(Opcodes.LCONST_1));
+                } else {
+                    insns.add(new LdcInsnNode(v)); // LDC2_W
+                }
+            }
+            case Type.DOUBLE -> {
+                double v = ((Number) value).doubleValue();
+                // LDC2_W the exact bits; DCONST_0/1 are avoided so -0.0 (whose bits differ from +0.0) is preserved.
+                insns.add(new LdcInsnNode(v));
+            }
+            default -> throw new IllegalArgumentException("unsupported fused constant element type: " + element.type().getClassName());
+        }
+    }
+
+    /** Whether {@code element}'s JVM sort matches a {@link FusionNode.Constant#element()} descriptor char (J/I/D). */
+    private static boolean elementSortMatches(Element element, char constantElement) {
+        int sort = element.type().getSort();
+        return switch (constantElement) {
+            case 'J' -> sort == Type.LONG;
+            case 'I' -> sort == Type.INT;
+            case 'D' -> sort == Type.DOUBLE;
+            default -> false;
+        };
     }
 
     /** Pushes a non-negative {@code int} constant using the tightest of {@code ICONST}/{@code BIPUSH}/{@code SIPUSH}/{@code LDC}. */
@@ -1774,6 +1852,11 @@ public final class Stitcher {
                 insns.add(new VarInsnNode(element.type().getOpcode(Opcodes.ILOAD), valueBase + input.index() * valueSize));
                 return;
             }
+            if (node instanceof FusionNode.Constant constant) {
+                // Embedded literal: push it as a bytecode constant (no pre-read value slot).
+                pushConstant(insns, element, constant);
+                return;
+            }
             FusionNode.Kernel kernel = (FusionNode.Kernel) node;
             MethodNode template = templates.methodNode(kernel.descriptor());
             Body body = BodyExtractor.extract(template);
@@ -1877,6 +1960,12 @@ public final class Stitcher {
          * node source.
          */
         void emit(FusionNode node, int enclosingKernelSlot) {
+            if (node instanceof FusionNode.Constant constant) {
+                // Embedded literal: push it as a bytecode constant, with no null / multi-value guard (a constant is
+                // always present and single-valued), so it never short-circuits the position to appendNull.
+                pushConstant(insns, inputElement, constant);
+                return;
+            }
             if (node instanceof FusionNode.Input input) {
                 int block = inputBase + input.index();
                 // switch (block.getValueCount(p)) { case 0 -> appendNull (null, no warning);
@@ -1960,6 +2049,10 @@ public final class Stitcher {
         if (tree instanceof FusionNode.Input input) {
             return input.index() + 1;
         }
+        if (tree instanceof FusionNode.Constant) {
+            // A constant is embedded in the bytecode, so it references no input vector and does not widen the arity.
+            return 0;
+        }
         if (tree instanceof FusionNode.Logical logical) {
             return Math.max(arity(logical.left()), arity(logical.right()));
         }
@@ -1988,6 +2081,8 @@ public final class Stitcher {
     private static void collectInputs(FusionNode node, Set<Integer> used) {
         if (node instanceof FusionNode.Input input) {
             used.add(input.index());
+        } else if (node instanceof FusionNode.Constant) {
+            // Embedded in the bytecode: consumes no input vector, so it contributes nothing to the consumed-input set.
         } else if (node instanceof FusionNode.Logical logical) {
             collectInputs(logical.left(), used);
             collectInputs(logical.right(), used);

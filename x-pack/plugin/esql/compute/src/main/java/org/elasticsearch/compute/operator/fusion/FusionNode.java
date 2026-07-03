@@ -12,11 +12,16 @@ import java.util.List;
 /**
  * An expression tree the {@link Stitcher} fuses into a single per-position body.
  *
- * <p>A tree is built from three node kinds:
+ * <p>A tree is built from these node kinds:
  * <ul>
  *   <li>{@link Input} — a leaf that reads position {@code p} of one of the fused method's input
  *       vectors. {@link Input#index()} selects which input (0-based); the fused method takes one
  *       vector parameter per distinct index in {@code [0, maxIndex]}.</li>
+ *   <li>{@link Constant} — a leaf whose value is a compile-time literal embedded directly into the
+ *       emitted loop as a bytecode constant ({@code LDC}/{@code LDC2_W}/{@code ICONST}/…), so it costs
+ *       no input vector, no page channel and no per-position array read — it never widens the fused
+ *       method's arity. Because the value is baked into the bytecode, two trees that differ only in a
+ *       constant's value stitch to <em>different</em> classes (the value is part of the cache key).</li>
  *   <li>{@link Kernel} — an inner node that applies a fusable arithmetic kernel (identified by a
  *       {@link FusionDescriptor}) to its children. The child count and each child's category must
  *       match the kernel's JVM argument descriptor (e.g. a {@code (JJ)J} kernel has exactly two
@@ -46,6 +51,33 @@ public sealed interface FusionNode {
         public Input {
             if (index < 0) {
                 throw new IllegalArgumentException("input index must be non-negative but was [" + index + "]");
+            }
+        }
+    }
+
+    /**
+     * A leaf whose value is a compile-time literal embedded into the emitted loop as a bytecode constant, rather
+     * than read from an input vector. It consumes no {@link Input} slot and does not widen the fused method's arity,
+     * so a {@code kernel(column, constant)} tree still reads exactly one input vector.
+     *
+     * <p>The stitcher pushes {@code value} with the tightest opcode for {@code element} ({@code ICONST}/{@code BIPUSH}/
+     * {@code SIPUSH}/{@code LDC} for {@code int}, {@code LDC2_W} for {@code long}/{@code double}) on every emit path
+     * (plain-vector, checked-vector, block, and the logical comparison helpers), typed to match the consuming kernel's
+     * argument. Because the value is baked into the bytecode, the constant's value is part of the fused class's cache
+     * key: {@code a > 5} and {@code a > 6} stitch to distinct classes (a cardinality the shape cache must tolerate).
+     *
+     * @param value   the literal's value, boxed as {@link Long}/{@link Integer}/{@link Double} to match {@code element};
+     *                must not be {@code null} (a null literal is not fusable — the planner refuses that subtree)
+     * @param element the primitive JVM type descriptor char of the value: {@code 'J'} (long), {@code 'I'} (int) or
+     *                {@code 'D'} (double). It must equal the homogeneous element of the tree the constant sits in.
+     */
+    record Constant(Object value, char element) implements FusionNode {
+        public Constant {
+            if (value == null) {
+                throw new IllegalArgumentException("constant value must not be null");
+            }
+            if (element != 'J' && element != 'I' && element != 'D') {
+                throw new IllegalArgumentException("constant element must be one of J/I/D but was [" + element + "]");
             }
         }
     }

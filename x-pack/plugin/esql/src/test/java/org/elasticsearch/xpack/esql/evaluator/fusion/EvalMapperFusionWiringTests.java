@@ -189,20 +189,21 @@ public class EvalMapperFusionWiringTests extends ESTestCase {
         }
     }
 
-    // (b) A literal (@Fixed-style) leaf makes the subtree non-fusable => the generated (unfused) factory is returned.
-    public void testLiteralLeafIsNotFused() {
+    // (b) A literal leaf is now fused (iter 24): the constant is embedded as a bytecode constant, so a depth-2 tree
+    // containing it stitches just like an all-column tree and still evaluates correctly.
+    public void testLiteralLeafFuses() {
         FieldAttribute a = field("a", DataType.LONG);
         FieldAttribute c = field("c", DataType.LONG);
         Layout layout = layout(a, c);
 
-        // (a + 5) * c : the Add has a constant (non-Attribute) operand, so no full subtree fuses.
+        // (a + 5) * c : the Add's constant operand embeds into the fused body; the whole depth-2 tree fuses.
         Expression expr = new Mul(
             Source.EMPTY,
             new Add(Source.EMPTY, a, new Literal(Source.EMPTY, 5L, DataType.LONG), EsqlTestUtils.TEST_CFG),
             c
         );
         ExpressionEvaluator.Factory factory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
-        assertThat("a literal leaf must not fuse", factory, not(instanceOf(FusedExpressionEvaluatorFactory.class)));
+        assertThat("a depth-2 tree with a literal leaf must fuse", factory, instanceOf(FusedExpressionEvaluatorFactory.class));
 
         // And it still evaluates correctly.
         int positionCount = 64;
