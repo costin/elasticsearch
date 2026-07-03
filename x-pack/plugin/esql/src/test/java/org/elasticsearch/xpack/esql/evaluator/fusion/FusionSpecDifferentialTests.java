@@ -8,6 +8,7 @@
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.elasticsearch.compute.data.Block;
+import org.elasticsearch.compute.data.IntBlock;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.core.Releasables;
@@ -374,6 +375,62 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
             blockFactory.newLongArrayVector(dv, positions).asBlock(),
             blockFactory.newLongArrayVector(ev, positions).asBlock() };
         runDifferential(fused, unfused, ElementKind.BOOLEAN, inputs, positions, "arith-under-comp-under-logical additive fallback");
+    }
+
+    /**
+     * END-TO-END over-budget fallback (criterion #6), through the REAL plan-time path
+     * ({@link FusionPlanner#maybeFuse} → {@link FusedExpressionEvaluatorFactory#tryCreate} → the {@link
+     * org.elasticsearch.compute.operator.fusion.Stitcher}): a large flat {@code AND} of column-column comparisons is a
+     * fusable logical shape (S3.1), but deep enough that the ENFORCED logical block-loop body exceeds the
+     * {@code MAX_FUSED_METHOD_BYTECODES} inlining budget, so the stitch is refused and the planner returns the
+     * <b>unfused</b> factory unchanged (NOT a {@link FusedExpressionEvaluatorFactory}). A <em>small</em> version of the
+     * SAME shape fuses, proving it is the SIZE (the budget guard) that forces the fallback here — not a planner-scope
+     * rejection — and that the over-budget shape still evaluates correctly via the fallback chain.
+     */
+    public void testOverBudgetLogicalRefusesToFuseAndFallsBackEndToEnd() {
+        int columns = 4;
+        FieldAttribute[] cols = new FieldAttribute[columns];
+        for (int c = 0; c < columns; c++) {
+            cols[c] = field("c" + c, DataType.LONG);
+        }
+        Layout layout = layout(cols);
+
+        // A small AND of the SAME shape (2 column comparisons) fuses — the shape is fusable in principle.
+        Expression small = andOfColumnComparisons(2, cols);
+        assertFuses(fusedFactory(small, layout), "small AND (2 comparisons) must fuse");
+
+        // A large AND (many comparisons) makes the enforced logical block-loop body exceed the inlining budget, so the
+        // real plan-time path refuses to fuse and returns the UNFUSED factory (the criterion #6 fallback).
+        Expression large = andOfColumnComparisons(64, cols);
+        ExpressionEvaluator.Factory fusedLarge = fusedFactory(large, layout);
+        ExpressionEvaluator.Factory unfusedLarge = unfusedFactory(large, layout);
+        assertDoesNotFuse(fusedLarge, "over-budget large AND must fall back to the unfused chain (not a FusedExpressionEvaluatorFactory)");
+        assertDoesNotFuse(unfusedLarge, "over-budget large AND kill switch OFF");
+
+        // And the over-budget shape still evaluates correctly through the fallback chain (produces a boolean block, no
+        // crash), matching the explicitly-unfused reference position-by-position.
+        int positions = 64;
+        Block[] inputs = new Block[columns];
+        for (int c = 0; c < columns; c++) {
+            inputs[c] = denseColumn(ElementKind.LONG, positions, c + 1);
+        }
+        runDifferential(fusedLarge, unfusedLarge, ElementKind.BOOLEAN, inputs, positions, "over-budget AND fallback evaluates");
+    }
+
+    /** A left-nested {@code AND} of {@code comparisons} column-column comparisons over {@code cols} (a fusable S3.1 logical shape). */
+    private static Expression andOfColumnComparisons(int comparisons, FieldAttribute[] cols) {
+        Expression tree = columnComparison(cols, 0);
+        for (int i = 1; i < comparisons; i++) {
+            tree = new And(Source.EMPTY, tree, columnComparison(cols, i));
+        }
+        return tree;
+    }
+
+    /** The {@code i}-th column-column comparison, cycling operator and (distinct) operand columns for variety. */
+    private static Expression columnComparison(FieldAttribute[] cols, int i) {
+        FieldAttribute left = cols[i % cols.length];
+        FieldAttribute right = cols[(i + 1) % cols.length]; // (i+1)%len != i%len for len >= 2, so operands differ
+        return (i % 2 == 0) ? new GreaterThan(Source.EMPTY, left, right) : new LessThan(Source.EMPTY, left, right);
     }
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -893,6 +950,382 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
             case DOUBLE -> new Literal(Source.EMPTY, (double) raw, DataType.DOUBLE);
             case BOOLEAN -> throw new AssertionError("boolean constant leaves are not generated");
         };
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // iter 25: mixed-type / cast fusion. ESQL bridges numeric operands of different types to a {@code commonType} with
+    // an explicit widening {@link org.elasticsearch.xpack.esql.expression.function.scalar.math.Cast} (int->long,
+    // int->double, long->double). The planner fuses those {@code @Fusable} cast kernels as INTERMEDIATE nodes (whose
+    // return element differs from their argument element), so a mixed-type tree fuses end-to-end rather than falling
+    // back — e.g. {@code doubleCol + intCol} is {@code Add(doubleCol, castIntToDouble(intCol))} and fuses whole.
+    // ---------------------------------------------------------------------------------------------------------------
+
+    /** The mixed-type shapes swept below; each mixes &ge; 2 numeric element kinds bridged by a synthetic widening cast. */
+    private enum MixedShape {
+        /** {@code doubleCol + intCol} -> {@code Add(double, castIntToDouble(int))}; output DOUBLE. */
+        DOUBLE_ADD_INT,
+        /** {@code longCol * intCol} -> {@code Mul(long, castIntToLong(int))}; output LONG. */
+        LONG_MUL_INT,
+        /** {@code doubleCol - longCol} -> {@code Sub(double, castLongToDouble(long))}; output DOUBLE. */
+        DOUBLE_SUB_LONG,
+        /** {@code (a_int * b_int) + c_long} -> {@code Add(castIntToLong(Mul(int,int)), long)} — a cast wrapping a KERNEL. */
+        INTMUL_ADD_LONG,
+        /**
+         * {@code ((a_int * b_int) + c_long) + d_double} -> {@code Add(castLongToDouble(Add(castIntToLong(Mul(int,int)),
+         * long)), double)} — a <b>nested</b> int→long→double widening: the inner {@code Mul}'s {@code int} is cast to
+         * {@code long} for the inner {@code Add}, whose {@code long} is then cast to {@code double} for the outer
+         * {@code Add}. Two cast kernels at different depths, exercising per-node typing bridging stacked widths.
+         */
+        NESTED_INT_LONG_DOUBLE,
+        /** {@code intCol > longCol} -> {@code GreaterThan(castIntToLong(int), long)} — a cast-bridged COMPARISON root; output BOOLEAN. */
+        INT_GT_LONG
+    }
+
+    /** The physical column element kinds a {@link MixedShape} reads, in channel order. */
+    private static ElementKind[] mixedColumnKinds(MixedShape shape) {
+        return switch (shape) {
+            case DOUBLE_ADD_INT -> new ElementKind[] { ElementKind.DOUBLE, ElementKind.INT };
+            case LONG_MUL_INT -> new ElementKind[] { ElementKind.LONG, ElementKind.INT };
+            case DOUBLE_SUB_LONG -> new ElementKind[] { ElementKind.DOUBLE, ElementKind.LONG };
+            case INTMUL_ADD_LONG -> new ElementKind[] { ElementKind.INT, ElementKind.INT, ElementKind.LONG };
+            case NESTED_INT_LONG_DOUBLE -> new ElementKind[] { ElementKind.INT, ElementKind.INT, ElementKind.LONG, ElementKind.DOUBLE };
+            case INT_GT_LONG -> new ElementKind[] { ElementKind.INT, ElementKind.LONG };
+        };
+    }
+
+    /** The {@code commonType} element kind of a {@link MixedShape}'s root (its result element). */
+    private static ElementKind mixedOutputKind(MixedShape shape) {
+        return switch (shape) {
+            case DOUBLE_ADD_INT, DOUBLE_SUB_LONG, NESTED_INT_LONG_DOUBLE -> ElementKind.DOUBLE;
+            case LONG_MUL_INT, INTMUL_ADD_LONG -> ElementKind.LONG;
+            case INT_GT_LONG -> ElementKind.BOOLEAN;
+        };
+    }
+
+    /** Builds the {@link MixedShape}'s expression over {@code cols} (typed per {@link #mixedColumnKinds}). */
+    private static Expression mixedExpr(MixedShape shape, FieldAttribute[] cols) {
+        return switch (shape) {
+            case DOUBLE_ADD_INT -> new Add(Source.EMPTY, cols[0], cols[1], EsqlTestUtils.TEST_CFG);
+            case LONG_MUL_INT -> new Mul(Source.EMPTY, cols[0], cols[1]);
+            case DOUBLE_SUB_LONG -> new Sub(Source.EMPTY, cols[0], cols[1], EsqlTestUtils.TEST_CFG);
+            case INTMUL_ADD_LONG -> new Add(Source.EMPTY, new Mul(Source.EMPTY, cols[0], cols[1]), cols[2], EsqlTestUtils.TEST_CFG);
+            // ((a_int * b_int) + c_long) + d_double: int→long (inner Add) then long→double (outer Add), two nested casts.
+            case NESTED_INT_LONG_DOUBLE -> new Add(
+                Source.EMPTY,
+                new Add(Source.EMPTY, new Mul(Source.EMPTY, cols[0], cols[1]), cols[2], EsqlTestUtils.TEST_CFG),
+                cols[3],
+                EsqlTestUtils.TEST_CFG
+            );
+            case INT_GT_LONG -> new GreaterThan(Source.EMPTY, cols[0], cols[1]);
+        };
+    }
+
+    /**
+     * The iter-25 mixed-type sweep: for each {@link MixedShape} and profile it builds a tree whose operands span two or
+     * three numeric element kinds (so ESQL's {@code commonType} inserts a widening cast the planner must fuse), asserts
+     * the tree FUSES (the core iter-25 unlock — a cast-bridged tree must not silently fall back to the unfused chain),
+     * and differential-checks values + null positions + the ratified warning subset against the unfused chain. Proves
+     * the cast kernel is fused both wrapping a leaf ({@code intCol -> double}) and wrapping a whole kernel
+     * ({@code Mul(int,int) -> long}), across the vector (CLEAN), block (NULLS/MULTIVALUE) and overflow paths.
+     */
+    public void testMixedTypeCastSpecSweepMatchesUnfused() {
+        Coverage cov = new Coverage();
+        Profile[] cycle = { Profile.CLEAN, Profile.NULLS, Profile.MULTIVALUE, Profile.OVERFLOW };
+        MixedShape[] shapes = MixedShape.values();
+        int iterations = 160;
+        int fusedCount = 0;
+        for (int i = 0; i < iterations; i++) {
+            // Independent strides (shape%|shapes|, profile%4) so every (shape × profile) combo is swept.
+            MixedShape shape = shapes[i % shapes.length];
+            Profile profile = cycle[(i / shapes.length) % cycle.length];
+            int positionCount = positionCountFor(i);
+
+            ElementKind[] kinds = mixedColumnKinds(shape);
+            FieldAttribute[] cols = new FieldAttribute[kinds.length];
+            for (int c = 0; c < kinds.length; c++) {
+                cols[c] = field("c" + c, dataType(kinds[c]));
+            }
+            Layout layout = layout(cols);
+            Expression expr = mixedExpr(shape, cols);
+            ElementKind outputKind = mixedOutputKind(shape);
+
+            ExpressionEvaluator.Factory fusedFactory = fusedFactory(expr, layout);
+            ExpressionEvaluator.Factory unfusedFactory = unfusedFactory(expr, layout);
+            String ctx = "mixedShape=" + shape + " i=" + i + " profile=" + profile + " expr=" + expr;
+            FusedExpressionEvaluatorFactory fused = assertFuses(fusedFactory, ctx);
+            assertDoesNotFuse(unfusedFactory, ctx);
+            fusedCount++;
+
+            recordStrategy(cov, fused.vectorStrategy(), outputKind);
+            recordShape(cov, positionCount);
+            recordProfile(cov, profile);
+
+            int[] referenced = new int[kinds.length];
+            for (int c = 0; c < kinds.length; c++) {
+                referenced[c] = c;
+            }
+            Block[] inputs = buildMixedPage(kinds, positionCount, profile, referenced);
+            List<String> referenceWarnings = runDifferential(fusedFactory, unfusedFactory, outputKind, inputs, positionCount, ctx);
+            recordWarnings(cov, profile, referenceWarnings);
+        }
+
+        assertShapeMatrixCovered(cov);
+        assertProfilesCovered(cov, Profile.CLEAN, Profile.NULLS, Profile.MULTIVALUE, Profile.OVERFLOW);
+        assertThat("every mixed-type (cast-bridged) tree must fuse, not silently fall back", fusedCount, equalTo(iterations));
+        assertThat("a mixed-type overflow-checked tree must reach the checked-vector fast path", cov.checkedVector, greaterThan(0));
+        assertThat("some overflow position in a mixed-type tree must register a warning", cov.overflowWarnings, greaterThan(0));
+        assertThat("some multi-value position in a mixed-type tree must register a warning", cov.multiValueWarnings, greaterThan(0));
+    }
+
+    /**
+     * The canonical mixed-type case, deterministic: {@code doubleCol + intCol} fuses (as {@code Add(doubleCol,
+     * castIntToDouble(intCol))}, the {@code ToDouble} cast fused as an intermediate node) and matches the unfused chain
+     * position-by-position over a dense page — including the {@code Integer.MAX_VALUE} row, whose exact {@code (double)}
+     * widening the fused body must reproduce.
+     */
+    public void testMixedTypeDoubleIntFusesDeterministic() {
+        FieldAttribute a = field("a", DataType.DOUBLE);
+        FieldAttribute b = field("b", DataType.INTEGER);
+        Layout layout = layout(a, b);
+        Expression expr = new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG);
+
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        assertFuses(fused, "doubleCol + intCol must fuse (cast-bridged double+int)");
+        assertDoesNotFuse(unfused, "doubleCol + intCol kill switch OFF");
+
+        double[] av = { 1.5, 2.0, -3.25, 0.0, 1e9 };
+        int[] bv = { 2, -1, 4, 0, Integer.MAX_VALUE };
+        int positions = av.length;
+        Block[] inputs = {
+            blockFactory.newDoubleArrayVector(av, positions).asBlock(),
+            blockFactory.newIntArrayVector(bv, positions).asBlock() };
+        runDifferential(fused, unfused, ElementKind.DOUBLE, inputs, positions, "doubleCol + intCol deterministic");
+    }
+
+    /**
+     * A cast wrapping a whole KERNEL, deterministic: {@code (a_int * b_int) + c_long} is
+     * {@code Add(castIntToLong(Mul(int,int)), longCol)} — the {@code Mul} sub-kernel's {@code int} result is widened to
+     * {@code long} by a fused cast before the {@code Add}. Proves the per-node typing bridges an intermediate node
+     * (not just a leaf) and matches the unfused chain.
+     */
+    public void testMixedTypeCastOfKernelFusesDeterministic() {
+        FieldAttribute a = field("a", DataType.INTEGER);
+        FieldAttribute b = field("b", DataType.INTEGER);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression expr = new Add(Source.EMPTY, new Mul(Source.EMPTY, a, b), c, EsqlTestUtils.TEST_CFG);
+
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        assertFuses(fused, "(a_int * b_int) + c_long must fuse (cast wrapping a kernel)");
+        assertDoesNotFuse(unfused, "(a_int * b_int) + c_long kill switch OFF");
+
+        int[] av = { 2, 3, -4, 0 };
+        int[] bv = { 5, 7, 6, 1 };
+        long[] cv = { 100L, -3L, 8L, 0L };
+        int positions = av.length;
+        Block[] inputs = {
+            blockFactory.newIntArrayVector(av, positions).asBlock(),
+            blockFactory.newIntArrayVector(bv, positions).asBlock(),
+            blockFactory.newLongArrayVector(cv, positions).asBlock() };
+        runDifferential(fused, unfused, ElementKind.LONG, inputs, positions, "(a*b)+c mixed int/long deterministic");
+    }
+
+    /**
+     * DETERMINISTIC casted-operand null/multi-value proof for {@code doubleCol + intCol}
+     * ({@code Add(doubleCol, castIntToDouble(intCol))}): the INT operand — the one that is widened by the synthetic
+     * {@code castIntToDouble} kernel — carries {@code null}s at known positions AND multi-values at other known
+     * positions, while the {@code double} operand is dense. The tree must FUSE, and the fused result must be
+     * {@code null} at <em>exactly</em> the casted operand's null/mv positions (so null/mv flows THROUGH the cast, not
+     * around it), matching the unfused chain in values, null positions and the multi-value warning (parity). The
+     * randomized {@link #testMixedTypeCastSpecSweepMatchesUnfused} does not pin WHICH operand is abnormal, so this
+     * targets the casted operand specifically.
+     */
+    public void testMixedTypeDoubleAddCastedIntNullMvDeterministic() {
+        FieldAttribute a = field("a", DataType.DOUBLE);
+        FieldAttribute b = field("b", DataType.INTEGER);
+        Layout layout = layout(a, b);
+        Expression expr = new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG); // Add(doubleCol, castIntToDouble(intCol))
+
+        int positions = 8;
+        double[] av = { 1.5, 2.0, -3.25, 0.0, 10.0, -1.0, 7.75, 100.0 };
+        Set<Integer> nulls = Set.of(1, 5);
+        Set<Integer> multivalues = Set.of(3, 6);
+        Set<Integer> expectedNull = Set.of(1, 3, 5, 6); // null OR multi-value in the casted int operand => null result
+        Block[] inputs = {
+            blockFactory.newDoubleArrayVector(av, positions).asBlock(),
+            intColumnWithNullsAndMultivalues(positions, nulls, multivalues, 2) };
+        assertCastedIntOperandNullMvFuses(
+            expr,
+            layout,
+            ElementKind.DOUBLE,
+            inputs,
+            positions,
+            expectedNull,
+            "doubleCol + intCol casted-int null/mv (Add(double, castIntToDouble(int)))"
+        );
+    }
+
+    /**
+     * DETERMINISTIC casted-operand null/multi-value proof for {@code longCol * intCol}
+     * ({@code Mul(longCol, castIntToLong(intCol))}): the INT operand widened by {@code castIntToLong} carries nulls and
+     * multi-values at known positions while the {@code long} operand is dense. Same guarantees as
+     * {@link #testMixedTypeDoubleAddCastedIntNullMvDeterministic} for the {@code int→long} cast path.
+     */
+    public void testMixedTypeLongMulCastedIntNullMvDeterministic() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.INTEGER);
+        Layout layout = layout(a, b);
+        Expression expr = new Mul(Source.EMPTY, a, b); // Mul(longCol, castIntToLong(intCol))
+
+        int positions = 8;
+        long[] av = { 3, 7, -2, 9, 0, 11, -4, 100 };
+        Set<Integer> nulls = Set.of(0, 4);
+        Set<Integer> multivalues = Set.of(2, 7);
+        Set<Integer> expectedNull = Set.of(0, 2, 4, 7);
+        Block[] inputs = {
+            blockFactory.newLongArrayVector(av, positions).asBlock(),
+            intColumnWithNullsAndMultivalues(positions, nulls, multivalues, 1) };
+        assertCastedIntOperandNullMvFuses(
+            expr,
+            layout,
+            ElementKind.LONG,
+            inputs,
+            positions,
+            expectedNull,
+            "longCol * intCol casted-int null/mv (Mul(long, castIntToLong(int)))"
+        );
+    }
+
+    /**
+     * A DEEPER, nested-width mixed tree, deterministic: {@code ((a_int * b_int) + c_long) + d_double} is
+     * {@code Add(castLongToDouble(Add(castIntToLong(Mul(int,int)), long)), double)} — the inner {@code Mul}'s
+     * {@code int} widens to {@code long} for the inner {@code Add}, whose {@code long} widens to {@code double} for the
+     * outer {@code Add}. Two synthetic cast kernels at different depths must both fuse (per-node typing bridging
+     * stacked widths int→long→double), matching the unfused chain position-by-position — including the
+     * {@code Integer.MAX_VALUE} row whose exact widenings the fused body must reproduce.
+     */
+    public void testMixedTypeNestedIntLongDoubleFusesDeterministic() {
+        FieldAttribute a = field("a", DataType.INTEGER);
+        FieldAttribute b = field("b", DataType.INTEGER);
+        FieldAttribute c = field("c", DataType.LONG);
+        FieldAttribute d = field("d", DataType.DOUBLE);
+        Layout layout = layout(a, b, c, d);
+        Expression expr = new Add(
+            Source.EMPTY,
+            new Add(Source.EMPTY, new Mul(Source.EMPTY, a, b), c, EsqlTestUtils.TEST_CFG),
+            d,
+            EsqlTestUtils.TEST_CFG
+        );
+
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        assertFuses(fused, "((a_int*b_int)+c_long)+d_double nested int->long->double must fuse");
+        assertDoesNotFuse(unfused, "((a*b)+c)+d kill switch OFF");
+
+        int[] av = { 2, 3, -4, 0, Integer.MAX_VALUE };
+        int[] bv = { 5, 7, 6, 1, 1 };
+        long[] cv = { 100L, -3L, 8L, 0L, 2L };
+        double[] dv = { 1.5, -2.25, 0.0, 7.5, 1e9 };
+        int positions = av.length;
+        Block[] inputs = {
+            blockFactory.newIntArrayVector(av, positions).asBlock(),
+            blockFactory.newIntArrayVector(bv, positions).asBlock(),
+            blockFactory.newLongArrayVector(cv, positions).asBlock(),
+            blockFactory.newDoubleArrayVector(dv, positions).asBlock() };
+        runDifferential(fused, unfused, ElementKind.DOUBLE, inputs, positions, "((a*b)+c)+d nested int/long/double deterministic");
+    }
+
+    /**
+     * Builds an {@code int} column carrying {@code null}s at {@code nullPositions} and multi-value entries at
+     * {@code mvPositions} (all other positions single-valued), so a differential test can pin exactly which positions
+     * the casted operand nulls. Values are {@code base + p} (deterministic, distinct across positions).
+     */
+    private Block intColumnWithNullsAndMultivalues(int positions, Set<Integer> nullPositions, Set<Integer> mvPositions, int base) {
+        try (IntBlock.Builder builder = blockFactory.newIntBlockBuilder(positions)) {
+            for (int p = 0; p < positions; p++) {
+                if (nullPositions.contains(p)) {
+                    builder.appendNull();
+                } else if (mvPositions.contains(p)) {
+                    builder.beginPositionEntry();
+                    builder.appendInt(base + p);
+                    builder.appendInt(base + p + 1);
+                    builder.endPositionEntry();
+                } else {
+                    builder.appendInt(base + p);
+                }
+            }
+            return builder.build();
+        }
+    }
+
+    /**
+     * Asserts a cast-bridged mixed-type tree whose CASTED int operand carries null/multi-values FUSES, that the fused
+     * result is {@code null} at exactly {@code expectedNullPositions} (null/mv propagates through the cast), that it
+     * matches the unfused chain in values + null positions, and that the multi-value warning fired on BOTH paths
+     * (parity). Releases the page and both result blocks before returning.
+     */
+    private void assertCastedIntOperandNullMvFuses(
+        Expression expr,
+        Layout layout,
+        ElementKind outputKind,
+        Block[] inputs,
+        int positions,
+        Set<Integer> expectedNullPositions,
+        String ctx
+    ) {
+        ExpressionEvaluator.Factory fusedFactory = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfusedFactory = unfusedFactory(expr, layout);
+        assertFuses(fusedFactory, ctx); // core iter-25 unlock: the cast-bridged tree must FUSE, not fall back
+        assertDoesNotFuse(unfusedFactory, ctx + " kill switch OFF");
+
+        ExpressionEvaluator fused = fusedFactory.get(driverContext);
+        ExpressionEvaluator reference = unfusedFactory.get(driverContext);
+        Page page = null;
+        Block fusedResult = null;
+        Block referenceResult = null;
+        try {
+            page = new Page(positions, inputs);
+            drainWarnings(); // clean slate
+            fusedResult = fused.eval(page);
+            List<String> fusedWarnings = drainWarnings();
+            referenceResult = reference.eval(page);
+            List<String> referenceWarnings = drainWarnings();
+
+            // The null/multi-value carried by the CASTED int operand must null the fused result at exactly those
+            // positions — proving null/mv propagates THROUGH the synthetic widening cast, not around it.
+            for (int p = 0; p < positions; p++) {
+                assertThat(ctx + " fused null@" + p, fusedResult.isNull(p), is(expectedNullPositions.contains(p)));
+            }
+            assertResultsEqual(outputKind, fusedResult, referenceResult, positions, ctx);
+            assertWarningsSubset(fusedWarnings, referenceWarnings, ctx);
+            // A multi-value in the casted operand raises the single-value multi-value warning on BOTH paths — parity,
+            // not just subset (a silently-dropped fused warning would still satisfy the subset rule).
+            assertThat(
+                ctx + " the unfused chain must raise the multi-value warning",
+                containsWarning(referenceWarnings, MULTI_VALUE_MSG),
+                is(true)
+            );
+            assertFusedEmitsWarning(fusedWarnings, MULTI_VALUE_MSG, ctx);
+        } finally {
+            Releasables.closeExpectNoException(fusedResult, referenceResult, fused, reference);
+            if (page != null) {
+                page.releaseBlocks();
+            }
+        }
+    }
+
+    /** Builds a page whose columns may have DIFFERENT element kinds (mixed-type trees), forcing an abnormal referenced column. */
+    private Block[] buildMixedPage(ElementKind[] kinds, int positionCount, Profile profile, int[] referenced) {
+        boolean abnormal = profile == Profile.NULLS || profile == Profile.MULTIVALUE || profile == Profile.NULLS_AND_MULTIVALUE;
+        int forced = abnormal && referenced.length > 0 ? referenced[randomInt(referenced.length - 1)] : -1;
+        Block[] blocks = new Block[kinds.length];
+        for (int c = 0; c < kinds.length; c++) {
+            Structure structure = structureFor(profile, positionCount, c == forced);
+            blocks[c] = buildColumn(kinds[c], positionCount, structure, profile, false);
+        }
+        return blocks;
     }
 
     // ---------------------------------------------------------------------------------------------------------------

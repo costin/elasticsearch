@@ -110,8 +110,12 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      */
     private final Source[] warningSources;
     private final int[] inputChannels;
-    /** The numeric input element (long/int/double). Runtime vector-eligibility narrows inputs to this *ArrayVector. */
-    private final ElementKind inputElement;
+    /**
+     * The numeric element of each input column, indexed by input (parallel to {@link #inputChannels}). With per-node
+     * typing a tree may mix elements (e.g. {@code doubleCol + intCol} reads channel 0 as {@code double} and channel 1
+     * as {@code int}), so runtime vector-eligibility narrows each input to its OWN {@code *ArrayVector}.
+     */
+    private final ElementKind[] inputElements;
     private final MethodHandle blockHandle;
     private final MethodHandle vectorHandle;
     private final VectorStrategy vectorStrategy;
@@ -121,7 +125,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     private FusedExpressionEvaluatorFactory(
         Source[] warningSources,
         int[] inputChannels,
-        ElementKind inputElement,
+        ElementKind[] inputElements,
         MethodHandle blockHandle,
         MethodHandle vectorHandle,
         VectorStrategy vectorStrategy,
@@ -130,7 +134,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     ) {
         this.warningSources = warningSources;
         this.inputChannels = inputChannels;
-        this.inputElement = inputElement;
+        this.inputElements = inputElements;
         this.blockHandle = blockHandle;
         this.vectorHandle = vectorHandle;
         this.vectorStrategy = vectorStrategy;
@@ -149,7 +153,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         Source[] warningSources,
         FusionNode tree,
         int[] inputChannels,
-        ElementKind inputElement,
+        ElementKind[] inputElements,
         ElementKind outputElement,
         boolean overflowChecked,
         ExpressionEvaluator.Factory unfused,
@@ -164,12 +168,12 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 MethodHandle logicalHandle = LOOKUP.findStatic(
                     logicalClass,
                     Stitcher.FUSED_METHOD_NAME,
-                    blockType(inputElement, outputElement, arity)
+                    blockType(inputElements, outputElement, arity)
                 );
                 return new FusedExpressionEvaluatorFactory(
                     warningSources,
                     inputChannels,
-                    inputElement,
+                    inputElements,
                     logicalHandle,
                     null,
                     VectorStrategy.NONE,
@@ -182,7 +186,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             MethodHandle blockHandle = LOOKUP.findStatic(
                 blockClass,
                 Stitcher.FUSED_METHOD_NAME,
-                blockType(inputElement, outputElement, arity)
+                blockType(inputElements, outputElement, arity)
             );
 
             MethodHandle vectorHandle;
@@ -205,7 +209,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             return new FusedExpressionEvaluatorFactory(
                 warningSources,
                 inputChannels,
-                inputElement,
+                inputElements,
                 blockHandle,
                 vectorHandle,
                 strategy,
@@ -231,7 +235,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         return new FusedExpressionEvaluator(
             warningSources,
             inputChannels,
-            inputElement,
+            inputElements,
             blockHandle,
             vectorHandle,
             vectorStrategy,
@@ -256,15 +260,15 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         return "Fused[shape=" + shape + ", strategy=" + vectorStrategy + ", unfused=" + unfused + "]";
     }
 
-    private static MethodType blockType(ElementKind inputElement, ElementKind outputElement, int arity) {
+    private static MethodType blockType(ElementKind[] inputElements, ElementKind outputElement, int arity) {
         List<Class<?>> params = new ArrayList<>();
         params.add(BlockFactory.class);
         params.add(Warnings[].class);
         params.add(int.class);
         for (int i = 0; i < arity; i++) {
-            // Input *Blocks are the numeric input element; the produced block is the output element (boolean for a
-            // comparison root).
-            params.add(inputElement.blockClass);
+            // Each input *Block is its own numeric element (a tree may mix them via cast kernels); the produced block
+            // is the output element (boolean for a comparison root).
+            params.add(inputElements[i].blockClass);
         }
         return MethodType.methodType(outputElement.blockClass, params);
     }
@@ -325,7 +329,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
         private final Source[] warningSources;
         private final int[] inputChannels;
-        private final ElementKind inputElement;
+        private final ElementKind[] inputElements;
         private final MethodHandle blockHandle;
         private final MethodHandle vectorHandle;
         private final VectorStrategy vectorStrategy;
@@ -343,7 +347,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         FusedExpressionEvaluator(
             Source[] warningSources,
             int[] inputChannels,
-            ElementKind inputElement,
+            ElementKind[] inputElements,
             MethodHandle blockHandle,
             MethodHandle vectorHandle,
             VectorStrategy vectorStrategy,
@@ -353,7 +357,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         ) {
             this.warningSources = warningSources;
             this.inputChannels = inputChannels;
-            this.inputElement = inputElement;
+            this.inputElements = inputElements;
             this.blockHandle = blockHandle;
             this.vectorHandle = vectorHandle;
             this.vectorStrategy = vectorStrategy;
@@ -432,7 +436,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             Vector[] vectors = new Vector[inputs.length];
             for (int i = 0; i < inputs.length; i++) {
                 Vector vector = inputs[i].asVector();
-                if (vector == null || inputElement.arrayVectorClass.isInstance(vector) == false) {
+                // Each input must be a dense no-null single-valued *ArrayVector of its OWN element (the tree may mix
+                // elements via cast kernels), so rawValues() is a valid tight read for that input.
+                if (vector == null || inputElements[i].arrayVectorClass.isInstance(vector) == false) {
                     return null;
                 }
                 vectors[i] = vector;

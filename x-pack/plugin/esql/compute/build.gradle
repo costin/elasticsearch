@@ -41,6 +41,9 @@ dependencies {
   }
   testImplementation(project(xpackModule('core')))
   testImplementation(project(xpackModule('ml')))
+  // StitcherBudgetTests: CheckClassAdapter structural validation of emitted fused bytecode (asm-util pulls asm-analysis).
+  testImplementation 'org.ow2.asm:asm-util:9.9'
+  testImplementation 'org.ow2.asm:asm-analysis:9.9'
 }
 
 def projectDirectory = project.layout.projectDirectory

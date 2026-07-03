@@ -349,9 +349,10 @@ public final class Stitcher {
      */
     private byte[] emitVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         int arity = arity(tree);
-        // INPUT element (leaf raw-array reads) vs OUTPUT element (the output array + produced vector). They coincide for
-        // an arithmetic root and differ for a comparison root, whose numeric inputs feed a boolean output.
-        Element inputElement = Element.of(rootArgType(tree));
+        // Per-input leaf elements (a tree may mix int/long/double via cast kernels) vs the OUTPUT element (the output
+        // array + produced vector). They coincide for a homogeneous arithmetic root and differ for a comparison root
+        // (numeric inputs feed a boolean output) or any cast-bridged input.
+        Element[] inputElements = inputElements(tree, arity);
         Element outputElement = Element.of(rootReturnType(tree));
 
         // Frame layout: [0] BlockFactory, [1] int positionCount, [2 .. 2+arity) input Vectors. The per-input raw
@@ -383,6 +384,7 @@ public final class Stitcher {
         // array is fetched through the public VectorUnsafe forwarder (INVOKESTATIC) rather than the package-private
         // rawValues() (INVOKEVIRTUAL), so this hidden class can be defined in the caller's own module.
         for (int i = 0; i < arity; i++) {
+            Element inputElement = inputElements[i];
             insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
             insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
             insns.add(
@@ -417,8 +419,8 @@ public final class Stitcher {
         // leave the computed value on top, so a single array-store consumes all three.
         insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
         insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        VectorLoopEmitter emitter = new VectorLoopEmitter(insns, inputElement, rawArrayBase, pSlot, kernelBase);
-        emitter.emit(tree);
+        VectorLoopEmitter emitter = new VectorLoopEmitter(insns, inputElements, rawArrayBase, pSlot, kernelBase);
+        emitter.emit(tree, outputElement);
         // The computed value (an int 0/1 for a comparison root) is stored with the OUTPUT element's array-store opcode
         // (BASTORE for boolean).
         insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
@@ -530,10 +532,10 @@ public final class Stitcher {
     private byte[] emitVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         int arity = arity(tree);
         int[] consumed = consumedInputs(tree);
-        // INPUT element (numeric raw-array reads + value slots) vs OUTPUT element (the builder + produced block).
-        Element inputElement = Element.of(rootArgType(tree));
+        // Per-input leaf elements (a tree may mix int/long/double via cast kernels) vs the OUTPUT element (the builder +
+        // produced block). Each consumed input is read at its OWN element into a per-input value slot.
+        Element[] inputElements = inputElements(tree, arity);
         Element outputElement = Element.of(rootReturnType(tree));
-        int size = inputElement.type().getSize();
         Set<String> overflowTypes = overflowExceptionInternalNames(tree);
 
         // Frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input Vectors. The per-input
@@ -546,7 +548,15 @@ public final class Stitcher {
         int builderSlot = rawArrayBase + arity;
         int pSlot = builderSlot + 1;
         int valueBase = pSlot + 1;
-        int resultSlot = valueBase + arity * size;
+        // Per-input value slots, sized by each input's own element (a long/double takes two slots). Densely populated
+        // over [0, arity); an unused index (never expected) defaults to a one-slot reservation.
+        int[] valueSlots = new int[arity];
+        int valueCursor = valueBase;
+        for (int i = 0; i < arity; i++) {
+            valueSlots[i] = valueCursor;
+            valueCursor += inputElements[i] != null ? inputElements[i].type().getSize() : 1;
+        }
+        int resultSlot = valueCursor;
         int excSlot = resultSlot + 1;
         int overflowExcSlot = excSlot + 1;
         // Names the overflow-checked kernel currently evaluating; the shared overflow handler reads it to attribute the
@@ -578,6 +588,7 @@ public final class Stitcher {
         // the plain vector loop, the array is fetched through the public VectorUnsafe forwarder (INVOKESTATIC) so this
         // hidden class can be defined in the caller's own module and link non-java.base kernel callees.
         for (int i : consumed) {
+            Element inputElement = inputElements[i];
             insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
             insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
             insns.add(
@@ -623,12 +634,13 @@ public final class Stitcher {
         insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
         insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
 
-        // v_i = a_i[p]; no null guard — a vector is dense and single-valued. Read with the INPUT element's opcodes.
+        // v_i = a_i[p]; no null guard — a vector is dense and single-valued. Read with each input's OWN element opcodes.
         for (int i : consumed) {
+            Element inputElement = inputElements[i];
             insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + i));
             insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
             insns.add(new InsnNode(inputElement.type().getOpcode(Opcodes.IALOAD)));
-            insns.add(new VarInsnNode(inputElement.type().getOpcode(Opcodes.ISTORE), valueBase + i * size));
+            insns.add(new VarInsnNode(inputElement.type().getOpcode(Opcodes.ISTORE), valueSlots[i]));
         }
 
         LabelNode tryStartOverflow = overflowTypes.isEmpty() ? null : new LabelNode();
@@ -641,8 +653,8 @@ public final class Stitcher {
             insns.add(tryStartOverflow);
         }
         insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        BlockLoopEmitter emitter = new BlockLoopEmitter(insns, inputElement, valueBase, size, sourceIndices, currentKernelSlot, kernelBase);
-        emitter.emit(tree);
+        BlockLoopEmitter emitter = new BlockLoopEmitter(insns, inputElements, valueSlots, sourceIndices, currentKernelSlot, kernelBase);
+        emitter.emit(tree, outputElement);
         insns.add(
             new MethodInsnNode(
                 Opcodes.INVOKEINTERFACE,
@@ -736,34 +748,36 @@ public final class Stitcher {
      */
     private final class VectorLoopEmitter {
         private final InsnList insns;
-        private final Element element;
+        private final Element[] inputElements;
         private final int rawArrayBase;
         private final int pSlot;
         private int kernelBase;
 
-        VectorLoopEmitter(InsnList insns, Element element, int rawArrayBase, int pSlot, int kernelBase) {
+        VectorLoopEmitter(InsnList insns, Element[] inputElements, int rawArrayBase, int pSlot, int kernelBase) {
             this.insns = insns;
-            this.element = element;
+            this.inputElements = inputElements;
             this.rawArrayBase = rawArrayBase;
             this.pSlot = pSlot;
             this.kernelBase = kernelBase;
         }
 
         /**
-         * Emits instructions that leave {@code node}'s value for the current position {@code p} on the operand
-         * stack.
+         * Emits instructions that leave {@code node}'s value for the current position {@code p} on the operand stack.
+         * {@code expected} is the element {@code node} must produce (its consuming kernel's argument element, or the
+         * output element at the root) — used to type a leaf read / constant push under per-node typing.
          */
-        void emit(FusionNode node) {
+        void emit(FusionNode node, Element expected) {
             if (node instanceof FusionNode.Input input) {
-                // a<index>[p]
+                // a<index>[p], read at this leaf's own element (== expected).
+                Element element = inputElements[input.index()];
                 insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + input.index()));
                 insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
                 insns.add(new InsnNode(element.type().getOpcode(Opcodes.IALOAD)));
                 return;
             }
             if (node instanceof FusionNode.Constant constant) {
-                // Embedded literal: push it as a bytecode constant (no array read, no input slot).
-                pushConstant(insns, element, constant);
+                // Embedded literal: push it as a bytecode constant (no array read, no input slot), typed to expected.
+                pushConstant(insns, expected, constant);
                 return;
             }
             FusionNode.Kernel kernel = (FusionNode.Kernel) node;
@@ -790,7 +804,8 @@ public final class Stitcher {
             }
             int offset = 0;
             for (int i = 0; i < argTypes.length; i++) {
-                emit(children.get(i));
+                // Each child produces this kernel's argument element (a cast child bridges a differing leaf element).
+                emit(children.get(i), Element.of(argTypes[i]));
                 insns.add(new VarInsnNode(argTypes[i].getOpcode(Opcodes.ISTORE), nodeBase + offset));
                 offset += argTypes[i].getSize();
             }
@@ -910,8 +925,9 @@ public final class Stitcher {
         // expression never consumes would over-nullify: a null/multi-value in an unused input would wrongly null the
         // whole position even though no kernel reads it. The unfused chain only inspects operands it actually uses,
         // so we mirror that by iterating the consumed-input set.
-        // INPUT element (numeric block reads + value slots) vs OUTPUT element (the builder + produced block).
-        Element inputElement = Element.of(rootArgType(tree));
+        // Per-input leaf elements (a tree may mix int/long/double via cast kernels) vs OUTPUT element (the builder +
+        // produced block). Each *Block parameter is typed to its input's own element.
+        Element[] inputElements = inputElements(tree, arity);
         Element outputElement = Element.of(rootReturnType(tree));
         // Distinct overflow exception types the tree's kernels can throw (uniformly ArithmeticException in scope);
         // empty when no kernel is overflow-checked, in which case no per-position try/catch is emitted.
@@ -943,11 +959,11 @@ public final class Stitcher {
         // operands' multi-value warnings register on warnings[its slot], matching the unfused per-node evaluator source.
         Map<FusionNode, Integer> sourceIndices = warningsSourceIndices(tree);
 
-        // Input *Block params use the INPUT element; the returned block uses the OUTPUT element (BooleanBlock for a
+        // Each input *Block param uses its OWN element; the returned block uses the OUTPUT element (BooleanBlock for a
         // comparison root).
         StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
         for (int i = 0; i < arity; i++) {
-            desc.append(inputElement.blockDescriptor());
+            desc.append(inputElements[i].blockDescriptor());
         }
         desc.append(")").append(outputElement.blockDescriptor());
 
@@ -1022,7 +1038,7 @@ public final class Stitcher {
         // overflow is caught by the handler(s) below.
         BlockDfsEmitter emitter = new BlockDfsEmitter(
             insns,
-            inputElement,
+            inputElements,
             inputBase,
             pSlot,
             countSlot,
@@ -1032,7 +1048,7 @@ public final class Stitcher {
             appendNull,
             kernelBase
         );
-        emitter.emit(tree);
+        emitter.emit(tree, outputElement);
         // Stash the root value in a slot, then append it once past the overflow-guarded region (the append itself
         // cannot overflow, so it stays outside the try).
         insns.add(new VarInsnNode(outputElement.type().getOpcode(Opcodes.ISTORE), rootValueSlot));
@@ -1818,43 +1834,42 @@ public final class Stitcher {
      */
     private final class BlockLoopEmitter {
         private final InsnList insns;
-        private final Element element;
-        private final int valueBase;
-        private final int valueSize;
+        private final Element[] inputElements;
+        private final int[] valueSlots;
         private final Map<FusionNode, Integer> sourceIndices;
         private final int currentKernelSlot;
         private int kernelBase;
 
         BlockLoopEmitter(
             InsnList insns,
-            Element element,
-            int valueBase,
-            int valueSize,
+            Element[] inputElements,
+            int[] valueSlots,
             Map<FusionNode, Integer> sourceIndices,
             int currentKernelSlot,
             int kernelBase
         ) {
             this.insns = insns;
-            this.element = element;
-            this.valueBase = valueBase;
-            this.valueSize = valueSize;
+            this.inputElements = inputElements;
+            this.valueSlots = valueSlots;
             this.sourceIndices = sourceIndices;
             this.currentKernelSlot = currentKernelSlot;
             this.kernelBase = kernelBase;
         }
 
         /**
-         * Emits instructions that leave {@code node}'s value for the current position {@code p} on the operand
-         * stack.
+         * Emits instructions that leave {@code node}'s value for the current position {@code p} on the operand stack.
+         * {@code expected} is the element {@code node} must produce (its consuming kernel's argument element, or the
+         * output element at the root) — used to type a constant push; a leaf reads its own pre-loaded value slot.
          */
-        void emit(FusionNode node) {
+        void emit(FusionNode node, Element expected) {
             if (node instanceof FusionNode.Input input) {
-                insns.add(new VarInsnNode(element.type().getOpcode(Opcodes.ILOAD), valueBase + input.index() * valueSize));
+                Element element = inputElements[input.index()];
+                insns.add(new VarInsnNode(element.type().getOpcode(Opcodes.ILOAD), valueSlots[input.index()]));
                 return;
             }
             if (node instanceof FusionNode.Constant constant) {
-                // Embedded literal: push it as a bytecode constant (no pre-read value slot).
-                pushConstant(insns, element, constant);
+                // Embedded literal: push it as a bytecode constant (no pre-read value slot), typed to expected.
+                pushConstant(insns, expected, constant);
                 return;
             }
             FusionNode.Kernel kernel = (FusionNode.Kernel) node;
@@ -1881,7 +1896,7 @@ public final class Stitcher {
             }
             int offset = 0;
             for (int i = 0; i < argTypes.length; i++) {
-                emit(children.get(i));
+                emit(children.get(i), Element.of(argTypes[i]));
                 insns.add(new VarInsnNode(argTypes[i].getOpcode(Opcodes.ISTORE), nodeBase + offset));
                 offset += argTypes[i].getSize();
             }
@@ -1912,7 +1927,7 @@ public final class Stitcher {
      */
     private final class BlockDfsEmitter {
         private final InsnList insns;
-        private final Element inputElement;
+        private final Element[] inputElements;
         private final int inputBase;
         private final int pSlot;
         private final int countSlot;
@@ -1924,7 +1939,7 @@ public final class Stitcher {
 
         BlockDfsEmitter(
             InsnList insns,
-            Element inputElement,
+            Element[] inputElements,
             int inputBase,
             int pSlot,
             int countSlot,
@@ -1935,7 +1950,7 @@ public final class Stitcher {
             int kernelBase
         ) {
             this.insns = insns;
-            this.inputElement = inputElement;
+            this.inputElements = inputElements;
             this.inputBase = inputBase;
             this.pSlot = pSlot;
             this.countSlot = countSlot;
@@ -1946,27 +1961,28 @@ public final class Stitcher {
             this.kernelBase = kernelBase;
         }
 
-        /** Entry point: the root is a kernel, so the {@code enclosingKernelSlot} passed here is never used by a leaf. */
-        void emit(FusionNode node) {
-            emit(node, -1);
+        /** Entry point: the root produces {@code expected}; the {@code enclosingKernelSlot} passed here is unused. */
+        void emit(FusionNode node, Element expected) {
+            emit(node, expected, -1);
         }
 
         /**
          * Emits the DFS evaluation of {@code node} for the current position {@code p}, leaving its value on the
          * operand stack, or jumping to {@code appendNull} — after registering the single-value multi-value warning
-         * when the input is multi-valued — when the node is null or multi-valued. A leaf's multi-value warning is
-         * attributed to {@code enclosingKernelSlot} (the warning source of the kernel that directly consumes the leaf),
-         * matching the unfused chain, where that kernel's generated evaluator inspects the operand and warns at its own
-         * node source.
+         * when the input is multi-valued — when the node is null or multi-valued. {@code expected} is the element
+         * {@code node} must produce (used to type a constant push). A leaf's multi-value warning is attributed to
+         * {@code enclosingKernelSlot} (the warning source of the kernel that directly consumes the leaf), matching the
+         * unfused chain, where that kernel's generated evaluator inspects the operand and warns at its own node source.
          */
-        void emit(FusionNode node, int enclosingKernelSlot) {
+        void emit(FusionNode node, Element expected, int enclosingKernelSlot) {
             if (node instanceof FusionNode.Constant constant) {
                 // Embedded literal: push it as a bytecode constant, with no null / multi-value guard (a constant is
                 // always present and single-valued), so it never short-circuits the position to appendNull.
-                pushConstant(insns, inputElement, constant);
+                pushConstant(insns, expected, constant);
                 return;
             }
             if (node instanceof FusionNode.Input input) {
+                Element inputElement = inputElements[input.index()];
                 int block = inputBase + input.index();
                 // switch (block.getValueCount(p)) { case 0 -> appendNull (null, no warning);
                 // case 1 -> read the single value; default -> register multi-value warning, then appendNull }
@@ -2029,7 +2045,7 @@ public final class Stitcher {
             int kernelSlot = sourceIndices.get(kernel);
             int offset = 0;
             for (int i = 0; i < argTypes.length; i++) {
-                emit(children.get(i), kernelSlot);
+                emit(children.get(i), Element.of(argTypes[i]), kernelSlot);
                 insns.add(new VarInsnNode(argTypes[i].getOpcode(Opcodes.ISTORE), nodeBase + offset));
                 offset += argTypes[i].getSize();
             }
@@ -2042,6 +2058,57 @@ public final class Stitcher {
             }
             insns.add(body.computation());
         }
+    }
+
+    /**
+     * The per-input {@link Element}, indexed by {@link FusionNode.Input#index()}. With per-node typing a tree may mix
+     * element kinds — a leaf reads its column at the element the kernel that consumes it expects (its descriptor's
+     * argument type at that operand position), which the planner guarantees equals the column's own element (bridging
+     * any mismatch with an explicit cast kernel). So {@code doubleCol + castIntToDouble(intCol)} yields
+     * {@code [double, int]}: the fused method reads channel 0 as a {@code double} array and channel 1 as an
+     * {@code int} array (the cast body then widens it). Every index in {@code [0, arity)} is populated (the planner
+     * assigns input indices densely and each is consumed exactly once).
+     */
+    private static Element[] inputElements(FusionNode tree, int arity) {
+        Element[] elements = new Element[arity];
+        collectInputElements(tree, elements);
+        // A tree may declare an input index in [0, arity) that no leaf actually consumes (the over-nullify guard: the
+        // method still takes one parameter per index, but an unused input is never read). Such a gap has no natural
+        // element, so bind it to the first populated one — its parameter type is arbitrary since the fused body never
+        // reads it, and this keeps the parameter list homogeneous with the consumed inputs.
+        Element fallback = null;
+        for (Element e : elements) {
+            if (e != null) {
+                fallback = e;
+                break;
+            }
+        }
+        for (int i = 0; i < elements.length; i++) {
+            if (elements[i] == null) {
+                elements[i] = fallback;
+            }
+        }
+        return elements;
+    }
+
+    private static void collectInputElements(FusionNode node, Element[] elements) {
+        if (node instanceof FusionNode.Kernel kernel) {
+            Type[] argTypes = Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes();
+            List<FusionNode> children = kernel.children();
+            for (int i = 0; i < children.size(); i++) {
+                FusionNode child = children.get(i);
+                if (child instanceof FusionNode.Input input) {
+                    elements[input.index()] = Element.of(argTypes[i]);
+                } else {
+                    // A Constant is embedded (no input slot); a nested Kernel carries its own argument elements.
+                    collectInputElements(child, elements);
+                }
+            }
+        } else if (node instanceof FusionNode.Logical logical) {
+            collectInputElements(logical.left(), elements);
+            collectInputElements(logical.right(), elements);
+        }
+        // FusionNode.Input at the root is impossible (depth ≥ 2); a bare Constant contributes no input slot.
     }
 
     /** Number of distinct input vectors the tree references, i.e. one past the maximum {@code Input} index. */
@@ -2102,19 +2169,6 @@ public final class Stitcher {
     }
 
     /**
-     * The tree's INPUT element type — the first argument type of the root kernel. In this scope every leaf and every
-     * arithmetic-intermediate result is homogeneous primitive {@code long}/{@code int}/{@code double}, so the root
-     * kernel's argument kind is exactly the kind of every raw-array read and per-position value slot. For a comparison
-     * root {@code (JJ)Z} this is the numeric operand kind (long), distinct from the boolean {@link #rootReturnType}.
-     */
-    private Type rootArgType(FusionNode tree) {
-        if (tree instanceof FusionNode.Kernel kernel) {
-            return Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes()[0];
-        }
-        throw new IllegalArgumentException("a fused vector loop requires a kernel at the tree root, not a bare input");
-    }
-
-    /**
      * Serializes {@code classNode} through {@code writer} and applies the JIT inlining budget (criterion #6) to the
      * emitted {@code fused} loop method's {@code Code} length, measured against {@link #MAX_FUSED_METHOD_BYTECODES}
      * (HotSpot's default {@code FreqInlineSize}).
@@ -2169,6 +2223,30 @@ public final class Stitcher {
             );
         }
         return bytecode;
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // Test seams (package-private): the raw fused class bytes for each emit path, BEFORE defineHiddenClass verifies
+    // them. They let same-package tests (StitcherBudgetTests) measure the emitted fused method's Code length against
+    // MAX_FUSED_METHOD_BYTECODES and run the bytes through CheckClassAdapter for a structural-validity check on top of
+    // the JVM's defineHiddenClass verifier. The enforced paths (plain-vector, logical block) still throw a
+    // StitchingException here if they exceed the budget — exactly as the compile* entry points would.
+    // -----------------------------------------------------------------------------------------------------------------
+
+    byte[] vectorLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return emitVectorLoop(caller, tree);
+    }
+
+    byte[] vectorLoopCheckedBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return emitVectorLoopChecked(caller, tree);
+    }
+
+    byte[] blockLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return emitBlockLoop(caller, tree);
+    }
+
+    byte[] logicalBlockLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return emitLogicalBlockLoop(caller, tree);
     }
 
     /**
@@ -2252,8 +2330,17 @@ public final class Stitcher {
 
     /**
      * The concrete {@code compute.data} types and opcodes for one supported primitive element kind. Resolving these
-     * once keeps the emit code free of per-type branching and confines the {@code long}/{@code int}/{@code double}
-     * differences to a single table.
+     * once keeps the emit code free of per-type branching and confines the {@code long}/{@code int}/{@code double}/
+     * {@code boolean} differences to a single {@link #of(Type)} table — the emit paths never hardcode a specific
+     * primitive, they read everything (array-vector class, raw-array descriptor, block/builder types, get/append
+     * methods, the {@code Type} that derives every load/store/return opcode) from here, so a new primitive is a
+     * pure data-add.
+     *
+     * <p><b>float:</b> deliberately absent. It would be one more {@code case Type.FLOAT} here (plus a
+     * {@code FloatArrayVector.rawValues()} exposed through {@code VectorUnsafe.floats}), but no {@code float} arithmetic
+     * kernel is {@code @Fusable} today, so the planner never types a node {@code float} and this table is never asked
+     * for it — adding it now would be untested dead code. When a fusable {@code float} op lands, add those two data
+     * entries and it flows through every path unchanged.
      */
     private record Element(
         String arrayVectorInternalName,
