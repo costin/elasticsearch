@@ -54,8 +54,8 @@ import java.util.function.Function;
  *       fuses as {@code Add(doubleCol, castIntToDouble(intCol))};</li>
  *   <li>every leaf is either an {@link Attribute} of a supported numeric element, resolvable to a page channel via the
  *       {@link Layout} (read at its OWN column element; a mismatch with the consuming kernel is cast-bridged), or a
- *       {@link Literal} embedded as a bytecode constant at the consuming kernel's element (it reads no channel and does
- *       not widen the tree's arity);</li>
+ *       {@link Literal} passed to the fused method as a trailing primitive argument at the consuming kernel's element
+ *       (it reads no channel and does not widen the tree's input-vector arity);</li>
  *   <li>optionally a boolean {@code AND}/{@code OR} 3VL {@link FusionNode.Logical} root whose operands are
  *       column/constant comparisons over one homogeneous numeric element (mixed-type comparisons under a logical root
  *       fall back to the unfused chain);</li>
@@ -222,6 +222,10 @@ public final class FusionPlanner {
         ElementKind outputElement = ctx.outputElement;
         boolean overflowChecked = ctx.overflowChecked;
         String shape = shapeOf(tree);
+        // The embedded constants in the single canonical emit order the Stitcher assigns their trailing parameter slots.
+        // The factory both appends their primitive types to the resolved MethodTypes and marshals their values into the
+        // invoke args in exactly this order — the byte-for-byte contract the Stitcher, planner and factory share.
+        List<FusionNode.Constant> constants = Stitcher.constantsInEmitOrder(tree);
 
         long minRows = FusionSettings.adaptiveMinRows();
         if (minRows > 0) {
@@ -238,7 +242,8 @@ public final class FusionPlanner {
                     overflowChecked,
                     unfused,
                     compiler,
-                    shape
+                    shape,
+                    constants
                 ),
                 minRows,
                 shape
@@ -254,7 +259,8 @@ public final class FusionPlanner {
             overflowChecked,
             unfused,
             compiler,
-            shape
+            shape,
+            constants
         );
     }
 
@@ -381,8 +387,9 @@ public final class FusionPlanner {
             return maybeCast(new FusionNode.Input(index), columnElement, expected, consumingSource, ctx, exp);
         }
         if (exp instanceof Literal literal) {
-            // A literal operand embeds as a bytecode constant (no page channel, no input vector), directly at the
-            // element the consuming kernel expects (matching Cast.cast of the literal to the operator's commonType).
+            // A literal operand is passed as a trailing primitive method argument (no page channel, no input vector),
+            // at the element the consuming kernel expects (matching Cast.cast of the literal to the operator's
+            // commonType); its value rides in as an argument at eval time rather than being baked into the bytecode.
             return buildConstant(literal, expected, ctx);
         }
 
@@ -590,7 +597,8 @@ public final class FusionPlanner {
         List<FusionNode> childNodes = new ArrayList<>(children.size());
         for (Expression child : children) {
             // A logical comparison operand's children are columns of the input element type OR literal constants (the
-            // constant is embedded in the comparison helper; column children still carry the null/multi-value guard).
+            // constant is threaded as a trailing argument into the comparison helper; column children still carry the
+            // null/multi-value guard).
             if (child instanceof Attribute attr) {
                 Layout.ChannelAndType channelAndType = ctx.layout.get(attr.id());
                 if (channelAndType == null || matches(attr.dataType(), ctx.logicalElement) == false) {
@@ -617,8 +625,9 @@ public final class FusionPlanner {
     }
 
     /**
-     * Builds a {@link FusionNode.Constant} embedded at the {@code expected} element the consuming kernel requires, from
-     * a numeric {@link Literal}, or {@code null} if it cannot be fused: the consuming element must be numeric, the
+     * Builds a {@link FusionNode.Constant} at the {@code expected} element the consuming kernel requires (its value
+     * threaded to the fused method as a trailing primitive argument), from a numeric {@link Literal}, or {@code null}
+     * if it cannot be fused: the consuming element must be numeric, the
      * literal's declared type must be that element or a supported widening into it (so converting the value here is
      * exact-for-the-cast the unfused chain would apply), and the value must be non-{@code null}. A {@code null} literal
      * is <b>refused</b>, so a subtree containing one falls back to the unfused chain — the correct + simplest handling
@@ -781,12 +790,13 @@ public final class FusionPlanner {
             }
             sb.append(')');
         } else if (node instanceof FusionNode.Constant constant) {
-            // The constant's VALUE is baked into the emitted bytecode, so it MUST be part of the cache key: `a > 5`
-            // and `a > 6` stitch to distinct classes. (An Input leaf, by contrast, stays `#` — its column binding is
-            // NOT in the bytecode.) Cardinality implication: each distinct literal value in a fusable shape produces
-            // its own hidden class, so a query family that varies a threshold over many values will stitch (and cache)
-            // one class per value; this is bounded by the FusedClassCache's soft-reference eviction like any other shape.
-            sb.append("#C:").append(constant.element()).append(':').append(constant.value());
+            // The constant's VALUE is now passed as a trailing method argument, NOT baked into the bytecode, so it is
+            // deliberately EXCLUDED from the cache key: `a > 5` and `a > 6` stitch to the SAME class and differ only in
+            // the argument supplied at eval time. Only the element-typed slot marker (`#C:<element>`) participates, so
+            // a long constant and a double constant still key distinct classes (their emit paths differ), while all
+            // values of one element share one hidden class — collapsing the former one-class-per-value cardinality.
+            // (An Input leaf, by contrast, stays `#` — its column binding is likewise not in the bytecode.)
+            sb.append("#C:").append(constant.element());
         } else {
             // FusionNode.Input: rendered as a bare '#' so column identities are excluded from the shape.
             sb.append('#');

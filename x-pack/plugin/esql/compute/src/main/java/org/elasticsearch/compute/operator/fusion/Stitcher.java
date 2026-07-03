@@ -355,11 +355,15 @@ public final class Stitcher {
         Element[] inputElements = inputElements(tree, arity);
         Element outputElement = Element.of(rootReturnType(tree));
 
-        // Frame layout: [0] BlockFactory, [1] int positionCount, [2 .. 2+arity) input Vectors. The per-input raw
-        // arrays, the output array, and the loop counter sit in the fixed region above the parameters; each kernel
-        // body then gets a disjoint slot range above that.
+        // Frame layout: [0] BlockFactory, [1] int positionCount, [2 .. 2+arity) input Vectors, then one trailing
+        // primitive parameter per embedded constant (in canonical emit order). The per-input raw arrays, the output
+        // array, and the loop counter sit in the fixed region ABOVE the parameters — so their bases are all shifted up
+        // by the constant parameters' total slot size; each kernel body then gets a disjoint slot range above that.
+        List<FusionNode.Constant> constants = constantsInEmitOrder(tree);
         int inputBase = 2;
-        int rawArrayBase = inputBase + arity;
+        int constParamBase = inputBase + arity;
+        Map<FusionNode.Constant, Integer> constantSlots = constantParamSlots(constants, constParamBase);
+        int rawArrayBase = constParamBase + constantParamSize(constants);
         int outSlot = rawArrayBase + arity;
         int pSlot = outSlot + 1;
         int kernelBase = pSlot + 1;
@@ -368,6 +372,7 @@ public final class Stitcher {
         for (int i = 0; i < arity; i++) {
             desc.append("L").append(VECTOR).append(";");
         }
+        appendConstantParamDescriptors(desc, constants);
         desc.append(")").append(outputElement.vectorDescriptor());
 
         MethodNode host = new MethodNode(
@@ -419,7 +424,7 @@ public final class Stitcher {
         // leave the computed value on top, so a single array-store consumes all three.
         insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
         insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        VectorLoopEmitter emitter = new VectorLoopEmitter(insns, inputElements, rawArrayBase, pSlot, kernelBase);
+        VectorLoopEmitter emitter = new VectorLoopEmitter(insns, inputElements, rawArrayBase, pSlot, kernelBase, constantSlots);
         emitter.emit(tree, outputElement);
         // The computed value (an int 0/1 for a comparison root) is stored with the OUTPUT element's array-store opcode
         // (BASTORE for boolean).
@@ -538,13 +543,18 @@ public final class Stitcher {
         Element outputElement = Element.of(rootReturnType(tree));
         Set<String> overflowTypes = overflowExceptionInternalNames(tree);
 
-        // Frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input Vectors. The per-input
-        // raw arrays, the builder, loop counter, per-input value slots, built result, the two exception slots and the
-        // current-kernel slot sit above the parameters; each kernel body then gets a disjoint range above that.
+        // Frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input Vectors, then one
+        // trailing primitive parameter per embedded constant (in canonical emit order). The per-input raw arrays, the
+        // builder, loop counter, per-input value slots, built result, the two exception slots and the current-kernel
+        // slot sit ABOVE the parameters (their bases shifted up by the constant parameters' total slot size); each
+        // kernel body then gets a disjoint range above that.
+        List<FusionNode.Constant> constants = constantsInEmitOrder(tree);
         int warningsArraySlot = 1;
         int pcSlot = 2;
         int inputBase = 3;
-        int rawArrayBase = inputBase + arity;
+        int constParamBase = inputBase + arity;
+        Map<FusionNode.Constant, Integer> constantSlots = constantParamSlots(constants, constParamBase);
+        int rawArrayBase = constParamBase + constantParamSize(constants);
         int builderSlot = rawArrayBase + arity;
         int pSlot = builderSlot + 1;
         int valueBase = pSlot + 1;
@@ -572,6 +582,7 @@ public final class Stitcher {
         for (int i = 0; i < arity; i++) {
             desc.append("L").append(VECTOR).append(";");
         }
+        appendConstantParamDescriptors(desc, constants);
         desc.append(")").append(outputElement.blockDescriptor());
 
         MethodNode host = new MethodNode(
@@ -653,7 +664,15 @@ public final class Stitcher {
             insns.add(tryStartOverflow);
         }
         insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        BlockLoopEmitter emitter = new BlockLoopEmitter(insns, inputElements, valueSlots, sourceIndices, currentKernelSlot, kernelBase);
+        BlockLoopEmitter emitter = new BlockLoopEmitter(
+            insns,
+            inputElements,
+            valueSlots,
+            sourceIndices,
+            currentKernelSlot,
+            kernelBase,
+            constantSlots
+        );
         emitter.emit(tree, outputElement);
         insns.add(
             new MethodInsnNode(
@@ -752,13 +771,22 @@ public final class Stitcher {
         private final int rawArrayBase;
         private final int pSlot;
         private int kernelBase;
+        private final Map<FusionNode.Constant, Integer> constantSlots;
 
-        VectorLoopEmitter(InsnList insns, Element[] inputElements, int rawArrayBase, int pSlot, int kernelBase) {
+        VectorLoopEmitter(
+            InsnList insns,
+            Element[] inputElements,
+            int rawArrayBase,
+            int pSlot,
+            int kernelBase,
+            Map<FusionNode.Constant, Integer> constantSlots
+        ) {
             this.insns = insns;
             this.inputElements = inputElements;
             this.rawArrayBase = rawArrayBase;
             this.pSlot = pSlot;
             this.kernelBase = kernelBase;
+            this.constantSlots = constantSlots;
         }
 
         /**
@@ -776,8 +804,8 @@ public final class Stitcher {
                 return;
             }
             if (node instanceof FusionNode.Constant constant) {
-                // Embedded literal: push it as a bytecode constant (no array read, no input slot), typed to expected.
-                pushConstant(insns, expected, constant);
+                // Embedded literal: load it from its trailing method-parameter slot (no array read, no input slot).
+                loadConstantParam(insns, expected, constant, constantSlots.get(constant));
                 return;
             }
             FusionNode.Kernel kernel = (FusionNode.Kernel) node;
@@ -940,10 +968,15 @@ public final class Stitcher {
         // above that. The DFS emitter
         // (see below) reads each consumed leaf inline into the enclosing kernel's operand slots, so there are no
         // separate pre-read leaf value slots.
+        // One trailing primitive parameter per embedded constant (canonical emit order) sits between the input *Blocks
+        // and the scratch region, so every scratch base is shifted up by the constant parameters' total slot size.
+        List<FusionNode.Constant> constants = constantsInEmitOrder(tree);
         int warningsArraySlot = 1;
         int pcSlot = 2;
         int inputBase = 3;
-        int builderSlot = inputBase + arity;
+        int constParamBase = inputBase + arity;
+        Map<FusionNode.Constant, Integer> constantSlots = constantParamSlots(constants, constParamBase);
+        int builderSlot = constParamBase + constantParamSize(constants);
         int pSlot = builderSlot + 1;
         int countSlot = pSlot + 1;
         int resultSlot = countSlot + 1;
@@ -965,6 +998,7 @@ public final class Stitcher {
         for (int i = 0; i < arity; i++) {
             desc.append(inputElements[i].blockDescriptor());
         }
+        appendConstantParamDescriptors(desc, constants);
         desc.append(")").append(outputElement.blockDescriptor());
 
         MethodNode host = new MethodNode(
@@ -1046,7 +1080,8 @@ public final class Stitcher {
             sourceIndices,
             currentKernelSlot,
             appendNull,
-            kernelBase
+            kernelBase,
+            constantSlots
         );
         emitter.emit(tree, outputElement);
         // Stash the root value in a slot, then append it once past the overflow-guarded region (the append itself
@@ -1259,12 +1294,18 @@ public final class Stitcher {
         // warning on warnings[its slot] so the header matches the unfused comparison evaluator's node source.
         Map<FusionNode, Integer> sourceIndices = warningsSourceIndices(tree);
 
-        // Frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input *Blocks. Builder, loop
-        // counter, built result, and caught-throwable slots sit above; the tri-state node slots start at workBase.
+        // Frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input *Blocks, then one
+        // trailing primitive parameter per embedded constant (canonical emit order). Builder, loop counter, built
+        // result, and caught-throwable slots sit above (their bases shifted up by the constant parameters' slot size);
+        // the tri-state node slots start at workBase. The top-level loop loads each constant from its parameter slot
+        // and threads it into the relevant cmpN helper call.
+        List<FusionNode.Constant> constants = constantsInEmitOrder(tree);
         int warningsArraySlot = 1;
         int pcSlot = 2;
         int inputBase = 3;
-        int builderSlot = inputBase + arity;
+        int constParamBase = inputBase + arity;
+        Map<FusionNode.Constant, Integer> constantSlots = constantParamSlots(constants, constParamBase);
+        int builderSlot = constParamBase + constantParamSize(constants);
         int pSlot = builderSlot + 1;
         int resultSlot = pSlot + 1;
         int excSlot = resultSlot + 1;
@@ -1274,6 +1315,7 @@ public final class Stitcher {
         for (int i = 0; i < arity; i++) {
             desc.append(inputElement.blockDescriptor());
         }
+        appendConstantParamDescriptors(desc, constants);
         desc.append(")").append(outputElement.blockDescriptor());
 
         MethodNode host = new MethodNode(
@@ -1327,7 +1369,8 @@ public final class Stitcher {
             sourceIndices,
             internalName,
             helperNames,
-            workBase
+            workBase,
+            constantSlots
         );
         int tRoot = emitter.alloc(1);
         emitter.emit(tree, tRoot);
@@ -1442,18 +1485,21 @@ public final class Stitcher {
         int size = inputElement.type().getSize();
         List<FusionNode> children = comparison.children();
         // Only column ({@link FusionNode.Input}) operands become *Block parameters; a {@link FusionNode.Constant}
-        // operand is embedded as a bytecode constant in the body's argument slot and needs no parameter or guard.
+        // operand is passed as a trailing primitive parameter (after the *Blocks, in canonical emit order) and loaded
+        // into the body's argument slot with no null / multi-value guard.
         int columnOperands = 0;
         for (FusionNode child : children) {
             if (child instanceof FusionNode.Input) {
                 columnOperands++;
             }
         }
+        List<FusionNode.Constant> helperConstants = constantsInEmitOrder(comparison);
 
         StringBuilder desc = new StringBuilder("(L").append(WARNINGS).append(";I");
         for (int i = 0; i < columnOperands; i++) {
             desc.append(inputElement.blockDescriptor());
         }
+        appendConstantParamDescriptors(desc, helperConstants);
         desc.append(")I");
 
         MethodNode helper = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, methodName, desc.toString(), null, null);
@@ -1461,9 +1507,11 @@ public final class Stitcher {
 
         int warningsSlot = 0;
         int pSlot = 1;
-        int blockBase = 2;                          // block params occupy [2 .. 2+columnOperands)
-        int countSlot = blockBase + columnOperands; // scratch for getValueCount
-        int bodyBase = countSlot + 1;               // the comparison body's shifted locals start here
+        int blockBase = 2;                                   // block params occupy [2 .. 2+columnOperands)
+        int constParamBase = blockBase + columnOperands;     // then the trailing constant params
+        Map<FusionNode.Constant, Integer> helperConstantSlots = constantParamSlots(helperConstants, constParamBase);
+        int countSlot = constParamBase + constantParamSize(helperConstants); // scratch for getValueCount
+        int bodyBase = countSlot + 1;                        // the comparison body's shifted locals start here
         SlotRemapper.shift(body.computation(), bodyBase);
 
         LabelNode retNull = new LabelNode();
@@ -1471,9 +1519,9 @@ public final class Stitcher {
         int blockParam = 0;     // running index of the next *Block parameter (column operands only)
         for (FusionNode child : children) {
             if (child instanceof FusionNode.Constant constant) {
-                // Embedded literal operand: push it straight into the body's shifted argument slot; no null / multi-
-                // value guard (a constant is always present and single-valued).
-                pushConstant(insns, inputElement, constant);
+                // Constant operand: load it from its trailing helper parameter into the body's shifted argument slot;
+                // no null / multi-value guard (a constant is always present and single-valued).
+                loadConstantParam(insns, inputElement, constant, helperConstantSlots.get(constant));
                 insns.add(new VarInsnNode(inputElement.type().getOpcode(Opcodes.ISTORE), bodyBase + offset));
                 offset += size;
                 continue;
@@ -1550,6 +1598,7 @@ public final class Stitcher {
         private final String internalName;
         private final Map<FusionNode, String> helperNames;
         private int nextSlot;
+        private final Map<FusionNode.Constant, Integer> constantSlots;
 
         LogicalDfsEmitter(
             InsnList insns,
@@ -1560,7 +1609,8 @@ public final class Stitcher {
             Map<FusionNode, Integer> sourceIndices,
             String internalName,
             Map<FusionNode, String> helperNames,
-            int workBase
+            int workBase,
+            Map<FusionNode.Constant, Integer> constantSlots
         ) {
             this.insns = insns;
             this.inputElement = inputElement;
@@ -1571,6 +1621,7 @@ public final class Stitcher {
             this.internalName = internalName;
             this.helperNames = helperNames;
             this.nextSlot = workBase;
+            this.constantSlots = constantSlots;
         }
 
         /** Claims {@code size} fresh, disjoint local slots and returns the base. */
@@ -1591,14 +1642,17 @@ public final class Stitcher {
 
         private void emitComparisonCall(FusionNode.Kernel comparison, int tSlot) {
             String name = helperNames.get(comparison);
-            // Only column ({@link FusionNode.Input}) operands are passed as *Block arguments; a constant operand is
-            // baked into the helper's body, so the call descriptor and the pushed arguments cover columns only.
+            // Column ({@link FusionNode.Input}) operands are passed as *Block arguments; constant operands follow as
+            // trailing primitive arguments (in canonical emit order), loaded from the top-level fused method's own
+            // constant parameter slots — so the helper is byte-identical for every constant value.
+            List<FusionNode.Constant> callConstants = constantsInEmitOrder(comparison);
             StringBuilder callDesc = new StringBuilder("(L").append(WARNINGS).append(";I");
             for (FusionNode child : comparison.children()) {
                 if (child instanceof FusionNode.Input) {
                     callDesc.append(inputElement.blockDescriptor());
                 }
             }
+            appendConstantParamDescriptors(callDesc, callConstants);
             callDesc.append(")I");
 
             // Pass this comparison's OWN Warnings (warnings[its source slot]) so its multi-value warning is attributed
@@ -1608,6 +1662,13 @@ public final class Stitcher {
             for (FusionNode child : comparison.children()) {
                 if (child instanceof FusionNode.Input input) {
                     insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + input.index()));
+                }
+            }
+            // Then the constant arguments, loaded from the top-level fused method's trailing parameter slots in child
+            // order (which equals canonical emit order for a single comparison's operands).
+            for (FusionNode child : comparison.children()) {
+                if (child instanceof FusionNode.Constant constant) {
+                    insns.add(new VarInsnNode(inputElement.type().getOpcode(Opcodes.ILOAD), constantSlots.get(constant)));
                 }
             }
             insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, name, callDesc.toString(), false));
@@ -1706,43 +1767,93 @@ public final class Stitcher {
     }
 
     /**
-     * Pushes a {@link FusionNode.Constant}'s value onto the operand stack as a primitive bytecode constant typed to
-     * {@code element}, so a constant leaf reads no array and occupies no {@link FusionNode.Input} slot on any emit path.
-     * An {@code int} uses the tightest of {@code ICONST}/{@code BIPUSH}/{@code SIPUSH}/{@code LDC}; a {@code long}/
-     * {@code double} uses {@code LDC2_W} (via {@link LdcInsnNode} with a {@link Long}/{@link Double} operand), the cheap
-     * {@code xCONST_0/1} where applicable.
+     * Emits a type-correct {@code xLOAD} of a {@link FusionNode.Constant} from its trailing <b>method-parameter</b>
+     * slot, typed to {@code element}, so a constant leaf reads no array and occupies no {@link FusionNode.Input} slot on
+     * any emit path. This replaces the former embedded-literal push ({@code LDC}/{@code ICONST}/…): the value now
+     * arrives as a runtime argument in {@code slot} (a single-assignment, loop-invariant parameter local), so one
+     * stitched class serves every constant value — {@code a > 5} and {@code a > 6} share it and differ only in the
+     * argument supplied at evaluation time.
      *
      * <p>{@code element} is the ambient element of the tree the constant sits in (the consuming kernel's argument
-     * kind). It <b>must</b> equal {@code constant.element()} — the planner guarantees this — so a defensive assertion
-     * fails loud here rather than silently emitting a wrong-category push (e.g. an {@code LDC2_W} of a {@code long}
-     * where the kernel wants an {@code int}), which would only surface downstream as an opaque {@link VerifyError}.
+     * kind). It <b>must</b> equal {@code constant.element()} — the planner guarantees this, and it types the parameter
+     * — so a defensive assertion fails loud here rather than silently emitting a wrong-category load (e.g. an
+     * {@code LLOAD} of a {@code long} where the kernel wants an {@code int}), which would only surface downstream as an
+     * opaque {@link VerifyError}.
      */
-    private static void pushConstant(InsnList insns, Element element, FusionNode.Constant constant) {
+    private static void loadConstantParam(InsnList insns, Element element, FusionNode.Constant constant, int slot) {
         assert elementSortMatches(element, constant.element())
             : "constant element ["
                 + constant.element()
                 + "] does not match the ambient tree element ["
                 + element.type().getClassName()
                 + "]";
-        Object value = constant.value();
-        switch (element.type().getSort()) {
-            case Type.INT -> pushInt(insns, ((Number) value).intValue());
-            case Type.LONG -> {
-                long v = ((Number) value).longValue();
-                if (v == 0L) {
-                    insns.add(new InsnNode(Opcodes.LCONST_0));
-                } else if (v == 1L) {
-                    insns.add(new InsnNode(Opcodes.LCONST_1));
-                } else {
-                    insns.add(new LdcInsnNode(v)); // LDC2_W
-                }
+        insns.add(new VarInsnNode(element.type().getOpcode(Opcodes.ILOAD), slot));
+    }
+
+    /**
+     * The {@link FusionNode.Constant} leaves of {@code tree} in the SINGLE canonical order every emit path visits them:
+     * a stable pre-order DFS (a {@link FusionNode.Kernel}'s children left-to-right; a {@link FusionNode.Logical}'s left
+     * subtree before its right). This is the one source of truth for the trailing constant-<b>parameter</b> order that
+     * the three parties which must agree byte-for-byte all consult: (a) the {@link Stitcher} assigns each constant a
+     * parameter slot in this order and loads it at each use site, (b) {@code FusionPlanner} collects the constant values
+     * in this order, and (c) {@code FusedExpressionEvaluatorFactory} both appends the parameter types to the resolved
+     * {@code MethodType}s and marshals the values into the invoke args in this order. Every emitter walks the tree in
+     * exactly this DFS order, so the i-th constant it reaches is the i-th trailing parameter.
+     */
+    public static List<FusionNode.Constant> constantsInEmitOrder(FusionNode tree) {
+        List<FusionNode.Constant> constants = new ArrayList<>();
+        collectConstantsInEmitOrder(tree, constants);
+        return constants;
+    }
+
+    private static void collectConstantsInEmitOrder(FusionNode node, List<FusionNode.Constant> out) {
+        if (node instanceof FusionNode.Constant constant) {
+            out.add(constant);
+        } else if (node instanceof FusionNode.Kernel kernel) {
+            for (FusionNode child : kernel.children()) {
+                collectConstantsInEmitOrder(child, out);
             }
-            case Type.DOUBLE -> {
-                double v = ((Number) value).doubleValue();
-                // LDC2_W the exact bits; DCONST_0/1 are avoided so -0.0 (whose bits differ from +0.0) is preserved.
-                insns.add(new LdcInsnNode(v));
-            }
-            default -> throw new IllegalArgumentException("unsupported fused constant element type: " + element.type().getClassName());
+        } else if (node instanceof FusionNode.Logical logical) {
+            collectConstantsInEmitOrder(logical.left(), out);
+            collectConstantsInEmitOrder(logical.right(), out);
+        }
+        // FusionNode.Input: not a constant, contributes no trailing parameter.
+    }
+
+    /**
+     * Maps each constant (by identity) to the absolute local slot of its trailing parameter, assigned in
+     * {@link #constantsInEmitOrder canonical order} starting at {@code base} (a {@code long}/{@code double} takes two
+     * slots). Distinct {@link FusionNode.Constant} instances get distinct slots even when their values are equal (two
+     * equal-valued literals are still separate leaves in the tree), so an {@link IdentityHashMap} keys on the node
+     * instance rather than on record value-equality.
+     */
+    private static Map<FusionNode.Constant, Integer> constantParamSlots(List<FusionNode.Constant> constants, int base) {
+        Map<FusionNode.Constant, Integer> slots = new IdentityHashMap<>();
+        int cursor = base;
+        for (FusionNode.Constant constant : constants) {
+            slots.put(constant, cursor);
+            cursor += constantSlotSize(constant);
+        }
+        return slots;
+    }
+
+    /** Total local slots the trailing constant parameters occupy (a {@code long}/{@code double} takes two). */
+    private static int constantParamSize(List<FusionNode.Constant> constants) {
+        int size = 0;
+        for (FusionNode.Constant constant : constants) {
+            size += constantSlotSize(constant);
+        }
+        return size;
+    }
+
+    private static int constantSlotSize(FusionNode.Constant constant) {
+        return constant.element() == 'J' || constant.element() == 'D' ? 2 : 1;
+    }
+
+    /** Appends one JVM descriptor char per constant parameter; the element char {@code J}/{@code I}/{@code D} is it. */
+    private static void appendConstantParamDescriptors(StringBuilder desc, List<FusionNode.Constant> constants) {
+        for (FusionNode.Constant constant : constants) {
+            desc.append(constant.element());
         }
     }
 
@@ -1839,6 +1950,7 @@ public final class Stitcher {
         private final Map<FusionNode, Integer> sourceIndices;
         private final int currentKernelSlot;
         private int kernelBase;
+        private final Map<FusionNode.Constant, Integer> constantSlots;
 
         BlockLoopEmitter(
             InsnList insns,
@@ -1846,7 +1958,8 @@ public final class Stitcher {
             int[] valueSlots,
             Map<FusionNode, Integer> sourceIndices,
             int currentKernelSlot,
-            int kernelBase
+            int kernelBase,
+            Map<FusionNode.Constant, Integer> constantSlots
         ) {
             this.insns = insns;
             this.inputElements = inputElements;
@@ -1854,6 +1967,7 @@ public final class Stitcher {
             this.sourceIndices = sourceIndices;
             this.currentKernelSlot = currentKernelSlot;
             this.kernelBase = kernelBase;
+            this.constantSlots = constantSlots;
         }
 
         /**
@@ -1868,8 +1982,8 @@ public final class Stitcher {
                 return;
             }
             if (node instanceof FusionNode.Constant constant) {
-                // Embedded literal: push it as a bytecode constant (no pre-read value slot), typed to expected.
-                pushConstant(insns, expected, constant);
+                // Embedded literal: load it from its trailing method-parameter slot (no pre-read value slot).
+                loadConstantParam(insns, expected, constant, constantSlots.get(constant));
                 return;
             }
             FusionNode.Kernel kernel = (FusionNode.Kernel) node;
@@ -1936,6 +2050,7 @@ public final class Stitcher {
         private final int currentKernelSlot;
         private final LabelNode appendNull;
         private int kernelBase;
+        private final Map<FusionNode.Constant, Integer> constantSlots;
 
         BlockDfsEmitter(
             InsnList insns,
@@ -1947,7 +2062,8 @@ public final class Stitcher {
             Map<FusionNode, Integer> sourceIndices,
             int currentKernelSlot,
             LabelNode appendNull,
-            int kernelBase
+            int kernelBase,
+            Map<FusionNode.Constant, Integer> constantSlots
         ) {
             this.insns = insns;
             this.inputElements = inputElements;
@@ -1959,6 +2075,7 @@ public final class Stitcher {
             this.currentKernelSlot = currentKernelSlot;
             this.appendNull = appendNull;
             this.kernelBase = kernelBase;
+            this.constantSlots = constantSlots;
         }
 
         /** Entry point: the root produces {@code expected}; the {@code enclosingKernelSlot} passed here is unused. */
@@ -1976,9 +2093,10 @@ public final class Stitcher {
          */
         void emit(FusionNode node, Element expected, int enclosingKernelSlot) {
             if (node instanceof FusionNode.Constant constant) {
-                // Embedded literal: push it as a bytecode constant, with no null / multi-value guard (a constant is
-                // always present and single-valued), so it never short-circuits the position to appendNull.
-                pushConstant(insns, expected, constant);
+                // Embedded literal: load it from its trailing method-parameter slot, with no null / multi-value guard
+                // (a constant is always present and single-valued), so it never short-circuits the position to
+                // appendNull.
+                loadConstantParam(insns, expected, constant, constantSlots.get(constant));
                 return;
             }
             if (node instanceof FusionNode.Input input) {

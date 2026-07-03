@@ -40,6 +40,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
@@ -169,6 +170,33 @@ public class FusedClassCacheTests extends ESTestCase {
         assertThat(reused, sameInstance(stitched));
         assertThat("only the first binding stitched", cache.spins(), is(1L));
         assertThat("the second binding hit the cache", cache.hits(), is(1L));
+        assertThat(cache.size(), is(1));
+    }
+
+    public void testDifferentConstantValuesShareOneShapeAndClass() {
+        // iter 30: a constant's VALUE is now passed as a trailing method argument, not baked into the bytecode, so two
+        // trees that differ ONLY in a constant value render the SAME shape signature and reuse ONE cached stitched
+        // class. (Before iter 30 the value was folded into the key — #C:J:5 vs #C:J:6 — so each value stitched its own
+        // class.) The element-typed slot marker (#C:J) is retained, so a long and a double constant still differ.
+        FusionNode addFive = add(input(0), constantLeaf(5L, 'J'));
+        FusionNode addSix = add(input(0), constantLeaf(6L, 'J'));
+
+        String signatureFive = FusionPlanner.shapeOf(addFive);
+        String signatureSix = FusionPlanner.shapeOf(addSix);
+        assertThat("the constant VALUE must be excluded from the shape signature", signatureFive, is(signatureSix));
+        assertThat("the element-typed slot marker is retained", signatureFive, containsString("#C:J"));
+        assertThat("the constant value must NOT appear in the signature", signatureFive, not(containsString("#C:J:5")));
+
+        Shape shapeFive = new Shape(signatureFive, ElementKind.LONG, Path.CHECKED_VECTOR);
+        Shape shapeSix = new Shape(signatureSix, ElementKind.LONG, Path.CHECKED_VECTOR);
+        assertThat("two trees differing only in a constant value must be equal cache keys", shapeFive, is(shapeSix));
+
+        FusedClassCache cache = new FusedClassCache();
+        Class<?> stitched = getUnchecked(cache, shapeFive, CLASS_1);
+        Class<?> reused = getUnchecked(cache, shapeSix, null); // the stitcher must NOT be invoked for the second value
+        assertThat("a differing constant value must reuse the first's stitched class", reused, sameInstance(stitched));
+        assertThat("only the first value stitched", cache.spins(), is(1L));
+        assertThat("the differing-value shape hit the cache", cache.hits(), is(1L));
         assertThat(cache.size(), is(1));
     }
 
@@ -340,6 +368,11 @@ public class FusedClassCacheTests extends ESTestCase {
 
     private static FusionNode input(int index) {
         return new FusionNode.Input(index);
+    }
+
+    /** A constant leaf carrying {@code value} at the given JVM element char (J/I/D) — the value the planner would embed. */
+    private static FusionNode constantLeaf(Object value, char element) {
+        return new FusionNode.Constant(value, element);
     }
 
     private static FusionNode add(FusionNode left, FusionNode right) {

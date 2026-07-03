@@ -121,6 +121,13 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     private final VectorStrategy vectorStrategy;
     private final ExpressionEvaluator.Factory unfused;
     private final String shape;
+    /**
+     * The embedded constants' (boxed) values in the {@link Stitcher#constantsInEmitOrder canonical emit order}, one per
+     * trailing primitive parameter of the fused method. Appended (after the input vectors/blocks) to the invoke args at
+     * evaluation time; empty when the shape has no constant leaves. {@code invokeWithArguments} unboxes each to the
+     * primitive parameter type the resolved {@link MethodType} declares.
+     */
+    private final Object[] constantValues;
 
     private FusedExpressionEvaluatorFactory(
         Source[] warningSources,
@@ -130,7 +137,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         MethodHandle vectorHandle,
         VectorStrategy vectorStrategy,
         ExpressionEvaluator.Factory unfused,
-        String shape
+        String shape,
+        Object[] constantValues
     ) {
         this.warningSources = warningSources;
         this.inputChannels = inputChannels;
@@ -140,6 +148,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         this.vectorStrategy = vectorStrategy;
         this.unfused = unfused;
         this.shape = shape;
+        this.constantValues = constantValues;
     }
 
     /**
@@ -158,7 +167,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         boolean overflowChecked,
         ExpressionEvaluator.Factory unfused,
         FusionPlanner.FusedClassCompiler compiler,
-        String shape
+        String shape,
+        List<FusionNode.Constant> constants
     ) {
         FusedExpressionEvaluatorFactory fused = tryCreateFusedOrNull(
             warningSources,
@@ -169,7 +179,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             overflowChecked,
             unfused,
             compiler,
-            shape
+            shape,
+            constants
         );
         return fused != null ? fused : unfused;
     }
@@ -191,9 +202,15 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         boolean overflowChecked,
         ExpressionEvaluator.Factory unfused,
         FusionPlanner.FusedClassCompiler compiler,
-        String shape
+        String shape,
+        List<FusionNode.Constant> constants
     ) {
         int arity = inputChannels.length;
+        // Embedded constants are trailing primitive parameters of the fused method now (iter 30): their types are
+        // appended to every resolved MethodType and their values are marshalled into the invoke args, both in the
+        // Stitcher's single canonical emit order — so one stitched class serves every constant value.
+        Class<?>[] constantParamTypes = constantParamTypes(constants);
+        Object[] constantValues = constantValues(constants);
         try {
             if (tree instanceof FusionNode.Logical) {
                 // A 3VL AND/OR tree is nullable boolean: block path only, no vector fast path (S3.1).
@@ -201,7 +218,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 MethodHandle logicalHandle = LOOKUP.findStatic(
                     logicalClass,
                     Stitcher.FUSED_METHOD_NAME,
-                    blockType(inputElements, outputElement, arity)
+                    blockType(inputElements, outputElement, arity, constantParamTypes)
                 );
                 return new FusedExpressionEvaluatorFactory(
                     warningSources,
@@ -211,7 +228,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     null,
                     VectorStrategy.NONE,
                     unfused,
-                    shape
+                    shape,
+                    constantValues
                 );
             }
 
@@ -219,14 +237,18 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             MethodHandle blockHandle = LOOKUP.findStatic(
                 blockClass,
                 Stitcher.FUSED_METHOD_NAME,
-                blockType(inputElements, outputElement, arity)
+                blockType(inputElements, outputElement, arity, constantParamTypes)
             );
 
             MethodHandle vectorHandle;
             VectorStrategy strategy;
             if (overflowChecked == false) {
                 Class<?> vectorClass = compiler.compileVectorLoop(LOOKUP, tree);
-                vectorHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, plainVectorType(outputElement, arity));
+                vectorHandle = LOOKUP.findStatic(
+                    vectorClass,
+                    Stitcher.FUSED_METHOD_NAME,
+                    plainVectorType(outputElement, arity, constantParamTypes)
+                );
                 strategy = VectorStrategy.PLAIN_VECTOR;
             } else {
                 // Overflow-checked trees (including double, whose kernels call NumericUtils.asFiniteNumber) all use the
@@ -235,7 +257,11 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 // it links non-java.base kernel callees just like the block path. The old double+overflow hard gate
                 // (VectorStrategy.NONE) is gone.
                 Class<?> vectorClass = compiler.compileVectorLoopChecked(LOOKUP, tree);
-                vectorHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, checkedVectorType(outputElement, arity));
+                vectorHandle = LOOKUP.findStatic(
+                    vectorClass,
+                    Stitcher.FUSED_METHOD_NAME,
+                    checkedVectorType(outputElement, arity, constantParamTypes)
+                );
                 strategy = VectorStrategy.CHECKED_VECTOR;
             }
 
@@ -247,7 +273,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 vectorHandle,
                 strategy,
                 unfused,
-                shape
+                shape,
+                constantValues
             );
         } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError e) {
             // Any plan-time stitch failure must fall back to the unfused chain and record the shape (criterion #5):
@@ -274,7 +301,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             vectorStrategy,
             unfused,
             context,
-            shape
+            shape,
+            constantValues
         );
     }
 
@@ -293,7 +321,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         return "Fused[shape=" + shape + ", strategy=" + vectorStrategy + ", unfused=" + unfused + "]";
     }
 
-    private static MethodType blockType(ElementKind[] inputElements, ElementKind outputElement, int arity) {
+    private static MethodType blockType(ElementKind[] inputElements, ElementKind outputElement, int arity, Class<?>[] constantParamTypes) {
         List<Class<?>> params = new ArrayList<>();
         params.add(BlockFactory.class);
         params.add(Warnings[].class);
@@ -303,10 +331,11 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             // is the output element (boolean for a comparison root).
             params.add(inputElements[i].blockClass);
         }
+        appendConstantParams(params, constantParamTypes);
         return MethodType.methodType(outputElement.blockClass, params);
     }
 
-    private static MethodType checkedVectorType(ElementKind outputElement, int arity) {
+    private static MethodType checkedVectorType(ElementKind outputElement, int arity, Class<?>[] constantParamTypes) {
         List<Class<?>> params = new ArrayList<>();
         params.add(BlockFactory.class);
         params.add(Warnings[].class);
@@ -315,17 +344,53 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             // Inputs are passed as the generic Vector interface (narrowed once inside the fused method).
             params.add(Vector.class);
         }
+        appendConstantParams(params, constantParamTypes);
         return MethodType.methodType(outputElement.blockClass, params);
     }
 
-    private static MethodType plainVectorType(ElementKind outputElement, int arity) {
+    private static MethodType plainVectorType(ElementKind outputElement, int arity, Class<?>[] constantParamTypes) {
         List<Class<?>> params = new ArrayList<>();
         params.add(BlockFactory.class);
         params.add(int.class);
         for (int i = 0; i < arity; i++) {
             params.add(Vector.class);
         }
+        appendConstantParams(params, constantParamTypes);
         return MethodType.methodType(outputElement.vectorClass, params);
+    }
+
+    /** Appends the trailing constant primitive parameter types (in canonical emit order) to a MethodType param list. */
+    private static void appendConstantParams(List<Class<?>> params, Class<?>[] constantParamTypes) {
+        for (Class<?> constantParamType : constantParamTypes) {
+            params.add(constantParamType);
+        }
+    }
+
+    /** The primitive parameter type for each constant (in canonical emit order), for the resolved {@link MethodType}. */
+    private static Class<?>[] constantParamTypes(List<FusionNode.Constant> constants) {
+        Class<?>[] types = new Class<?>[constants.size()];
+        for (int i = 0; i < types.length; i++) {
+            types[i] = constantParamClass(constants.get(i).element());
+        }
+        return types;
+    }
+
+    /** The (boxed) constant values in canonical emit order, marshalled into the invoke args at evaluation time. */
+    private static Object[] constantValues(List<FusionNode.Constant> constants) {
+        Object[] values = new Object[constants.size()];
+        for (int i = 0; i < values.length; i++) {
+            values[i] = constants.get(i).value();
+        }
+        return values;
+    }
+
+    private static Class<?> constantParamClass(char element) {
+        return switch (element) {
+            case 'J' -> long.class;
+            case 'I' -> int.class;
+            case 'D' -> double.class;
+            default -> throw new IllegalArgumentException("unsupported fused constant element [" + element + "]");
+        };
     }
 
     /**
@@ -369,6 +434,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         private final ExpressionEvaluator.Factory unfusedFactory;
         private final DriverContext driverContext;
         private final String shape;
+        // The embedded constants' values, appended (after the input vectors/blocks) to the fused method's invoke args.
+        private final Object[] constantValues;
 
         private Warnings[] warnings;
         // Lazily built only if a defensive LinkageError forces a per-page fallback; closed with this evaluator.
@@ -386,7 +453,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             VectorStrategy vectorStrategy,
             ExpressionEvaluator.Factory unfusedFactory,
             DriverContext driverContext,
-            String shape
+            String shape,
+            Object[] constantValues
         ) {
             this.warningSources = warningSources;
             this.inputChannels = inputChannels;
@@ -397,6 +465,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             this.unfusedFactory = unfusedFactory;
             this.driverContext = driverContext;
             this.shape = shape;
+            this.constantValues = constantValues;
         }
 
         @Override
@@ -419,30 +488,36 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     // Test seam: simulate a stitch that verified at plan time but fails to link at first eval.
                     throw new LinkageError("injected eval-time linkage failure for shape [" + shape + "]");
                 }
+                // Trailing constant arguments follow the input vectors/blocks in the fused method's signature; unbox is
+                // handled by invokeWithArguments against the primitive parameter types of the resolved MethodType.
+                int constCount = constantValues.length;
                 Vector[] vectors = vectorHandle == null ? null : vectorEligible(inputs);
                 if (vectors != null) {
                     if (vectorStrategy == VectorStrategy.PLAIN_VECTOR) {
-                        Object[] args = new Object[2 + arity];
+                        Object[] args = new Object[2 + arity + constCount];
                         args[0] = blockFactory;
                         args[1] = positionCount;
                         System.arraycopy(vectors, 0, args, 2, arity);
+                        System.arraycopy(constantValues, 0, args, 2 + arity, constCount);
                         Vector out = (Vector) vectorHandle.invokeWithArguments(args);
                         return out.asBlock();
                     }
                     // CHECKED_VECTOR
-                    Object[] args = new Object[3 + arity];
+                    Object[] args = new Object[3 + arity + constCount];
                     args[0] = blockFactory;
                     args[1] = warnings();
                     args[2] = positionCount;
                     System.arraycopy(vectors, 0, args, 3, arity);
+                    System.arraycopy(constantValues, 0, args, 3 + arity, constCount);
                     return (Block) vectorHandle.invokeWithArguments(args);
                 }
                 // Block path: null/multi-value tolerant, overflow-aware. Also the logical (3VL) path.
-                Object[] args = new Object[3 + arity];
+                Object[] args = new Object[3 + arity + constCount];
                 args[0] = blockFactory;
                 args[1] = warnings();
                 args[2] = positionCount;
                 System.arraycopy(inputs, 0, args, 3, arity);
+                System.arraycopy(constantValues, 0, args, 3 + arity, constCount);
                 return (Block) blockHandle.invokeWithArguments(args);
             } catch (LinkageError e) {
                 // Defensive (criterion #5): a stitch that verified at plan time should never fail to link at eval, but
