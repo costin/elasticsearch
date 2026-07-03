@@ -41,8 +41,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.lessThanOrEqualTo;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.sameInstance;
 
@@ -306,6 +308,25 @@ public class FusedClassCacheTests extends ESTestCase {
         assertThat(cache.spins(), is(1L));
         assertThat(cache.misses(), is(1L));
         assertThat(cache.size(), is(1));
+    }
+
+    public void testCacheIsBoundedInSize() {
+        // The cache is opportunistic, so it is bounded: inserting many more distinct shapes than the cap must not grow
+        // it without limit — size stays at or below MAX_ENTRIES, and the most-recently-resolved shape is retained.
+        FusedClassCache cache = new FusedClassCache();
+        int inserted = FusedClassCache.MAX_ENTRIES * 3;
+        Shape last = null;
+        for (int i = 0; i < inserted; i++) {
+            last = new Shape("Add(#,#)#" + i, ElementKind.LONG, Path.BLOCK);
+            getUnchecked(cache, last, CLASS_1);
+            assertThat("cache size must never exceed the cap", cache.size(), is(lessThanOrEqualTo(FusedClassCache.MAX_ENTRIES)));
+        }
+        assertThat("far more shapes were inserted than the cap", inserted, is(greaterThan(FusedClassCache.MAX_ENTRIES)));
+        assertThat("the cache settled at the cap", cache.size(), is(FusedClassCache.MAX_ENTRIES));
+        // The shape resolved most recently is never the eviction victim of its own miss, so it is still cached (a hit).
+        long hitsBefore = cache.hits();
+        getUnchecked(cache, last, null); // stitcher would fail if invoked
+        assertThat("the just-resolved shape must be retained (not evicted by its own insert)", cache.hits(), is(hitsBefore + 1));
     }
 
     public void testFailedStitchIsNotCachedAndPropagates() {

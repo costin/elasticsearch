@@ -73,6 +73,16 @@ import java.util.concurrent.atomic.LongAdder;
  */
 final class FusedClassCache {
 
+    /**
+     * Hard upper bound on distinct shapes retained. The cache is purely <b>opportunistic</b> — it only pays off when a
+     * query shape recurs often enough to reuse its stitched class — so it does not need to grow without bound to be
+     * useful. When a miss would exceed this cap the cache first drops any entries whose class the GC already reclaimed
+     * (free wins) and then, if still over, evicts arbitrary victims (a wrongly-evicted shape simply re-stitches on its
+     * next sighting). Deliberately simple: no LRU bookkeeping, no admission filter — just a size ceiling so a
+     * pathological (e.g. machine-generated) workload cannot accumulate unbounded hidden-class metadata.
+     */
+    static final int MAX_ENTRIES = 512;
+
     /** Whether cached classes are held {@link RefType#SOFT softly} (default) or {@link RefType#WEAK weakly}. */
     enum RefType {
         SOFT,
@@ -190,7 +200,9 @@ final class FusedClassCache {
     Class<?> get(Shape shape, ClassStitcher stitcher) throws Stitcher.StitchingException {
         Entry entry = classes.computeIfAbsent(shape, unused -> new Entry());
         try {
-            return entry.resolve(stitcher);
+            Class<?> stitched = entry.resolve(stitcher);
+            evictIfOverCapacity(shape);
+            return stitched;
         } catch (Stitcher.StitchingException | RuntimeException | Error e) {
             // Don't leave a poisoned empty slot behind: if the stitch failed and nothing else populated the entry, drop
             // it so the next attempt for this shape starts clean (counted as a fresh miss, not a cleared ref). The
@@ -199,6 +211,31 @@ final class FusedClassCache {
             // still-empty entry.
             classes.computeIfPresent(shape, (unused, current) -> (current == entry && current.isEmpty()) ? null : current);
             throw e;
+        }
+    }
+
+    /**
+     * Keeps the shape count at or below {@link #MAX_ENTRIES} after a miss. First removes entries whose class the GC
+     * already reclaimed (cleared reference — free to drop); if still over, evicts arbitrary victims (this is an
+     * opportunistic cache, so a dropped shape merely re-stitches on its next sighting). Never evicts {@code keep} (the
+     * shape just resolved). {@link ConcurrentHashMap}'s iterator is weakly consistent, so concurrent removal is safe;
+     * a benign race may leave the map transiently a few entries over the cap, which the next miss trims.
+     */
+    private void evictIfOverCapacity(Shape keep) {
+        if (classes.size() <= MAX_ENTRIES) {
+            return;
+        }
+        for (var it = classes.entrySet().iterator(); it.hasNext() && classes.size() > MAX_ENTRIES;) {
+            var mapping = it.next();
+            if (mapping.getKey().equals(keep) == false && mapping.getValue().isEmpty()) {
+                it.remove();
+            }
+        }
+        for (var it = classes.entrySet().iterator(); it.hasNext() && classes.size() > MAX_ENTRIES;) {
+            var mapping = it.next();
+            if (mapping.getKey().equals(keep) == false) {
+                it.remove();
+            }
         }
     }
 
