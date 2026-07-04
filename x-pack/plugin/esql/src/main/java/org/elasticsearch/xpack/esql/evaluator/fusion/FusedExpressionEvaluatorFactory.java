@@ -161,29 +161,11 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * @param compiler the stitch entry points; the test seam substitutes a failing implementation here
      */
     static ExpressionEvaluator.Factory tryCreate(
-        Source[] warningSources,
-        FusionNode tree,
-        int[] inputChannels,
-        ElementKind[] inputElements,
-        ElementKind outputElement,
-        boolean overflowChecked,
+        FusionPlan plan,
         ExpressionEvaluator.Factory unfused,
-        FusionPlanner.FusedClassCompiler compiler,
-        String shape,
-        List<FusionNode.Constant> constants
+        FusionPlanner.FusedClassCompiler compiler
     ) {
-        FusedExpressionEvaluatorFactory fused = tryCreateFusedOrNull(
-            warningSources,
-            tree,
-            inputChannels,
-            inputElements,
-            outputElement,
-            overflowChecked,
-            unfused,
-            compiler,
-            shape,
-            constants
-        );
+        FusedExpressionEvaluatorFactory fused = tryCreateFusedOrNull(plan, unfused, compiler);
         return fused != null ? fused : unfused;
     }
 
@@ -196,17 +178,19 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * factory.
      */
     static FusedExpressionEvaluatorFactory tryCreateFusedOrNull(
-        Source[] warningSources,
-        FusionNode tree,
-        int[] inputChannels,
-        ElementKind[] inputElements,
-        ElementKind outputElement,
-        boolean overflowChecked,
+        FusionPlan plan,
         ExpressionEvaluator.Factory unfused,
-        FusionPlanner.FusedClassCompiler compiler,
-        String shape,
-        List<FusionNode.Constant> constants
+        FusionPlanner.FusedClassCompiler compiler
     ) {
+        // Unpack the typed plan once; the emit/bind body below is unchanged.
+        Source[] warningSources = plan.warningSources();
+        FusionNode tree = plan.tree();
+        int[] inputChannels = plan.channels();
+        ElementKind[] inputElements = plan.inputElements();
+        ElementKind outputElement = plan.outputElement();
+        boolean overflowChecked = plan.overflowChecked();
+        String shape = plan.shape();
+        List<FusionNode.Constant> constants = plan.constants();
         int arity = inputChannels.length;
         // Embedded constants are trailing primitive parameters of the fused method now (iter 30): their types are
         // appended to every resolved MethodType and their values are marshalled into the invoke args, both in the

@@ -243,14 +243,19 @@ public final class FusionPlanner {
         // One walk derives the whole positional contract (warning-source slots + constants-in-emit-order); the Stitcher
         // re-derives the same facts when it emits, and both agree because FusionSignature is the single source of truth.
         FusionSignature signature = FusionSignature.of(tree);
-        Source[] warningSources = warningSources(signature.warningSourceIndices(), ctx);
-        ElementKind outputElement = ctx.outputElement;
-        boolean overflowChecked = ctx.overflowChecked;
         String shape = shapeOf(tree);
-        // The embedded constants in the single canonical emit order the Stitcher assigns their trailing parameter slots.
-        // The factory both appends their primitive types to the resolved MethodTypes and marshals their values into the
-        // invoke args in exactly this order — the byte-for-byte contract the Stitcher, planner and factory share.
-        List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
+        // One typed carrier bundles everything the factory needs (the signature is the single source for the constant
+        // emit order + warning-source slots); the esql-side bindings the tree can't carry travel alongside it.
+        FusionPlan plan = new FusionPlan(
+            signature,
+            tree,
+            channels,
+            inputElements,
+            ctx.outputElement,
+            ctx.overflowChecked,
+            warningSources(signature.warningSourceIndices(), ctx),
+            shape
+        );
 
         long minRows = FusionSettings.adaptiveMinRows();
         if (minRows > 0) {
@@ -258,35 +263,13 @@ public final class FusionPlanner {
             // rows, then stitch once (memoised) and switch. The supplier returns the fused factory or null on failure.
             return new AdaptiveFusionEvaluatorFactory(
                 unfused,
-                () -> FusedExpressionEvaluatorFactory.tryCreateFusedOrNull(
-                    warningSources,
-                    tree,
-                    channels,
-                    inputElements,
-                    outputElement,
-                    overflowChecked,
-                    unfused,
-                    compiler,
-                    shape,
-                    constants
-                ),
+                () -> FusedExpressionEvaluatorFactory.tryCreateFusedOrNull(plan, unfused, compiler),
                 minRows,
                 shape
             );
         }
         // Eager path (default, minRows == 0): stitch now at plan time, falling back to the unfused factory on failure.
-        return FusedExpressionEvaluatorFactory.tryCreate(
-            warningSources,
-            tree,
-            channels,
-            inputElements,
-            outputElement,
-            overflowChecked,
-            unfused,
-            compiler,
-            shape,
-            constants
-        );
+        return FusedExpressionEvaluatorFactory.tryCreate(plan, unfused, compiler);
     }
 
     /**
