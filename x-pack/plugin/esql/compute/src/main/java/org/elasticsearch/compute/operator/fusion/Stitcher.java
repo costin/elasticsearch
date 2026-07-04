@@ -129,6 +129,9 @@ public final class Stitcher {
      * @param what names the emit path in the log/message (e.g. {@code "block-loop class"})
      */
     private Class<?> defineOrThrow(MethodHandles.Lookup caller, byte[] bytecode, String what) throws StitchingException {
+        // Opt-in debug/profiler visibility into the generated (hidden, on-disk-invisible) class; a no-op unless
+        // -Desql.fusion.dump=true or a sink is installed (cold plan-time path, once per fused class).
+        FusionDump.emit(bytecode);
         try {
             return caller.defineHiddenClass(bytecode, true).lookupClass();
         } catch (LinkageError e) {
