@@ -31,6 +31,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.lessThan;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
 
 /**
@@ -162,36 +163,31 @@ public class StitcherBudgetTests extends ESTestCase {
     }
 
     /**
-     * Walking increasing chain depth proves the two halves of the budget guard at once on the ENFORCED plain-vector
-     * path: every tree the stitcher <em>emits</em> is within the inlining budget (a deep tree that fits still fits),
-     * and a deep enough tree is <em>refused</em> with a {@link Stitcher.StitchingException} rather than emitted as an
-     * un-inlinable body. Both a representative-deep tree and the over-budget cliff are therefore covered.
+     * On the plain-vector path an over-budget expression is no longer refused — it is SPLIT (B1): the stitched
+     * expression moves into a {@code private static compute()} helper and the top-level {@code fused} loop becomes a
+     * tiny call-loop (reads + one call + store). So walking increasing chain depth, the stitcher never throws and the
+     * top-level {@code fused} method stays within the inlining budget at every depth — inline while it fits, then a
+     * bounded call-loop once split. The deepest tree proves the split engaged: its top-level loop is far below the
+     * budget, whereas its inline body would have been thousands of bytecodes (and pre-B1 would have refused).
      */
-    public void testDeepPlainVectorStaysWithinBudgetElseRefuses() throws Exception {
-        boolean sawRefusal = false;
-        int maxFusedDepth = 0;
+    public void testDeepPlainVectorSplitsStayingWithinBudget() throws Exception {
+        int deepestTopLevel = 0;
         for (int depth = 2; depth <= 200; depth++) {
-            FusionNode tree = leftChain(ADD, depth);
-            try {
-                int size = Stitcher.fusedMethodCodeLength(stitcher.vectorLoopBytecode(MethodHandles.lookup(), tree));
-                assertThat(
-                    "depth=" + depth + " plain-vector body must be inlinable when it fuses",
-                    size,
-                    lessThanOrEqualTo(Stitcher.MAX_FUSED_METHOD_BYTECODES)
-                );
-                maxFusedDepth = depth;
-            } catch (Stitcher.StitchingException refused) {
-                // The first depth whose plain-vector body would exceed MAX_FUSED_METHOD_BYTECODES: it must refuse
-                // (so the caller falls back to the unfused chain), not emit an un-inlinable hot method. Assert the
-                // refusal is SPECIFICALLY the inlining-budget guard (message + a measured size over budget), not some
-                // other, unrelated stitch failure that would spuriously satisfy the "did not emit" check.
-                assertBudgetRefusal(refused, "plain-vector loop");
-                sawRefusal = true;
-                break;
-            }
+            int topLevel = Stitcher.fusedMethodCodeLength(stitcher.vectorLoopBytecode(MethodHandles.lookup(), leftChain(ADD, depth)));
+            assertThat(
+                "depth=" + depth + " top-level fused loop must stay within the inlining budget (inline or split)",
+                topLevel,
+                lessThanOrEqualTo(Stitcher.MAX_FUSED_METHOD_BYTECODES)
+            );
+            deepestTopLevel = topLevel;
         }
-        assertThat("a representative deep tree must still fuse within budget", maxFusedDepth, greaterThan(2));
-        assertTrue("a deep enough plain-vector tree must refuse to fuse (over-budget → unfused fallback)", sawRefusal);
+        // The split engaged for the deepest tree: its top-level loop is just reads + one compute() call + store, so it
+        // is far under the budget — an inline body of a 200-deep chain would be thousands of bytecodes.
+        assertThat(
+            "the deepest tree must have SPLIT into a tiny call-loop (not refused)",
+            deepestTopLevel,
+            lessThan(Stitcher.MAX_FUSED_METHOD_BYTECODES / 2)
+        );
     }
 
     // -----------------------------------------------------------------------------------------------------------------

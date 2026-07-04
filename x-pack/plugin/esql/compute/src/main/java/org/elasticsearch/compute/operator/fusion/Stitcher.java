@@ -552,7 +552,188 @@ public final class Stitcher {
         }
 
         ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$VectorLoop"), host);
-        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "plain-vector loop", true);
+        // Measure the inline body WITHOUT enforcing: an oversized inline loop is not refused (which would degrade to
+        // block-only), it is split into a private static compute() helper (B1) so the fast path survives.
+        byte[] inline = serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "plain-vector loop", false);
+        if (fusedMethodCodeLength(inline) <= MAX_FUSED_METHOD_BYTECODES) {
+            return inline;
+        }
+        return emitVectorLoopSplit(caller, tree, inputElements, outputElement, constants);
+    }
+
+    /**
+     * Over-budget counterpart to the plain-vector fast path (B1): when the inline per-position expression would exceed
+     * the {@link #MAX_FUSED_METHOD_BYTECODES} inlining budget, the whole stitched expression is lifted into a
+     * {@code private static compute(v0, v1, …, c0, …)} helper (the same {@link StackKernelEmitter} output, but reading
+     * its inputs from parameters instead of {@code a_i[p]}). The top-level {@code fused} loop then only reads each
+     * {@code a_i[p]}, calls {@code compute}, and stores {@code out[p]} — a tiny, inlinable body that keeps the dense
+     * fast path (raw-array reads, no null/multi-value guards) instead of degrading to the block path. The small-tree
+     * common case never reaches here (it stays fully inline, so C2 can vectorize it); only a pathologically deep tree
+     * is split, and the top-level loop is still budget-enforced (so a genuinely un-inlinable loop shell — not expected —
+     * still refuses to fuse).
+     */
+    private byte[] emitVectorLoopSplit(
+        MethodHandles.Lookup caller,
+        FusionNode tree,
+        Element[] inputElements,
+        Element outputElement,
+        List<FusionNode.Constant> constants
+    ) throws StitchingException {
+        int arity = inputElements.length;
+        String internalName = fusedClassName(caller, "Fused$$VectorLoopSplit");
+
+        // The compute helper: (v0, v1, …, c0, c1, …) -> result. Value params first (one per input, its own element),
+        // then one primitive per constant in canonical emit order.
+        MethodNode compute = emitVectorComputeHelper(tree, inputElements, outputElement, constants);
+
+        // Top-level loop frame: [0] BlockFactory, [1] positionCount, [2 .. 2+arity) input Vectors, constants, then the
+        // per-input raw arrays, output array, loop counter (no kernel-body range — the body is a single compute call).
+        FrameLayout frame = new FrameLayout();
+        frame.slot();                                                       // [0] BlockFactory
+        frame.slot();                                                       // [1] int positionCount
+        int inputBase = frame.slots(arity);                                 // [2 .. 2+arity) input Vectors
+        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
+        int rawArrayBase = frame.slots(arity);
+        int outSlot = frame.slot();
+        int pSlot = frame.slot();
+
+        StringBuilder loopDesc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";I");
+        for (int i = 0; i < arity; i++) {
+            loopDesc.append("L").append(VECTOR).append(";");
+        }
+        appendConstantParamDescriptors(loopDesc, constants);
+        loopDesc.append(")").append(outputElement.vectorDescriptor());
+
+        MethodNode host = new MethodNode(
+            Opcodes.ASM9,
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            FUSED_METHOD_NAME,
+            loopDesc.toString(),
+            null,
+            null
+        );
+        InsnList insns = host.instructions;
+
+        for (int i = 0; i < arity; i++) {
+            Element inputElement = inputElements[i];
+            insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
+            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
+            insns.add(
+                new MethodInsnNode(
+                    Opcodes.INVOKESTATIC,
+                    VECTOR_UNSAFE,
+                    inputElement.vectorUnsafeMethod(),
+                    inputElement.vectorUnsafeDescriptor(),
+                    false
+                )
+            );
+            insns.add(new VarInsnNode(Opcodes.ASTORE, rawArrayBase + i));
+        }
+        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        insns.add(new IntInsnNode(Opcodes.NEWARRAY, outputElement.newArrayType()));
+        insns.add(new VarInsnNode(Opcodes.ASTORE, outSlot));
+        insns.add(new InsnNode(Opcodes.ICONST_0));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
+
+        LabelNode loopStart = new LabelNode();
+        LabelNode loopEnd = new LabelNode();
+        insns.add(loopStart);
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
+
+        // out[p] = compute(a0[p], a1[p], …, c0, c1, …)
+        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        for (int i = 0; i < arity; i++) {
+            Element inputElement = inputElements[i];
+            insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + i));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+            insns.add(new InsnNode(inputElement.type().getOpcode(Opcodes.IALOAD)));
+        }
+        for (FusionNode.Constant constant : constants) {
+            insns.add(new VarInsnNode(constantType(constant).getOpcode(Opcodes.ILOAD), constantSlots.get(constant)));
+        }
+        insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, "compute", compute.desc, false));
+        insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
+
+        insns.add(new IincInsnNode(pSlot, 1));
+        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
+        insns.add(loopEnd);
+
+        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEVIRTUAL,
+                BLOCK_FACTORY,
+                outputElement.newVectorMethod(),
+                outputElement.newVectorDescriptor(),
+                false
+            )
+        );
+        insns.add(new InsnNode(Opcodes.ARETURN));
+
+        if (hostMethodInterceptor != null) {
+            hostMethodInterceptor.accept(host);
+        }
+
+        ClassNode classNode = newFusedClass(internalName, host);
+        classNode.methods.add(compute);
+        // Enforce on the TOP-LEVEL loop only: it is now a handful of instructions (reads + one call + store), so this
+        // never trips for a real tree; the (unenforced) compute helper carries the large body.
+        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "plain-vector loop (split)", true);
+    }
+
+    /**
+     * Builds the {@code private static compute(v0, …, c0, …)} helper for {@link #emitVectorLoopSplit}: the stitched
+     * expression reading its inputs from value parameters (rather than {@code a_i[p]}), returning the root result.
+     */
+    private MethodNode emitVectorComputeHelper(
+        FusionNode tree,
+        Element[] inputElements,
+        Element outputElement,
+        List<FusionNode.Constant> constants
+    ) {
+        int arity = inputElements.length;
+        FrameLayout frame = new FrameLayout();
+        int[] valueSlots = new int[arity];
+        for (int i = 0; i < arity; i++) {
+            valueSlots[i] = frame.slot(inputElements[i].type());
+        }
+        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
+        int kernelBase = frame.mark();
+
+        StringBuilder desc = new StringBuilder("(");
+        for (int i = 0; i < arity; i++) {
+            desc.append(inputElements[i].type().getDescriptor());
+        }
+        appendConstantParamDescriptors(desc, constants);
+        desc.append(")").append(outputElement.type().getDescriptor());
+
+        MethodNode compute = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "compute", desc.toString(), null, null);
+        InsnList insns = compute.instructions;
+        StackKernelEmitter emitter = new StackKernelEmitter(
+            insns,
+            constantSlots,
+            kernelBase,
+            // Split-vector leaf: the input value passed as a parameter (read at this leaf's own element).
+            input -> insns.add(new VarInsnNode(inputElements[input.index()].type().getOpcode(Opcodes.ILOAD), valueSlots[input.index()])),
+            kernel -> {}
+        );
+        emitter.emit(tree, outputElement);
+        insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IRETURN)));
+        return compute;
+    }
+
+    /** The JVM {@link Type} of a constant's primitive element ({@code J}/{@code I}/{@code D}). */
+    private static Type constantType(FusionNode.Constant constant) {
+        return switch (constant.element()) {
+            case 'J' -> Type.LONG_TYPE;
+            case 'D' -> Type.DOUBLE_TYPE;
+            default -> Type.INT_TYPE;
+        };
     }
 
     /**

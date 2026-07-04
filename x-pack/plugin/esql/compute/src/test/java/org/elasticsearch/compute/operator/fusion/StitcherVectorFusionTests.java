@@ -164,6 +164,56 @@ public class StitcherVectorFusionTests extends ESTestCase {
         }
     }
 
+    /**
+     * B1 proof: a chain far too deep to inline within the 325-bytecode budget must still fuse on the plain-vector
+     * path — by SPLITTING the expression into a {@code private static compute()} helper the tiny top-level loop calls
+     * (rather than degrading to the block path). Build {@code (((in0 + in1) + in1) + …)} with 60 adds (its inline body
+     * would be ~900 bytecodes), compile the vector loop, and assert it computes {@code a + 60*b} position-by-position —
+     * proving the split class defines, verifies, links, and runs correctly.
+     */
+    public void testDeepChainSplitsAndComputesCorrectly() throws Throwable {
+        FusionDescriptor add = new FusionDescriptor(KernelFixtures.class, "processLongsAdd", "(JJ)J", true, true);
+        int adds = 60;
+        FusionNode tree = new FusionNode.Input(0);
+        for (int i = 0; i < adds; i++) {
+            tree = new FusionNode.Kernel(add, List.of(tree, new FusionNode.Input(1)));
+        }
+
+        Stitcher stitcher = new Stitcher(new TemplateRegistry());
+        Class<?> fused = stitcher.compileVectorLoop(MethodHandles.lookup(), tree);
+        assertThat(fused.getPackageName(), equalTo(getClass().getPackageName()));
+
+        MethodType type = MethodType.methodType(LongVector.class, BlockFactory.class, int.class, Vector.class, Vector.class);
+        MethodHandle handle = MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);
+
+        for (int shape = 0; shape < 40; shape++) {
+            int positionCount = positionCountFor(shape);
+            long[] a = new long[positionCount];
+            long[] b = new long[positionCount];
+            for (int p = 0; p < positionCount; p++) {
+                // Bounded so a + 60*b cannot overflow long.
+                a[p] = randomLongBetween(-1_000L, 1_000L);
+                b[p] = randomLongBetween(-100L, 100L);
+            }
+            LongVector v0 = blockFactory.newLongArrayVector(a, positionCount);
+            LongVector v1 = blockFactory.newLongArrayVector(b, positionCount);
+            LongVector result = null;
+            try {
+                result = (LongVector) handle.invoke(blockFactory, positionCount, v0, v1);
+                assertThat("shape=" + shape, result.getPositionCount(), equalTo(positionCount));
+                for (int p = 0; p < positionCount; p++) {
+                    long expected = a[p];
+                    for (int i = 0; i < adds; i++) {
+                        expected = Math.addExact(expected, b[p]);
+                    }
+                    assertThat("shape=" + shape + " p=" + p, result.getLong(p), equalTo(expected));
+                }
+            } finally {
+                Releasables.closeExpectNoException(v0, v1, result);
+            }
+        }
+    }
+
     /** Guarantees coverage of empty, single, small, and &ge; 1024 position counts across the shape sweep. */
     private int positionCountFor(int shape) {
         if (shape == 0) {
