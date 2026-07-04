@@ -223,17 +223,11 @@ public final class Stitcher {
             hostMethodInterceptor.accept(host);
         }
 
-        String internalName = hiddenClassInternalName(caller, descriptor);
-        ClassNode classNode = new ClassNode(Opcodes.ASM9);
-        classNode.version = Opcodes.V21;
-        classNode.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER;
-        classNode.name = internalName;
-        classNode.superName = "java/lang/Object";
-        classNode.methods.add(host);
+        ClassNode classNode = newFusedClass(hiddenClassInternalName(caller, descriptor), host);
 
         // COMPUTE_FRAMES recomputes maxStack, maxLocals, and stack-map frames. Straight-line kernel bodies have
         // no control-flow joins, so getCommonSuperClass (which would need the caller's class loader) is never
-        // consulted.
+        // consulted — a plain writer suffices here (the looped paths use frameComputingWriter).
         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES);
         classNode.accept(writer);
         return writer.toByteArray();
@@ -244,9 +238,50 @@ public final class Stitcher {
      * derived from the caller's package. The JVM appends a unique suffix to this name at define time.
      */
     private static String hiddenClassInternalName(MethodHandles.Lookup caller, FusionDescriptor descriptor) {
+        return fusedClassName(caller, descriptor.kernelClass().getSimpleName() + "$$Fused");
+    }
+
+    /**
+     * The internal (slash-separated) name for a fused hidden class: {@code simpleName} qualified by the
+     * <b>caller's</b> package, so {@code defineHiddenClass} places it in the caller's runtime package (the JVM then
+     * appends a unique suffix). Every emit path derives its host class name here.
+     */
+    private static String fusedClassName(MethodHandles.Lookup caller, String simpleName) {
         String pkg = caller.lookupClass().getPackageName().replace('.', '/');
-        String simpleName = descriptor.kernelClass().getSimpleName() + "$$Fused";
         return pkg.isEmpty() ? simpleName : pkg + "/" + simpleName;
+    }
+
+    /**
+     * A fused hidden-class {@link ClassNode}: {@code public final}, class-file {@code V21}, {@code Object}
+     * superclass, carrying {@code host} as its (initial) method. The two helper-emitting paths (logical, filter-eval)
+     * add their {@code cmpN}/{@code pred}/{@code projAppend} helper methods afterwards.
+     */
+    private static ClassNode newFusedClass(String internalName, MethodNode host) {
+        ClassNode classNode = new ClassNode(Opcodes.ASM9);
+        classNode.version = Opcodes.V21;
+        classNode.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER;
+        classNode.name = internalName;
+        classNode.superName = "java/lang/Object";
+        classNode.methods.add(host);
+        return classNode;
+    }
+
+    /**
+     * A {@link ClassWriter#COMPUTE_FRAMES} writer whose {@code getCommonSuperClass} resolves against the
+     * <b>caller's</b> class loader rather than ASM's own. The looped/branching emit paths have control-flow joins at
+     * which {@code COMPUTE_FRAMES} may need a common-superclass lookup; the caller's loader can see both the public
+     * {@code compute} vector/block types and the spliced kernel bodies' call targets. Our joins never actually merge
+     * incompatible reference types, so this is a safety net rather than a hot dependency. (The depth-1 straight-line
+     * {@link #emit} has no joins and uses a plain writer.)
+     */
+    private static ClassWriter frameComputingWriter(MethodHandles.Lookup caller) {
+        ClassLoader loader = caller.lookupClass().getClassLoader();
+        return new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
+            @Override
+            protected ClassLoader getClassLoader() {
+                return loader != null ? loader : super.getClassLoader();
+            }
+        };
     }
 
     /**
@@ -488,25 +523,8 @@ public final class Stitcher {
             hostMethodInterceptor.accept(host);
         }
 
-        ClassNode classNode = new ClassNode(Opcodes.ASM9);
-        classNode.version = Opcodes.V21;
-        classNode.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER;
-        classNode.name = caller.lookupClass().getPackageName().replace('.', '/') + "/Fused$$VectorLoop";
-        classNode.superName = "java/lang/Object";
-        classNode.methods.add(host);
-
-        ClassLoader loader = caller.lookupClass().getClassLoader();
-        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
-            // The loop is control flow, so COMPUTE_FRAMES may need a common-superclass lookup at the back-edge
-            // join. Resolve against the caller's class loader (which can see both the compute vector types and the
-            // kernel callees) rather than ASM's own; our joins never actually merge incompatible reference types, so
-            // this is only a safety net.
-            @Override
-            protected ClassLoader getClassLoader() {
-                return loader != null ? loader : super.getClassLoader();
-            }
-        };
-        return serializeWithBudgetGuard(classNode, writer, "plain-vector loop", true);
+        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$VectorLoop"), host);
+        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "plain-vector loop", true);
     }
 
     /**
@@ -770,21 +788,8 @@ public final class Stitcher {
             hostMethodInterceptor.accept(host);
         }
 
-        ClassNode classNode = new ClassNode(Opcodes.ASM9);
-        classNode.version = Opcodes.V21;
-        classNode.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER;
-        classNode.name = caller.lookupClass().getPackageName().replace('.', '/') + "/Fused$$CheckedVectorLoop";
-        classNode.superName = "java/lang/Object";
-        classNode.methods.add(host);
-
-        ClassLoader loader = caller.lookupClass().getClassLoader();
-        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
-            @Override
-            protected ClassLoader getClassLoader() {
-                return loader != null ? loader : super.getClassLoader();
-            }
-        };
-        return serializeWithBudgetGuard(classNode, writer, "checked-vector loop", false);
+        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$CheckedVectorLoop"), host);
+        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "checked-vector loop", false);
     }
 
     /**
@@ -1160,24 +1165,8 @@ public final class Stitcher {
             hostMethodInterceptor.accept(host);
         }
 
-        ClassNode classNode = new ClassNode(Opcodes.ASM9);
-        classNode.version = Opcodes.V21;
-        classNode.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER;
-        classNode.name = caller.lookupClass().getPackageName().replace('.', '/') + "/Fused$$BlockLoop";
-        classNode.superName = "java/lang/Object";
-        classNode.methods.add(host);
-
-        ClassLoader loader = caller.lookupClass().getClassLoader();
-        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
-            // The loop and the try/finally are control flow, so COMPUTE_FRAMES may need a common-superclass lookup
-            // at a join. Resolve against the caller's class loader (which can see the public block types and, via
-            // java.base, java/lang/Throwable) rather than ASM's own.
-            @Override
-            protected ClassLoader getClassLoader() {
-                return loader != null ? loader : super.getClassLoader();
-            }
-        };
-        return serializeWithBudgetGuard(classNode, writer, "block loop", false);
+        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$BlockLoop"), host);
+        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "block loop", false);
     }
 
     /**
@@ -1264,7 +1253,7 @@ public final class Stitcher {
         Element inputElement = Element.of(logicalInputType(tree));
         Element outputElement = Element.of(Type.BOOLEAN_TYPE);
 
-        String internalName = caller.lookupClass().getPackageName().replace('.', '/') + "/Fused$$LogicalBlockLoop";
+        String internalName = fusedClassName(caller, "Fused$$LogicalBlockLoop");
 
         // One helper per comparison operand, in DFS order; the map lets the loop emitter resolve each comparison's call.
         Map<FusionNode, String> helperNames = new IdentityHashMap<>();
@@ -1414,25 +1403,12 @@ public final class Stitcher {
             hostMethodInterceptor.accept(host);
         }
 
-        ClassNode classNode = new ClassNode(Opcodes.ASM9);
-        classNode.version = Opcodes.V21;
-        classNode.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER;
-        classNode.name = internalName;
-        classNode.superName = "java/lang/Object";
-        classNode.methods.add(host);
+        ClassNode classNode = newFusedClass(internalName, host);
         classNode.methods.addAll(helpers);
-
-        ClassLoader loader = caller.lookupClass().getClassLoader();
-        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
-            @Override
-            protected ClassLoader getClassLoader() {
-                return loader != null ? loader : super.getClassLoader();
-            }
-        };
         // Enforce the inlining budget on the top-level loop method (criterion #6). The helpers keep it small even for
         // nested trees; if it somehow exceeds the budget we refuse to fuse (→ unfused fallback) rather than emit an
         // un-inlinable hot body.
-        return serializeWithBudgetGuard(classNode, writer, "logical block loop", true);
+        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "logical block loop", true);
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -1546,7 +1522,7 @@ public final class Stitcher {
             mergedProjSources.put(e.getKey(), predWarnCount + e.getValue());
         }
 
-        String internalName = caller.lookupClass().getPackageName().replace('.', '/') + "/Fused$$FilterEvalBlockLoop";
+        String internalName = fusedClassName(caller, "Fused$$FilterEvalBlockLoop");
 
         // Build the helper methods. A logical predicate additionally needs one cmpN helper per comparison operand.
         List<MethodNode> methods = new ArrayList<>();
@@ -1732,24 +1708,11 @@ public final class Stitcher {
             hostMethodInterceptor.accept(host);
         }
 
-        ClassNode classNode = new ClassNode(Opcodes.ASM9);
-        classNode.version = Opcodes.V21;
-        classNode.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER;
-        classNode.name = internalName;
-        classNode.superName = "java/lang/Object";
-        classNode.methods.add(host);
+        ClassNode classNode = newFusedClass(internalName, host);
         classNode.methods.addAll(methods);
-
-        ClassLoader loader = caller.lookupClass().getClassLoader();
-        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
-            @Override
-            protected ClassLoader getClassLoader() {
-                return loader != null ? loader : super.getClassLoader();
-            }
-        };
         // The two per-position bodies are factored into the pred/projAppend (and cmpN) helpers, so the top-level fused
         // loop stays small and inlinable; enforce the budget on it (→ unfused fallback if a pathological shape exceeds).
-        return serializeWithBudgetGuard(classNode, writer, "filter-eval block loop", true);
+        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "filter-eval block loop", true);
     }
 
     /**
