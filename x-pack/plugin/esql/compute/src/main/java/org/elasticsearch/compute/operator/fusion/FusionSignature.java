@@ -7,7 +7,10 @@
 
 package org.elasticsearch.compute.operator.fusion;
 
+import org.objectweb.asm.Type;
+
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -49,19 +52,22 @@ public final class FusionSignature {
     private final List<FusionNode.Constant> constantsInEmitOrder;
     private final Map<FusionNode, Integer> warningSourceIndices;
     private final Set<String> overflowExceptionInternalNames;
+    private final Type[] inputTypes;
 
     private FusionSignature(
         int arity,
         int[] consumedInputs,
         List<FusionNode.Constant> constantsInEmitOrder,
         Map<FusionNode, Integer> warningSourceIndices,
-        Set<String> overflowExceptionInternalNames
+        Set<String> overflowExceptionInternalNames,
+        Type[] inputTypes
     ) {
         this.arity = arity;
         this.consumedInputs = consumedInputs;
         this.constantsInEmitOrder = constantsInEmitOrder;
         this.warningSourceIndices = warningSourceIndices;
         this.overflowExceptionInternalNames = overflowExceptionInternalNames;
+        this.inputTypes = inputTypes;
     }
 
     /** Derives the signature of {@code tree} in a single pre-order walk and verifies its internal consistency. */
@@ -70,15 +76,35 @@ public final class FusionSignature {
         Map<FusionNode, Integer> warningSources = new IdentityHashMap<>();
         Set<String> overflow = new LinkedHashSet<>();
         TreeSet<Integer> consumed = new TreeSet<>();
+        Map<Integer, Type> inputTypeByIndex = new HashMap<>();
         int[] maxInputIndex = { -1 };
-        walk(tree, constants, warningSources, overflow, consumed, maxInputIndex);
+        walk(tree, null, constants, warningSources, overflow, consumed, inputTypeByIndex, maxInputIndex);
 
         int[] consumedInputs = new int[consumed.size()];
         int i = 0;
         for (int index : consumed) {
             consumedInputs[i++] = index;
         }
-        FusionSignature signature = new FusionSignature(maxInputIndex[0] + 1, consumedInputs, constants, warningSources, overflow);
+        int arity = maxInputIndex[0] + 1;
+        // Per-input JVM type, indexed by Input#index(): the element the consuming kernel expects at that operand
+        // position (the planner guarantees it equals the column's own element, bridging any mismatch with a cast).
+        // A declared-but-unconsumed index (the over-nullify guard) has no natural type, so it inherits the first
+        // populated one — arbitrary since the fused body never reads it, but it keeps the parameter list homogeneous.
+        Type[] inputTypes = new Type[arity];
+        Type fallback = null;
+        for (int index = 0; index < arity; index++) {
+            Type type = inputTypeByIndex.get(index);
+            if (type != null && fallback == null) {
+                fallback = type;
+            }
+            inputTypes[index] = type;
+        }
+        for (int index = 0; index < arity; index++) {
+            if (inputTypes[index] == null) {
+                inputTypes[index] = fallback;
+            }
+        }
+        FusionSignature signature = new FusionSignature(arity, consumedInputs, constants, warningSources, overflow, inputTypes);
         assert signature.assertConsistent();
         return signature;
     }
@@ -91,10 +117,12 @@ public final class FusionSignature {
      */
     private static void walk(
         FusionNode node,
+        Type expected,
         List<FusionNode.Constant> constants,
         Map<FusionNode, Integer> warningSources,
         Set<String> overflow,
         TreeSet<Integer> consumed,
+        Map<Integer, Type> inputTypeByIndex,
         int[] maxInputIndex
     ) {
         if (node instanceof FusionNode.Input input) {
@@ -102,6 +130,8 @@ public final class FusionSignature {
             if (input.index() > maxInputIndex[0]) {
                 maxInputIndex[0] = input.index();
             }
+            // The leaf's element is the type its consuming kernel expects at this operand position ({@code expected}).
+            inputTypeByIndex.put(input.index(), expected);
         } else if (node instanceof FusionNode.Constant constant) {
             // Embedded literal: contributes a trailing parameter, no input vector, no warning source.
             constants.add(constant);
@@ -111,13 +141,16 @@ public final class FusionSignature {
             if (kernel.descriptor().hasOverflowException()) {
                 overflow.add(kernel.descriptor().overflowExceptionType().replace('.', '/'));
             }
-            for (FusionNode child : kernel.children()) {
-                walk(child, constants, warningSources, overflow, consumed, maxInputIndex);
+            Type[] argTypes = Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes();
+            List<FusionNode> children = kernel.children();
+            for (int i = 0; i < children.size(); i++) {
+                walk(children.get(i), argTypes[i], constants, warningSources, overflow, consumed, inputTypeByIndex, maxInputIndex);
             }
         } else if (node instanceof FusionNode.Logical logical) {
-            // A logical node is not a warning source; recurse left then right.
-            walk(logical.left(), constants, warningSources, overflow, consumed, maxInputIndex);
-            walk(logical.right(), constants, warningSources, overflow, consumed, maxInputIndex);
+            // A logical node is not a warning source; recurse left then right. Its operands are comparison/logical
+            // kernels (never bare Inputs), so no per-input type flows through here.
+            walk(logical.left(), null, constants, warningSources, overflow, consumed, inputTypeByIndex, maxInputIndex);
+            walk(logical.right(), null, constants, warningSources, overflow, consumed, inputTypeByIndex, maxInputIndex);
         }
     }
 
@@ -152,6 +185,16 @@ public final class FusionSignature {
     }
 
     /**
+     * The per-input JVM {@link Type}, indexed by {@link FusionNode.Input#index()} and densely populated over
+     * {@code [0, arity)} — the same result the {@code Stitcher} used to re-derive in a separate {@code inputElements}
+     * tree walk, now produced by this one walk. Package-private: only the {@code Stitcher} (same package) maps these to
+     * its bytecode-emission {@code Element}s; it deliberately does not leak through the public planner-facing API.
+     */
+    Type[] inputTypes() {
+        return inputTypes;
+    }
+
+    /**
      * Structural invariants the three parties rely on; an {@code assert} (elided in production) so a planner/tree bug
      * fails loud at derivation time instead of as a downstream {@code VerifyError} or a silently misaligned argument.
      */
@@ -165,6 +208,11 @@ public final class FusionSignature {
         // Every consumed input index must fit under the arity (the fused method takes one parameter per index).
         for (int index : consumedInputs) {
             assert index >= 0 && index < arity : "consumed input index [" + index + "] is out of range for arity [" + arity + "]";
+        }
+        // Every input slot in [0, arity) has a resolved type (a consumed leaf's own, or the homogeneous fallback).
+        assert inputTypes.length == arity : "inputTypes length [" + inputTypes.length + "] must equal arity [" + arity + "]";
+        for (int index = 0; index < arity; index++) {
+            assert inputTypes[index] != null : "input type at [" + index + "] must be resolved (arity " + arity + ")";
         }
         // Every constant's element must be one of the primitive descriptor chars the emit paths load (J/I/D), matching
         // Stitcher#elementSortMatches — a boolean/other constant would surface as an opaque VerifyError downstream.

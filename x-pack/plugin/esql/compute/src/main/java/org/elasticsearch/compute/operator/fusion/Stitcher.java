@@ -433,7 +433,7 @@ public final class Stitcher {
         // Per-input leaf elements (a tree may mix int/long/double via cast kernels) vs the OUTPUT element (the output
         // array + produced vector). They coincide for a homogeneous arithmetic root and differ for a comparison root
         // (numeric inputs feed a boolean output) or any cast-bridged input.
-        Element[] inputElements = inputElements(tree, arity);
+        Element[] inputElements = inputElements(signature);
         Element outputElement = Element.of(rootReturnType(tree));
 
         // Frame layout: [0] BlockFactory, [1] int positionCount, [2 .. 2+arity) input Vectors, then one trailing
@@ -613,7 +613,7 @@ public final class Stitcher {
         int[] consumed = signature.consumedInputs();
         // Per-input leaf elements (a tree may mix int/long/double via cast kernels) vs the OUTPUT element (the builder +
         // produced block). Each consumed input is read at its OWN element into a per-input value slot.
-        Element[] inputElements = inputElements(tree, arity);
+        Element[] inputElements = inputElements(signature);
         Element outputElement = Element.of(rootReturnType(tree));
         Set<String> overflowTypes = signature.overflowExceptionInternalNames();
 
@@ -1039,7 +1039,7 @@ public final class Stitcher {
         // so we mirror that by iterating the consumed-input set.
         // Per-input leaf elements (a tree may mix int/long/double via cast kernels) vs OUTPUT element (the builder +
         // produced block). Each *Block parameter is typed to its input's own element.
-        Element[] inputElements = inputElements(tree, arity);
+        Element[] inputElements = inputElements(signature);
         Element outputElement = Element.of(rootReturnType(tree));
         // Frame layout: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input *Blocks. The
         // builder, loop counter, a scratch value-count slot, the built result slot, the caught-throwable slot
@@ -1588,9 +1588,9 @@ public final class Stitcher {
         FusionSignature projSignature = FusionSignature.of(projectionTree);
         int predArity = predSignature.arity();
         int projArity = projSignature.arity();
-        Element[] predInputElements = inputElements(predicateTree, predArity);
+        Element[] predInputElements = inputElements(predSignature);
         Element predLogicalElement = predicateIsLogical ? Element.of(logicalInputType(predicateTree)) : null;
-        Element[] projInputElements = inputElements(projectionTree, projArity);
+        Element[] projInputElements = inputElements(projSignature);
         Element projOutputElement = Element.of(rootReturnType(projectionTree));
 
         List<FusionNode.Constant> predConstants = predSignature.constantsInEmitOrder();
@@ -2759,46 +2759,15 @@ public final class Stitcher {
      * {@code int} array (the cast body then widens it). Every index in {@code [0, arity)} is populated (the planner
      * assigns input indices densely and each is consumed exactly once).
      */
-    private static Element[] inputElements(FusionNode tree, int arity) {
-        Element[] elements = new Element[arity];
-        collectInputElements(tree, elements);
-        // A tree may declare an input index in [0, arity) that no leaf actually consumes (the over-nullify guard: the
-        // method still takes one parameter per index, but an unused input is never read). Such a gap has no natural
-        // element, so bind it to the first populated one — its parameter type is arbitrary since the fused body never
-        // reads it, and this keeps the parameter list homogeneous with the consumed inputs.
-        Element fallback = null;
-        for (Element e : elements) {
-            if (e != null) {
-                fallback = e;
-                break;
-            }
-        }
-        for (int i = 0; i < elements.length; i++) {
-            if (elements[i] == null) {
-                elements[i] = fallback;
-            }
+    private static Element[] inputElements(FusionSignature signature) {
+        // The per-input JVM types are derived once, in the FusionSignature walk (with the over-nullify fallback already
+        // applied, so every slot is non-null); here we only map each to its bytecode-emission Element — no tree walk.
+        Type[] types = signature.inputTypes();
+        Element[] elements = new Element[types.length];
+        for (int i = 0; i < types.length; i++) {
+            elements[i] = Element.of(types[i]);
         }
         return elements;
-    }
-
-    private static void collectInputElements(FusionNode node, Element[] elements) {
-        if (node instanceof FusionNode.Kernel kernel) {
-            Type[] argTypes = Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes();
-            List<FusionNode> children = kernel.children();
-            for (int i = 0; i < children.size(); i++) {
-                FusionNode child = children.get(i);
-                if (child instanceof FusionNode.Input input) {
-                    elements[input.index()] = Element.of(argTypes[i]);
-                } else {
-                    // A Constant is embedded (no input slot); a nested Kernel carries its own argument elements.
-                    collectInputElements(child, elements);
-                }
-            }
-        } else if (node instanceof FusionNode.Logical logical) {
-            collectInputElements(logical.left(), elements);
-            collectInputElements(logical.right(), elements);
-        }
-        // FusionNode.Input at the root is impossible (depth ≥ 2); a bare Constant contributes no input slot.
     }
 
     /** Whether any input leaf reads a reference element (a {@code BYTES_REF}), i.e. the host must allocate a spare. */
