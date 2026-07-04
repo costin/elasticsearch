@@ -14,7 +14,6 @@ import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.FusionSignature;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
-import org.elasticsearch.compute.operator.fusion.TemplateRegistry;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.Literal;
@@ -78,20 +77,15 @@ public final class FusionPlanner {
 
     private FusionPlanner() {}
 
-    /** Shared stitcher; the {@link TemplateRegistry} cache and the stitcher itself are thread-safe. */
-    private static final Stitcher DEFAULT_STITCHER = new Stitcher(new TemplateRegistry());
-
     /**
-     * Process-wide cache of stitched hidden classes keyed by expression {@linkplain FusedClassCache.Shape shape}. The
-     * {@link #DEFAULT_COMPILER} consults it before invoking the {@link Stitcher}, so repeated identical query shapes
-     * reuse one hidden class. Test-injected compilers ({@link #compilerForTests}) bypass it, so the raw stitch/fallback
-     * seams stay uncached and order-independent across tests.
+     * Owns the shared {@link Stitcher}, the process-wide {@link FusedClassCache}, and the caching production compiler —
+     * the "how a shape is materialised" concern, kept out of the planner so this class is pure plan-building.
      */
-    private static final FusedClassCache CLASS_CACHE = new FusedClassCache();
+    private static final FusionCompilationService COMPILATION = new FusionCompilationService();
 
     /** Package-private accessor so tests in this package can assert cache reuse and reset counters. */
     static FusedClassCache classCache() {
-        return CLASS_CACHE;
+        return COMPILATION.cache();
     }
 
     /**
@@ -111,7 +105,7 @@ public final class FusionPlanner {
         /**
          * Compiles the fused WHERE-predicate + EVAL-projection block loop (S3.2a). Defaulted so existing
          * {@link FusedClassCompiler} test doubles (which only exercise the single-expression paths) need not override it;
-         * {@link #DEFAULT_COMPILER} and any filter-eval-specific test double provide a real implementation.
+         * the production {@link FusionCompilationService} compiler and any filter-eval-specific test double provide a real implementation.
          */
         default Class<?> compileFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
             throws Stitcher.StitchingException {
@@ -120,78 +114,7 @@ public final class FusionPlanner {
     }
 
     /**
-     * Production compiler: looks the shape up in {@link #CLASS_CACHE} first and only invokes the shared {@link Stitcher}
-     * on a miss (or after a cleared reference). The caller {@link MethodHandles.Lookup} is excluded from the cache key
-     * because production always uses the single {@link FusedExpressionEvaluatorFactory} module lookup; caching by shape
-     * alone is therefore safe here.
-     */
-    private static final FusedClassCompiler DEFAULT_COMPILER = new FusedClassCompiler() {
-        @Override
-        public Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-            return CLASS_CACHE.get(shapeKey(tree, FusedClassCache.Path.BLOCK), () -> DEFAULT_STITCHER.compileBlockLoop(caller, tree));
-        }
-
-        @Override
-        public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-            return CLASS_CACHE.get(
-                shapeKey(tree, FusedClassCache.Path.PLAIN_VECTOR),
-                () -> DEFAULT_STITCHER.compileVectorLoop(caller, tree)
-            );
-        }
-
-        @Override
-        public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-            return CLASS_CACHE.get(
-                shapeKey(tree, FusedClassCache.Path.CHECKED_VECTOR),
-                () -> DEFAULT_STITCHER.compileVectorLoopChecked(caller, tree)
-            );
-        }
-
-        @Override
-        public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-            return CLASS_CACHE.get(
-                shapeKey(tree, FusedClassCache.Path.LOGICAL_BLOCK),
-                () -> DEFAULT_STITCHER.compileLogicalBlockLoop(caller, tree)
-            );
-        }
-
-        @Override
-        public Class<?> compileFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
-            throws Stitcher.StitchingException {
-            // The fused class is fully determined by BOTH sub-shapes, so the cache key encodes both (and, for
-            // specificity, keys on the projection output element).
-            FusedClassCache.Shape shape = new FusedClassCache.Shape(
-                filterEvalShapeOf(predicateTree, projectionTree),
-                rootElement(projectionTree),
-                FusedClassCache.Path.FILTER_EVAL_BLOCK
-            );
-            return CLASS_CACHE.get(shape, () -> DEFAULT_STITCHER.compileFilterEvalBlockLoop(caller, predicateTree, projectionTree));
-        }
-    };
-
-    /** Builds the binding-independent cache key for {@code tree} on the given emit {@code path}. */
-    private static FusedClassCache.Shape shapeKey(FusionNode tree, FusedClassCache.Path path) {
-        return new FusedClassCache.Shape(shapeOf(tree), rootElement(tree), path);
-    }
-
-    /**
-     * The OUTPUT element kind of a (depth &ge; 2) fused tree, read from its root kernel's return type. For an
-     * arithmetic root this is the homogeneous numeric element; for a comparison root it is {@link ElementKind#BOOLEAN}.
-     * Part of the {@link FusedClassCache} key (the numeric input element is already implied by the kernel descriptors
-     * encoded in {@link #shapeOf}).
-     */
-    private static ElementKind rootElement(FusionNode tree) {
-        if (tree instanceof FusionNode.Logical) {
-            // A 3VL AND/OR tree always produces a nullable boolean.
-            return ElementKind.BOOLEAN;
-        }
-        FusionNode.Kernel root = (FusionNode.Kernel) tree;
-        String descriptor = root.descriptor().kernelType();
-        return outputElementOf(descriptor.charAt(descriptor.indexOf(')') + 1));
-    }
-
-    /**
-     * Test-only override for {@link #DEFAULT_COMPILER}. When non-null, {@link #maybeFuse} stitches through it, letting
+     * Test-only override for the production compiler. When non-null, {@link #maybeFuse} stitches through it, letting
      * a test force a {@link Stitcher.StitchingException} and assert the query still completes via the unfused chain
      * with the failure counter incremented. Never set in production.
      */
@@ -239,7 +162,7 @@ public final class FusionPlanner {
         assert noNullElements(inputElements)
             : "planner must populate every input element densely; got " + java.util.Arrays.toString(inputElements);
         ExpressionEvaluator.Factory unfused = rawFactory.apply(exp);
-        FusedClassCompiler compiler = compilerForTests != null ? compilerForTests : DEFAULT_COMPILER;
+        FusedClassCompiler compiler = compilerForTests != null ? compilerForTests : COMPILATION.compiler();
         // One walk derives the whole positional contract (warning-source slots + constants-in-emit-order); the Stitcher
         // re-derives the same facts when it emits, and both agree because FusionSignature is the single source of truth.
         FusionSignature signature = FusionSignature.of(tree);
@@ -328,7 +251,7 @@ public final class FusionPlanner {
 
         ExpressionEvaluator.Factory unfusedPredicate = rawFactory.apply(predicate);
         ExpressionEvaluator.Factory unfusedProjection = rawFactory.apply(projection);
-        FusedClassCompiler compiler = compilerForTests != null ? compilerForTests : DEFAULT_COMPILER;
+        FusedClassCompiler compiler = compilerForTests != null ? compilerForTests : COMPILATION.compiler();
 
         // One walk per sub-tree derives its warning-source slots + constants-in-emit-order (single source of truth).
         FusionSignature predicateSignature = FusionSignature.of(predicateTree);
@@ -894,7 +817,7 @@ public final class FusionPlanner {
     }
 
     /** The output element for a return descriptor char: BOOLEAN for {@code 'Z'}, else the numeric {@link #elementOf}. */
-    private static ElementKind outputElementOf(char returnChar) {
+    static ElementKind outputElementOf(char returnChar) {
         return returnChar == 'Z' ? ElementKind.BOOLEAN : elementOf(returnChar);
     }
 
