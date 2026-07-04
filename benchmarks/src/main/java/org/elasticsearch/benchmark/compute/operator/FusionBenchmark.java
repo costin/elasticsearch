@@ -9,6 +9,7 @@
 
 package org.elasticsearch.benchmark.compute.operator;
 
+import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.benchmark.Utils;
 import org.elasticsearch.common.breaker.NoopCircuitBreaker;
 import org.elasticsearch.common.settings.Settings;
@@ -35,6 +36,7 @@ import org.elasticsearch.xpack.esql.evaluator.EvalMapper;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Log;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Sqrt;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.Length;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
@@ -250,11 +252,7 @@ public class FusionBenchmark {
             @Override
             Built build() {
                 FieldAttribute a = longField("a"), b = longField("b"), c = longField("c"), d = longField("d");
-                Expression expr = new And(
-                    Source.EMPTY,
-                    new GreaterThan(Source.EMPTY, a, b),
-                    new LessThan(Source.EMPTY, c, d)
-                );
+                Expression expr = new And(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new LessThan(Source.EMPTY, c, d));
                 return new Built(expr, layout(a, b, c, d));
             }
 
@@ -371,6 +369,43 @@ public class FusionBenchmark {
                     double expected = Math.log(mathA(i)) * (double) b(i);
                     double actual = r.getDouble(r.getFirstValueIndex(i));
                     if (Double.doubleToLongBits(actual) != Double.doubleToLongBits(expected)) {
+                        throw new AssertionError("[" + this + "] @" + i + " expected [" + expected + "] but was [" + actual + "]");
+                    }
+                }
+            }
+        },
+        /**
+         * {@code LENGTH(s) > 5} over a keyword column (Task 11): the first BytesRef-input fused shape — a
+         * {@code @Fusable} {@link Length} ({@code (BytesRef)int}, a pure UTF-8 code-point scan) under a
+         * {@link GreaterThan} against a baked-in integer literal, yielding a nullable boolean on the block path.
+         * The generated strings are pure ASCII, so their UTF-8 byte length equals their code-point count and
+         * {@code checkExpected} can compare the raw {@link BytesRef#length} against the threshold.
+         */
+        LENGTH_GT_INT("length_gt_int") {
+            @Override
+            Built build() {
+                FieldAttribute s = keywordField("s");
+                Expression expr = new GreaterThan(
+                    Source.EMPTY,
+                    new Length(Source.EMPTY, s),
+                    new Literal(Source.EMPTY, LENGTH_THRESHOLD, DataType.INTEGER)
+                );
+                return new Built(expr, layout(s));
+            }
+
+            @Override
+            Page page(BlockFactory bf, int size) {
+                return new Page(keywordVector(bf, size));
+            }
+
+            @Override
+            void checkExpected(Block out, int size) {
+                BooleanBlock r = (BooleanBlock) out;
+                for (int i = 0; i < size; i++) {
+                    // ASCII inputs: BytesRef.length (UTF-8 bytes) == code-point count == LENGTH(s).
+                    boolean expected = asciiLen(i) > LENGTH_THRESHOLD;
+                    boolean actual = r.getBoolean(r.getFirstValueIndex(i));
+                    if (actual != expected) {
                         throw new AssertionError("[" + this + "] @" + i + " expected [" + expected + "] but was [" + actual + "]");
                     }
                 }
@@ -609,6 +644,28 @@ public class FusionBenchmark {
         return i % 50;
     }
 
+    // Keyword-length generator (Task 11): a fixed ASCII threshold plus per-position ASCII string lengths that straddle
+    // it, so LENGTH(s) > 5 yields a genuine mix of true/false. Lengths cycle 1..10 (half <= 5, half > 5).
+    private static final int LENGTH_THRESHOLD = 5;
+
+    /** Per-position ASCII string length: cycles 1..10 so LENGTH(s) > 5 is an even mix of true/false. */
+    private static int asciiLen(int i) {
+        return (i % 10) + 1;
+    }
+
+    /** Dense keyword column of ASCII strings ('a' repeated {@link #asciiLen}) so byte length == code-point count. */
+    private static Block keywordVector(BlockFactory bf, int size) {
+        try (var builder = bf.newBytesRefVectorBuilder(size)) {
+            for (int i = 0; i < size; i++) {
+                int len = asciiLen(i);
+                byte[] bytes = new byte[len];
+                Arrays.fill(bytes, (byte) 'a');
+                builder.appendBytesRef(new BytesRef(bytes));
+            }
+            return builder.build().asBlock();
+        }
+    }
+
     // Logical generators: overlapping magnitudes so both (a > b) and (c < d) vary.
     private static long logA(int i) {
         return i % 50;
@@ -653,6 +710,10 @@ public class FusionBenchmark {
 
     private static FieldAttribute doubleField(String name) {
         return field(name, DataType.DOUBLE);
+    }
+
+    private static FieldAttribute keywordField(String name) {
+        return field(name, DataType.KEYWORD);
     }
 
     private static FieldAttribute field(String name, DataType type) {
