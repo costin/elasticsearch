@@ -214,6 +214,61 @@ public class StitcherVectorFusionTests extends ESTestCase {
         }
     }
 
+    /**
+     * B1 split with embedded CONSTANTS: a deep chain {@code (((in0 + 1) + 1) + …)} with 60 constant-add levels forces
+     * the split, and each level's {@code 1} is a distinct {@link FusionNode.Constant} — so the split {@code compute}
+     * helper takes 60 trailing {@code long} constant params and the top-level loop must marshal all 60 into the call in
+     * canonical emit order. Asserting the result is {@code a + 60} proves the split's constant plumbing is correct.
+     */
+    public void testDeepChainWithConstantsSplitsAndComputesCorrectly() throws Throwable {
+        FusionDescriptor add = new FusionDescriptor(KernelFixtures.class, "processLongsAdd", "(JJ)J", true, true);
+        int adds = 60;
+        FusionNode tree = new FusionNode.Input(0);
+        for (int i = 0; i < adds; i++) {
+            tree = new FusionNode.Kernel(add, List.of(tree, new FusionNode.Constant(1L, 'J')));
+        }
+
+        Stitcher stitcher = new Stitcher(new TemplateRegistry());
+        Class<?> fused = stitcher.compileVectorLoop(MethodHandles.lookup(), tree);
+
+        // (BlockFactory, int, Vector, long x adds) -> LongVector
+        Class<?>[] params = new Class<?>[3 + adds];
+        params[0] = BlockFactory.class;
+        params[1] = int.class;
+        params[2] = Vector.class;
+        for (int i = 0; i < adds; i++) {
+            params[3 + i] = long.class;
+        }
+        MethodHandle handle = MethodHandles.lookup()
+            .findStatic(fused, Stitcher.FUSED_METHOD_NAME, MethodType.methodType(LongVector.class, params));
+
+        for (int shape = 0; shape < 30; shape++) {
+            int positionCount = positionCountFor(shape);
+            long[] a = new long[positionCount];
+            for (int p = 0; p < positionCount; p++) {
+                a[p] = randomLongBetween(-1_000_000L, 1_000_000L);
+            }
+            LongVector v0 = blockFactory.newLongArrayVector(a, positionCount);
+            LongVector result = null;
+            try {
+                Object[] args = new Object[3 + adds];
+                args[0] = blockFactory;
+                args[1] = positionCount;
+                args[2] = v0;
+                for (int i = 0; i < adds; i++) {
+                    args[3 + i] = 1L;
+                }
+                result = (LongVector) handle.invokeWithArguments(args);
+                assertThat("shape=" + shape, result.getPositionCount(), equalTo(positionCount));
+                for (int p = 0; p < positionCount; p++) {
+                    assertThat("shape=" + shape + " p=" + p, result.getLong(p), equalTo(a[p] + adds));
+                }
+            } finally {
+                Releasables.closeExpectNoException(v0, result);
+            }
+        }
+    }
+
     /** Guarantees coverage of empty, single, small, and &ge; 1024 position counts across the shape sweep. */
     private int positionCountFor(int shape) {
         if (shape == 0) {

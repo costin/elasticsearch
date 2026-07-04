@@ -2968,8 +2968,9 @@ public final class Stitcher {
      * body over 325 bytecodes today. Those paths are correctness fallbacks invoked via {@code MethodHandle} (not a
      * normal inlinable call site); refusing them would regress the existing differential suite (deep arithmetic trees
      * would stop fusing) with no JIT benefit, so their sizes are measured and logged for visibility but not enforced.
-     * Splitting oversize bodies into {@code private static} helpers is the planned follow-up for the larger combined
-     * bodies of the filter+expression mega-fusion iters.
+     * The plain-vector path splits an oversize body into a {@code private static compute()} helper (B1,
+     * {@link #emitVectorLoopSplit}) rather than refusing; this guard's {@code enforce=true} then applies only to the
+     * resulting tiny call-loop. Splitting the checked-vector / block combined bodies the same way remains a follow-up.
      */
     private static byte[] serializeWithBudgetGuard(ClassNode classNode, ClassWriter writer, String pathName, boolean enforce)
         throws StitchingException {
