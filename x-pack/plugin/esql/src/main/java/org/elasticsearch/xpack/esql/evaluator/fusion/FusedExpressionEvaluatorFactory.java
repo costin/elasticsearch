@@ -32,6 +32,8 @@ import org.elasticsearch.compute.operator.Warnings;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.FusionSimd;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
+import org.elasticsearch.core.Releasable;
+import org.elasticsearch.core.Releasables;
 import org.elasticsearch.logging.LogManager;
 import org.elasticsearch.logging.Logger;
 import org.elasticsearch.xpack.esql.core.tree.Source;
@@ -693,6 +695,15 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         public void close() {
             if (unfusedFallback != null) {
                 unfusedFallback.close();
+            }
+            // Release any per-driver SCRATCH @Fixed buffer this evaluator owns that is Releasable (#8b). Today's scratch
+            // (BytesRef / UTF8CodePoint for LEFT) is not Releasable so this is a no-op, but a future breaker-accounted
+            // scratch (e.g. a BreakingBytesRefBuilder for CONCAT) is owned per driver and must be freed here. Captured
+            // reference constants (e.g. a Locale) and boxed primitives are never Releasable, so only scratch is closed.
+            for (Object constantValue : constantValues) {
+                if (constantValue instanceof Releasable releasable) {
+                    Releasables.closeExpectNoException(releasable);
+                }
             }
         }
 

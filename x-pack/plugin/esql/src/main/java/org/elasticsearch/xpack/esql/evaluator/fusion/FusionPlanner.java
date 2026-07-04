@@ -24,7 +24,6 @@ import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Cast;
-import org.elasticsearch.xpack.esql.expression.function.scalar.string.ChangeCase;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Left;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.BinaryLogic;
@@ -36,7 +35,6 @@ import java.lang.invoke.MethodHandles;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
 
@@ -486,12 +484,13 @@ public final class FusionPlanner {
             // commonType); its value rides in as an argument at eval time rather than being baked into the bytecode.
             return buildConstant(literal, expected, ctx);
         }
-        if (exp instanceof ChangeCase changeCase) {
-            // TO_LOWER/TO_UPPER (B3b): a BytesRef -> BytesRef @ConvertEvaluator kernel with two object @Fixed operands
-            // (the query Locale and the UPPER/LOWER Case). It is not FusionAware (convert-evaluators emit no descriptor),
-            // so it is recognised explicitly here and its Locale/Case captured as reference constants.
-            return buildChangeCase(changeCase, ctx, expected, root);
-        }
+        // NOTE: TO_LOWER/TO_UPPER (ChangeCase) are deliberately NOT fused. They are @ConvertEvaluator functions, which
+        // MAP over a multi-valued position (a multi-valued keyword yields a multi-valued result, no warning), whereas
+        // the fused block emitter applies single-value semantics (a multi-valued leaf warns + nulls). Fusing them would
+        // break the fused==unfused invariant for multi-valued inputs. Fusing a convert-evaluator needs a multi-value
+        // mapping emitter mode (a real capability, not yet built). The object-@Fixed constant machinery they motivated
+        // still ships (used by regular single-value @Evaluator kernels), and LEFT below is the real single-value
+        // BytesRef string function that fuses correctly.
         if (exp instanceof Left left) {
             // LEFT(str, length) (#8b): a BytesRef -> BytesRef kernel whose first two @Fixed params are per-driver SCRATCH
             // buffers (a reusable BytesRef + a UTF8CodePoint), created fresh per driver rather than captured. Its body
@@ -564,52 +563,6 @@ public final class FusionPlanner {
         }
         // A non-root node must output the element its parent expects; bridge a numeric mismatch with a cast kernel.
         return maybeCast(kernel, naturalOut, expected, consumingSource, ctx, exp);
-    }
-
-    /**
-     * The manually-built kernel descriptor for {@code ChangeCase#process(BytesRef, @Fixed Locale, @Fixed Case)}. Convert-
-     * evaluators emit no {@code FUSION_DESCRIPTOR}, so this names the real static method (the stitcher reads its bytecode
-     * off {@code ChangeCase.class} and splices the straight-line body). The {@code $Case} inner-class descriptor is
-     * written explicitly (a naive {@code '.'->'/'} would wrongly produce {@code ChangeCase.Case}). Not overflow-checked;
-     * an all-null input yields null (matching the unfused convert evaluator).
-     */
-    private static final FusionDescriptor CHANGE_CASE_DESCRIPTOR = new FusionDescriptor(
-        ChangeCase.class,
-        "process",
-        "(Lorg/apache/lucene/util/BytesRef;Ljava/util/Locale;"
-            + "Lorg/elasticsearch/xpack/esql/expression/function/scalar/string/ChangeCase$Case;)Lorg/apache/lucene/util/BytesRef;",
-        false,
-        true
-    );
-
-    /**
-     * Builds the fused node for a {@code TO_LOWER}/{@code TO_UPPER} ({@link ChangeCase}) expression: a single kernel over
-     * its {@code BytesRef} field child plus two object {@code @Fixed} reference constants — the query {@link Locale} and
-     * the {@code UPPER}/{@code LOWER} {@link ChangeCase.Case} — captured off the expression at plan time. It produces a
-     * {@code BytesRef} (block-path only). Refuses (returns {@code null}) unless it is the root or its parent expects a
-     * {@code BytesRef}, or if the field child does not itself fuse to a {@code BytesRef} producer.
-     */
-    private static FusionNode buildChangeCase(ChangeCase changeCase, PlanContext ctx, ElementKind expected, boolean root) {
-        if (root == false && expected != ElementKind.BYTES_REF) {
-            return null;
-        }
-        FusionNode field = build(changeCase.field(), ctx, ElementKind.BYTES_REF, changeCase.source(), false);
-        if (field == null) {
-            return null;
-        }
-        FusionNode.Kernel kernel = new FusionNode.Kernel(
-            CHANGE_CASE_DESCRIPTOR,
-            List.of(
-                field,
-                FusionNode.Constant.reference(changeCase.configuration().locale(), Locale.class),
-                FusionNode.Constant.reference(changeCase.caseType(), ChangeCase.Case.class)
-            )
-        );
-        ctx.kernelSources.put(kernel, changeCase.source());
-        if (root) {
-            ctx.outputElement = ElementKind.BYTES_REF;
-        }
-        return kernel;
     }
 
     /**
