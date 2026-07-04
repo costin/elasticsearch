@@ -457,33 +457,55 @@ public class ComparisonFusionDifferentialTests extends FusionDifferentialTestCas
         assumeTrue("Vector API (jdk.incubator.vector) not available", FusionSimd.available());
         FusionSettings.setSimdEnabledForTests(true);
         try {
-            FieldAttribute a = field("a", DataType.LONG);
-            FieldAttribute b = field("b", DataType.LONG);
-            Layout layout = layout(a, b);
-            Expression[] comparisons = {
-                new GreaterThan(Source.EMPTY, a, b),
-                new LessThan(Source.EMPTY, a, b),
-                new Equals(Source.EMPTY, a, b) };
-            for (Expression expr : comparisons) {
-                String label = expr.getClass().getSimpleName();
-                ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
-                ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
-                assertFuses(fused, label + " (simd)");
-                for (int pc : new int[] { 0, 1, 5, 16, 17, 64, 129, 512 + randomIntBetween(0, 512) }) {
+            runSimdSweep(DataType.LONG);
+            runSimdSweep(DataType.INTEGER);
+        } finally {
+            FusionSettings.setSimdEnabledForTests(false);
+        }
+    }
+
+    /** Drives all six comparison operators over dense vector-backed columns of {@code type} onto the SIMD path. */
+    private void runSimdSweep(DataType type) {
+        FieldAttribute a = field("a", type);
+        FieldAttribute b = field("b", type);
+        Layout layout = layout(a, b);
+        Expression[] comparisons = {
+            new GreaterThan(Source.EMPTY, a, b),
+            new GreaterThanOrEqual(Source.EMPTY, a, b),
+            new LessThan(Source.EMPTY, a, b),
+            new LessThanOrEqual(Source.EMPTY, a, b),
+            new Equals(Source.EMPTY, a, b),
+            new NotEquals(Source.EMPTY, a, b) };
+        for (Expression expr : comparisons) {
+            String label = type + " " + expr.getClass().getSimpleName();
+            ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+            ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+            assertFuses(fused, label + " (simd)");
+            for (int pc : new int[] { 0, 1, 5, 16, 17, 64, 129, 512 + randomIntBetween(0, 512) }) {
+                Block a0;
+                Block b0;
+                if (type == DataType.LONG) {
                     long[] av = new long[pc];
                     long[] bv = new long[pc];
                     for (int p = 0; p < pc; p++) {
                         av[p] = randomLongBetween(-50, 50);
                         bv[p] = randomLongBetween(-50, 50); // overlapping ranges -> both true and false lanes
                     }
-                    // Dense vector-backed columns so the runtime takes the vector (SIMD) path, not the block path.
-                    Block a0 = blockFactory.newLongArrayVector(av, pc).asBlock();
-                    Block b0 = blockFactory.newLongArrayVector(bv, pc).asBlock();
-                    runDifferentialWarnings(fused, unfused, ElementKind.BOOLEAN, new Block[] { a0, b0 }, pc, label + " simd pc=" + pc);
+                    a0 = blockFactory.newLongArrayVector(av, pc).asBlock();
+                    b0 = blockFactory.newLongArrayVector(bv, pc).asBlock();
+                } else {
+                    int[] av = new int[pc];
+                    int[] bv = new int[pc];
+                    for (int p = 0; p < pc; p++) {
+                        av[p] = randomIntBetween(-50, 50);
+                        bv[p] = randomIntBetween(-50, 50);
+                    }
+                    a0 = blockFactory.newIntArrayVector(av, pc).asBlock();
+                    b0 = blockFactory.newIntArrayVector(bv, pc).asBlock();
                 }
+                // Dense vector-backed columns so the runtime takes the vector (SIMD) path, not the block path.
+                runDifferentialWarnings(fused, unfused, ElementKind.BOOLEAN, new Block[] { a0, b0 }, pc, label + " simd pc=" + pc);
             }
-        } finally {
-            FusionSettings.setSimdEnabledForTests(false);
         }
     }
 

@@ -786,8 +786,10 @@ public final class Stitcher {
         if (arity != 2
             || signature.constantsInEmitOrder().isEmpty() == false
             || inputElements[1].type().getSort() != operand.type().getSort()
-            || operand.reference()) {
-            throw new StitchingException("SIMD path requires two same-primitive column operands with no constants", null);
+            || (operand.type().getSort() != Type.INT && operand.type().getSort() != Type.LONG)) {
+            // int/long only: double lane compares differ from scalar on NaN/-0.0, so double is deliberately excluded
+            // here (self-guarding the emitter, not just relying on the planner's simdComparison gate).
+            throw new StitchingException("SIMD path requires two same-int/long column operands with no constants", null);
         }
         Element outputElement = Element.of(rootReturnType(tree));
         String eVector = simdVectorClass(operand);

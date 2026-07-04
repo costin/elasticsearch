@@ -297,6 +297,12 @@ public class CsvIT extends ESTestCase {
                     if (adaptiveMinRows != null) {
                         builder.put("esql.fusion.adaptive.min_rows", adaptiveMinRows);
                     }
+                    // -Desql.fusion.simd=true runs the whole corpus with the opt-in SIMD comparison path on, proving
+                    // result/warning parity for every csv-spec comparison (when the Vector API is available).
+                    String simd = System.getProperty("esql.fusion.simd");
+                    if (simd != null) {
+                        builder.put("esql.fusion.simd", simd);
+                    }
                     return builder.build();
                 }
 
