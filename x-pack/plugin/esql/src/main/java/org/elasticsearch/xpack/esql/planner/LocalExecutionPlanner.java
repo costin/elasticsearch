@@ -38,6 +38,7 @@ import org.elasticsearch.compute.operator.DistinctByOperator;
 import org.elasticsearch.compute.operator.Driver;
 import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.EvalOperator.EvalOperatorFactory;
+import org.elasticsearch.compute.operator.FilterEvalOperator;
 import org.elasticsearch.compute.operator.FilterOperator.FilterOperatorFactory;
 import org.elasticsearch.compute.operator.GroupedLimitOperator;
 import org.elasticsearch.compute.operator.HighlightConfig;
@@ -1146,6 +1147,35 @@ public class LocalExecutionPlanner {
     }
 
     private PhysicalOperation planEval(EvalExec eval, LocalExecutionPlannerContext context) {
+        if (eval.fields().size() == 1
+            && eval.child() instanceof FilterExec filter
+            && (context.shardContexts.isEmpty() || PlannerUtils.usesScoring(filter) == false)) {
+            // WHERE + single-EVAL fusion (S3.2b): when both the predicate and the single projection are fusable, emit
+            // ONE FilterEvalOperator instead of the separate FilterOperator + EvalOperator. The scoring path
+            // (FilterOperator -> ScoreOperator -> EvalOperator) is excluded above and always takes the unfused chain.
+            Alias field = eval.fields().get(0);
+            PhysicalOperation source = plan(filter.child(), context);
+            Layout.Builder layoutBuilder = source.layout.builder();
+            layoutBuilder.append(field.toAttribute());
+            Layout outputLayout = layoutBuilder.build();
+            EvalMapper.FilterEvalMapping mapping = EvalMapper.toFilterEvalEvaluator(
+                context.foldCtx(),
+                filter.condition(),
+                field.child(),
+                source.layout,
+                context.shardContexts,
+                context.analysisRegistry()
+            );
+            if (mapping.isFused()) {
+                return source.with(new FilterEvalOperator.FilterEvalOperatorFactory(mapping.fused()), outputLayout);
+            }
+            // Not fusable: build the ordinary Filter -> Eval chain on the already-planned source. This path is never
+            // a scoring one (excluded above), so it inserts no ScoreOperator and is byte-identical to planFilter +
+            // planEval; the source is planned exactly once (here), so nothing is planned twice.
+            PhysicalOperation filtered = source.with(new FilterOperatorFactory(mapping.predicate()), source.layout);
+            return filtered.with(new EvalOperatorFactory(mapping.projection()), outputLayout);
+        }
+
         PhysicalOperation source = plan(eval.child(), context);
 
         for (Alias field : eval.fields()) {

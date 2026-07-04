@@ -24,13 +24,18 @@ import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.compute.aggregation.AggregatorMode;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.lucene.EmptyIndexedByShardId;
+import org.elasticsearch.compute.lucene.IndexedByShardId;
 import org.elasticsearch.compute.lucene.IndexedByShardIdFromList;
 import org.elasticsearch.compute.lucene.query.DataPartitioning;
 import org.elasticsearch.compute.lucene.query.LuceneSourceOperator;
 import org.elasticsearch.compute.lucene.query.LuceneTopNSourceOperator;
 import org.elasticsearch.compute.lucene.read.ValuesSourceReaderOperator;
 import org.elasticsearch.compute.operator.DriverContext;
+import org.elasticsearch.compute.operator.EvalOperator;
+import org.elasticsearch.compute.operator.FilterEvalOperator;
+import org.elasticsearch.compute.operator.FilterOperator;
 import org.elasticsearch.compute.operator.LocalSourceOperator;
+import org.elasticsearch.compute.operator.ScoreOperator;
 import org.elasticsearch.compute.operator.SourceOperator;
 import org.elasticsearch.compute.test.NoOpReleasable;
 import org.elasticsearch.compute.test.TestBlockFactory;
@@ -49,12 +54,15 @@ import org.elasticsearch.plugins.ExtensiblePlugin;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.search.internal.AliasFilter;
 import org.elasticsearch.search.internal.ContextIndexSearcher;
+import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.analysis.AnalyzerSettings;
 import org.elasticsearch.xpack.esql.core.expression.Alias;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
+import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
 import org.elasticsearch.xpack.esql.core.expression.FoldContext;
 import org.elasticsearch.xpack.esql.core.expression.Literal;
+import org.elasticsearch.xpack.esql.core.expression.MetadataAttribute;
 import org.elasticsearch.xpack.esql.core.expression.ReferenceAttribute;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
@@ -73,13 +81,21 @@ import org.elasticsearch.xpack.esql.datasources.spi.SourceOperatorFactoryProvide
 import org.elasticsearch.xpack.esql.datasources.spi.StoragePath;
 import org.elasticsearch.xpack.esql.expression.Order;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Count;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Sub;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
 import org.elasticsearch.xpack.esql.index.EsIndexGenerator;
 import org.elasticsearch.xpack.esql.optimizer.rules.physical.ProjectAwayColumns;
 import org.elasticsearch.xpack.esql.plan.logical.MetricsInfo;
+import org.elasticsearch.xpack.esql.plan.logical.local.EmptyLocalSupplier;
 import org.elasticsearch.xpack.esql.plan.physical.EsQueryExec;
+import org.elasticsearch.xpack.esql.plan.physical.EvalExec;
 import org.elasticsearch.xpack.esql.plan.physical.ExternalSourceExec;
 import org.elasticsearch.xpack.esql.plan.physical.FieldExtractExec;
+import org.elasticsearch.xpack.esql.plan.physical.FilterExec;
+import org.elasticsearch.xpack.esql.plan.physical.LocalSourceExec;
 import org.elasticsearch.xpack.esql.plan.physical.MetricsInfoExec;
+import org.elasticsearch.xpack.esql.plan.physical.PhysicalPlan;
 import org.elasticsearch.xpack.esql.plan.physical.TimeSeriesAggregateExec;
 import org.elasticsearch.xpack.esql.plugin.QueryPragmas;
 import org.elasticsearch.xpack.esql.session.Configuration;
@@ -790,6 +806,92 @@ public class LocalExecutionPlannerTests extends MapperServiceTestCase {
         var p = plan.driverFactories.get(0).driverSupplier().physicalOperation();
         var fieldInfo = ((ValuesSourceReaderOperator.Factory) p.intermediateOperatorFactories.get(0)).fields().get(0);
         return fieldInfo.buildLoader().build(DriverContext.WarningsMode.COLLECT, 0);
+    }
+
+    /**
+     * A fusable single-field EVAL over a fusable, non-scoring WHERE must fuse into ONE {@link FilterEvalOperator}
+     * (S3.2b wiring), replacing the separate {@link FilterOperator} + {@link EvalOperator} pair.
+     */
+    public void testFusableWhereEvalFusesIntoFilterEvalOperator() throws IOException {
+        FieldAttribute a = numericField("a", DataType.LONG);
+        FieldAttribute b = numericField("b", DataType.LONG);
+        // WHERE a > b | EVAL x = a + b — both sides are fusable, no scoring.
+        Expression predicate = new GreaterThan(Source.EMPTY, a, b);
+        Alias projection = new Alias(Source.EMPTY, "x", new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG));
+        LocalSourceExec source = new LocalSourceExec(Source.EMPTY, List.of(a, b), EmptyLocalSupplier.EMPTY);
+        EvalExec eval = new EvalExec(Source.EMPTY, new FilterExec(Source.EMPTY, source, predicate), List.of(projection));
+
+        List<?> intermediates = intermediateOperatorFactories(eval, EmptyIndexedByShardId.instance());
+        assertThat(
+            "must emit exactly one fused FilterEvalOperator",
+            count(intermediates, FilterEvalOperator.FilterEvalOperatorFactory.class),
+            equalTo(1L)
+        );
+        assertThat("no separate FilterOperator", count(intermediates, FilterOperator.FilterOperatorFactory.class), equalTo(0L));
+        assertThat("no separate EvalOperator", count(intermediates, EvalOperator.EvalOperatorFactory.class), equalTo(0L));
+    }
+
+    /**
+     * A multi-field EVAL is NOT a single-projection fusion candidate: it must fall back to the ordinary
+     * {@link FilterOperator} + {@link EvalOperator} chain with no {@link FilterEvalOperator}.
+     */
+    public void testMultiFieldEvalFallsBackToSeparateChain() throws IOException {
+        FieldAttribute a = numericField("a", DataType.LONG);
+        FieldAttribute b = numericField("b", DataType.LONG);
+        Expression predicate = new GreaterThan(Source.EMPTY, a, b);
+        Alias x = new Alias(Source.EMPTY, "x", new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG));
+        Alias y = new Alias(Source.EMPTY, "y", new Sub(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG));
+        LocalSourceExec source = new LocalSourceExec(Source.EMPTY, List.of(a, b), EmptyLocalSupplier.EMPTY);
+        EvalExec eval = new EvalExec(Source.EMPTY, new FilterExec(Source.EMPTY, source, predicate), List.of(x, y));
+
+        List<?> intermediates = intermediateOperatorFactories(eval, EmptyIndexedByShardId.instance());
+        assertThat("multi-field EVAL must not fuse", count(intermediates, FilterEvalOperator.FilterEvalOperatorFactory.class), equalTo(0L));
+        assertThat("separate FilterOperator is retained", count(intermediates, FilterOperator.FilterOperatorFactory.class), equalTo(1L));
+        assertThat("both EVAL fields are applied", count(intermediates, EvalOperator.EvalOperatorFactory.class), equalTo(2L));
+    }
+
+    /**
+     * A scoring WHERE (its output carries {@code _score}) drives the {@code Filter -> Score -> Eval} chain on data
+     * nodes and must NOT be fused across: no {@link FilterEvalOperator}, and the {@link ScoreOperator} is retained.
+     */
+    public void testScoringWhereEvalFallsBackToSeparateChain() throws IOException {
+        FieldAttribute a = numericField("a", DataType.LONG);
+        FieldAttribute b = numericField("b", DataType.LONG);
+        MetadataAttribute score = new MetadataAttribute(Source.EMPTY, MetadataAttribute.SCORE, DataType.DOUBLE, false);
+        Expression predicate = new GreaterThan(Source.EMPTY, a, b);
+        Alias projection = new Alias(Source.EMPTY, "x", new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG));
+        // _score in the source (and therefore the filter) output makes PlannerUtils.usesScoring(filter) true.
+        LocalSourceExec source = new LocalSourceExec(Source.EMPTY, List.of(a, b, score), EmptyLocalSupplier.EMPTY);
+        EvalExec eval = new EvalExec(Source.EMPTY, new FilterExec(Source.EMPTY, source, predicate), List.of(projection));
+
+        // Non-empty shard contexts are required for the scoring branch to engage (data-node behavior).
+        List<?> intermediates = intermediateOperatorFactories(eval, new IndexedByShardIdFromList<>(createShardContexts()));
+        assertThat("scoring WHERE must not fuse", count(intermediates, FilterEvalOperator.FilterEvalOperatorFactory.class), equalTo(0L));
+        assertThat("scoring WHERE keeps the FilterOperator", count(intermediates, FilterOperator.FilterOperatorFactory.class), equalTo(1L));
+        assertThat("scoring WHERE keeps the ScoreOperator", count(intermediates, ScoreOperator.ScoreOperatorFactory.class), equalTo(1L));
+        assertThat("scoring WHERE keeps the EvalOperator", count(intermediates, EvalOperator.EvalOperatorFactory.class), equalTo(1L));
+    }
+
+    private List<?> intermediateOperatorFactories(
+        PhysicalPlan physicalPlan,
+        IndexedByShardId<? extends EsPhysicalOperationProviders.ShardContext> shardContexts
+    ) throws IOException {
+        LocalExecutionPlanner.LocalExecutionPlan plan = planner().plan(
+            "test",
+            FoldContext.small(),
+            PlannerSettings.DEFAULTS,
+            physicalPlan,
+            shardContexts
+        );
+        return plan.driverFactories.get(0).driverSupplier().physicalOperation().intermediateOperatorFactories;
+    }
+
+    private static long count(List<?> factories, Class<?> type) {
+        return factories.stream().filter(type::isInstance).count();
+    }
+
+    private static FieldAttribute numericField(String name, DataType type) {
+        return new FieldAttribute(Source.EMPTY, name, new EsField(name, type, Map.of(), true, EsField.TimeSeriesFieldType.NONE));
     }
 
     private int randomEstimatedRowSize(boolean huge) {
