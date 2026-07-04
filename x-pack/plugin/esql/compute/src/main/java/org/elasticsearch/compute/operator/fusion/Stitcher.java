@@ -30,11 +30,9 @@ import org.objectweb.asm.tree.VarInsnNode;
 import java.lang.invoke.MethodHandles;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeSet;
 import java.util.function.Consumer;
 
 /**
@@ -429,7 +427,9 @@ public final class Stitcher {
      * manipulation on cloned kernel bodies.
      */
     private byte[] emitVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        int arity = arity(tree);
+        // One walk derives every structural fact this emit path needs (arity, constants-in-emit-order, ...).
+        FusionSignature signature = FusionSignature.of(tree);
+        int arity = signature.arity();
         // Per-input leaf elements (a tree may mix int/long/double via cast kernels) vs the OUTPUT element (the output
         // array + produced vector). They coincide for a homogeneous arithmetic root and differ for a comparison root
         // (numeric inputs feed a boolean output) or any cast-bridged input.
@@ -440,7 +440,7 @@ public final class Stitcher {
         // primitive parameter per embedded constant (in canonical emit order). The per-input raw arrays, the output
         // array, and the loop counter sit in the fixed region ABOVE the parameters — so their bases are all shifted up
         // by the constant parameters' total slot size; each kernel body then gets a disjoint slot range above that.
-        List<FusionNode.Constant> constants = constantsInEmitOrder(tree);
+        List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
         int inputBase = 2;
         int constParamBase = inputBase + arity;
         Map<FusionNode.Constant, Integer> constantSlots = constantParamSlots(constants, constParamBase);
@@ -603,20 +603,22 @@ public final class Stitcher {
      * wraps the kernel evaluation in the overflow try/catch, so the only nulls it can produce are overflow nulls.
      */
     private byte[] emitVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        int arity = arity(tree);
-        int[] consumed = consumedInputs(tree);
+        // One walk derives arity, consumed inputs, constants-in-emit-order, warning-source indices and overflow types.
+        FusionSignature signature = FusionSignature.of(tree);
+        int arity = signature.arity();
+        int[] consumed = signature.consumedInputs();
         // Per-input leaf elements (a tree may mix int/long/double via cast kernels) vs the OUTPUT element (the builder +
         // produced block). Each consumed input is read at its OWN element into a per-input value slot.
         Element[] inputElements = inputElements(tree, arity);
         Element outputElement = Element.of(rootReturnType(tree));
-        Set<String> overflowTypes = overflowExceptionInternalNames(tree);
+        Set<String> overflowTypes = signature.overflowExceptionInternalNames();
 
         // Frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input Vectors, then one
         // trailing primitive parameter per embedded constant (in canonical emit order). The per-input raw arrays, the
         // builder, loop counter, per-input value slots, built result, the two exception slots and the current-kernel
         // slot sit ABOVE the parameters (their bases shifted up by the constant parameters' total slot size); each
         // kernel body then gets a disjoint range above that.
-        List<FusionNode.Constant> constants = constantsInEmitOrder(tree);
+        List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
         int warningsArraySlot = 1;
         int pcSlot = 2;
         int inputBase = 3;
@@ -644,7 +646,7 @@ public final class Stitcher {
 
         // Each kernel's warning-source slot into the runtime Warnings[]: its overflow warning registers on
         // warnings[its slot], matching the unfused per-node evaluator source.
-        Map<FusionNode, Integer> sourceIndices = warningsSourceIndices(tree);
+        Map<FusionNode, Integer> sourceIndices = signature.warningSourceIndices();
 
         StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
         for (int i = 0; i < arity; i++) {
@@ -1023,7 +1025,9 @@ public final class Stitcher {
      * manipulation on cloned kernel bodies.
      */
     private byte[] emitBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        int arity = arity(tree);
+        // One walk derives arity, constants-in-emit-order and warning-source indices for this emit path.
+        FusionSignature signature = FusionSignature.of(tree);
+        int arity = signature.arity();
         // Only the inputs the tree actually references are null-checked and read. The method still takes one *Block
         // parameter per index in [0, arity) (so callers bind positionally by leaf index), but guarding an input the
         // expression never consumes would over-nullify: a null/multi-value in an unused input would wrongly null the
@@ -1041,7 +1045,7 @@ public final class Stitcher {
         // inline into the enclosing kernel's operand slots, so there are no separate pre-read leaf value slots.
         // One trailing primitive parameter per embedded constant (canonical emit order) sits between the input *Blocks
         // and the scratch region, so every scratch base is shifted up by the constant parameters' total slot size.
-        List<FusionNode.Constant> constants = constantsInEmitOrder(tree);
+        List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
         int warningsArraySlot = 1;
         int pcSlot = 2;
         int inputBase = 3;
@@ -1071,7 +1075,7 @@ public final class Stitcher {
 
         // Each kernel's warning-source slot into the runtime Warnings[]: its overflow warning and its direct leaf
         // operands' multi-value warnings register on warnings[its slot], matching the unfused per-node evaluator source.
-        Map<FusionNode, Integer> sourceIndices = warningsSourceIndices(tree);
+        Map<FusionNode, Integer> sourceIndices = signature.warningSourceIndices();
 
         // Each input *Block param uses its OWN element; the returned block uses the OUTPUT element (BooleanBlock for a
         // comparison root).
@@ -1311,7 +1315,9 @@ public final class Stitcher {
      * short-circuit 3VL truth tables.
      */
     private byte[] emitLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        int arity = arity(tree);
+        // One walk derives arity, warning-source indices and constants-in-emit-order for this emit path.
+        FusionSignature signature = FusionSignature.of(tree);
+        int arity = signature.arity();
         // INPUT element: the numeric kind of the comparison operands' columns (long/int/double). OUTPUT: nullable boolean.
         Element inputElement = Element.of(logicalInputType(tree));
         Element outputElement = Element.of(Type.BOOLEAN_TYPE);
@@ -1324,14 +1330,14 @@ public final class Stitcher {
         assignComparisonHelpers(tree, inputElement, helperNames, helpers);
         // Each comparison's warning-source slot into the runtime Warnings[]; a comparison registers its multi-value
         // warning on warnings[its slot] so the header matches the unfused comparison evaluator's node source.
-        Map<FusionNode, Integer> sourceIndices = warningsSourceIndices(tree);
+        Map<FusionNode, Integer> sourceIndices = signature.warningSourceIndices();
 
         // Frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input *Blocks, then one
         // trailing primitive parameter per embedded constant (canonical emit order). Builder, loop counter, built
         // result, and caught-throwable slots sit above (their bases shifted up by the constant parameters' slot size);
         // the tri-state node slots start at workBase. The top-level loop loads each constant from its parameter slot
         // and threads it into the relevant cmpN helper call.
-        List<FusionNode.Constant> constants = constantsInEmitOrder(tree);
+        List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
         int warningsArraySlot = 1;
         int pcSlot = 2;
         int inputBase = 3;
@@ -1565,21 +1571,24 @@ public final class Stitcher {
             }
         }
 
-        int predArity = arity(predicateTree);
-        int projArity = arity(projectionTree);
+        // One walk per sub-tree derives its arity, constants-in-emit-order and warning-source indices.
+        FusionSignature predSignature = FusionSignature.of(predicateTree);
+        FusionSignature projSignature = FusionSignature.of(projectionTree);
+        int predArity = predSignature.arity();
+        int projArity = projSignature.arity();
         Element[] predInputElements = inputElements(predicateTree, predArity);
         Element predLogicalElement = predicateIsLogical ? Element.of(logicalInputType(predicateTree)) : null;
         Element[] projInputElements = inputElements(projectionTree, projArity);
         Element projOutputElement = Element.of(rootReturnType(projectionTree));
 
-        List<FusionNode.Constant> predConstants = constantsInEmitOrder(predicateTree);
-        List<FusionNode.Constant> projConstants = constantsInEmitOrder(projectionTree);
+        List<FusionNode.Constant> predConstants = predSignature.constantsInEmitOrder();
+        List<FusionNode.Constant> projConstants = projSignature.constantsInEmitOrder();
 
         // Per-source warning slots: the predicate's sources first, then the projection's (offset by predWarnCount), so
         // the single runtime Warnings[] holds both and each kernel registers against its own node source.
-        Map<FusionNode, Integer> predSources = warningsSourceIndices(predicateTree);
+        Map<FusionNode, Integer> predSources = predSignature.warningSourceIndices();
         int predWarnCount = predSources.size();
-        Map<FusionNode, Integer> projSourcesLocal = warningsSourceIndices(projectionTree);
+        Map<FusionNode, Integer> projSourcesLocal = projSignature.warningSourceIndices();
         Map<FusionNode, Integer> mergedProjSources = new IdentityHashMap<>();
         for (Map.Entry<FusionNode, Integer> e : projSourcesLocal.entrySet()) {
             mergedProjSources.put(e.getKey(), predWarnCount + e.getValue());
@@ -2326,23 +2335,7 @@ public final class Stitcher {
      * exactly this DFS order, so the i-th constant it reaches is the i-th trailing parameter.
      */
     public static List<FusionNode.Constant> constantsInEmitOrder(FusionNode tree) {
-        List<FusionNode.Constant> constants = new ArrayList<>();
-        collectConstantsInEmitOrder(tree, constants);
-        return constants;
-    }
-
-    private static void collectConstantsInEmitOrder(FusionNode node, List<FusionNode.Constant> out) {
-        if (node instanceof FusionNode.Constant constant) {
-            out.add(constant);
-        } else if (node instanceof FusionNode.Kernel kernel) {
-            for (FusionNode child : kernel.children()) {
-                collectConstantsInEmitOrder(child, out);
-            }
-        } else if (node instanceof FusionNode.Logical logical) {
-            collectConstantsInEmitOrder(logical.left(), out);
-            collectConstantsInEmitOrder(logical.right(), out);
-        }
-        // FusionNode.Input: not a constant, contributes no trailing parameter.
+        return FusionSignature.of(tree).constantsInEmitOrder();
     }
 
     /**
@@ -2420,45 +2413,12 @@ public final class Stitcher {
      * therefore reuse one cached hidden class and each supplies its own per-source {@code Warnings[]}.
      */
     public static Map<FusionNode, Integer> warningsSourceIndices(FusionNode tree) {
-        Map<FusionNode, Integer> indices = new IdentityHashMap<>();
-        assignWarningsSourceIndices(tree, indices);
-        return indices;
+        return FusionSignature.of(tree).warningSourceIndices();
     }
 
     /** The number of distinct warning-source slots {@code tree} needs, i.e. the size of the runtime {@code Warnings[]}. */
     public static int warningsSourceCount(FusionNode tree) {
-        return warningsSourceIndices(tree).size();
-    }
-
-    private static void assignWarningsSourceIndices(FusionNode node, Map<FusionNode, Integer> indices) {
-        if (node instanceof FusionNode.Logical logical) {
-            assignWarningsSourceIndices(logical.left(), indices);
-            assignWarningsSourceIndices(logical.right(), indices);
-        } else if (node instanceof FusionNode.Kernel kernel) {
-            indices.put(kernel, indices.size());
-            for (FusionNode child : kernel.children()) {
-                assignWarningsSourceIndices(child, indices);
-            }
-        }
-        // FusionNode.Input: not a warning source, no slot.
-    }
-
-    /** Distinct JVM internal names of the overflow exceptions the {@code tree}'s kernels can throw (may be empty). */
-    private static Set<String> overflowExceptionInternalNames(FusionNode tree) {
-        Set<String> types = new LinkedHashSet<>();
-        collectOverflowTypes(tree, types);
-        return types;
-    }
-
-    private static void collectOverflowTypes(FusionNode node, Set<String> types) {
-        if (node instanceof FusionNode.Kernel kernel) {
-            if (kernel.descriptor().hasOverflowException()) {
-                types.add(kernel.descriptor().overflowExceptionType().replace('.', '/'));
-            }
-            for (FusionNode child : kernel.children()) {
-                collectOverflowTypes(child, types);
-            }
-        }
+        return FusionSignature.of(tree).warningSourceCount();
     }
 
     /** The disjoint local slots a {@link BlockDfsEmitter} node evaluates into: a {@code present} flag and its value. */
@@ -2820,55 +2780,6 @@ public final class Stitcher {
         insns.add(new InsnNode(Opcodes.DUP));
         insns.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, BYTES_REF, "<init>", "()V", false));
         insns.add(new VarInsnNode(Opcodes.ASTORE, slot));
-    }
-
-    /** Number of distinct input vectors the tree references, i.e. one past the maximum {@code Input} index. */
-    private static int arity(FusionNode tree) {
-        if (tree instanceof FusionNode.Input input) {
-            return input.index() + 1;
-        }
-        if (tree instanceof FusionNode.Constant) {
-            // A constant is embedded in the bytecode, so it references no input vector and does not widen the arity.
-            return 0;
-        }
-        if (tree instanceof FusionNode.Logical logical) {
-            return Math.max(arity(logical.left()), arity(logical.right()));
-        }
-        int max = 0;
-        for (FusionNode child : ((FusionNode.Kernel) tree).children()) {
-            max = Math.max(max, arity(child));
-        }
-        return max;
-    }
-
-    /**
-     * The distinct input indices the {@code tree} actually references, ascending. Used by the block path to guard and
-     * read only the inputs the expression consumes (rule against over-nullifying on an unreferenced input).
-     */
-    private static int[] consumedInputs(FusionNode tree) {
-        TreeSet<Integer> used = new TreeSet<>();
-        collectInputs(tree, used);
-        int[] out = new int[used.size()];
-        int i = 0;
-        for (int index : used) {
-            out[i++] = index;
-        }
-        return out;
-    }
-
-    private static void collectInputs(FusionNode node, Set<Integer> used) {
-        if (node instanceof FusionNode.Input input) {
-            used.add(input.index());
-        } else if (node instanceof FusionNode.Constant) {
-            // Embedded in the bytecode: consumes no input vector, so it contributes nothing to the consumed-input set.
-        } else if (node instanceof FusionNode.Logical logical) {
-            collectInputs(logical.left(), used);
-            collectInputs(logical.right(), used);
-        } else {
-            for (FusionNode child : ((FusionNode.Kernel) node).children()) {
-                collectInputs(child, used);
-            }
-        }
     }
 
     /** The tree's output element type — the return type of the root kernel. May be boolean for a comparison root. */
