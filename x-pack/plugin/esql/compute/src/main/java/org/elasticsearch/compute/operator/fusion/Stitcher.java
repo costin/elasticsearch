@@ -1827,16 +1827,17 @@ public final class Stitcher {
         MethodNode pred = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "pred", desc.toString(), null, null);
         InsnList insns = pred.instructions;
 
-        int warningsArraySlot = 0;
-        int pSlot = 1;
-        int inputBase = 2;
-        int constParamBase = inputBase + predArity;
-        Map<FusionNode.Constant, Integer> constantSlots = constantParamSlots(predConstants, constParamBase);
-        int countSlot = constParamBase + constantParamSize(predConstants);
-        int liveSlot = countSlot + 1;
-        int overflowExcSlot = liveSlot + 1;
-        int spareBytesRefSlot = overflowExcSlot + 1;
-        int workBase = spareBytesRefSlot + 1;
+        // Params [0..): Warnings[], int p, one *Block per input, one primitive per constant. Then the scratch region.
+        FrameLayout frame = new FrameLayout();
+        int warningsArraySlot = frame.slot();
+        int pSlot = frame.slot();
+        int inputBase = frame.slots(predArity);
+        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(predConstants, frame);
+        int countSlot = frame.slot();
+        int liveSlot = frame.slot();
+        int overflowExcSlot = frame.slot();
+        int spareBytesRefSlot = frame.slot();
+        int workBase = frame.mark();
 
         if (predicateTree instanceof FusionNode.Logical) {
             LogicalDfsEmitter emitter = new LogicalDfsEmitter(
@@ -1919,17 +1920,18 @@ public final class Stitcher {
         MethodNode proj = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "projAppend", desc.toString(), null, null);
         InsnList insns = proj.instructions;
 
-        int builderSlot = 0;
-        int warningsArraySlot = 1;
-        int pSlot = 2;
-        int inputBase = 3;
-        int constParamBase = inputBase + projArity;
-        Map<FusionNode.Constant, Integer> constantSlots = constantParamSlots(projConstants, constParamBase);
-        int countSlot = constParamBase + constantParamSize(projConstants);
-        int liveSlot = countSlot + 1;
-        int overflowExcSlot = liveSlot + 1;
-        int spareBytesRefSlot = overflowExcSlot + 1;
-        int workBase = spareBytesRefSlot + 1;
+        // Params [0..): builder, Warnings[], int p, one *Block per input, one primitive per constant. Then scratch.
+        FrameLayout frame = new FrameLayout();
+        int builderSlot = frame.slot();
+        int warningsArraySlot = frame.slot();
+        int pSlot = frame.slot();
+        int inputBase = frame.slots(projArity);
+        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(projConstants, frame);
+        int countSlot = frame.slot();
+        int liveSlot = frame.slot();
+        int overflowExcSlot = frame.slot();
+        int spareBytesRefSlot = frame.slot();
+        int workBase = frame.mark();
 
         insns.add(new InsnNode(Opcodes.ICONST_1));
         insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
@@ -2046,13 +2048,14 @@ public final class Stitcher {
         MethodNode helper = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, methodName, desc.toString(), null, null);
         InsnList insns = helper.instructions;
 
-        int warningsSlot = 0;
-        int pSlot = 1;
-        int blockBase = 2;                                   // block params occupy [2 .. 2+columnOperands)
-        int constParamBase = blockBase + columnOperands;     // then the trailing constant params
-        Map<FusionNode.Constant, Integer> helperConstantSlots = constantParamSlots(helperConstants, constParamBase);
-        int countSlot = constParamBase + constantParamSize(helperConstants); // scratch for getValueCount
-        int bodyBase = countSlot + 1;                        // the comparison body's shifted locals start here
+        // Params [0..): Warnings, int p, one *Block per column operand, one primitive per constant. Then scratch + body.
+        FrameLayout frame = new FrameLayout();
+        int warningsSlot = frame.slot();
+        int pSlot = frame.slot();
+        int blockBase = frame.slots(columnOperands);         // block params occupy [2 .. 2+columnOperands)
+        Map<FusionNode.Constant, Integer> helperConstantSlots = allocConstantSlots(helperConstants, frame);
+        int countSlot = frame.slot();                        // scratch for getValueCount
+        int bodyBase = frame.mark();                         // the comparison body's shifted locals start here
         SlotRemapper.shift(body.computation(), bodyBase);
 
         LabelNode retNull = new LabelNode();
@@ -2351,26 +2354,11 @@ public final class Stitcher {
     }
 
     /**
-     * Maps each constant (by identity) to the absolute local slot of its trailing parameter, assigned in
-     * {@link #constantsInEmitOrder canonical order} starting at {@code base} (a {@code long}/{@code double} takes two
-     * slots). Distinct {@link FusionNode.Constant} instances get distinct slots even when their values are equal (two
-     * equal-valued literals are still separate leaves in the tree), so an {@link IdentityHashMap} keys on the node
-     * instance rather than on record value-equality.
-     */
-    private static Map<FusionNode.Constant, Integer> constantParamSlots(List<FusionNode.Constant> constants, int base) {
-        Map<FusionNode.Constant, Integer> slots = new IdentityHashMap<>();
-        int cursor = base;
-        for (FusionNode.Constant constant : constants) {
-            slots.put(constant, cursor);
-            cursor += constantSlotSize(constant);
-        }
-        return slots;
-    }
-
-    /**
-     * Reserves one trailing parameter slot per constant from {@code frame} (in canonical emit order, each sized by its
-     * element width) and maps each constant to its slot. The {@link FrameLayout} version of {@link #constantParamSlots}:
-     * the frame guarantees a {@code long}/{@code double} constant gets its two slots without hand-rolled arithmetic.
+     * Reserves one trailing parameter slot per constant from {@code frame} (in {@link #constantsInEmitOrder canonical
+     * emit order}, each sized by its element width) and maps each constant (by identity) to its slot. The frame
+     * guarantees a {@code long}/{@code double} constant gets its two slots without hand-rolled arithmetic. Distinct
+     * {@link FusionNode.Constant} instances get distinct slots even when their values are equal (two equal-valued
+     * literals are still separate leaves), so an {@link IdentityHashMap} keys on the node instance, not value-equality.
      */
     private static Map<FusionNode.Constant, Integer> allocConstantSlots(List<FusionNode.Constant> constants, FrameLayout frame) {
         Map<FusionNode.Constant, Integer> slots = new IdentityHashMap<>();
@@ -2378,15 +2366,6 @@ public final class Stitcher {
             slots.put(constant, frame.reserve(constantSlotSize(constant)));
         }
         return slots;
-    }
-
-    /** Total local slots the trailing constant parameters occupy (a {@code long}/{@code double} takes two). */
-    private static int constantParamSize(List<FusionNode.Constant> constants) {
-        int size = 0;
-        for (FusionNode.Constant constant : constants) {
-            size += constantSlotSize(constant);
-        }
-        return size;
     }
 
     private static int constantSlotSize(FusionNode.Constant constant) {
