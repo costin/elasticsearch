@@ -679,6 +679,13 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
         }
     }
 
+    /** A single-position {@code long} block holding one value. */
+    protected Block singleLong(long value) {
+        try (LongBlock.Builder builder = blockFactory.newLongBlockBuilder(1)) {
+            return builder.appendLong(value).build();
+        }
+    }
+
     // ---------------------------------------------------------------------------------------------------------------
     // Shape selection
     // ---------------------------------------------------------------------------------------------------------------

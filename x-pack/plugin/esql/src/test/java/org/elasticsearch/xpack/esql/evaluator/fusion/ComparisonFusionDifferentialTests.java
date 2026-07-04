@@ -394,6 +394,58 @@ public class ComparisonFusionDifferentialTests extends FusionDifferentialTestCas
         );
     }
 
+    /**
+     * Pins the overflow/{@code live} dual on its SUBSET side. When an ancestor short-circuits the value path before a
+     * sibling overflow-checked kernel, that sibling body still runs (it feeds a consuming kernel's present gate) but its
+     * overflow is caught SILENTLY because {@code live} is already false. So the fused path must produce a correct null
+     * with NO overflow warning (a valid subset), while the unfused chain — which runs every evaluator over the whole
+     * page — DOES emit the sibling's overflow warning. Guards the {@code live}-gated silent catch in {@code
+     * BlockDfsEmitter} against a future edit that drops the null or lets the overflow warning/exception escape.
+     */
+    public void testSiblingOverflowOffValuePathIsSilentButNullMatches() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        FieldAttribute d = field("d", DataType.LONG);
+        Layout layout = layout(a, b, c, d);
+        // (a + b) * (c + d): the Mul visits operand 0 (a+b) first; a null a short-circuits the value path (live=false)
+        // before operand 1 (c+d) runs and overflows (MAX_VALUE + 1).
+        Expression expr = new Mul(
+            Source.EMPTY,
+            new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG),
+            new Add(Source.EMPTY, c, d, EsqlTestUtils.TEST_CFG)
+        );
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        assertFuses(fused, "(a+b) * (c+d)");
+        assertDoesNotFuse(unfused, "(a+b) * (c+d)");
+
+        int positionCount = 1;
+        Block[] inputs = {
+            nullLong(positionCount),        // a: null -> (a+b) not present, live=false before (c+d) runs
+            singleLong(1L),                 // b: never inspected (a short-circuits first)
+            singleLong(Long.MAX_VALUE),     // c
+            singleLong(1L) };               // d: c + d overflows
+        // runDifferentialWarnings asserts value/null parity AND fused-warnings ⊆ unfused internally.
+        DifferentialWarnings warnings = runDifferentialWarnings(
+            fused,
+            unfused,
+            ElementKind.LONG,
+            inputs,
+            positionCount,
+            "(a=null + b) * (MAX + 1 overflow)"
+        );
+        // Sanity: the unfused chain runs (c+d)'s evaluator fully, so it emits the overflow warning.
+        assertThat("unfused must emit the overflow warning (sanity)", containsWarning(warnings.reference(), "long overflow"), is(true));
+        // The crux: the fused path caught (c+d)'s overflow silently (live already false), so it emits NO overflow
+        // warning — a valid subset — while still producing null at the position (checked by runDifferentialWarnings).
+        assertThat(
+            "fused must NOT emit the overflow warning off the value path (live-gated silent catch); fused=" + warnings.fused(),
+            containsWarning(warnings.fused(), "long overflow"),
+            is(false)
+        );
+    }
+
     private static Literal lit(long v) {
         return new Literal(Source.EMPTY, v, DataType.LONG);
     }
