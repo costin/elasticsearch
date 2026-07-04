@@ -90,7 +90,9 @@ public sealed interface FusionNode {
                 // captured reference constant (ALOAD) — only WHERE the value comes from differs — so it must be a
                 // reference ('L') with a declared refType and carries no plan-time value.
                 if (element != 'L') {
-                    throw new IllegalArgumentException("a scratch constant must be reference-typed (element 'L') but was [" + element + "]");
+                    throw new IllegalArgumentException(
+                        "a scratch constant must be reference-typed (element 'L') but was [" + element + "]"
+                    );
                 }
                 if (refType == null) {
                     throw new IllegalArgumentException("a scratch constant must carry its declared refType");
