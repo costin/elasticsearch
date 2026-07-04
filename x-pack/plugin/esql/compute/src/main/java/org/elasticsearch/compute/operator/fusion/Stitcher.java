@@ -734,8 +734,11 @@ public final class Stitcher {
         return compute;
     }
 
-    /** The JVM {@link Type} of a constant's primitive element ({@code J}/{@code I}/{@code D}). */
+    /** The JVM {@link Type} of a constant's element: a primitive ({@code J}/{@code I}/{@code D}) or a reference type. */
     private static Type constantType(FusionNode.Constant constant) {
+        if (constant.isReference()) {
+            return Type.getType(constant.refType());
+        }
         return switch (constant.element()) {
             case 'J' -> Type.LONG_TYPE;
             case 'D' -> Type.DOUBLE_TYPE;
@@ -2721,6 +2724,12 @@ public final class Stitcher {
      * opaque {@link VerifyError}.
      */
     private static void loadConstantParam(InsnList insns, Element element, FusionNode.Constant constant, int slot) {
+        if (constant.isReference()) {
+            // A reference (object) @Fixed constant: loaded with ALOAD from its trailing reference parameter slot. It is
+            // not typed by the ambient primitive Element (there is none for e.g. a Locale), so it does not consult it.
+            insns.add(new VarInsnNode(Opcodes.ALOAD, slot));
+            return;
+        }
         assert elementSortMatches(element, constant.element())
             : "constant element ["
                 + constant.element()
@@ -2763,10 +2772,18 @@ public final class Stitcher {
         return constant.element() == 'J' || constant.element() == 'D' ? 2 : 1;
     }
 
-    /** Appends one JVM descriptor char per constant parameter; the element char {@code J}/{@code I}/{@code D} is it. */
+    /**
+     * Appends one JVM parameter descriptor per constant: for a primitive constant the element char {@code J}/{@code I}/
+     * {@code D} is itself the descriptor; for a reference (object) {@code @Fixed} constant it is the full
+     * {@code L…;} descriptor of its declared type (e.g. {@code Ljava/util/Locale;}).
+     */
     private static void appendConstantParamDescriptors(StringBuilder desc, List<FusionNode.Constant> constants) {
         for (FusionNode.Constant constant : constants) {
-            desc.append(constant.element());
+            if (constant.isReference()) {
+                desc.append(Type.getType(constant.refType()).getDescriptor());
+            } else {
+                desc.append(constant.element());
+            }
         }
     }
 
@@ -2943,7 +2960,9 @@ public final class Stitcher {
             storeZero(valueSlot, expected);
             int initOffset = 0;
             for (Type argType : argTypes) {
-                storeZero(nodeBase + initOffset, Element.of(argType));
+                // Type-based (not Element-based): an object @Fixed argument (e.g. Locale) has no Element, so seed it via
+                // the raw-type helper which nulls any reference type.
+                storeZeroForType(nodeBase + initOffset, argType);
                 initOffset += argType.getSize();
             }
 
@@ -2954,19 +2973,23 @@ public final class Stitcher {
             int offset = 0;
             for (int i = 0; i < argTypes.length; i++) {
                 Type argType = argTypes[i];
-                Element argElem = Element.of(argType);
                 int argSlot = nodeBase + offset;
                 FusionNode child = children.get(i);
                 if (child instanceof FusionNode.Constant constant) {
                     // A constant is always present and single-valued: load it into the argument slot unconditionally
-                    // (harmless when this kernel already short-circuited — the body will not run).
-                    loadConstantParam(insns, argElem, constant, constantSlots.get(constant));
+                    // (harmless when this kernel already short-circuited — the body will not run). A reference (object)
+                    // @Fixed constant has no primitive Element, so only a primitive constant resolves one.
+                    loadConstantParam(insns, constant.isReference() ? null : Element.of(argType), constant, constantSlots.get(constant));
                     insns.add(new VarInsnNode(argType.getOpcode(Opcodes.ISTORE), argSlot));
                 } else if (child instanceof FusionNode.Input input) {
-                    emitLeaf(input, argElem, argSlot, presentSlot, kernelSlot);
+                    // A leaf input is always a supported primitive/BytesRef element (a reference @Fixed value is a
+                    // Constant, never an Input), so Element.of is safe here.
+                    emitLeaf(input, Element.of(argType), argSlot, presentSlot, kernelSlot);
                 } else {
                     // Nested kernel: ALWAYS emit it (so its own subtree's per-kernel warnings fire even when THIS
-                    // kernel already short-circuited), then fold its presence into this kernel's own present flag.
+                    // kernel already short-circuited), then fold its presence into this kernel's own present flag. A
+                    // nested kernel always produces a supported element, so Element.of is safe.
+                    Element argElem = Element.of(argType);
                     NodeSlots childSlots = emit(child, argElem);
                     LabelNode afterChild = new LabelNode();
                     LabelNode childFail = new LabelNode();
@@ -3092,6 +3115,20 @@ public final class Stitcher {
             );
             insns.add(new VarInsnNode(argElem.type().getOpcode(Opcodes.ISTORE), argSlot));
             insns.add(afterOperand);
+        }
+
+        /**
+         * Stores a type-correct zero into {@code slot} for a raw JVM {@link Type} (verifier definite-assignment). Unlike
+         * {@link #storeZero(int, Element)} this handles any reference/array type by seeding {@code null} directly, so it
+         * works for an object {@code @Fixed} argument type (e.g. {@code Locale}) that has no {@link Element}.
+         */
+        private void storeZeroForType(int slot, Type type) {
+            if (type.getSort() == Type.OBJECT || type.getSort() == Type.ARRAY) {
+                insns.add(new InsnNode(Opcodes.ACONST_NULL));
+                insns.add(new VarInsnNode(Opcodes.ASTORE, slot));
+            } else {
+                storeZero(slot, Element.of(type));
+            }
         }
 
         /** Stores a type-correct zero into {@code slot} (verifier definite-assignment for the present-path-only reads). */

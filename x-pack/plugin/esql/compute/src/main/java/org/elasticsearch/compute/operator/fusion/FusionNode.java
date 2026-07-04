@@ -78,14 +78,47 @@ public sealed interface FusionNode {
      *                {@code 'D'} (double). It must equal the homogeneous element of the tree the constant sits in, and
      *                it types the constant's trailing parameter slot on the fused method.
      */
-    record Constant(Object value, char element) implements FusionNode {
+    record Constant(Object value, char element, Class<?> refType) implements FusionNode {
         public Constant {
             if (value == null) {
                 throw new IllegalArgumentException("constant value must not be null");
             }
-            if (element != 'J' && element != 'I' && element != 'D') {
-                throw new IllegalArgumentException("constant element must be one of J/I/D but was [" + element + "]");
+            if (element == 'L') {
+                // A reference-typed (object) @Fixed constant (B3b): its value is captured off the expression at plan
+                // time (e.g. a Locale from the query configuration, or an enum) and passed to the fused method as a
+                // reference parameter. refType is the DECLARED parameter type the kernel expects (e.g. java.util.Locale),
+                // which types the fused method's trailing L…; parameter and the factory's MethodType.
+                if (refType == null) {
+                    throw new IllegalArgumentException("a reference constant (element 'L') must carry its declared refType");
+                }
+                if (refType.isPrimitive()) {
+                    throw new IllegalArgumentException("a reference constant's refType must not be primitive but was [" + refType + "]");
+                }
+            } else if (element != 'J' && element != 'I' && element != 'D') {
+                throw new IllegalArgumentException("constant element must be one of J/I/D/L but was [" + element + "]");
+            } else if (refType != null) {
+                throw new IllegalArgumentException("a primitive constant (element [" + element + "]) must not carry a refType");
             }
+        }
+
+        /** A primitive ({@code J}/{@code I}/{@code D}) constant leaf; the common case, carries no reference type. */
+        public Constant(Object value, char element) {
+            this(value, element, null);
+        }
+
+        /**
+         * A reference-typed (object) {@code @Fixed} constant leaf (B3b): {@code value} is the captured object and
+         * {@code declaredType} is the parameter type the consuming kernel declares (e.g. {@code Locale.class}). It is
+         * passed to the fused method as a reference argument and read with {@code ALOAD} — it is block-path only, since
+         * a reference operand never rides the primitive vector fast paths.
+         */
+        public static Constant reference(Object value, Class<?> declaredType) {
+            return new Constant(value, 'L', declaredType);
+        }
+
+        /** Whether this is a reference-typed (object) constant rather than a primitive one. */
+        public boolean isReference() {
+            return element == 'L';
         }
     }
 

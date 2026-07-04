@@ -699,6 +699,74 @@ public class StitcherBlockFusionTests extends ESTestCase {
     }
 
     /**
+     * B3b (object-{@code @Fixed}): fuse a straight-line {@code BytesRef -> BytesRef} kernel that also takes a reference
+     * (object) {@code @Fixed} constant — a {@code String} suffix — mirroring {@code ChangeCase.process(BytesRef, @Fixed
+     * Locale, @Fixed Case)}. The suffix is a {@link FusionNode.Constant#reference reference constant}: the fused method
+     * gains a trailing {@code String} parameter (loaded with {@code ALOAD}), and the same stitched class serves any
+     * suffix value. Asserts the produced {@code BytesRefBlock} appends {@code value + suffix} per position and preserves
+     * the null — proving reference-constant descriptor threading, ALOAD, and the null-typed pre-init end to end.
+     */
+    public void testBytesRefOutputWithReferenceFixedConstant() throws Throwable {
+        FusionDescriptor appendSuffix = new FusionDescriptor(
+            KernelFixtures.class,
+            "processAppendSuffix",
+            "(Lorg/apache/lucene/util/BytesRef;Ljava/lang/String;)Lorg/apache/lucene/util/BytesRef;",
+            false,
+            true
+        );
+        String suffix = "_" + randomAlphaOfLength(4);
+        FusionNode tree = new FusionNode.Kernel(
+            appendSuffix,
+            List.of(new FusionNode.Input(0), FusionNode.Constant.reference(suffix, String.class))
+        );
+
+        Class<?> fused = stitcher.compileBlockLoop(MethodHandles.lookup(), tree);
+        assertThat(fused.getPackageName(), equalTo(getClass().getPackageName()));
+        // The reference constant becomes a trailing String parameter of the fused method.
+        MethodType type = MethodType.methodType(
+            BytesRefBlock.class,
+            BlockFactory.class,
+            Warnings[].class,
+            int.class,
+            BytesRefBlock.class,
+            String.class
+        );
+        MethodHandle handle = MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);
+
+        int positionCount = 5;
+        String[] vals = { "alpha", "", "keyword text δ", null, "z" };
+        BytesRefBlock in;
+        try (BytesRefBlock.Builder b = blockFactory.newBytesRefBlockBuilder(positionCount)) {
+            for (String s : vals) {
+                if (s == null) {
+                    b.appendNull();
+                } else {
+                    b.appendBytesRef(new BytesRef(s));
+                }
+            }
+            in = b.build();
+        }
+        BytesRefBlock out = null;
+        try {
+            // The trailing arg is the object @Fixed constant value, marshalled by the caller (here, the test).
+            out = (BytesRefBlock) handle.invoke(blockFactory, noopWarnings(tree), positionCount, in, suffix);
+            assertThat(out.getPositionCount(), equalTo(positionCount));
+            BytesRef scratch = new BytesRef();
+            for (int p = 0; p < positionCount; p++) {
+                if (vals[p] == null) {
+                    assertThat("p=" + p + " null", out.isNull(p), is(true));
+                } else {
+                    assertThat("p=" + p + " non-null", out.isNull(p), is(false));
+                    BytesRef got = out.getBytesRef(out.getFirstValueIndex(p), scratch);
+                    assertThat("p=" + p, got.utf8ToString(), equalTo(vals[p] + suffix));
+                }
+            }
+        } finally {
+            Releasables.closeExpectNoException(in, out);
+        }
+    }
+
+    /**
      * A no-op {@code Warnings[]} sized to the tree's warning-source slots — the per-source array the fused block method
      * now takes (one {@code Warnings} per kernel node). NOOP so these value/null differential tests don't assert on
      * headers; correctness only needs each {@code warnings[slot]} index to be in bounds.

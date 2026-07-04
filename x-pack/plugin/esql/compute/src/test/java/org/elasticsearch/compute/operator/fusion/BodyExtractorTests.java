@@ -57,6 +57,18 @@ public class BodyExtractorTests extends ESTestCase {
         public static boolean processLongsGreaterThan(long lhs, long rhs) {
             return lhs > rhs;
         }
+
+        /**
+         * A straight-line {@code BytesRef -> BytesRef} kernel that takes a reference (object) {@code @Fixed} constant (a
+         * {@code String} suffix) — the structural shape of ToLower/ToUpper's {@code ChangeCase.process(BytesRef,
+         * @Fixed Locale, @Fixed Case)}. It exercises object-{@code @Fixed} constant threading (B3b): the suffix arrives
+         * as a reference method parameter (ALOAD), not read from an input column. Uses only public calls (no
+         * package-private access) so the fused hidden class links from any package. {@code String.concat} (not
+         * {@code +}) keeps the body free of {@code invokedynamic}.
+         */
+        public static org.apache.lucene.util.BytesRef processAppendSuffix(org.apache.lucene.util.BytesRef v, String suffix) {
+            return new org.apache.lucene.util.BytesRef(v.utf8ToString().concat(suffix));
+        }
     }
 
     private static final String LONG_BINARY_TYPE = "(JJ)J";

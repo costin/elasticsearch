@@ -214,11 +214,13 @@ public final class FusionSignature {
         for (int index = 0; index < arity; index++) {
             assert inputTypes[index] != null : "input type at [" + index + "] must be resolved (arity " + arity + ")";
         }
-        // Every constant's element must be one of the primitive descriptor chars the emit paths load (J/I/D), matching
-        // Stitcher#elementSortMatches — a boolean/other constant would surface as an opaque VerifyError downstream.
+        // Every constant is either a primitive the emit paths load with a typed xLOAD (J/I/D) or a reference (object)
+        // @Fixed constant loaded with ALOAD (element 'L', carrying its declared refType) — anything else would surface
+        // as an opaque VerifyError downstream.
         for (FusionNode.Constant constant : constantsInEmitOrder) {
             char element = constant.element();
-            assert element == 'J' || element == 'I' || element == 'D' : "constant has unexpected element [" + element + "]";
+            assert element == 'J' || element == 'I' || element == 'D' || (element == 'L' && constant.refType() != null)
+                : "constant has unexpected element [" + element + "]";
         }
         return true;
     }
