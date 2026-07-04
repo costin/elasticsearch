@@ -264,11 +264,9 @@ public final class FusionPlanner {
         System.arraycopy(predicateSources, 0, warningSources, 0, predicateSources.length);
         System.arraycopy(projectionSources, 0, warningSources, predicateSources.length, projectionSources.length);
 
-        List<FusionNode.Constant> predicateConstants = predicateSignature.constantsInEmitOrder();
-        List<FusionNode.Constant> projectionConstants = projectionSignature.constantsInEmitOrder();
-
-        return FusedFilterEvalEvaluatorFactory.create(
-            warningSources,
+        FilterEvalPlan plan = new FilterEvalPlan(
+            predicateSignature,
+            projectionSignature,
             predicateTree,
             projectionTree,
             predicateChannels,
@@ -276,13 +274,10 @@ public final class FusionPlanner {
             predicateInputElements,
             projectionInputElements,
             projCtx.outputElement,
-            predicateConstants,
-            projectionConstants,
-            unfusedPredicate,
-            unfusedProjection,
-            compiler,
+            warningSources,
             filterEvalShapeOf(predicateTree, projectionTree)
         );
+        return FusedFilterEvalEvaluatorFactory.create(plan, unfusedPredicate, unfusedProjection, compiler);
     }
 
     /**

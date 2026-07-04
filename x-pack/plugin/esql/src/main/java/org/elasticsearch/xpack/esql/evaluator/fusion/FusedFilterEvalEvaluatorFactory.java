@@ -109,21 +109,23 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
      * Always returns a non-null factory so the {@link org.elasticsearch.compute.operator.FilterEvalOperator} can run.
      */
     static FusedFilterEvalEvaluatorFactory create(
-        Source[] warningSources,
-        FusionNode predicateTree,
-        FusionNode projectionTree,
-        int[] predicateChannels,
-        int[] projectionChannels,
-        ElementKind[] predicateInputElements,
-        ElementKind[] projectionInputElements,
-        ElementKind projectionOutputElement,
-        List<FusionNode.Constant> predicateConstants,
-        List<FusionNode.Constant> projectionConstants,
+        FilterEvalPlan plan,
         ExpressionEvaluator.Factory unfusedPredicate,
         ExpressionEvaluator.Factory unfusedProjection,
-        FusionPlanner.FusedClassCompiler compiler,
-        String shape
+        FusionPlanner.FusedClassCompiler compiler
     ) {
+        // Unpack the typed plan once; the stitch/bind body below is unchanged.
+        Source[] warningSources = plan.warningSources();
+        FusionNode predicateTree = plan.predicateTree();
+        FusionNode projectionTree = plan.projectionTree();
+        int[] predicateChannels = plan.predicateChannels();
+        int[] projectionChannels = plan.projectionChannels();
+        ElementKind[] predicateInputElements = plan.predicateInputElements();
+        ElementKind[] projectionInputElements = plan.projectionInputElements();
+        ElementKind projectionOutputElement = plan.projectionOutputElement();
+        List<FusionNode.Constant> predicateConstants = plan.predicateConstants();
+        List<FusionNode.Constant> projectionConstants = plan.projectionConstants();
+        String shape = plan.shape();
         Object[] predConstValues = constantValues(predicateConstants);
         Object[] projConstValues = constantValues(projectionConstants);
         MethodHandle handle = null;
