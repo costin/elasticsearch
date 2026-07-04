@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.evaluator.fusion;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.UnicodeUtil;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.compute.operator.BreakingBytesRefBuilder;
 import org.elasticsearch.compute.operator.FilterEvalEvaluator;
 import org.elasticsearch.compute.operator.fusion.FusionAware;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
@@ -25,6 +26,7 @@ import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Cast;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Left;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.Space;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.BinaryLogic;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
@@ -497,6 +499,12 @@ public final class FusionPlanner {
             // loops over code points and calls only public methods, so it links from the fused hidden class's package.
             return buildLeft(left, ctx, expected, root);
         }
+        if (exp instanceof Space space) {
+            // SPACE(number) (Releasable/breaker scratch): a BytesRef -> BytesRef kernel whose @Fixed param is a
+            // per-driver BreakingBytesRefBuilder — a Releasable, circuit-breaker-accounted scratch built from the
+            // DriverContext's breaker and released on close. Single-value @Evaluator (MV-safe); warns on a bad number.
+            return buildSpace(space, ctx, expected, root);
+        }
 
         ExpressionEvaluator.Factory factory = ctx.rawFactory.apply(exp);
         if ((factory instanceof FusionAware) == false) {
@@ -579,6 +587,54 @@ public final class FusionPlanner {
         false,
         true
     );
+
+    /**
+     * The manually-built kernel descriptor for {@code Space#process(@Fixed BreakingBytesRefBuilder scratch, int number)}.
+     * The @Fixed param is a per-driver Releasable breaker-accounted scratch (first, before the int input). Overflow-
+     * checked: {@code Space} declares {@code @Evaluator(warnExceptions = IllegalArgumentException.class)} (a negative or
+     * too-long number throws), so the block emitter wraps the spliced body in a catch that warns + nulls, matching the
+     * unfused {@code SpaceEvaluator}. An all-null input yields null.
+     */
+    private static final FusionDescriptor SPACE_DESCRIPTOR = new FusionDescriptor(
+        Space.class,
+        "process",
+        "(Lorg/elasticsearch/compute/operator/BreakingBytesRefBuilder;I)Lorg/apache/lucene/util/BytesRef;",
+        true,
+        true,
+        "java.lang.IllegalArgumentException"
+    );
+
+    /**
+     * Builds the fused node for a {@code SPACE(number)} ({@link Space}) expression: a kernel over its int {@code number}
+     * child, preceded by a per-driver Releasable SCRATCH operand — a {@link BreakingBytesRefBuilder} built from the
+     * {@link org.elasticsearch.compute.operator.DriverContext}'s circuit breaker (the same supplier {@code
+     * Space#toEvaluator} uses) and released when the fused evaluator closes. Produces a {@code BytesRef} (block-path
+     * only). Refuses unless it is the root or its parent expects a {@code BytesRef}, or if the child does not fuse.
+     */
+    private static FusionNode buildSpace(Space space, PlanContext ctx, ElementKind expected, boolean root) {
+        if (root == false && expected != ElementKind.BYTES_REF) {
+            return null;
+        }
+        FusionNode number = build(space.children().get(0), ctx, ElementKind.INT, space.source(), false);
+        if (number == null) {
+            return null;
+        }
+        FusionNode.Kernel kernel = new FusionNode.Kernel(
+            SPACE_DESCRIPTOR,
+            List.of(
+                FusionNode.Constant.scratch(
+                    context -> new BreakingBytesRefBuilder(context.breaker(), "space"),
+                    BreakingBytesRefBuilder.class
+                ),
+                number
+            )
+        );
+        ctx.kernelSources.put(kernel, space.source());
+        if (root) {
+            ctx.outputElement = ElementKind.BYTES_REF;
+        }
+        return kernel;
+    }
 
     /**
      * Builds the fused node for a {@code LEFT(str, length)} ({@link Left}) expression (#8b): a kernel over its BytesRef

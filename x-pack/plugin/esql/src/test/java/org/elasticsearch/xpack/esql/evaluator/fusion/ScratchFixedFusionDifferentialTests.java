@@ -17,6 +17,7 @@ import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Left;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.Space;
 import org.elasticsearch.xpack.esql.planner.Layout;
 
 /**
@@ -88,5 +89,38 @@ public class ScratchFixedFusionDifferentialTests extends FusionDifferentialTestC
             in = b.build();
         }
         runDifferentialWarnings(fused, unfused, ElementKind.BYTES_REF, new Block[] { in }, positionCount, "left(left(s,5),3) mv");
+    }
+
+    /**
+     * {@code SPACE(number)} owns a per-driver {@link org.elasticsearch.compute.operator.BreakingBytesRefBuilder} — a
+     * circuit-breaker-accounted {@code Releasable} scratch — so this proves the breaker-accounted scratch lifecycle:
+     * built from the driver's breaker in {@code get(DriverContext)} and released on {@code close()}. The base harness's
+     * {@code @After} asserts the request breaker is back to 0, so a leaked scratch fails the test. Uses a non-foldable
+     * int column (a literal would fold SPACE away) wrapped in LEFT to make a depth-2 fusable tree, with a negative value
+     * to exercise the warn+null (IllegalArgumentException) path. Fused must match the unfused chain.
+     */
+    public void testSpaceBreakerScratchFusesAndMatchesUnfused() {
+        FieldAttribute n = field("n", DataType.INTEGER);
+        Layout layout = layout(n);
+        // LEFT(SPACE(n), 3): SPACE (breaker scratch) inside LEFT (plain scratch) -> depth-2, both scratch kinds at once.
+        Expression expr = new Left(Source.EMPTY, new Space(Source.EMPTY, n), intLit(3));
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        assertFuses(fused, "left(space(n),3)");
+
+        Integer[] vals = { 0, 1, 3, 10, -1, 5, 2, 7 }; // -1 -> SPACE warns + nulls (both paths)
+        int positionCount = vals.length;
+        Block in;
+        try (org.elasticsearch.compute.data.IntBlock.Builder b = blockFactory.newIntBlockBuilder(positionCount)) {
+            for (Integer v : vals) {
+                if (v == null) {
+                    b.appendNull();
+                } else {
+                    b.appendInt(v);
+                }
+            }
+            in = b.build();
+        }
+        runDifferentialWarnings(fused, unfused, ElementKind.BYTES_REF, new Block[] { in }, positionCount, "left(space(n),3)");
     }
 }

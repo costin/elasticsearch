@@ -535,6 +535,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         // Latched true after the first eval-time LinkageError so every later page routes straight to the unfused
         // fallback instead of re-attempting (and re-failing) the fused handle per page.
         private boolean fusionDisabled;
+        // Guards close() so a Releasable per-driver scratch buffer is released exactly once (a double close would
+        // double-decrement its circuit-breaker reservation).
+        private boolean closed;
 
         FusedExpressionEvaluator(
             Source[] warningSources,
@@ -693,13 +696,17 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
         @Override
         public void close() {
+            if (closed) {
+                return; // idempotent: never release a breaker-accounted scratch twice
+            }
+            closed = true;
             if (unfusedFallback != null) {
                 unfusedFallback.close();
             }
-            // Release any per-driver SCRATCH @Fixed buffer this evaluator owns that is Releasable (#8b). Today's scratch
-            // (BytesRef / UTF8CodePoint for LEFT) is not Releasable so this is a no-op, but a future breaker-accounted
-            // scratch (e.g. a BreakingBytesRefBuilder for CONCAT) is owned per driver and must be freed here. Captured
-            // reference constants (e.g. a Locale) and boxed primitives are never Releasable, so only scratch is closed.
+            // Release any per-driver SCRATCH @Fixed buffer this evaluator owns that is Releasable. Today's LEFT scratch
+            // (BytesRef / UTF8CodePoint) is not Releasable so it is skipped, but SPACE's BreakingBytesRefBuilder is a
+            // circuit-breaker-accounted Releasable owned per driver and MUST be freed here or its breaker reservation
+            // leaks. Captured reference constants (e.g. a Locale) and boxed primitives are never Releasable.
             for (Object constantValue : constantValues) {
                 if (constantValue instanceof Releasable releasable) {
                     Releasables.closeExpectNoException(releasable);
