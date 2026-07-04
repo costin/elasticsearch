@@ -339,8 +339,19 @@ public final class Stitcher {
      */
     private static final String WARNINGS = "org/elasticsearch/compute/operator/Warnings";
 
-    /** Descriptor of {@code Warnings.registerException(Exception)}. */
+    /** Descriptor of {@code Warnings.registerException(Exception)} — used for an already-thrown overflow exception. */
     private static final String WARNINGS_REGISTER_DESCRIPTOR = "(Ljava/lang/Exception;)V";
+
+    /**
+     * Descriptor of {@code Warnings.registerException(Class<? extends Exception>, String)} — the allocation-free
+     * overload. The multi-value warning has a constant class and message, so the fused loop registers it through this
+     * overload (a {@code ldc} of the class + the message string) instead of constructing an
+     * {@code IllegalArgumentException} per multi-valued position. {@link org.elasticsearch.compute.operator.Warnings}
+     * caps at {@link org.elasticsearch.compute.operator.Warnings#MAX_ADDED_WARNINGS} and builds the identical header
+     * ({@code registerException(Exception)} itself delegates to {@code registerException(getClass(), getMessage())}),
+     * so this is byte-for-byte the same warning with no per-row allocation in the hot loop.
+     */
+    private static final String WARNINGS_REGISTER_CLASS_DESCRIPTOR = "(Ljava/lang/Class;Ljava/lang/String;)V";
 
     /**
      * JVM descriptor of a {@code Warnings[]} parameter. The fused block / checked-vector / logical methods take a
@@ -2249,19 +2260,24 @@ public final class Stitcher {
     }
 
     /**
-     * Emits {@code <warnings>.registerException(new IllegalArgumentException("single-value function encountered
-     * multi-value"))} — the carried-forward multi-value warning the generated unfused evaluator raises when a scalar
+     * Emits {@code <warnings>.registerException(IllegalArgumentException.class, "single-value function encountered
+     * multi-value")} — the carried-forward multi-value warning the generated unfused evaluator raises when a scalar
      * kernel meets a multi-valued position. The target {@code Warnings} must already be on top of the operand stack
      * (pushed by {@link #loadWarnings} for the node's own warning-source slot, or a bare {@code ALOAD} of a single
      * {@code Warnings} local in a {@code cmpN} helper); this method consumes it and leaves the stack unchanged
      * otherwise.
+     *
+     * <p>Unlike the generated unfused evaluator (which currently {@code new IllegalArgumentException(...)}s — see the
+     * {@code TODO} in {@code StandardArgument}), the fused hot loop uses the allocation-free
+     * {@link #WARNINGS_REGISTER_CLASS_DESCRIPTOR registerException(Class, String)} overload: the class and message are
+     * compile-time constants, so a {@code ldc} of the class + the message avoids constructing an exception per
+     * multi-valued position. The resulting warning header is identical (that overload is what the {@code Exception}
+     * overload delegates to), so the fused-⊆-unfused warning invariant is preserved.
      */
     private static void emitMultiValueWarningOn(InsnList insns) {
-        insns.add(new TypeInsnNode(Opcodes.NEW, ILLEGAL_ARGUMENT_EXCEPTION));
-        insns.add(new InsnNode(Opcodes.DUP));
+        insns.add(new LdcInsnNode(Type.getObjectType(ILLEGAL_ARGUMENT_EXCEPTION)));
         insns.add(new LdcInsnNode(MULTI_VALUE_MESSAGE));
-        insns.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, ILLEGAL_ARGUMENT_EXCEPTION, "<init>", "(Ljava/lang/String;)V", false));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, WARNINGS, "registerException", WARNINGS_REGISTER_DESCRIPTOR, false));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, WARNINGS, "registerException", WARNINGS_REGISTER_CLASS_DESCRIPTOR, false));
     }
 
     /**
