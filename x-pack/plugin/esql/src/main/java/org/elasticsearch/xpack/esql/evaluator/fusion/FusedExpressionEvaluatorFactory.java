@@ -226,11 +226,12 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 blockType(inputElements, outputElement, arity, constantParamTypes)
             );
 
-            if (hasBytesRefInput(inputElements)) {
-                // A BytesRef (keyword/text) column may be ordinal-encoded rather than a plain ArrayVector, so this
-                // slice deliberately does NOT compile a vector fast path for it — the tree always runs the block path
-                // (which reads each BytesRef via getBytesRef into a reusable spare). Block-only, like the 3VL logical
-                // trees, but with a real (non-null) block handle.
+            if (hasBytesRefInput(inputElements) || outputElement == ElementKind.BYTES_REF) {
+                // A BytesRef (keyword/text) column may be ordinal-encoded rather than a plain ArrayVector, and a
+                // variable-width BytesRef OUTPUT (B3b) has no dense array vector at all, so this slice deliberately
+                // does NOT compile a vector fast path for either — the tree always runs the block path (BytesRef inputs
+                // read via getBytesRef into a reusable spare; a BytesRef output appends through the block builder).
+                // Block-only, like the 3VL logical trees, but with a real (non-null) block handle.
                 return new FusedExpressionEvaluatorFactory(
                     warningSources,
                     inputChannels,

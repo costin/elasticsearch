@@ -792,8 +792,10 @@ public final class FusionPlanner {
     /**
      * The supported element kind for a column/literal {@link DataType}, or {@code null} if not fusable. Numeric types
      * map to their primitive element; {@code KEYWORD}/{@code TEXT} map to {@link ElementKind#BYTES_REF} so a string
-     * column can feed a {@code BytesRef}-consuming kernel (e.g. {@code LENGTH}). {@code BYTES_REF} is INPUT-only in this
-     * slice — the block path reads it via {@code getBytesRef} — so it never becomes a tree's output element.
+     * column can feed a {@code BytesRef}-consuming kernel (e.g. {@code LENGTH}). {@code BYTES_REF} is INPUT-only <b>to the
+     * planner</b>: the {@code Stitcher} block path can now also produce a {@code BytesRef} output (B3b), but this planner
+     * does not yet type a node's output {@code BYTES_REF} (no {@code BytesRef}-returning kernel is {@code @Fusable} +
+     * object-{@code @Fixed}-constant support is still needed), so it never emits a BytesRef-output tree today.
      */
     private static ElementKind elementOf(DataType type) {
         if (type == DataType.LONG) {
