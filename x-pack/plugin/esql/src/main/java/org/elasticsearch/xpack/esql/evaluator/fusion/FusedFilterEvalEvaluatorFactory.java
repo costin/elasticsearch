@@ -262,6 +262,14 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
         private final DriverContext driverContext;
         private final String shape;
 
+        // Spreader bound ONCE (fusedHandle.asSpreader(Object[].class, argCount)) plus a reusable per-page scratch
+        // Object[]: removes the per-page Invokers.spreadInvoker MethodType map lookup that invokeWithArguments does
+        // and the per-page array allocation. Both null when the plan-time stitch failed (fusedHandle == null); that
+        // path never touches them. Safe because each Factory.get(DriverContext) yields a fresh evaluator run
+        // single-threaded per Driver — no concurrent eval on one instance (see ExpressionEvaluator's contract).
+        private final MethodHandle fusedSpreader;
+        private final Object[] scratch;
+
         private Warnings[] warnings;
         // Lazily built unfused pair, used either as the plan-time fallback (fusedHandle == null) or after a defensive
         // eval-time LinkageError; closed with this evaluator.
@@ -291,6 +299,18 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
             this.unfusedProjectionFactory = unfusedProjectionFactory;
             this.driverContext = driverContext;
             this.shape = shape;
+
+            if (fusedHandle == null) {
+                // Plan-time stitch failed: this evaluator always uses the unfused pair, so no spreader/scratch.
+                this.fusedSpreader = null;
+                this.scratch = null;
+            } else {
+                // (BlockFactory, Warnings[], int, int[]) + predicate inputs + projection inputs + both constant tails.
+                int argCount = 4 + predicateChannels.length + projectionChannels.length + predicateConstants.length
+                    + projectionConstants.length;
+                this.fusedSpreader = fusedHandle.asSpreader(Object[].class, argCount);
+                this.scratch = new Object[argCount];
+            }
         }
 
         @Override
@@ -308,7 +328,7 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
                 if (injectEvalLinkageErrorForTests) {
                     throw new LinkageError("injected eval-time linkage failure for shape [" + shape + "]");
                 }
-                Object[] args = new Object[4 + predArity + projArity + predConst + projConst];
+                Object[] args = scratch;
                 int i = 0;
                 args[i++] = blockFactory;
                 args[i++] = warnings();
@@ -323,7 +343,7 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
                 System.arraycopy(predicateConstants, 0, args, i, predConst);
                 i += predConst;
                 System.arraycopy(projectionConstants, 0, args, i, projConst);
-                return (Block) fusedHandle.invokeWithArguments(args);
+                return (Block) fusedSpreader.invoke(args);
             } catch (LinkageError e) {
                 fusionDisabled = true;
                 logger.warn(() -> "fused filter-eval failed to link for shape [" + shape + "]; falling back to unfused", e);

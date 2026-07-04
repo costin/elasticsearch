@@ -480,6 +480,18 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         // The embedded constants' values, appended (after the input vectors/blocks) to the fused method's invoke args.
         private final Object[] constantValues;
 
+        // Spreaders bound ONCE per evaluator: handle.asSpreader(Object[].class, argCount) is resolved here (ctor)
+        // rather than re-resolved every page by handle.invokeWithArguments (which does an Invokers.spreadInvoker
+        // MethodType map lookup per call). Paired with a reusable per-page scratch Object[] (allocated once, sized
+        // per path) to remove the per-page array allocation. Safe because each Factory.get(DriverContext) yields a
+        // fresh evaluator and a Driver runs single-threaded — no two threads ever call eval on the same instance
+        // (see ExpressionEvaluator's contract) — so this is the idiomatic scratch-reuse pattern.
+        private final MethodHandle blockSpreader;
+        private final Object[] blockScratch;
+        // Null when no vector fast path was compiled (vectorHandle == null).
+        private final MethodHandle vectorSpreader;
+        private final Object[] vectorScratch;
+
         private Warnings[] warnings;
         // Lazily built only if a defensive LinkageError forces a per-page fallback; closed with this evaluator.
         private ExpressionEvaluator unfusedFallback;
@@ -509,6 +521,22 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             this.driverContext = driverContext;
             this.shape = shape;
             this.constantValues = constantValues;
+
+            int arity = inputChannels.length;
+            int constCount = constantValues.length;
+            // Block path (incl. logical/bytesref): (BlockFactory, Warnings[], int) + inputs + constants.
+            int blockArgCount = 3 + arity + constCount;
+            this.blockSpreader = blockHandle.asSpreader(Object[].class, blockArgCount);
+            this.blockScratch = new Object[blockArgCount];
+            if (vectorHandle == null) {
+                this.vectorSpreader = null;
+                this.vectorScratch = null;
+            } else {
+                // Plain vector: (BlockFactory, int) + vectors + constants. Checked vector: adds Warnings[] (3 leading).
+                int vectorArgCount = (vectorStrategy == VectorStrategy.PLAIN_VECTOR ? 2 : 3) + arity + constCount;
+                this.vectorSpreader = vectorHandle.asSpreader(Object[].class, vectorArgCount);
+                this.vectorScratch = new Object[vectorArgCount];
+            }
         }
 
         @Override
@@ -537,31 +565,31 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 Vector[] vectors = vectorHandle == null ? null : vectorEligible(inputs);
                 if (vectors != null) {
                     if (vectorStrategy == VectorStrategy.PLAIN_VECTOR) {
-                        Object[] args = new Object[2 + arity + constCount];
+                        Object[] args = vectorScratch;
                         args[0] = blockFactory;
                         args[1] = positionCount;
                         System.arraycopy(vectors, 0, args, 2, arity);
                         System.arraycopy(constantValues, 0, args, 2 + arity, constCount);
-                        Vector out = (Vector) vectorHandle.invokeWithArguments(args);
+                        Vector out = (Vector) vectorSpreader.invoke(args);
                         return out.asBlock();
                     }
                     // CHECKED_VECTOR
-                    Object[] args = new Object[3 + arity + constCount];
+                    Object[] args = vectorScratch;
                     args[0] = blockFactory;
                     args[1] = warnings();
                     args[2] = positionCount;
                     System.arraycopy(vectors, 0, args, 3, arity);
                     System.arraycopy(constantValues, 0, args, 3 + arity, constCount);
-                    return (Block) vectorHandle.invokeWithArguments(args);
+                    return (Block) vectorSpreader.invoke(args);
                 }
                 // Block path: null/multi-value tolerant, overflow-aware. Also the logical (3VL) path.
-                Object[] args = new Object[3 + arity + constCount];
+                Object[] args = blockScratch;
                 args[0] = blockFactory;
                 args[1] = warnings();
                 args[2] = positionCount;
                 System.arraycopy(inputs, 0, args, 3, arity);
                 System.arraycopy(constantValues, 0, args, 3 + arity, constCount);
-                return (Block) blockHandle.invokeWithArguments(args);
+                return (Block) blockSpreader.invoke(args);
             } catch (LinkageError e) {
                 // Defensive (criterion #5): a stitch that verified at plan time should never fail to link at eval, but
                 // if it somehow does we must still complete the query. Latch fusion off so subsequent pages skip the
