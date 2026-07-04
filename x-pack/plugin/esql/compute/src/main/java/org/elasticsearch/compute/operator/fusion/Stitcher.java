@@ -441,13 +441,17 @@ public final class Stitcher {
         // array, and the loop counter sit in the fixed region ABOVE the parameters — so their bases are all shifted up
         // by the constant parameters' total slot size; each kernel body then gets a disjoint slot range above that.
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
-        int inputBase = 2;
-        int constParamBase = inputBase + arity;
-        Map<FusionNode.Constant, Integer> constantSlots = constantParamSlots(constants, constParamBase);
-        int rawArrayBase = constParamBase + constantParamSize(constants);
-        int outSlot = rawArrayBase + arity;
-        int pSlot = outSlot + 1;
-        int kernelBase = pSlot + 1;
+        // Parameter region [0..): BlockFactory, positionCount, one Vector ref per input, one primitive per constant.
+        FrameLayout frame = new FrameLayout();
+        frame.slot();                                                       // [0] BlockFactory
+        frame.slot();                                                       // [1] int positionCount
+        int inputBase = frame.slots(arity);                                 // [2 .. 2+arity) input Vectors
+        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
+        // Scratch region above the parameters: per-input raw arrays, the output array, the loop counter.
+        int rawArrayBase = frame.slots(arity);
+        int outSlot = frame.slot();
+        int pSlot = frame.slot();
+        int kernelBase = frame.mark();
 
         StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";I");
         for (int i = 0; i < arity; i++) {
@@ -619,30 +623,30 @@ public final class Stitcher {
         // slot sit ABOVE the parameters (their bases shifted up by the constant parameters' total slot size); each
         // kernel body then gets a disjoint range above that.
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
-        int warningsArraySlot = 1;
-        int pcSlot = 2;
-        int inputBase = 3;
-        int constParamBase = inputBase + arity;
-        Map<FusionNode.Constant, Integer> constantSlots = constantParamSlots(constants, constParamBase);
-        int rawArrayBase = constParamBase + constantParamSize(constants);
-        int builderSlot = rawArrayBase + arity;
-        int pSlot = builderSlot + 1;
-        int valueBase = pSlot + 1;
-        // Per-input value slots, sized by each input's own element (a long/double takes two slots). Densely populated
-        // over [0, arity); an unused index (never expected) defaults to a one-slot reservation.
+        // Parameter region [0..): BlockFactory, Warnings[], positionCount, one Vector per input, one primitive per constant.
+        FrameLayout frame = new FrameLayout();
+        frame.slot();                                                       // [0] BlockFactory
+        int warningsArraySlot = frame.slot();                               // [1] Warnings[]
+        int pcSlot = frame.slot();                                          // [2] int positionCount
+        int inputBase = frame.slots(arity);                                 // [3 .. 3+arity) input Vectors
+        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
+        // Scratch region above the parameters. Per-input value slots are sized by each input's own element (a
+        // long/double takes two slots); an unused index (never expected) reserves one. The FrameLayout guarantees the
+        // widths never collide.
+        int rawArrayBase = frame.slots(arity);
+        int builderSlot = frame.slot();
+        int pSlot = frame.slot();
         int[] valueSlots = new int[arity];
-        int valueCursor = valueBase;
         for (int i = 0; i < arity; i++) {
-            valueSlots[i] = valueCursor;
-            valueCursor += inputElements[i] != null ? inputElements[i].type().getSize() : 1;
+            valueSlots[i] = inputElements[i] != null ? frame.slot(inputElements[i].type()) : frame.slot();
         }
-        int resultSlot = valueCursor;
-        int excSlot = resultSlot + 1;
-        int overflowExcSlot = excSlot + 1;
+        int resultSlot = frame.slot();
+        int excSlot = frame.slot();
+        int overflowExcSlot = frame.slot();
         // Names the overflow-checked kernel currently evaluating; the shared overflow handler reads it to attribute the
         // caught overflow to that kernel's own warning source.
-        int currentKernelSlot = overflowExcSlot + 1;
-        int kernelBase = currentKernelSlot + 1;
+        int currentKernelSlot = frame.slot();
+        int kernelBase = frame.mark();
 
         // Each kernel's warning-source slot into the runtime Warnings[]: its overflow warning registers on
         // warnings[its slot], matching the unfused per-node evaluator source.
@@ -1046,31 +1050,35 @@ public final class Stitcher {
         // One trailing primitive parameter per embedded constant (canonical emit order) sits between the input *Blocks
         // and the scratch region, so every scratch base is shifted up by the constant parameters' total slot size.
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
-        int warningsArraySlot = 1;
-        int pcSlot = 2;
-        int inputBase = 3;
-        int constParamBase = inputBase + arity;
-        Map<FusionNode.Constant, Integer> constantSlots = constantParamSlots(constants, constParamBase);
-        int builderSlot = constParamBase + constantParamSize(constants);
-        int pSlot = builderSlot + 1;
-        int countSlot = pSlot + 1;
-        int resultSlot = countSlot + 1;
-        int excSlot = resultSlot + 1;
+        // Parameter region [0..): BlockFactory, Warnings[], positionCount, one *Block per input, one primitive per constant.
+        FrameLayout frame = new FrameLayout();
+        frame.slot();                                                       // [0] BlockFactory
+        int warningsArraySlot = frame.slot();                               // [1] Warnings[]
+        int pcSlot = frame.slot();                                          // [2] int positionCount
+        int inputBase = frame.slots(arity);                                 // [3 .. 3+arity) input *Blocks
+        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
+        // Scratch region above the parameters: the builder, loop counter, a scratch value-count slot, the built result
+        // slot, the caught-throwable slot (builder-safety), the per-kernel overflow-exception slot, then:
+        int builderSlot = frame.slot();
+        int pSlot = frame.slot();
+        int countSlot = frame.slot();
+        int resultSlot = frame.slot();
+        int excSlot = frame.slot();
         // A scratch slot for the exception caught by any single kernel's overflow handler (handlers never overlap in
         // execution, so one slot is shared).
-        int overflowExcSlot = excSlot + 1;
+        int overflowExcSlot = frame.slot();
         // The per-position value-path flag: {@code true} until the whole-tree short-circuit fires (the first null /
         // multi-value / overflow the value DFS meets), then {@code false}. It gates ONLY the value-dependent overflow /
         // div-by-zero warning registration to the ratified short-circuit subset — an off-value-path kernel body still
         // runs (its result feeds a sibling's per-kernel multi-value gate) but its overflow is caught silently. Leaf
         // multi-value warnings are NOT gated by {@code live}: each kernel emits them in its own operand order so they
         // match the unfused chain (which runs every kernel's loop fully), independent of ancestor short-circuits.
-        int liveSlot = overflowExcSlot + 1;
+        int liveSlot = frame.slot();
         // A reusable BytesRef spare for any BYTES_REF (keyword/text) leaf, allocated once below the DFS work region and
         // initialised before the loop. Reserved unconditionally (a one-slot gap when the tree has no reference input,
         // so the layout is uniform); only initialised + consulted when a reference input is present.
-        int spareBytesRefSlot = liveSlot + 1;
-        int workBase = spareBytesRefSlot + 1;
+        int spareBytesRefSlot = frame.slot();
+        int workBase = frame.mark();
         boolean needsSpare = hasReferenceInput(inputElements);
 
         // Each kernel's warning-source slot into the runtime Warnings[]: its overflow warning and its direct leaf
@@ -1338,16 +1346,20 @@ public final class Stitcher {
         // the tri-state node slots start at workBase. The top-level loop loads each constant from its parameter slot
         // and threads it into the relevant cmpN helper call.
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
-        int warningsArraySlot = 1;
-        int pcSlot = 2;
-        int inputBase = 3;
-        int constParamBase = inputBase + arity;
-        Map<FusionNode.Constant, Integer> constantSlots = constantParamSlots(constants, constParamBase);
-        int builderSlot = constParamBase + constantParamSize(constants);
-        int pSlot = builderSlot + 1;
-        int resultSlot = pSlot + 1;
-        int excSlot = resultSlot + 1;
-        int workBase = excSlot + 1;
+        // Parameter region [0..): BlockFactory, Warnings[], positionCount, one *Block per input, one primitive per constant.
+        FrameLayout frame = new FrameLayout();
+        frame.slot();                                                       // [0] BlockFactory
+        int warningsArraySlot = frame.slot();                               // [1] Warnings[]
+        int pcSlot = frame.slot();                                          // [2] int positionCount
+        int inputBase = frame.slots(arity);                                 // [3 .. 3+arity) input *Blocks
+        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
+        // Scratch region above the parameters: builder, loop counter, built result, caught-throwable; the tri-state
+        // node slots start at workBase.
+        int builderSlot = frame.slot();
+        int pSlot = frame.slot();
+        int resultSlot = frame.slot();
+        int excSlot = frame.slot();
+        int workBase = frame.mark();
 
         StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
         for (int i = 0; i < arity; i++) {
@@ -1628,22 +1640,22 @@ public final class Stitcher {
         // Top-level fused loop frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3] int[] positions,
         // [4 .. 4+predArity) predicate input *Blocks, then the projection input *Blocks, then the predicate constant
         // params, then the projection constant params, then the scratch region.
-        int warningsArraySlot = 1;
-        int pcSlot = 2;
-        int positionsSlot = 3;
-        int predInputBase = 4;
-        int projInputBase = predInputBase + predArity;
-        int constParamBase = projInputBase + projArity;
-        Map<FusionNode.Constant, Integer> topPredConstantSlots = constantParamSlots(predConstants, constParamBase);
-        int projConstBase = constParamBase + constantParamSize(predConstants);
-        Map<FusionNode.Constant, Integer> topProjConstantSlots = constantParamSlots(projConstants, projConstBase);
-        int scratchBase = projConstBase + constantParamSize(projConstants);
-        int builderSlot = scratchBase;
-        int pSlot = builderSlot + 1;
-        int rowCountSlot = pSlot + 1;
-        int resultSlot = rowCountSlot + 1;
-        int excSlot = resultSlot + 1;
-        int tSlot = excSlot + 1;
+        FrameLayout frame = new FrameLayout();
+        frame.slot();                                                       // [0] BlockFactory
+        int warningsArraySlot = frame.slot();                               // [1] Warnings[]
+        int pcSlot = frame.slot();                                          // [2] int positionCount
+        int positionsSlot = frame.slot();                                   // [3] int[] positions
+        int predInputBase = frame.slots(predArity);                         // predicate input *Blocks
+        int projInputBase = frame.slots(projArity);                         // projection input *Blocks
+        Map<FusionNode.Constant, Integer> topPredConstantSlots = allocConstantSlots(predConstants, frame);
+        Map<FusionNode.Constant, Integer> topProjConstantSlots = allocConstantSlots(projConstants, frame);
+        // Scratch region above the parameters.
+        int builderSlot = frame.slot();
+        int pSlot = frame.slot();
+        int rowCountSlot = frame.slot();
+        int resultSlot = frame.slot();
+        int excSlot = frame.slot();
+        int tSlot = frame.slot();
 
         StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I[I");
         for (int i = 0; i < predArity; i++) {
@@ -2351,6 +2363,19 @@ public final class Stitcher {
         for (FusionNode.Constant constant : constants) {
             slots.put(constant, cursor);
             cursor += constantSlotSize(constant);
+        }
+        return slots;
+    }
+
+    /**
+     * Reserves one trailing parameter slot per constant from {@code frame} (in canonical emit order, each sized by its
+     * element width) and maps each constant to its slot. The {@link FrameLayout} version of {@link #constantParamSlots}:
+     * the frame guarantees a {@code long}/{@code double} constant gets its two slots without hand-rolled arithmetic.
+     */
+    private static Map<FusionNode.Constant, Integer> allocConstantSlots(List<FusionNode.Constant> constants, FrameLayout frame) {
+        Map<FusionNode.Constant, Integer> slots = new IdentityHashMap<>();
+        for (FusionNode.Constant constant : constants) {
+            slots.put(constant, frame.reserve(constantSlotSize(constant)));
         }
         return slots;
     }
