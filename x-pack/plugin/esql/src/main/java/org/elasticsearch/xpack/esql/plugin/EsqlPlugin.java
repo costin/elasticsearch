@@ -550,7 +550,8 @@ public class EsqlPlugin extends Plugin implements ActionPlugin, ExtensiblePlugin
                 FusionSettings.FUSION_ENABLED_SETTING,
                 FusionSettings.FUSION_ADAPTIVE_MIN_ROWS_SETTING,
                 FusionSettings.FUSION_SAMPLE_SETTING,
-                FusionSettings.FUSION_SIMD_SETTING
+                FusionSettings.FUSION_SIMD_SETTING,
+                FusionSettings.FUSION_STRING_DEPTH1_SETTING
             )
         );
         settings.addAll(PlannerSettings.settings());

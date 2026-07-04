@@ -196,7 +196,10 @@ public final class FusionPlanner {
         boolean simdWorthwhile = vectorComparison.isEmpty() == false && FusionSettings.isSimdEnabled() && FusionSimd.available();
         // A multi-value mapping convert kernel (TO_LOWER/TO_UPPER) is a single (depth-1) unary kernel, but fusing it via
         // the mapping loop re-enables the whole TO_* family, so it is worth fusing at depth 1 (like the SIMD comparison).
-        if (depth(tree) < 2 && simdWorthwhile == false && ctx.mapping == false) {
+        // A lone single-value BytesRef string function (LEFT/SPACE/CONCAT) fuses at depth 1 only under the opt-in
+        // esql.fusion.string_depth1 switch (its win is marginal — string work dominates — so it is off by default).
+        boolean stringDepth1 = ctx.outputElement == ElementKind.BYTES_REF && ctx.mapping == false && FusionSettings.isStringDepth1Enabled();
+        if (depth(tree) < 2 && simdWorthwhile == false && ctx.mapping == false && stringDepth1 == false) {
             // A lone kernel is not worth fusing on the scalar paths — leave it to the generated evaluator.
             return null;
         }

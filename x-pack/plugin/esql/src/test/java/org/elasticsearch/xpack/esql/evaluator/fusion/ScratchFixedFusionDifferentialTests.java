@@ -162,6 +162,31 @@ public class ScratchFixedFusionDifferentialTests extends FusionDifferentialTestC
         runDifferentialWarnings(fused, unfused, ElementKind.BYTES_REF, new Block[] { ba, bb }, positionCount, "left(concat(a,b),3)");
     }
 
+    /**
+     * Opt-in depth-1 string fusion: a bare {@code LEFT(s, 3)} (a lone depth-1 kernel) does NOT fuse by default, but
+     * DOES fuse when {@code esql.fusion.string_depth1} is on — and then matches the unfused evaluator (including the
+     * single-value multi-value warn+null and null propagation).
+     */
+    public void testBareLeftDepth1FusesOnlyWhenEnabled() {
+        FieldAttribute s = field("s", DataType.KEYWORD);
+        Layout layout = layout(s);
+        Expression expr = new Left(Source.EMPTY, s, intLit(3));
+
+        // Default: a lone depth-1 string function is not worth fusing.
+        assertDoesNotFuse(fusedFactory(expr, layout), "left(s,3) default off");
+
+        FusionSettings.setStringDepth1EnabledForTests(true);
+        try {
+            ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+            ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+            assertFuses(fused, "left(s,3) depth1 on");
+            Block in = keywordBlock("hello", "", null, "δΔxyz", "ab", "z");
+            runDifferentialWarnings(fused, unfused, ElementKind.BYTES_REF, new Block[] { in }, 6, "left(s,3) depth1");
+        } finally {
+            FusionSettings.setStringDepth1EnabledForTests(false);
+        }
+    }
+
     /** A 3-operand CONCAT proves the variadic array-gather for N &gt; 2 (three distinct fresh per-element BytesRefs). */
     public void testConcatThreeArgVariadic() {
         FieldAttribute a = field("a", DataType.KEYWORD);
