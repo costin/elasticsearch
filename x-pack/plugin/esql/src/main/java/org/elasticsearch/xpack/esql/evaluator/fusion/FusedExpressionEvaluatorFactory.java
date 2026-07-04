@@ -262,27 +262,51 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
             MethodHandle vectorHandle;
             VectorStrategy strategy;
-            if (overflowChecked == false) {
-                Class<?> vectorClass = compiler.compileVectorLoop(LOOKUP, tree);
-                vectorHandle = LOOKUP.findStatic(
-                    vectorClass,
-                    Stitcher.FUSED_METHOD_NAME,
-                    plainVectorType(outputElement, arity, constantParamTypes)
+            try {
+                if (overflowChecked == false) {
+                    Class<?> vectorClass = compiler.compileVectorLoop(LOOKUP, tree);
+                    vectorHandle = LOOKUP.findStatic(
+                        vectorClass,
+                        Stitcher.FUSED_METHOD_NAME,
+                        plainVectorType(outputElement, arity, constantParamTypes)
+                    );
+                    strategy = VectorStrategy.PLAIN_VECTOR;
+                } else {
+                    // Overflow-checked trees (including double, whose kernels call NumericUtils.asFiniteNumber) all use
+                    // the checked-vector path now: the fused class is defined in the caller's (esql-proper) module —
+                    // reaching the backing array through the public VectorUnsafe forwarder rather than a compute.data
+                    // teleport — so it links non-java.base kernel callees just like the block path. The old
+                    // double+overflow hard gate (VectorStrategy.NONE) is gone.
+                    Class<?> vectorClass = compiler.compileVectorLoopChecked(LOOKUP, tree);
+                    vectorHandle = LOOKUP.findStatic(
+                        vectorClass,
+                        Stitcher.FUSED_METHOD_NAME,
+                        checkedVectorType(outputElement, arity, constantParamTypes)
+                    );
+                    strategy = VectorStrategy.CHECKED_VECTOR;
+                }
+            } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError vectorFailure) {
+                // The block path already stitched, verified and linked; a vector-fast-path failure must NOT drop the
+                // whole fusion back to the unfused chain. The most common cause is the plain-vector inlining-budget
+                // guard refusing a deep tree (StitchingException) — the block path is budget-unenforced and still fuses
+                // it correctly. Degrade to BLOCK-ONLY (VectorStrategy.NONE, no vector handle) rather than losing all
+                // fusion: values/nulls/warnings are identical to the block path, we just forgo the vector fast path.
+                logger.debug(
+                    () -> "fused vector fast path unavailable for shape [" + shape + "]; degrading to block-only fusion",
+                    vectorFailure
                 );
-                strategy = VectorStrategy.PLAIN_VECTOR;
-            } else {
-                // Overflow-checked trees (including double, whose kernels call NumericUtils.asFiniteNumber) all use the
-                // checked-vector path now: the fused class is defined in the caller's (esql-proper) module — reaching
-                // the backing array through the public VectorUnsafe forwarder rather than a compute.data teleport — so
-                // it links non-java.base kernel callees just like the block path. The old double+overflow hard gate
-                // (VectorStrategy.NONE) is gone.
-                Class<?> vectorClass = compiler.compileVectorLoopChecked(LOOKUP, tree);
-                vectorHandle = LOOKUP.findStatic(
-                    vectorClass,
-                    Stitcher.FUSED_METHOD_NAME,
-                    checkedVectorType(outputElement, arity, constantParamTypes)
+                FusionTelemetry.recordVectorDegraded(shape);
+                return new FusedExpressionEvaluatorFactory(
+                    warningSources,
+                    inputChannels,
+                    inputElements,
+                    blockHandle,
+                    null,
+                    VectorStrategy.NONE,
+                    unfused,
+                    shape,
+                    constantValues
                 );
-                strategy = VectorStrategy.CHECKED_VECTOR;
             }
 
             return new FusedExpressionEvaluatorFactory(

@@ -307,6 +307,84 @@ public class EvalMapperFusionWiringTests extends ESTestCase {
         }
     }
 
+    // (f) A vector-fast-path stitch failure (e.g. the plain-vector inlining budget refusing a deep tree) must DEGRADE
+    // to block-only fusion — the already-stitched block path is correct — instead of dropping all fusion back to the
+    // unfused chain. Inject a compiler that stitches the block path for real but fails BOTH vector paths.
+    public void testVectorPathFailureDegradesToBlockOnly() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression expr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+
+        Stitcher real = new Stitcher(new org.elasticsearch.compute.operator.fusion.TemplateRegistry());
+        FusionPlanner.compilerForTests = new FusionPlanner.FusedClassCompiler() {
+            @Override
+            public Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return real.compileBlockLoop(caller, tree);
+            }
+
+            @Override
+            public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                throw new Stitcher.StitchingException("injected vector-path failure (e.g. over inlining budget)", null);
+            }
+
+            @Override
+            public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                throw new Stitcher.StitchingException("injected vector-path failure (e.g. over inlining budget)", null);
+            }
+
+            @Override
+            public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return real.compileLogicalBlockLoop(caller, tree);
+            }
+        };
+
+        long degradedBefore = FusionTelemetry.vectorDegraded();
+        ExpressionEvaluator.Factory factory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+        assertThat(
+            "a vector-path failure must still fuse (block-only), not fall back to unfused",
+            factory,
+            instanceOf(FusedExpressionEvaluatorFactory.class)
+        );
+        assertThat(
+            "degraded fusion runs the block path only (no vector fast path)",
+            ((FusedExpressionEvaluatorFactory) factory).vectorStrategy(),
+            is(VectorStrategy.NONE)
+        );
+        assertThat("the degrade must be counted", FusionTelemetry.vectorDegraded(), is(degradedBefore + 1));
+
+        // And it still computes correctly via the block path.
+        int positionCount = 128;
+        long[] av = new long[positionCount];
+        long[] bv = new long[positionCount];
+        long[] cv = new long[positionCount];
+        for (int p = 0; p < positionCount; p++) {
+            av[p] = randomLongBetween(-1000, 1000);
+            bv[p] = randomLongBetween(-1000, 1000);
+            cv[p] = randomLongBetween(-1000, 1000);
+        }
+        ExpressionEvaluator evaluator = factory.get(driverContext);
+        Page page = null;
+        LongBlock result = null;
+        try {
+            page = new Page(
+                blockFactory.newLongArrayVector(av, positionCount).asBlock(),
+                blockFactory.newLongArrayVector(bv, positionCount).asBlock(),
+                blockFactory.newLongArrayVector(cv, positionCount).asBlock()
+            );
+            result = (LongBlock) evaluator.eval(page);
+            for (int p = 0; p < positionCount; p++) {
+                assertThat("p=" + p, result.getLong(result.getFirstValueIndex(p)), is((av[p] + bv[p]) * cv[p]));
+            }
+        } finally {
+            Releasables.closeExpectNoException(result, evaluator);
+            if (page != null) {
+                page.releaseBlocks();
+            }
+        }
+    }
+
     // (d) The overflow-checked double tree now routes through the checked-vector path (the old hard gate is gone), and
     // still matches the unfused chain. NumericUtils.asFiniteNumber links because the fused class is defined in this
     // caller module and reads the backing array through the public VectorUnsafe forwarder.

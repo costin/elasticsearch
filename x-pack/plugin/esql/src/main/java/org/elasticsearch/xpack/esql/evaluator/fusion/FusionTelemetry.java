@@ -60,6 +60,12 @@ public final class FusionTelemetry {
     private static final LongAdder ADAPTIVE_ABANDONED = new LongAdder();
 
     /**
+     * Number of shapes that fused on the block path but degraded to block-only because the vector fast path could not
+     * be built (e.g. the plain-vector inlining budget refused a deep tree). Diagnostic side-channel only.
+     */
+    private static final LongAdder VECTOR_DEGRADED = new LongAdder();
+
+    /**
      * Records one stitching failure for {@code shape} (the {@link FusionPlanner} shape signature). The aggregate is
      * always incremented; the per-shape counter is incremented for an already-tracked shape, or for a new shape only
      * while the map is below {@link #MAX_TRACKED_SHAPES} — beyond the cap a new shape counts only in the aggregate.
@@ -98,6 +104,20 @@ public final class FusionTelemetry {
         ADAPTIVE_ABANDONED.increment();
     }
 
+    /**
+     * Records one shape whose block path fused but whose vector fast path could not be built (most commonly the
+     * plain-vector inlining budget refusing a deep tree), so it degraded to block-only fusion instead of falling all
+     * the way back to the unfused chain.
+     */
+    public static void recordVectorDegraded(String shape) {
+        VECTOR_DEGRADED.increment();
+    }
+
+    /** Number of shapes that degraded to block-only fusion after a vector-fast-path stitch failure. */
+    public static long vectorDegraded() {
+        return VECTOR_DEGRADED.sum();
+    }
+
     /** Number of adaptive unfused-to-fused switches recorded. */
     public static long adaptiveSwitches() {
         return ADAPTIVE_SWITCHES.sum();
@@ -119,5 +139,6 @@ public final class FusionTelemetry {
         TOTAL_FAILURES.reset();
         ADAPTIVE_SWITCHES.reset();
         ADAPTIVE_ABANDONED.reset();
+        VECTOR_DEGRADED.reset();
     }
 }
