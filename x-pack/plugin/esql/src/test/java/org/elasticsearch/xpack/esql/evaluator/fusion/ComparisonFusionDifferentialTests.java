@@ -9,6 +9,7 @@ package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.compute.operator.fusion.FusionSimd;
 import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
@@ -444,6 +445,46 @@ public class ComparisonFusionDifferentialTests extends FusionDifferentialTestCas
             containsWarning(warnings.fused(), "long overflow"),
             is(false)
         );
+    }
+
+    /**
+     * B2 end-to-end: with {@code esql.fusion.simd} on and the Vector API available, a bare {@code a OP b} column
+     * comparison (a depth-1 tree the scalar planner would skip) fuses via the SIMD lane-compare path. Feeding dense
+     * vector-backed columns drives the runtime onto that vector path, and the result must match the unfused evaluator
+     * position-by-position across sizes below/at/above one SIMD species. Skipped when the Vector API is unavailable.
+     */
+    public void testSimdComparisonMatchesUnfused() {
+        assumeTrue("Vector API (jdk.incubator.vector) not available", FusionSimd.available());
+        FusionSettings.setSimdEnabledForTests(true);
+        try {
+            FieldAttribute a = field("a", DataType.LONG);
+            FieldAttribute b = field("b", DataType.LONG);
+            Layout layout = layout(a, b);
+            Expression[] comparisons = {
+                new GreaterThan(Source.EMPTY, a, b),
+                new LessThan(Source.EMPTY, a, b),
+                new Equals(Source.EMPTY, a, b) };
+            for (Expression expr : comparisons) {
+                String label = expr.getClass().getSimpleName();
+                ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+                ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+                assertFuses(fused, label + " (simd)");
+                for (int pc : new int[] { 0, 1, 5, 16, 17, 64, 129, 512 + randomIntBetween(0, 512) }) {
+                    long[] av = new long[pc];
+                    long[] bv = new long[pc];
+                    for (int p = 0; p < pc; p++) {
+                        av[p] = randomLongBetween(-50, 50);
+                        bv[p] = randomLongBetween(-50, 50); // overlapping ranges -> both true and false lanes
+                    }
+                    // Dense vector-backed columns so the runtime takes the vector (SIMD) path, not the block path.
+                    Block a0 = blockFactory.newLongArrayVector(av, pc).asBlock();
+                    Block b0 = blockFactory.newLongArrayVector(bv, pc).asBlock();
+                    runDifferentialWarnings(fused, unfused, ElementKind.BOOLEAN, new Block[] { a0, b0 }, pc, label + " simd pc=" + pc);
+                }
+            }
+        } finally {
+            FusionSettings.setSimdEnabledForTests(false);
+        }
     }
 
     private static Literal lit(long v) {

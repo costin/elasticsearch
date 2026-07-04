@@ -13,6 +13,7 @@ import org.elasticsearch.compute.operator.fusion.FusionAware;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.FusionSignature;
+import org.elasticsearch.compute.operator.fusion.FusionSimd;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
@@ -161,10 +162,6 @@ public final class FusionPlanner {
         if (tree == null || ctx.outputElement == null || ctx.inputElements.isEmpty()) {
             return null;
         }
-        if (depth(tree) < 2) {
-            // A lone kernel is not worth fusing — leave it to the generated evaluator.
-            return null;
-        }
         int[] channels = toIntArray(ctx.channels);
         ElementKind[] inputElements = ctx.inputElements.toArray(new ElementKind[0]);
         // The build walk appends one element per leaf input as it assigns channels, so every index in [0, arity) is
@@ -172,11 +169,20 @@ public final class FusionPlanner {
         // planner-produced tree never has one — that fallback is dead code for this path, asserted here.)
         assert noNullElements(inputElements)
             : "planner must populate every input element densely; got " + java.util.Arrays.toString(inputElements);
-        ExpressionEvaluator.Factory unfused = rawFactory.apply(exp);
-        FusedClassCompiler compiler = compilerForTests != null ? compilerForTests : COMPILATION.compiler();
         // One walk derives the whole positional contract (warning-source slots + constants-in-emit-order); the Stitcher
         // re-derives the same facts when it emits, and both agree because FusionSignature is the single source of truth.
         FusionSignature signature = FusionSignature.of(tree);
+        // A SIMD-eligible boolean comparison is a single (depth-1) comparison over two columns — normally "not worth
+        // fusing" on the scalar paths, but the Vector-API lane compare DOES beat the generated evaluator, so it is
+        // worth fusing when SIMD is opted in AND available in this runtime. Everything else still requires depth >= 2.
+        String vectorComparison = simdComparison(exp, tree, inputElements, ctx.outputElement, signature.constantsInEmitOrder());
+        boolean simdWorthwhile = vectorComparison.isEmpty() == false && FusionSettings.isSimdEnabled() && FusionSimd.available();
+        if (depth(tree) < 2 && simdWorthwhile == false) {
+            // A lone kernel is not worth fusing on the scalar paths — leave it to the generated evaluator.
+            return null;
+        }
+        ExpressionEvaluator.Factory unfused = rawFactory.apply(exp);
+        FusedClassCompiler compiler = compilerForTests != null ? compilerForTests : COMPILATION.compiler();
         String shape = shapeOf(tree);
         // One typed carrier bundles everything the factory needs (the signature is the single source for the constant
         // emit order + warning-source slots); the esql-side bindings the tree can't carry travel alongside it.
@@ -189,7 +195,7 @@ public final class FusionPlanner {
             ctx.overflowChecked,
             warningSources(signature.warningSourceIndices(), ctx),
             shape,
-            simdComparison(exp, tree, inputElements, ctx.outputElement, signature.constantsInEmitOrder())
+            vectorComparison
         );
 
         long minRows = FusionSettings.adaptiveMinRows();
