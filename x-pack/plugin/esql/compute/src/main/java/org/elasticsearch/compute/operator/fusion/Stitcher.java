@@ -2476,6 +2476,22 @@ public final class Stitcher {
      * range (the kernel body's {@code maxLocals}); the value + argument slots are pre-initialised to a typed zero so
      * the verifier sees them definitely assigned (they are read only on the present path, but that correlation is
      * value-level, not type-level, so an explicit zero-init is required).
+     *
+     * <p><b>Invariant spec (the {@code present}/{@code live} contract — do not drift when editing DFS emission).</b>
+     * <ol>
+     *   <li><b>Values/nulls are identical to unfused:</b> a position is null iff the root is not {@code present}, i.e.
+     *       iff any consumed leaf is null/multi-value or any kernel on the value path overflows.</li>
+     *   <li><b>Multi-value warnings are per-kernel, operand-order, ancestor-independent</b> (gated by the kernel's OWN
+     *       {@code present}, never by {@code live}): a leaf's mv warning fires iff its consuming kernel's earlier
+     *       operands are present — even if an ancestor already short-circuited the position. Pinned by
+     *       {@code ComparisonFusionDifferentialTests.testComparisonNullLeftLeafDoesNotSuppressArithmeticChildMultiValueWarning}
+     *       and {@code testArithmeticNullOperandBeforeMultiValueOperandSuppressesWarningWithinKernel}.</li>
+     *   <li><b>Value-dependent warnings (overflow/div-by-zero) are the ratified SUBSET</b> (gated by {@code live}): a
+     *       body that overflows off the value path is caught silently. Pinned by
+     *       {@code ComparisonFusionDifferentialTests.testSiblingOverflowOffValuePathIsSilentButNullMatches}.</li>
+     * </ol>
+     * Any fused warning set is therefore a subset of the unfused chain's; short-circuit only drops never-reached
+     * warnings, never adds a spurious one.
      */
     private final class BlockDfsEmitter {
         private final InsnList insns;
