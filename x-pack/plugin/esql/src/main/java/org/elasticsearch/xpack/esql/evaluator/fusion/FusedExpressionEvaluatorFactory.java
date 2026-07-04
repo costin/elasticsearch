@@ -204,6 +204,27 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         // Stitcher's single canonical emit order — so one stitched class serves every constant value.
         Class<?>[] constantParamTypes = constantParamTypes(constants);
         try {
+            if (plan.mapping()) {
+                // Multi-value mapping convert kernel (TO_LOWER/TO_UPPER): block-only (it maps over multi-values, so no
+                // vector fast path). Its method signature is the ordinary block shape, so binding is identical.
+                Class<?> mappingClass = compiler.compileMappingBlockLoop(LOOKUP, tree);
+                MethodHandle mappingHandle = LOOKUP.findStatic(
+                    mappingClass,
+                    Stitcher.FUSED_METHOD_NAME,
+                    blockType(inputElements, outputElement, arity, constantParamTypes)
+                );
+                return new FusedExpressionEvaluatorFactory(
+                    warningSources,
+                    inputChannels,
+                    inputElements,
+                    mappingHandle,
+                    null,
+                    VectorStrategy.NONE,
+                    unfused,
+                    shape,
+                    constants
+                );
+            }
             if (tree instanceof FusionNode.Logical) {
                 // A 3VL AND/OR tree is nullable boolean: block path only, no vector fast path (S3.1).
                 Class<?> logicalClass = compiler.compileLogicalBlockLoop(LOOKUP, tree);

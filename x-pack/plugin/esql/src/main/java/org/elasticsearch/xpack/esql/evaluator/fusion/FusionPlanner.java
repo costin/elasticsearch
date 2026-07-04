@@ -25,6 +25,7 @@ import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Cast;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.ChangeCase;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Concat;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Left;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Space;
@@ -38,6 +39,7 @@ import java.lang.invoke.MethodHandles;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
 
@@ -129,6 +131,15 @@ public final class FusionPlanner {
             throws Stitcher.StitchingException {
             throw new UnsupportedOperationException("compileVectorLoopSimd not implemented by this compiler");
         }
+
+        /**
+         * Compiles the multi-value mapping block loop for a unary convert kernel (TO_LOWER/TO_UPPER). Defaulted so
+         * existing test doubles need not implement it; {@link FusionCompilationService} provides the real, cache-backed
+         * implementation.
+         */
+        default Class<?> compileMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+            throw new UnsupportedOperationException("compileMappingBlockLoop not implemented by this compiler");
+        }
     }
 
     /**
@@ -183,7 +194,9 @@ public final class FusionPlanner {
         // worth fusing when SIMD is opted in AND available in this runtime. Everything else still requires depth >= 2.
         String vectorComparison = simdComparison(exp, tree, inputElements, ctx.outputElement, signature.constantsInEmitOrder());
         boolean simdWorthwhile = vectorComparison.isEmpty() == false && FusionSettings.isSimdEnabled() && FusionSimd.available();
-        if (depth(tree) < 2 && simdWorthwhile == false) {
+        // A multi-value mapping convert kernel (TO_LOWER/TO_UPPER) is a single (depth-1) unary kernel, but fusing it via
+        // the mapping loop re-enables the whole TO_* family, so it is worth fusing at depth 1 (like the SIMD comparison).
+        if (depth(tree) < 2 && simdWorthwhile == false && ctx.mapping == false) {
             // A lone kernel is not worth fusing on the scalar paths — leave it to the generated evaluator.
             return null;
         }
@@ -201,7 +214,8 @@ public final class FusionPlanner {
             ctx.overflowChecked,
             warningSources(signature.warningSourceIndices(), ctx),
             shape,
-            vectorComparison
+            vectorComparison,
+            ctx.mapping
         );
 
         long minRows = FusionSettings.adaptiveMinRows();
@@ -417,6 +431,8 @@ public final class FusionPlanner {
         /** The root node's output kind: the numeric element for an arithmetic root, or BOOLEAN for a comparison/logical root. */
         private ElementKind outputElement;
         private boolean overflowChecked;
+        /** Set when the root is a multi-value mapping convert kernel (TO_LOWER/TO_UPPER) — routed to the mapping loop. */
+        private boolean mapping;
 
         PlanContext(Layout layout, Function<Expression, ExpressionEvaluator.Factory> rawFactory) {
             this.layout = layout;
@@ -487,13 +503,14 @@ public final class FusionPlanner {
             // commonType); its value rides in as an argument at eval time rather than being baked into the bytecode.
             return buildConstant(literal, expected, ctx);
         }
-        // NOTE: TO_LOWER/TO_UPPER (ChangeCase) are deliberately NOT fused. They are @ConvertEvaluator functions, which
-        // MAP over a multi-valued position (a multi-valued keyword yields a multi-valued result, no warning), whereas
-        // the fused block emitter applies single-value semantics (a multi-valued leaf warns + nulls). Fusing them would
-        // break the fused==unfused invariant for multi-valued inputs. Fusing a convert-evaluator needs a multi-value
-        // mapping emitter mode (a real capability, not yet built). The object-@Fixed constant machinery they motivated
-        // still ships (used by regular single-value @Evaluator kernels), and LEFT below is the real single-value
-        // BytesRef string function that fuses correctly.
+        if (exp instanceof ChangeCase changeCase) {
+            // TO_LOWER/TO_UPPER (@ConvertEvaluator) MAP over a multi-valued position (a multi-valued keyword yields a
+            // multi-valued result, no warning). They fuse ONLY as a ROOT via the multi-value mapping block loop (which
+            // reproduces that mapping); nested in a single-value kernel they would need the parent to handle a
+            // multi-value intermediate, so buildChangeCase refuses a non-root position (the enclosing tree then doesn't
+            // fuse the ChangeCase). Locale + Case are captured as reference constants.
+            return buildChangeCase(changeCase, ctx, root);
+        }
         if (exp instanceof Left left) {
             // LEFT(str, length) (#8b): a BytesRef -> BytesRef kernel whose first two @Fixed params are per-driver SCRATCH
             // buffers (a reusable BytesRef + a UTF8CodePoint), created fresh per driver rather than captured. Its body
@@ -594,6 +611,50 @@ public final class FusionPlanner {
         false,
         true
     );
+
+    /**
+     * The manually-built kernel descriptor for {@code ChangeCase#process(BytesRef, @Fixed Locale, @Fixed Case)}. The
+     * {@code $Case} inner-class descriptor is written explicitly. Not overflow-checked; a null input yields null. Fused
+     * only via the multi-value mapping loop (it maps over multi-values).
+     */
+    private static final FusionDescriptor CHANGE_CASE_DESCRIPTOR = new FusionDescriptor(
+        ChangeCase.class,
+        "process",
+        "(Lorg/apache/lucene/util/BytesRef;Ljava/util/Locale;"
+            + "Lorg/elasticsearch/xpack/esql/expression/function/scalar/string/ChangeCase$Case;)Lorg/apache/lucene/util/BytesRef;",
+        false,
+        true
+    );
+
+    /**
+     * Builds the fused node for a {@code TO_LOWER}/{@code TO_UPPER} ({@link ChangeCase}) expression as a MULTI-VALUE
+     * MAPPING kernel: a single kernel over its BytesRef field child plus two object {@code @Fixed} reference constants
+     * (the query {@link Locale} and the {@code UPPER}/{@code LOWER} {@link ChangeCase.Case}). Fuses ONLY at the root —
+     * a nested position returns {@code null} (refuse) so a single-value parent never sees a mapped multi-value
+     * intermediate. Sets {@link PlanContext#mapping} so the factory routes it to the mapping block loop.
+     */
+    private static FusionNode buildChangeCase(ChangeCase changeCase, PlanContext ctx, boolean root) {
+        if (root == false) {
+            return null;
+        }
+        FusionNode field = build(changeCase.field(), ctx, ElementKind.BYTES_REF, changeCase.source(), false);
+        if (field == null || field instanceof FusionNode.Input == false) {
+            // The mapping loop maps a single column input; only a direct BytesRef column child is supported.
+            return null;
+        }
+        FusionNode.Kernel kernel = new FusionNode.Kernel(
+            CHANGE_CASE_DESCRIPTOR,
+            List.of(
+                field,
+                FusionNode.Constant.reference(changeCase.configuration().locale(), Locale.class),
+                FusionNode.Constant.reference(changeCase.caseType(), ChangeCase.Case.class)
+            )
+        );
+        ctx.kernelSources.put(kernel, changeCase.source());
+        ctx.outputElement = ElementKind.BYTES_REF;
+        ctx.mapping = true;
+        return kernel;
+    }
 
     /**
      * The manually-built kernel descriptor for {@code Concat#process(@Fixed BreakingBytesRefBuilder scratch,

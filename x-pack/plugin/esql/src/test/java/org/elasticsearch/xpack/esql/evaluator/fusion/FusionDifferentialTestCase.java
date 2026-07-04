@@ -274,9 +274,23 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
                     assertThat(ctx + " value@" + p, f, equalTo(r));
                 }
                 case BYTES_REF -> {
-                    BytesRef f = ((BytesRefBlock) fused).getBytesRef(fused.getFirstValueIndex(p), new BytesRef());
-                    BytesRef r = ((BytesRefBlock) reference).getBytesRef(reference.getFirstValueIndex(p), new BytesRef());
-                    assertThat(ctx + " value@" + p, f, equalTo(r));
+                    // Multi-value-aware: a convert kernel (TO_LOWER/TO_UPPER) maps a multi-valued position to a
+                    // multi-valued result, so compare the value count and every value, not just the first.
+                    BytesRefBlock fb = (BytesRefBlock) fused;
+                    BytesRefBlock rb = (BytesRefBlock) reference;
+                    int fc = fb.getValueCount(p);
+                    assertThat(ctx + " valueCount@" + p, fc, equalTo(rb.getValueCount(p)));
+                    int fFirst = fb.getFirstValueIndex(p);
+                    int rFirst = rb.getFirstValueIndex(p);
+                    BytesRef fs = new BytesRef();
+                    BytesRef rs = new BytesRef();
+                    for (int v = 0; v < fc; v++) {
+                        assertThat(
+                            ctx + " value@" + p + "[" + v + "]",
+                            fb.getBytesRef(fFirst + v, fs),
+                            equalTo(rb.getBytesRef(rFirst + v, rs))
+                        );
+                    }
                 }
             }
         }

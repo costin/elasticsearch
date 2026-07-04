@@ -77,6 +77,11 @@ final class FusionCompilationService {
                 () -> stitcher.compileVectorLoopSimd(caller, tree, comparison)
             );
         }
+
+        @Override
+        public Class<?> compileMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+            return cache.get(shapeKey(tree, FusedClassCache.Path.MAPPING_BLOCK), () -> stitcher.compileMappingBlockLoop(caller, tree));
+        }
     };
 
     /** The production caching compiler consulted by {@link FusionPlanner} when no test override is installed. */

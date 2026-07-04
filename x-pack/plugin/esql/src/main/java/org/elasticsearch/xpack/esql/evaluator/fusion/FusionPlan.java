@@ -40,7 +40,14 @@ record FusionPlan(
      * boolean comparison of two same-primitive columns (B2) — set by the planner from the comparison {@code
      * Expression}. Empty means "no SIMD variant" (the scalar plain-vector path is used).
      */
-    String vectorComparison
+    String vectorComparison,
+    /**
+     * Whether this is a MULTI-VALUE MAPPING tree — a unary {@code @ConvertEvaluator} kernel (e.g. TO_LOWER/TO_UPPER)
+     * that maps over every value of a position. When {@code true} the factory compiles the tree via
+     * {@code Stitcher.compileMappingBlockLoop} (block-only, no vector fast path) instead of the ordinary single-value
+     * block path, which would wrongly warn+null a multi-value.
+     */
+    boolean mapping
 ) {
     /** The embedded constants in the Stitcher's canonical emit order — read from the signature (single source of truth). */
     List<FusionNode.Constant> constants() {

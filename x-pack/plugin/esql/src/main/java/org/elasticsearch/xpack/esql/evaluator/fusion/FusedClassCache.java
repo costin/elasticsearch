@@ -103,7 +103,9 @@ final class FusedClassCache {
          */
         FILTER_EVAL_BLOCK,
         /** {@link Stitcher#compileVectorLoopSimd}: the opt-in Panama Vector-API variant of the plain-vector path (B2). */
-        SIMD_VECTOR
+        SIMD_VECTOR,
+        /** {@link Stitcher#compileMappingBlockLoop}: a unary convert kernel that maps over multi-values (TO_LOWER/TO_UPPER). */
+        MAPPING_BLOCK
     }
 
     /**
