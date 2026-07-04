@@ -1652,6 +1652,259 @@ public final class Stitcher {
     }
 
     /**
+     * Compiles the MULTI-VALUE MAPPING block loop for a unary {@code @ConvertEvaluator}-style kernel (e.g.
+     * {@code TO_LOWER}/{@code TO_UPPER}) — a kernel that maps over EVERY value of a multi-valued position rather than
+     * treating a multi-value as a single-value error. The tree must be a single {@link FusionNode.Kernel} root with
+     * exactly one reference (BytesRef) input operand and zero-or-more {@code @Fixed} reference constants, a BytesRef
+     * output, and a non-throwing straight-line body. This mirrors the unfused convert evaluator's {@code evalBlock}:
+     * an empty position appends null, a single-value position appends one converted value, and a multi-value position
+     * appends a converted value per input value inside a {@code beginPositionEntry}/{@code endPositionEntry} — so a
+     * multi-valued input yields a multi-valued (not null-with-warning) result, which the ordinary single-value block
+     * path cannot reproduce.
+     *
+     * @throws StitchingException on verification/link/access failure — the caller falls back to the unfused chain
+     */
+    public Class<?> compileMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return defineOrThrow(caller, emitMappingBlockLoop(caller, tree), "mapping block-loop class");
+    }
+
+    private byte[] emitMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        if (tree instanceof FusionNode.Kernel == false) {
+            throw new StitchingException("mapping path requires a single convert kernel root", null);
+        }
+        FusionNode.Kernel root = (FusionNode.Kernel) tree;
+        FusionSignature signature = FusionSignature.of(tree);
+        int arity = signature.arity();
+        Element[] inputElements = inputElements(signature);
+        Element outputElement = Element.of(rootReturnType(tree));
+        // Shape guard: a unary reference (BytesRef) input, a reference output, a non-throwing body. The planner only
+        // routes such convert kernels here; anything else is a planner bug — refuse rather than emit wrong code.
+        if (arity != 1
+            || inputElements[0].reference() == false
+            || outputElement.reference() == false
+            || root.descriptor().hasOverflowException()) {
+            throw new StitchingException("mapping path requires a unary BytesRef->BytesRef non-throwing convert kernel", null);
+        }
+        List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
+        Type[] argTypes = Type.getMethodType(root.descriptor().kernelType()).getArgumentTypes();
+        List<FusionNode> children = root.children();
+        Body body = extractKernelBody(root);
+
+        // Frame: [0] BlockFactory, [1] Warnings[] (unused; kept so the signature matches the factory's blockType), [2]
+        // positionCount, [3] the single input BytesRefBlock, then one reference param per @Fixed constant, then scratch.
+        FrameLayout frame = new FrameLayout();
+        frame.slot();                                    // [0] BlockFactory
+        frame.slot();                                    // [1] Warnings[]
+        int pcSlot = frame.slot();                       // [2] int positionCount
+        int inputBase = frame.slots(arity);              // [3] input BytesRefBlock
+        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
+        int builderSlot = frame.slot();
+        int pSlot = frame.slot();
+        int countSlot = frame.slot();
+        int fviSlot = frame.slot();
+        int iSlot = frame.slot();
+        int spareSlot = frame.slot();
+        int resultSlot = frame.slot();
+        int excSlot = frame.slot();
+        int bodyBase = frame.mark();
+        SlotRemapper.shift(body.computation(), bodyBase);
+
+        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
+        desc.append(inputElements[0].blockDescriptor());
+        appendConstantParamDescriptors(desc, constants);
+        desc.append(")").append(outputElement.blockDescriptor());
+
+        MethodNode host = new MethodNode(
+            Opcodes.ASM9,
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            FUSED_METHOD_NAME,
+            desc.toString(),
+            null,
+            null
+        );
+        InsnList insns = host.instructions;
+
+        // builder = bf.new*BlockBuilder(positionCount); spare = new BytesRef();
+        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEVIRTUAL,
+                BLOCK_FACTORY,
+                outputElement.newBlockBuilderMethod(),
+                outputElement.newBlockBuilderDescriptor(),
+                false
+            )
+        );
+        insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
+        emitSpareBytesRefInit(insns, spareSlot);
+
+        LabelNode tryStart = new LabelNode();
+        LabelNode tryEnd = new LabelNode();
+        LabelNode handler = new LabelNode();
+        insns.add(tryStart);
+        insns.add(new InsnNode(Opcodes.ICONST_0));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
+
+        LabelNode loopStart = new LabelNode();
+        LabelNode loopEnd = new LabelNode();
+        LabelNode appendNull = new LabelNode();
+        LabelNode next = new LabelNode();
+        insns.add(loopStart);
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
+        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
+        // count = in0.getValueCount(p)
+        insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getValueCount", "(I)I", true));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, countSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
+        insns.add(new JumpInsnNode(Opcodes.IFEQ, appendNull)); // count == 0 -> appendNull
+
+        // if (count > 1) builder.beginPositionEntry();
+        LabelNode afterBegin = new LabelNode();
+        insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
+        insns.add(new InsnNode(Opcodes.ICONST_1));
+        insns.add(new JumpInsnNode(Opcodes.IF_ICMPLE, afterBegin));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEINTERFACE,
+                outputElement.builderInternalName(),
+                "beginPositionEntry",
+                "()" + outputElement.builderDescriptor(),
+                true
+            )
+        );
+        insns.add(new InsnNode(Opcodes.POP));
+        insns.add(afterBegin);
+
+        // fvi = in0.getFirstValueIndex(p); i = 0;
+        insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getFirstValueIndex", "(I)I", true));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, fviSlot));
+        insns.add(new InsnNode(Opcodes.ICONST_0));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, iSlot));
+
+        LabelNode valLoop = new LabelNode();
+        LabelNode valLoopEnd = new LabelNode();
+        insns.add(valLoop);
+        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
+        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, valLoopEnd));
+        // Store each operand into the body's argument slot: the single Input reads value (fvi+i) into the reusable
+        // spare; each @Fixed reference constant is loaded from its parameter slot.
+        int off = 0;
+        for (int j = 0; j < children.size(); j++) {
+            Type argType = argTypes[j];
+            int argSlot = bodyBase + off;
+            FusionNode child = children.get(j);
+            if (child instanceof FusionNode.Input) {
+                insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase));
+                insns.add(new VarInsnNode(Opcodes.ILOAD, fviSlot));
+                insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
+                insns.add(new InsnNode(Opcodes.IADD));
+                insns.add(new VarInsnNode(Opcodes.ALOAD, spareSlot));
+                insns.add(
+                    new MethodInsnNode(
+                        Opcodes.INVOKEINTERFACE,
+                        inputElements[0].blockInternalName(),
+                        inputElements[0].getValueMethod(),
+                        inputElements[0].getValueDescriptor(),
+                        true
+                    )
+                );
+                insns.add(new VarInsnNode(Opcodes.ASTORE, argSlot));
+            } else {
+                FusionNode.Constant constant = (FusionNode.Constant) child;
+                loadConstantParam(insns, constant.isReference() ? null : Element.of(argType), constant, constantSlots.get(constant));
+                insns.add(new VarInsnNode(argType.getOpcode(Opcodes.ISTORE), argSlot));
+            }
+            off += argType.getSize();
+        }
+        // Run the (non-throwing) convert body; it leaves the converted value on the stack, then append it.
+        insns.add(body.computation());
+        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEINTERFACE,
+                outputElement.builderInternalName(),
+                outputElement.appendMethod(),
+                outputElement.appendDescriptor(),
+                true
+            )
+        );
+        insns.add(new InsnNode(Opcodes.POP));
+        insns.add(new IincInsnNode(iSlot, 1));
+        insns.add(new JumpInsnNode(Opcodes.GOTO, valLoop));
+        insns.add(valLoopEnd);
+
+        // if (count > 1) builder.endPositionEntry();
+        insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
+        insns.add(new InsnNode(Opcodes.ICONST_1));
+        insns.add(new JumpInsnNode(Opcodes.IF_ICMPLE, next));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEINTERFACE,
+                outputElement.builderInternalName(),
+                "endPositionEntry",
+                "()" + outputElement.builderDescriptor(),
+                true
+            )
+        );
+        insns.add(new InsnNode(Opcodes.POP));
+        insns.add(new JumpInsnNode(Opcodes.GOTO, next));
+
+        insns.add(appendNull);
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEINTERFACE,
+                outputElement.builderInternalName(),
+                "appendNull",
+                outputElement.appendNullDescriptor(),
+                true
+            )
+        );
+        insns.add(new InsnNode(Opcodes.POP));
+
+        insns.add(next);
+        insns.add(new IincInsnNode(pSlot, 1));
+        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
+
+        insns.add(loopEnd);
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(
+            new MethodInsnNode(Opcodes.INVOKEINTERFACE, outputElement.builderInternalName(), "build", outputElement.buildDescriptor(), true)
+        );
+        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
+        insns.add(tryEnd);
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
+        insns.add(new InsnNode(Opcodes.ARETURN));
+
+        insns.add(handler);
+        insns.add(new VarInsnNode(Opcodes.ASTORE, excSlot));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
+        insns.add(new InsnNode(Opcodes.ATHROW));
+        host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
+
+        if (hostMethodInterceptor != null) {
+            hostMethodInterceptor.accept(host);
+        }
+        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$MappingBlockLoop"), host);
+        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "mapping block loop", false);
+    }
+
+    /**
      * Fuses a <b>logical</b> tree — a three-valued-logic (3VL) {@code AND}/{@code OR} tree ({@link FusionNode.Logical})
      * whose operands are boolean-producing comparison {@link FusionNode.Kernel}s (from S3.0) or nested
      * {@link FusionNode.Logical}s — into a single nullable-boolean block loop, materialised as a hidden class

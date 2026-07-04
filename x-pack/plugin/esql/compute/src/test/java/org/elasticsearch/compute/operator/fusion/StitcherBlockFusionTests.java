@@ -767,6 +767,74 @@ public class StitcherBlockFusionTests extends ESTestCase {
     }
 
     /**
+     * Task 4 (multi-value mapping): the mapping block loop maps a unary convert kernel over EVERY value of a position.
+     * Uses the {@code processAppendSuffix(BytesRef, @Fixed String)} fixture (a straight-line BytesRef->BytesRef convert
+     * with one reference constant). A single-value position yields one converted value, a multi-value position yields
+     * one converted value PER input value (inside begin/endPositionEntry), and a null position stays null — matching a
+     * convert evaluator's evalBlock, unlike the single-value path which would warn+null a multi-value.
+     */
+    public void testMappingBlockLoopMapsMultiValue() throws Throwable {
+        FusionDescriptor appendSuffix = new FusionDescriptor(
+            KernelFixtures.class,
+            "processAppendSuffix",
+            "(Lorg/apache/lucene/util/BytesRef;Ljava/lang/String;)Lorg/apache/lucene/util/BytesRef;",
+            false,
+            true
+        );
+        String suffix = "_" + randomAlphaOfLength(3);
+        FusionNode tree = new FusionNode.Kernel(
+            appendSuffix,
+            List.of(new FusionNode.Input(0), FusionNode.Constant.reference(suffix, String.class))
+        );
+
+        Class<?> fused = stitcher.compileMappingBlockLoop(MethodHandles.lookup(), tree);
+        assertThat(fused.getPackageName(), equalTo(getClass().getPackageName()));
+        MethodType type = MethodType.methodType(
+            BytesRefBlock.class,
+            BlockFactory.class,
+            Warnings[].class,
+            int.class,
+            BytesRefBlock.class,
+            String.class
+        );
+        MethodHandle handle = MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);
+
+        // Positions: 0 = single "a", 1 = multi-value ["b","c"], 2 = null, 3 = single "δΔ".
+        int positionCount = 4;
+        BytesRefBlock in;
+        try (BytesRefBlock.Builder b = blockFactory.newBytesRefBlockBuilder(positionCount)) {
+            b.appendBytesRef(new BytesRef("a"));
+            b.beginPositionEntry();
+            b.appendBytesRef(new BytesRef("b"));
+            b.appendBytesRef(new BytesRef("c"));
+            b.endPositionEntry();
+            b.appendNull();
+            b.appendBytesRef(new BytesRef("δΔ"));
+            in = b.build();
+        }
+        BytesRefBlock out = null;
+        try {
+            out = (BytesRefBlock) handle.invoke(blockFactory, noopWarnings(tree), positionCount, in, suffix);
+            assertThat(out.getPositionCount(), equalTo(positionCount));
+            BytesRef scratch = new BytesRef();
+            // pos 0: single "a_suffix"
+            assertThat(out.getValueCount(0), equalTo(1));
+            assertThat(out.getBytesRef(out.getFirstValueIndex(0), scratch).utf8ToString(), equalTo("a" + suffix));
+            // pos 1: MULTI-VALUE ["b_suffix", "c_suffix"] — mapped, not null
+            assertThat(out.getValueCount(1), equalTo(2));
+            assertThat(out.getBytesRef(out.getFirstValueIndex(1), scratch).utf8ToString(), equalTo("b" + suffix));
+            assertThat(out.getBytesRef(out.getFirstValueIndex(1) + 1, scratch).utf8ToString(), equalTo("c" + suffix));
+            // pos 2: null
+            assertThat(out.isNull(2), is(true));
+            // pos 3: single "δΔ_suffix"
+            assertThat(out.getValueCount(3), equalTo(1));
+            assertThat(out.getBytesRef(out.getFirstValueIndex(3), scratch).utf8ToString(), equalTo("δΔ" + suffix));
+        } finally {
+            Releasables.closeExpectNoException(in, out);
+        }
+    }
+
+    /**
      * A no-op {@code Warnings[]} sized to the tree's warning-source slots — the per-source array the fused block method
      * now takes (one {@code Warnings} per kernel node). NOOP so these value/null differential tests don't assert on
      * headers; correctness only needs each {@code warnings[slot]} index to be in bounds.
