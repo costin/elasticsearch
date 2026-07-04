@@ -430,6 +430,7 @@ public final class Stitcher {
         // One walk derives every structural fact this emit path needs (arity, constants-in-emit-order, ...).
         FusionSignature signature = FusionSignature.of(tree);
         int arity = signature.arity();
+        int[] consumed = signature.consumedInputs();
         // Per-input leaf elements (a tree may mix int/long/double via cast kernels) vs the OUTPUT element (the output
         // array + produced vector). They coincide for a homogeneous arithmetic root and differ for a comparison root
         // (numeric inputs feed a boolean output) or any cast-bridged input.
@@ -470,10 +471,13 @@ public final class Stitcher {
         );
         InsnList insns = host.instructions;
 
-        // Cast each input to its concrete *ArrayVector ONCE and read its backing array into a local (JIT #6). The
-        // array is fetched through the public VectorUnsafe forwarder (INVOKESTATIC) rather than the package-private
-        // rawValues() (INVOKEVIRTUAL), so this hidden class can be defined in the caller's own module.
-        for (int i = 0; i < arity; i++) {
+        // Cast each CONSUMED input to its concrete *ArrayVector ONCE and read its backing array into a local (JIT #6).
+        // The array is fetched through the public VectorUnsafe forwarder (INVOKESTATIC) rather than the package-private
+        // rawValues() (INVOKEVIRTUAL), so this hidden class can be defined in the caller's own module. Only inputs the
+        // tree actually reads are cast/extracted (matching the checked-vector path): a declared-but-unread index (a
+        // gap in [0,arity)) is never touched, so no wasted CHECKCAST/extract and no ClassCastException on a vector no
+        // leaf consumes.
+        for (int i : consumed) {
             Element inputElement = inputElements[i];
             insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
             insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
