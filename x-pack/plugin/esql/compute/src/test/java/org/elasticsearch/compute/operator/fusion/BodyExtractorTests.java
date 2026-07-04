@@ -69,6 +69,20 @@ public class BodyExtractorTests extends ESTestCase {
         public static org.apache.lucene.util.BytesRef processAppendSuffix(org.apache.lucene.util.BytesRef v, String suffix) {
             return new org.apache.lucene.util.BytesRef(v.utf8ToString().concat(suffix));
         }
+
+        /**
+         * A straight-line-to-a-single-return but <b>loop-bodied</b> kernel: {@code sum(0..n-1)}. It has a backward
+         * branch (the {@code for} back-edge) yet exactly one terminal return and no {@code ATHROW}, so it is the shape a
+         * loop-capable {@link BodyExtractor} must splice — the structural precursor to code-point/byte-loop string
+         * kernels (Substring/Trim). Kept integer-only so it splices onto the primitive vector path for an execution test.
+         */
+        public static int processSumTo(int n) {
+            int s = 0;
+            for (int i = 0; i < n; i++) {
+                s += i;
+            }
+            return s;
+        }
     }
 
     private static final String LONG_BINARY_TYPE = "(JJ)J";
@@ -95,6 +109,39 @@ public class BodyExtractorTests extends ESTestCase {
 
         // Extraction must not mutate the source node handed in by the registry.
         assertThat(kernel.instructions.size(), equalTo(originalSize));
+    }
+
+    public void testExtractsLoopBody() {
+        // A loop-bodied kernel (a for back-edge) with a single terminal return and no ATHROW is loop-capable: it
+        // extracts like any straight-line body, with the back-edge preserved in the cloned computation (#8a).
+        TemplateRegistry registry = new TemplateRegistry();
+        FusionDescriptor sumTo = new FusionDescriptor(KernelFixtures.class, "processSumTo", "(I)I", false, true);
+        MethodNode kernel = registry.methodNode(sumTo);
+        int originalSize = kernel.instructions.size();
+
+        Body body = BodyExtractor.extract(kernel);
+
+        assertThat(body.returnOpcode(), equalTo(Opcodes.IRETURN));
+        assertThat("exactly the terminal return is removed", body.computation().size(), equalTo(originalSize - 1));
+        assertNoReturnInstruction(body);
+        assertTrue("the loop back-edge must survive extraction", hasBackwardJump(body));
+        // Extraction must not mutate the source node handed in by the registry.
+        assertThat(kernel.instructions.size(), equalTo(originalSize));
+    }
+
+    /** Whether the extracted computation still contains a backward jump (a loop back-edge). */
+    private static boolean hasBackwardJump(Body body) {
+        java.util.Map<AbstractInsnNode, Integer> pos = new java.util.HashMap<>();
+        int i = 0;
+        for (AbstractInsnNode insn = body.computation().getFirst(); insn != null; insn = insn.getNext()) {
+            pos.put(insn, i++);
+        }
+        for (AbstractInsnNode insn = body.computation().getFirst(); insn != null; insn = insn.getNext()) {
+            if (insn instanceof JumpInsnNode jump && pos.get(jump.label) < pos.get(insn)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public void testRejectsMultipleReturns() {
