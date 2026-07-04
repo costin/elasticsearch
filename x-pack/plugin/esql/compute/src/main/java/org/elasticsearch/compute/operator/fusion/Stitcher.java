@@ -2952,11 +2952,24 @@ public final class Stitcher {
 
             Type[] argTypes = Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes();
             var children = kernel.children();
-            checkKernelArity(kernel, argTypes.length, children.size());
+            // A variadic kernel's LAST parameter is an array gathering the trailing children (e.g. CONCAT's BytesRef[]);
+            // it has one child per FIXED arg plus zero-or-more varargs elements. A non-variadic kernel is 1:1.
+            boolean variadic = kernel.descriptor().variadic();
+            int fixedArgs = variadic ? argTypes.length - 1 : argTypes.length;
+            if (variadic) {
+                if (children.size() < fixedArgs) {
+                    throw new IllegalArgumentException(
+                        "variadic kernel [" + kernel.descriptor().kernelMethod() + "] needs at least " + fixedArgs + " operands"
+                    );
+                }
+            } else {
+                checkKernelArity(kernel, argTypes.length, children.size());
+            }
             int kernelSlot = sourceIndices.get(kernel);
 
             // Pre-init value slot + argument slots to a typed zero for verifier definite-assignment (they are read only
-            // on the present path, but the verifier cannot prove that value-level correlation).
+            // on the present path, but the verifier cannot prove that value-level correlation). The variadic array arg
+            // is a reference, so storeZeroForType nulls it.
             storeZero(valueSlot, expected);
             int initOffset = 0;
             for (Type argType : argTypes) {
@@ -2971,7 +2984,7 @@ public final class Stitcher {
             insns.add(new VarInsnNode(Opcodes.ISTORE, presentSlot));
 
             int offset = 0;
-            for (int i = 0; i < argTypes.length; i++) {
+            for (int i = 0; i < fixedArgs; i++) {
                 Type argType = argTypes[i];
                 int argSlot = nodeBase + offset;
                 FusionNode child = children.get(i);
@@ -3010,6 +3023,14 @@ public final class Stitcher {
                     insns.add(afterChild);
                 }
                 offset += argType.getSize();
+            }
+
+            // Variadic kernel: build the trailing array argument from the remaining children (each a BytesRef column),
+            // gathering them into a fresh array at the array parameter's slot. Any null/multi-value element short-
+            // circuits the whole kernel (present=false), exactly like a fixed operand.
+            if (variadic) {
+                Element elementElem = Element.of(argTypes[argTypes.length - 1].getElementType());
+                emitVarargsGather(nodeBase + offset, elementElem, children.subList(fixedArgs, children.size()), presentSlot, kernelSlot);
             }
 
             // Run the body iff every operand of THIS kernel was present. An overflow-checked body is wrapped so an
@@ -3115,6 +3136,78 @@ public final class Stitcher {
             );
             insns.add(new VarInsnNode(argElem.type().getOpcode(Opcodes.ISTORE), argSlot));
             insns.add(afterOperand);
+        }
+
+        /**
+         * Builds a variadic kernel's trailing array argument: {@code arraySlot = new E[elements.size()]}, then reads each
+         * element (a BytesRef column) with the same null / multi-value guard as {@link #emitLeaf} and stores it into the
+         * array. Any null or multi-value element short-circuits the whole kernel ({@code present=false}) and a
+         * multi-value element registers the single-value warning on {@code kernelSlot} — matching the unfused evaluator's
+         * per-argument semantics. Each element is read into a <b>fresh</b> {@code new E()} (not the shared reusable
+         * spare) because all elements coexist in the array; a shared spare would alias every slot to the last value.
+         */
+        private void emitVarargsGather(int arraySlot, Element elementElem, List<FusionNode> elements, int presentSlot, int kernelSlot) {
+            String elementInternalName = elementElem.type().getInternalName();
+            // array = new E[count]
+            pushInt(insns, elements.size());
+            insns.add(new TypeInsnNode(Opcodes.ANEWARRAY, elementInternalName));
+            insns.add(new VarInsnNode(Opcodes.ASTORE, arraySlot));
+            for (int k = 0; k < elements.size(); k++) {
+                FusionNode element = elements.get(k);
+                if ((element instanceof FusionNode.Input) == false) {
+                    // The planner only builds variadic trees whose elements are BytesRef column inputs.
+                    throw new IllegalArgumentException("a variadic array element must be a column input but was [" + element + "]");
+                }
+                FusionNode.Input input = (FusionNode.Input) element;
+                Element inputElement = inputElements[input.index()];
+                int block = inputBase + input.index();
+                LabelNode after = new LabelNode();
+                LabelNode fail = new LabelNode();
+                LabelNode single = new LabelNode();
+                // If the kernel already short-circuited, skip this element entirely.
+                insns.add(new VarInsnNode(Opcodes.ILOAD, presentSlot));
+                insns.add(new JumpInsnNode(Opcodes.IFEQ, after));
+                insns.add(new VarInsnNode(Opcodes.ALOAD, block));
+                insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+                insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getValueCount", "(I)I", true));
+                insns.add(new VarInsnNode(Opcodes.ISTORE, countSlot));
+                insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
+                insns.add(new JumpInsnNode(Opcodes.IFEQ, fail)); // count == 0 -> null, no warning
+                insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
+                insns.add(new InsnNode(Opcodes.ICONST_1));
+                insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, single)); // count == 1 -> read
+                // count > 1 -> single-value multi-value warning on THIS kernel's source, then fail.
+                loadWarnings(insns, warningsArraySlot, kernelSlot);
+                emitMultiValueWarningOn(insns);
+                insns.add(fail);
+                insns.add(new InsnNode(Opcodes.ICONST_0));
+                insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
+                insns.add(new InsnNode(Opcodes.ICONST_0));
+                insns.add(new VarInsnNode(Opcodes.ISTORE, presentSlot));
+                insns.add(new JumpInsnNode(Opcodes.GOTO, after));
+                insns.add(single);
+                // array[k] = block.getBytesRef(block.getFirstValueIndex(p), new E()) — a fresh spare per element.
+                insns.add(new VarInsnNode(Opcodes.ALOAD, arraySlot));
+                pushInt(insns, k);
+                insns.add(new VarInsnNode(Opcodes.ALOAD, block));
+                insns.add(new VarInsnNode(Opcodes.ALOAD, block));
+                insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+                insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getFirstValueIndex", "(I)I", true));
+                insns.add(new TypeInsnNode(Opcodes.NEW, elementInternalName));
+                insns.add(new InsnNode(Opcodes.DUP));
+                insns.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, elementInternalName, "<init>", "()V", false));
+                insns.add(
+                    new MethodInsnNode(
+                        Opcodes.INVOKEINTERFACE,
+                        inputElement.blockInternalName(),
+                        inputElement.getValueMethod(),
+                        inputElement.getValueDescriptor(),
+                        true
+                    )
+                );
+                insns.add(new InsnNode(Opcodes.AASTORE));
+                insns.add(after);
+            }
         }
 
         /**

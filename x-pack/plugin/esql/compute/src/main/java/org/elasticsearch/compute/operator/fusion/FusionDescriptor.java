@@ -22,6 +22,10 @@ package org.elasticsearch.compute.operator.fusion;
  *                              kernel is not overflow-checked. The stitcher uses this as the exact type to
  *                              catch around a spliced kernel body so an overflowing position becomes a null
  *                              with a registered warning, mirroring the unfused evaluator (binding rule #3).
+ * @param variadic              whether the kernel's LAST parameter is an array that gathers a variable number of
+ *                              operands (e.g. {@code CONCAT}'s {@code BytesRef[] values}). When {@code true} the tree
+ *                              supplies the fixed leading operands followed by the array's elements as extra children,
+ *                              and the stitcher builds the array per row from those trailing children.
  */
 public record FusionDescriptor(
     Class<?> kernelClass,
@@ -29,7 +33,8 @@ public record FusionDescriptor(
     String kernelType,
     boolean overflowChecked,
     boolean allNullsIsNull,
-    String overflowExceptionType
+    String overflowExceptionType,
+    boolean variadic
 ) {
     /**
      * Convenience constructor for callers and tests that predate the explicit {@link #overflowExceptionType}
@@ -38,7 +43,7 @@ public record FusionDescriptor(
      * NaN/Inf guard), which is exactly what the annotation processor derives from the kernel's
      * {@code @Evaluator.warnExceptions}. This overload reproduces that mapping so a descriptor built by hand
      * stays consistent with the generated one: {@code java.lang.ArithmeticException} when overflow-checked,
-     * empty otherwise.
+     * empty otherwise. Not variadic.
      */
     public FusionDescriptor(Class<?> kernelClass, String kernelMethod, String kernelType, boolean overflowChecked, boolean allNullsIsNull) {
         this(
@@ -49,6 +54,18 @@ public record FusionDescriptor(
             allNullsIsNull,
             overflowChecked ? "java.lang.ArithmeticException" : ""
         );
+    }
+
+    /** Convenience constructor (the shape the annotation processor emits): explicit overflow type, not variadic. */
+    public FusionDescriptor(
+        Class<?> kernelClass,
+        String kernelMethod,
+        String kernelType,
+        boolean overflowChecked,
+        boolean allNullsIsNull,
+        String overflowExceptionType
+    ) {
+        this(kernelClass, kernelMethod, kernelType, overflowChecked, allNullsIsNull, overflowExceptionType, false);
     }
 
     /** Whether this kernel declares an overflow exception the stitcher must catch around its spliced body. */

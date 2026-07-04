@@ -25,6 +25,7 @@ import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Cast;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.Concat;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Left;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Space;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
@@ -505,6 +506,12 @@ public final class FusionPlanner {
             // DriverContext's breaker and released on close. Single-value @Evaluator (MV-safe); warns on a bad number.
             return buildSpace(space, ctx, expected, root);
         }
+        if (exp instanceof Concat concat) {
+            // CONCAT(a, b, ...) (variadic): a BytesRef -> BytesRef kernel whose process takes (@Fixed
+            // BreakingBytesRefBuilder scratch, BytesRef[] values). The N string operands become the array's elements;
+            // the stitcher builds the array per row. Single-value @Evaluator (MV-safe).
+            return buildConcat(concat, ctx, expected, root);
+        }
 
         ExpressionEvaluator.Factory factory = ctx.rawFactory.apply(exp);
         if ((factory instanceof FusionAware) == false) {
@@ -587,6 +594,57 @@ public final class FusionPlanner {
         false,
         true
     );
+
+    /**
+     * The manually-built kernel descriptor for {@code Concat#process(@Fixed BreakingBytesRefBuilder scratch,
+     * BytesRef[] values)} — variadic: the trailing {@code values} array gathers the N string operands. Not overflow-
+     * checked: {@code Concat} declares no {@code @Evaluator.warnExceptions}, so an over-length concatenation throws
+     * {@code EsqlClientException} which propagates (a query failure), exactly as the unfused evaluator does.
+     */
+    private static final FusionDescriptor CONCAT_DESCRIPTOR = new FusionDescriptor(
+        Concat.class,
+        "process",
+        "(Lorg/elasticsearch/compute/operator/BreakingBytesRefBuilder;[Lorg/apache/lucene/util/BytesRef;)Lorg/apache/lucene/util/BytesRef;",
+        false,
+        true,
+        "",
+        true
+    );
+
+    /**
+     * Builds the fused node for a {@code CONCAT(a, b, ...)} ({@link Concat}) expression (variadic): a kernel whose first
+     * operand is a per-driver breaker-accounted {@link BreakingBytesRefBuilder} scratch and whose remaining operands are
+     * the N string arguments — each of which must fuse to a {@code BytesRef} column input (a literal or nested function
+     * argument is not supported here, so the whole CONCAT then refuses). Produces a {@code BytesRef} (block-path only).
+     */
+    private static FusionNode buildConcat(Concat concat, PlanContext ctx, ElementKind expected, boolean root) {
+        if (root == false && expected != ElementKind.BYTES_REF) {
+            return null;
+        }
+        List<Expression> args = concat.children();
+        if (args.size() < 2) {
+            return null;
+        }
+        List<FusionNode> kernelChildren = new java.util.ArrayList<>(args.size() + 1);
+        kernelChildren.add(
+            FusionNode.Constant.scratch(context -> new BreakingBytesRefBuilder(context.breaker(), "concat"), BreakingBytesRefBuilder.class)
+        );
+        for (Expression arg : args) {
+            FusionNode node = build(arg, ctx, ElementKind.BYTES_REF, concat.source(), false);
+            // The array-gather emit reads each element as a fresh BytesRef from a column, so every operand must be a
+            // plain BytesRef column input; refuse the whole CONCAT otherwise (a literal/nested arg falls back to unfused).
+            if (node instanceof FusionNode.Input == false) {
+                return null;
+            }
+            kernelChildren.add(node);
+        }
+        FusionNode.Kernel kernel = new FusionNode.Kernel(CONCAT_DESCRIPTOR, kernelChildren);
+        ctx.kernelSources.put(kernel, concat.source());
+        if (root) {
+            ctx.outputElement = ElementKind.BYTES_REF;
+        }
+        return kernel;
+    }
 
     /**
      * The manually-built kernel descriptor for {@code Space#process(@Fixed BreakingBytesRefBuilder scratch, int number)}.

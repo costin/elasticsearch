@@ -16,9 +16,12 @@ import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
 import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.Concat;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Left;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Space;
 import org.elasticsearch.xpack.esql.planner.Layout;
+
+import java.util.List;
 
 /**
  * B3b/#8b end-to-end: a real single-value string function with per-driver SCRATCH {@code @Fixed} buffers ({@code LEFT},
@@ -122,5 +125,58 @@ public class ScratchFixedFusionDifferentialTests extends FusionDifferentialTestC
             in = b.build();
         }
         runDifferentialWarnings(fused, unfused, ElementKind.BYTES_REF, new Block[] { in }, positionCount, "left(space(n),3)");
+    }
+
+    private Block keywordBlock(String... vals) {
+        try (BytesRefBlock.Builder b = blockFactory.newBytesRefBlockBuilder(vals.length)) {
+            for (String v : vals) {
+                if (v == null) {
+                    b.appendNull();
+                } else {
+                    b.appendBytesRef(new BytesRef(v));
+                }
+            }
+            return b.build();
+        }
+    }
+
+    /**
+     * CONCAT(a, b, ...) is a variadic kernel: {@code process(@Fixed BreakingBytesRefBuilder scratch, BytesRef[] values)}.
+     * The N string operands become the array's elements, which the stitcher builds per row (each read into a fresh
+     * BytesRef). Wrapped in LEFT to make a depth-2 fusable tree. A null operand nulls the position (standard null
+     * propagation); fused must match the unfused ConcatEvaluator. Also exercises the breaker-accounted CONCAT scratch
+     * (the harness {@code @After} proves the breaker balances).
+     */
+    public void testConcatVariadicFusesAndMatchesUnfused() {
+        FieldAttribute a = field("a", DataType.KEYWORD);
+        FieldAttribute b = field("b", DataType.KEYWORD);
+        Layout layout = layout(a, b);
+        Expression expr = new Left(Source.EMPTY, new Concat(Source.EMPTY, a, List.of(b)), intLit(3));
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        assertFuses(fused, "left(concat(a,b),3)");
+
+        Block ba = keywordBlock("foo", "", "abc", null, "δΔx", "z");
+        Block bb = keywordBlock("bar", "Q", null, "y", "ΩΩ", "");
+        int positionCount = 6;
+        runDifferentialWarnings(fused, unfused, ElementKind.BYTES_REF, new Block[] { ba, bb }, positionCount, "left(concat(a,b),3)");
+    }
+
+    /** A 3-operand CONCAT proves the variadic array-gather for N &gt; 2 (three distinct fresh per-element BytesRefs). */
+    public void testConcatThreeArgVariadic() {
+        FieldAttribute a = field("a", DataType.KEYWORD);
+        FieldAttribute b = field("b", DataType.KEYWORD);
+        FieldAttribute c = field("c", DataType.KEYWORD);
+        Layout layout = layout(a, b, c);
+        Expression expr = new Left(Source.EMPTY, new Concat(Source.EMPTY, a, List.of(b, c)), intLit(5));
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        assertFuses(fused, "left(concat(a,b,c),5)");
+
+        Block ba = keywordBlock("A", "one", null, "x");
+        Block bb = keywordBlock("B", "two", "y", "");
+        Block bc = keywordBlock("C", "three", "z", "w");
+        int positionCount = 4;
+        runDifferentialWarnings(fused, unfused, ElementKind.BYTES_REF, new Block[] { ba, bb, bc }, positionCount, "left(concat(a,b,c),5)");
     }
 }

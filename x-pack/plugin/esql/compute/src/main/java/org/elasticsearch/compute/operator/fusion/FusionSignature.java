@@ -143,8 +143,14 @@ public final class FusionSignature {
             }
             Type[] argTypes = Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes();
             List<FusionNode> children = kernel.children();
+            // A variadic kernel's LAST parameter is an array; the fixed leading children map to their own argTypes, and
+            // every trailing child (a varargs element) maps to that array's ELEMENT type. A non-variadic kernel has one
+            // child per argType.
+            boolean variadic = kernel.descriptor().variadic();
+            Type varargsElementType = variadic ? argTypes[argTypes.length - 1].getElementType() : null;
             for (int i = 0; i < children.size(); i++) {
-                walk(children.get(i), argTypes[i], constants, warningSources, overflow, consumed, inputTypeByIndex, maxInputIndex);
+                Type childType = (variadic && i >= argTypes.length - 1) ? varargsElementType : argTypes[i];
+                walk(children.get(i), childType, constants, warningSources, overflow, consumed, inputTypeByIndex, maxInputIndex);
             }
         } else if (node instanceof FusionNode.Logical logical) {
             // A logical node is not a warning source; recurse left then right. Its operands are comparison/logical
