@@ -494,7 +494,17 @@ public final class Stitcher {
         // leave the computed value on top, so a single array-store consumes all three.
         insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
         insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        VectorLoopEmitter emitter = new VectorLoopEmitter(insns, inputElements, rawArrayBase, pSlot, kernelBase, constantSlots);
+        StackKernelEmitter emitter = new StackKernelEmitter(insns, constantSlots, kernelBase,
+            // Plain-vector leaf: a<index>[p], read at this leaf's own element.
+            input -> {
+                Element element = inputElements[input.index()];
+                insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + input.index()));
+                insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+                insns.add(new InsnNode(element.type().getOpcode(Opcodes.IALOAD)));
+            },
+            // Plain vector has no overflow-checked kernels, so nothing runs before a body.
+            kernel -> {}
+        );
         emitter.emit(tree, outputElement);
         // The computed value (an int 0/1 for a comparison root) is stored with the OUTPUT element's array-store opcode
         // (BASTORE for boolean).
@@ -708,14 +718,20 @@ public final class Stitcher {
             insns.add(tryStartOverflow);
         }
         insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        BlockLoopEmitter emitter = new BlockLoopEmitter(
-            insns,
-            inputElements,
-            valueSlots,
-            sourceIndices,
-            currentKernelSlot,
-            kernelBase,
-            constantSlots
+        StackKernelEmitter emitter = new StackKernelEmitter(insns, constantSlots, kernelBase,
+            // Checked-vector leaf: the per-position value already read (no null/mv guard — the vector is dense).
+            input -> {
+                Element element = inputElements[input.index()];
+                insns.add(new VarInsnNode(element.type().getOpcode(Opcodes.ILOAD), valueSlots[input.index()]));
+            },
+            // Before an overflow-checked body, record which kernel is running so the shared overflow handler
+            // attributes a caught overflow to THIS kernel's own source (see the handler below).
+            kernel -> {
+                if (kernel.descriptor().hasOverflowException()) {
+                    pushInt(insns, sourceIndices.get(kernel));
+                    insns.add(new VarInsnNode(Opcodes.ISTORE, currentKernelSlot));
+                }
+            }
         );
         emitter.emit(tree, outputElement);
         insns.add(
@@ -792,32 +808,64 @@ public final class Stitcher {
         return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "checked-vector loop", false);
     }
 
-    /**
-     * Post-order emitter for one expression tree into the fused loop body. Holds the running kernel-slot base so
-     * each {@link FusionNode.Kernel} node claims a disjoint range (advanced by the body's {@code maxLocals}).
-     */
-    private final class VectorLoopEmitter {
-        private final InsnList insns;
-        private final Element[] inputElements;
-        private final int rawArrayBase;
-        private final int pSlot;
-        private int kernelBase;
-        private final Map<FusionNode.Constant, Integer> constantSlots;
+    /** Extracts a kernel's straight-line {@link Body} from its template {@link MethodNode} (registry lookup + lift). */
+    private Body extractKernelBody(FusionNode.Kernel kernel) {
+        return BodyExtractor.extract(templates.methodNode(kernel.descriptor()));
+    }
 
-        VectorLoopEmitter(
+    /**
+     * Emits an {@link FusionNode.Input} leaf's value for the current position onto the operand stack, typed to the
+     * leaf's own element. The two stack-based paths differ only here: the plain-vector fast path reads
+     * {@code rawArray[p]}, while the checked-vector path reads a value already loaded into the leaf's value local.
+     */
+    @FunctionalInterface
+    private interface LeafReader {
+        void read(FusionNode.Input input);
+    }
+
+    /**
+     * A hook the {@link StackKernelEmitter} runs immediately before splicing a kernel's body (after its operands are
+     * stored into the body's argument slots). No-op for the plain-vector path; the checked-vector path uses it to
+     * record which overflow-checked kernel is about to run so the shared handler attributes a caught overflow to that
+     * kernel's own warning source.
+     */
+    @FunctionalInterface
+    private interface KernelPreBody {
+        void beforeBody(FusionNode.Kernel kernel);
+    }
+
+    /**
+     * Post-order emitter that leaves a tree's value for the current position on the operand stack — the shared core of
+     * the two <b>stack-based</b> fast paths (plain-vector {@link #emitVectorLoop} and checked-vector
+     * {@link #emitVectorLoopChecked}). Both walk the tree identically — a {@link FusionNode.Constant} loads from its
+     * trailing parameter slot; a {@link FusionNode.Kernel} claims a disjoint slot range (advanced by the body's
+     * {@code maxLocals}), shifts and splices its body, storing each child's value into the body's argument slots — and
+     * differ ONLY in two injected strategies: how an {@link FusionNode.Input} leaf is read ({@link LeafReader}) and
+     * what runs just before a kernel body ({@link KernelPreBody}). Sharing this walk keeps the two paths from drifting.
+     *
+     * <p>It is NOT used by the nullable/multi-valued {@link BlockDfsEmitter} or the 3VL {@link LogicalDfsEmitter}:
+     * those interleave present/live/warning control flow with the walk (they are real semantic forks), though they
+     * reuse the same {@link #extractKernelBody}/{@link #checkKernelArity}/{@link #loadConstantParam} primitives.
+     */
+    private final class StackKernelEmitter {
+        private final InsnList insns;
+        private final Map<FusionNode.Constant, Integer> constantSlots;
+        private final LeafReader leafReader;
+        private final KernelPreBody preBody;
+        private int kernelBase;
+
+        StackKernelEmitter(
             InsnList insns,
-            Element[] inputElements,
-            int rawArrayBase,
-            int pSlot,
+            Map<FusionNode.Constant, Integer> constantSlots,
             int kernelBase,
-            Map<FusionNode.Constant, Integer> constantSlots
+            LeafReader leafReader,
+            KernelPreBody preBody
         ) {
             this.insns = insns;
-            this.inputElements = inputElements;
-            this.rawArrayBase = rawArrayBase;
-            this.pSlot = pSlot;
-            this.kernelBase = kernelBase;
             this.constantSlots = constantSlots;
+            this.kernelBase = kernelBase;
+            this.leafReader = leafReader;
+            this.preBody = preBody;
         }
 
         /**
@@ -827,21 +875,18 @@ public final class Stitcher {
          */
         void emit(FusionNode node, Element expected) {
             if (node instanceof FusionNode.Input input) {
-                // a<index>[p], read at this leaf's own element (== expected).
-                Element element = inputElements[input.index()];
-                insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + input.index()));
-                insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-                insns.add(new InsnNode(element.type().getOpcode(Opcodes.IALOAD)));
+                // A leaf reads at its OWN element (inputElements[index], == expected under per-node typing), via the
+                // injected strategy.
+                leafReader.read(input);
                 return;
             }
             if (node instanceof FusionNode.Constant constant) {
-                // Embedded literal: load it from its trailing method-parameter slot (no array read, no input slot).
+                // Embedded literal: load it from its trailing method-parameter slot (no leaf read, no input slot).
                 loadConstantParam(insns, expected, constant, constantSlots.get(constant));
                 return;
             }
             FusionNode.Kernel kernel = (FusionNode.Kernel) node;
-            MethodNode template = templates.methodNode(kernel.descriptor());
-            Body body = BodyExtractor.extract(template);
+            Body body = extractKernelBody(kernel);
 
             // Claim this node's disjoint slot range, then shift the body's locals into it. Argument loads inside the
             // body now read [nodeBase + argOffset]; the stores below feed exactly those slots.
@@ -859,6 +904,7 @@ public final class Stitcher {
                 insns.add(new VarInsnNode(argTypes[i].getOpcode(Opcodes.ISTORE), nodeBase + offset));
                 offset += argTypes[i].getSize();
             }
+            preBody.beforeBody(kernel);
             // The spliced body reads its inputs from the shifted argument slots and leaves the result on the stack.
             insns.add(body.computation());
         }
@@ -1938,8 +1984,7 @@ public final class Stitcher {
      * returned.
      */
     private MethodNode emitComparisonHelper(FusionNode.Kernel comparison, Element inputElement, String methodName) {
-        MethodNode template = templates.methodNode(comparison.descriptor());
-        Body body = BodyExtractor.extract(template);
+        Body body = extractKernelBody(comparison);
         int size = inputElement.type().getSize();
         List<FusionNode> children = comparison.children();
         // Only column ({@link FusionNode.Input}) operands become *Block parameters; a {@link FusionNode.Constant}
@@ -2394,85 +2439,6 @@ public final class Stitcher {
         }
     }
 
-    /**
-     * Post-order emitter for the fused <b>checked-vector</b> loop. Identical in structure to {@link VectorLoopEmitter}
-     * except an {@link FusionNode.Input} reads the per-position value already loaded into its value local (rather than
-     * indexing a raw array). It carries no null/multi-value guards because the checked-vector path operates on dense,
-     * single-valued vectors; the nullable/multi-valued block path uses {@link BlockDfsEmitter} instead, which inlines
-     * those guards in DFS order.
-     */
-    private final class BlockLoopEmitter {
-        private final InsnList insns;
-        private final Element[] inputElements;
-        private final int[] valueSlots;
-        private final Map<FusionNode, Integer> sourceIndices;
-        private final int currentKernelSlot;
-        private int kernelBase;
-        private final Map<FusionNode.Constant, Integer> constantSlots;
-
-        BlockLoopEmitter(
-            InsnList insns,
-            Element[] inputElements,
-            int[] valueSlots,
-            Map<FusionNode, Integer> sourceIndices,
-            int currentKernelSlot,
-            int kernelBase,
-            Map<FusionNode.Constant, Integer> constantSlots
-        ) {
-            this.insns = insns;
-            this.inputElements = inputElements;
-            this.valueSlots = valueSlots;
-            this.sourceIndices = sourceIndices;
-            this.currentKernelSlot = currentKernelSlot;
-            this.kernelBase = kernelBase;
-            this.constantSlots = constantSlots;
-        }
-
-        /**
-         * Emits instructions that leave {@code node}'s value for the current position {@code p} on the operand stack.
-         * {@code expected} is the element {@code node} must produce (its consuming kernel's argument element, or the
-         * output element at the root) — used to type a constant push; a leaf reads its own pre-loaded value slot.
-         */
-        void emit(FusionNode node, Element expected) {
-            if (node instanceof FusionNode.Input input) {
-                Element element = inputElements[input.index()];
-                insns.add(new VarInsnNode(element.type().getOpcode(Opcodes.ILOAD), valueSlots[input.index()]));
-                return;
-            }
-            if (node instanceof FusionNode.Constant constant) {
-                // Embedded literal: load it from its trailing method-parameter slot (no pre-read value slot).
-                loadConstantParam(insns, expected, constant, constantSlots.get(constant));
-                return;
-            }
-            FusionNode.Kernel kernel = (FusionNode.Kernel) node;
-            MethodNode template = templates.methodNode(kernel.descriptor());
-            Body body = BodyExtractor.extract(template);
-
-            // Claim this node's disjoint slot range, then shift the body's locals into it. Argument loads inside the
-            // body now read [nodeBase + argOffset]; the stores below feed exactly those slots.
-            int nodeBase = kernelBase;
-            kernelBase += body.maxLocals();
-            SlotRemapper.shift(body.computation(), nodeBase);
-
-            Type[] argTypes = Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes();
-            var children = kernel.children();
-            checkKernelArity(kernel, argTypes.length, children.size());
-            int offset = 0;
-            for (int i = 0; i < argTypes.length; i++) {
-                emit(children.get(i), Element.of(argTypes[i]));
-                insns.add(new VarInsnNode(argTypes[i].getOpcode(Opcodes.ISTORE), nodeBase + offset));
-                offset += argTypes[i].getSize();
-            }
-            if (kernel.descriptor().hasOverflowException()) {
-                // Record which kernel is about to run so the shared overflow handler attributes a caught overflow to
-                // THIS kernel's own source (see emitVectorLoopChecked's handler).
-                pushInt(insns, sourceIndices.get(kernel));
-                insns.add(new VarInsnNode(Opcodes.ISTORE, currentKernelSlot));
-            }
-            insns.add(body.computation());
-        }
-    }
-
     /** The disjoint local slots a {@link BlockDfsEmitter} node evaluates into: a {@code present} flag and its value. */
     private record NodeSlots(int present, int value) {}
 
@@ -2563,8 +2529,7 @@ public final class Stitcher {
          */
         NodeSlots emit(FusionNode node, Element expected) {
             FusionNode.Kernel kernel = (FusionNode.Kernel) node;
-            MethodNode template = templates.methodNode(kernel.descriptor());
-            Body body = BodyExtractor.extract(template);
+            Body body = extractKernelBody(kernel);
 
             // Claim this node's disjoint slots: a present flag, an expected-wide value slot, then the body's local
             // range (arguments + temps). Children recurse and claim strictly higher slots, so no ranges collide.
