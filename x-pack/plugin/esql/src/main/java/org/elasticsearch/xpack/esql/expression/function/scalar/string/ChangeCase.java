@@ -29,7 +29,7 @@ public abstract class ChangeCase extends EsqlConfigurationFunction {
     public enum Case {
         UPPER {
             @Override
-            String process(String value, Locale locale) {
+            public String process(String value, Locale locale) {
                 return value.toUpperCase(locale);
             }
 
@@ -40,7 +40,7 @@ public abstract class ChangeCase extends EsqlConfigurationFunction {
         },
         LOWER {
             @Override
-            String process(String value, Locale locale) {
+            public String process(String value, Locale locale) {
                 return value.toLowerCase(locale);
             }
 
@@ -50,7 +50,9 @@ public abstract class ChangeCase extends EsqlConfigurationFunction {
             }
         };
 
-        abstract String process(String value, Locale locale);
+        // public (not package-private) so the bytecode-fusion stitcher can splice ChangeCase#process — whose body calls
+        // caseType.process(...) — into a fused hidden class defined in a different package without an IllegalAccessError.
+        public abstract String process(String value, Locale locale);
 
         public abstract boolean matchesCase(String value);
     }

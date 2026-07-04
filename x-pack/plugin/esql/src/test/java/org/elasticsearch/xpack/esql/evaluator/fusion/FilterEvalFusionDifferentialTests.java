@@ -511,6 +511,7 @@ public class FilterEvalFusionDifferentialTests extends FusionDifferentialTestCas
             case INT -> DataType.INTEGER;
             case DOUBLE -> DataType.DOUBLE;
             case BOOLEAN -> throw new AssertionError("boolean columns are not inputs here");
+            case BYTES_REF -> throw new AssertionError("BytesRef columns are not inputs here");
         };
     }
 

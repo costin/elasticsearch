@@ -7,6 +7,7 @@
 
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
+import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.MockBigArrays;
@@ -14,6 +15,7 @@ import org.elasticsearch.common.util.PageCacheRecycler;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BlockFactory;
 import org.elasticsearch.compute.data.BooleanBlock;
+import org.elasticsearch.compute.data.BytesRefBlock;
 import org.elasticsearch.compute.data.DoubleBlock;
 import org.elasticsearch.compute.data.IntBlock;
 import org.elasticsearch.compute.data.LongBlock;
@@ -271,6 +273,11 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
                     boolean r = ((BooleanBlock) reference).getBoolean(reference.getFirstValueIndex(p));
                     assertThat(ctx + " value@" + p, f, equalTo(r));
                 }
+                case BYTES_REF -> {
+                    BytesRef f = ((BytesRefBlock) fused).getBytesRef(fused.getFirstValueIndex(p), new BytesRef());
+                    BytesRef r = ((BytesRefBlock) reference).getBytesRef(reference.getFirstValueIndex(p), new BytesRef());
+                    assertThat(ctx + " value@" + p, f, equalTo(r));
+                }
             }
         }
     }
@@ -368,7 +375,8 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
         LONG,
         INT,
         DOUBLE,
-        BOOLEAN
+        BOOLEAN,
+        BYTES_REF
     }
 
     /**
@@ -440,6 +448,7 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
             case INT -> buildIntColumn(positionCount, structure, () -> nextInt(profile));
             case DOUBLE -> buildDoubleColumn(positionCount, structure, this::nextDouble);
             case BOOLEAN -> throw new AssertionError("boolean columns are output-only in these harnesses");
+            case BYTES_REF -> throw new AssertionError("BytesRef columns are supplied directly by BytesRef tests, not generated here");
         };
     }
 
@@ -640,6 +649,7 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
                 yield blockFactory.newDoubleArrayVector(v, positions).asBlock();
             }
             case BOOLEAN -> throw new AssertionError("boolean columns are output-only in these harnesses");
+            case BYTES_REF -> throw new AssertionError("BytesRef columns are supplied directly by BytesRef tests, not generated here");
         };
     }
 

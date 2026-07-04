@@ -419,11 +419,16 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         }
     }
 
-    /** The primitive parameter type for each constant (in canonical emit order), for the resolved {@link MethodType}. */
+    /**
+     * The parameter type for each constant (in canonical emit order), for the resolved {@link MethodType}: the
+     * primitive class for a primitive constant, or the declared reference type for an object {@code @Fixed} constant
+     * (B3b) — matching the {@code L…;} descriptor the Stitcher emitted for it.
+     */
     private static Class<?>[] constantParamTypes(List<FusionNode.Constant> constants) {
         Class<?>[] types = new Class<?>[constants.size()];
         for (int i = 0; i < types.length; i++) {
-            types[i] = constantParamClass(constants.get(i).element());
+            FusionNode.Constant constant = constants.get(i);
+            types[i] = constant.isReference() ? constant.refType() : constantParamClass(constant.element());
         }
         return types;
     }

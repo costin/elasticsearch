@@ -1014,6 +1014,7 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
             case INT -> new Literal(Source.EMPTY, (int) raw, DataType.INTEGER);
             case DOUBLE -> new Literal(Source.EMPTY, (double) raw, DataType.DOUBLE);
             case BOOLEAN -> throw new AssertionError("boolean constant leaves are not generated");
+            case BYTES_REF -> throw new AssertionError("BytesRef constant leaves are not generated");
         };
     }
 
@@ -1756,6 +1757,7 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
             case INT -> DataType.INTEGER;
             case DOUBLE -> DataType.DOUBLE;
             case BOOLEAN -> throw new AssertionError("boolean leaves are not generated");
+            case BYTES_REF -> throw new AssertionError("BytesRef leaves are not generated");
         };
     }
 
