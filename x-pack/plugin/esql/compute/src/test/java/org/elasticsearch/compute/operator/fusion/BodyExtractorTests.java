@@ -52,6 +52,11 @@ public class BodyExtractorTests extends ESTestCase {
         public static org.apache.lucene.util.BytesRef processBytesRefIdentity(org.apache.lucene.util.BytesRef v) {
             return v;
         }
+
+        /** A straight-line {@code long > long -> boolean} comparison kernel for the SIMD (Vector-API) fast-path tests. */
+        public static boolean processLongsGreaterThan(long lhs, long rhs) {
+            return lhs > rhs;
+        }
     }
 
     private static final String LONG_BINARY_TYPE = "(JJ)J";

@@ -736,6 +736,219 @@ public final class Stitcher {
         };
     }
 
+    /** The {@code jdk.incubator.vector.*Vector} internal name for a primitive operand element (int/long/double). */
+    private static String simdVectorClass(Element operand) {
+        return switch (operand.type().getSort()) {
+            case Type.INT -> FusionSimd.INT_VECTOR;
+            case Type.LONG -> FusionSimd.LONG_VECTOR;
+            case Type.DOUBLE -> FusionSimd.DOUBLE_VECTOR;
+            default -> throw new IllegalArgumentException("no SIMD vector class for element " + operand.type().getClassName());
+        };
+    }
+
+    /**
+     * Compiles the opt-in Panama Vector-API (SIMD) variant of the plain-vector fast path (B2) for a boolean COMPARISON
+     * of two same-primitive column operands (e.g. {@code a > b}), materialised as a hidden class. {@code comparison}
+     * is the {@code jdk.incubator.vector.VectorOperators.Comparison} constant name (e.g. {@code "GT"}) supplied by the
+     * planner from the comparison {@code Expression}. The caller must have {@linkplain FusionSimd#enableReadsFrom
+     * granted its module a read edge} to {@code jdk.incubator.vector} first.
+     *
+     * @throws StitchingException on verification/link/access failure — the caller falls back to the scalar path
+     */
+    public Class<?> compileVectorLoopSimd(MethodHandles.Lookup caller, FusionNode tree, String comparison) throws StitchingException {
+        return defineOrThrow(caller, emitVectorLoopSimd(caller, tree, comparison), "SIMD vector-loop class");
+    }
+
+    /**
+     * Emits the SIMD comparison loop:
+     * <pre>{@code
+     * static BooleanVector fused(BlockFactory bf, int positionCount, Vector in0, Vector in1) {
+     *     int[] a = VectorUnsafe.ints((IntArrayVector) in0);
+     *     int[] b = VectorUnsafe.ints((IntArrayVector) in1);
+     *     boolean[] out = new boolean[positionCount];
+     *     VectorSpecies species = IntVector.SPECIES_PREFERRED;
+     *     int bound = species.loopBound(positionCount), len = species.length(), i = 0;
+     *     for (; i < bound; i += len) {                                   // SIMD body
+     *         IntVector.fromArray(species, a, i).compare(GT, IntVector.fromArray(species, b, i)).intoArray(out, i);
+     *     }
+     *     for (; i < positionCount; i++) out[i] = a[i] > b[i];            // scalar tail (spliced comparison kernel)
+     *     return bf.newBooleanArrayVector(out, positionCount);
+     * }
+     * }</pre>
+     */
+    private byte[] emitVectorLoopSimd(MethodHandles.Lookup caller, FusionNode tree, String comparison) throws StitchingException {
+        FusionSignature signature = FusionSignature.of(tree);
+        int arity = signature.arity();
+        Element[] inputElements = inputElements(signature);
+        Element operand = inputElements[0];
+        // Defensive shape guard (the planner only routes eligible trees here): two same-primitive column operands,
+        // no constants, boolean output. Anything else is a planner bug — refuse rather than emit wrong code.
+        if (arity != 2
+            || signature.constantsInEmitOrder().isEmpty() == false
+            || inputElements[1].type().getSort() != operand.type().getSort()
+            || operand.reference()) {
+            throw new StitchingException("SIMD path requires two same-primitive column operands with no constants", null);
+        }
+        Element outputElement = Element.of(rootReturnType(tree));
+        String eVector = simdVectorClass(operand);
+        String arrayDescriptor = operand.rawValuesDescriptor().substring(2);            // "()[I" -> "[I"
+        String speciesDescriptor = "L" + FusionSimd.VECTOR_SPECIES + ";";
+        String fromArrayDescriptor = "(" + speciesDescriptor + arrayDescriptor + "I)L" + eVector + ";";
+        String compareDescriptor = "(L" + FusionSimd.COMPARISON + ";L" + FusionSimd.VECTOR + ";)L" + FusionSimd.VECTOR_MASK + ";";
+
+        FrameLayout frame = new FrameLayout();
+        frame.slot();                                    // [0] BlockFactory
+        frame.slot();                                    // [1] int positionCount
+        int inputBase = frame.slots(arity);              // [2 .. 2+arity) input Vectors
+        int rawArrayBase = frame.slots(arity);           // per-input backing arrays
+        int outSlot = frame.slot();                      // boolean[]
+        int speciesSlot = frame.slot();                  // VectorSpecies
+        int boundSlot = frame.slot();                    // int loop bound
+        int lenSlot = frame.slot();                      // int species length
+        int iSlot = frame.slot();                        // int cursor (shared by SIMD body + scalar tail)
+        int vaSlot = frame.slot();                       // *Vector
+        int vbSlot = frame.slot();                       // *Vector
+        int maskSlot = frame.slot();                     // VectorMask
+        int kernelBase = frame.mark();                   // scalar-tail spliced comparison body
+
+        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";I");
+        for (int i = 0; i < arity; i++) {
+            desc.append("L").append(VECTOR).append(";");
+        }
+        desc.append(")").append(outputElement.vectorDescriptor());
+
+        MethodNode host = new MethodNode(
+            Opcodes.ASM9,
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            FUSED_METHOD_NAME,
+            desc.toString(),
+            null,
+            null
+        );
+        InsnList insns = host.instructions;
+
+        // a = VectorUnsafe.<E>s((EArrayVector) inN); read each backing array once.
+        for (int i = 0; i < arity; i++) {
+            insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
+            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElements[i].arrayVectorInternalName()));
+            insns.add(
+                new MethodInsnNode(
+                    Opcodes.INVOKESTATIC,
+                    VECTOR_UNSAFE,
+                    inputElements[i].vectorUnsafeMethod(),
+                    inputElements[i].vectorUnsafeDescriptor(),
+                    false
+                )
+            );
+            insns.add(new VarInsnNode(Opcodes.ASTORE, rawArrayBase + i));
+        }
+        // out = new boolean[positionCount]
+        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        insns.add(new IntInsnNode(Opcodes.NEWARRAY, outputElement.newArrayType()));
+        insns.add(new VarInsnNode(Opcodes.ASTORE, outSlot));
+        // species = EVector.SPECIES_PREFERRED
+        insns.add(new org.objectweb.asm.tree.FieldInsnNode(Opcodes.GETSTATIC, eVector, "SPECIES_PREFERRED", speciesDescriptor));
+        insns.add(new VarInsnNode(Opcodes.ASTORE, speciesSlot));
+        // bound = species.loopBound(positionCount)
+        insns.add(new VarInsnNode(Opcodes.ALOAD, speciesSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, FusionSimd.VECTOR_SPECIES, "loopBound", "(I)I", true));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, boundSlot));
+        // len = species.length()
+        insns.add(new VarInsnNode(Opcodes.ALOAD, speciesSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, FusionSimd.VECTOR_SPECIES, "length", "()I", true));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, lenSlot));
+        // i = 0
+        insns.add(new InsnNode(Opcodes.ICONST_0));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, iSlot));
+
+        LabelNode simdStart = new LabelNode();
+        LabelNode tailStart = new LabelNode();
+        LabelNode tailEnd = new LabelNode();
+        insns.add(simdStart);
+        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, boundSlot));
+        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, tailStart));
+        // va = EVector.fromArray(species, a, i)
+        insns.add(new VarInsnNode(Opcodes.ALOAD, speciesSlot));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, eVector, "fromArray", fromArrayDescriptor, false));
+        insns.add(new VarInsnNode(Opcodes.ASTORE, vaSlot));
+        // vb = EVector.fromArray(species, b, i)
+        insns.add(new VarInsnNode(Opcodes.ALOAD, speciesSlot));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + 1));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, eVector, "fromArray", fromArrayDescriptor, false));
+        insns.add(new VarInsnNode(Opcodes.ASTORE, vbSlot));
+        // mask = va.compare(VectorOperators.<OP>, vb)
+        insns.add(new VarInsnNode(Opcodes.ALOAD, vaSlot));
+        insns.add(
+            new org.objectweb.asm.tree.FieldInsnNode(
+                Opcodes.GETSTATIC,
+                FusionSimd.VECTOR_OPERATORS,
+                comparison,
+                "L" + FusionSimd.COMPARISON + ";"
+            )
+        );
+        insns.add(new VarInsnNode(Opcodes.ALOAD, vbSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, eVector, "compare", compareDescriptor, false));
+        insns.add(new VarInsnNode(Opcodes.ASTORE, maskSlot));
+        // mask.intoArray(out, i)
+        insns.add(new VarInsnNode(Opcodes.ALOAD, maskSlot));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, FusionSimd.VECTOR_MASK, "intoArray", "([ZI)V", false));
+        // i += len
+        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, lenSlot));
+        insns.add(new InsnNode(Opcodes.IADD));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, iSlot));
+        insns.add(new JumpInsnNode(Opcodes.GOTO, simdStart));
+
+        // Scalar tail: for (; i < positionCount; i++) out[i] = <comparison>(a[i], b[i]).
+        insns.add(tailStart);
+        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, tailEnd));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
+        StackKernelEmitter tail = new StackKernelEmitter(insns, java.util.Map.of(), kernelBase, input -> {
+            Element e = inputElements[input.index()];
+            insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + input.index()));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
+            insns.add(new InsnNode(e.type().getOpcode(Opcodes.IALOAD)));
+        }, kernel -> {});
+        tail.emit(tree, outputElement);
+        insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
+        insns.add(new IincInsnNode(iSlot, 1));
+        insns.add(new JumpInsnNode(Opcodes.GOTO, tailStart));
+        insns.add(tailEnd);
+
+        // return bf.newBooleanArrayVector(out, positionCount)
+        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEVIRTUAL,
+                BLOCK_FACTORY,
+                outputElement.newVectorMethod(),
+                outputElement.newVectorDescriptor(),
+                false
+            )
+        );
+        insns.add(new InsnNode(Opcodes.ARETURN));
+
+        if (hostMethodInterceptor != null) {
+            hostMethodInterceptor.accept(host);
+        }
+        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$SimdVectorLoop"), host);
+        // Not budget-enforced: the SIMD body is a fixed small sequence, but it is only used for the eligible
+        // single-comparison shape, so it never approaches the limit; measure/log only.
+        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "SIMD vector loop", false);
+    }
+
     /**
      * Overflow-aware counterpart to {@link #compileVectorLoop}: fuses a tree of no-null single-valued primitive
      * {@code *ArrayVector} inputs whose kernels are <b>overflow-checked</b> into a single counted loop that reads
