@@ -121,6 +121,41 @@ public final class Stitcher {
     }
 
     /**
+     * Defines {@code bytecode} as a hidden class in the {@code caller}'s module and returns it, mapping the two
+     * failure modes of {@link MethodHandles.Lookup#defineHiddenClass} — a {@link LinkageError} (a {@link VerifyError}
+     * from the JVM's own verifier is a subtype) and an {@link IllegalAccessException} — to a typed
+     * {@link StitchingException} after a WARN, so the plan-time caller falls back to the unfused chain without the
+     * query path ever seeing an {@code Error}. Every {@code compile*} entry point funnels through here, so the
+     * define-and-map-failure contract (binding rule #5's failure surface) lives once rather than being copied per path.
+     *
+     * @param what names the emit path in the log/message (e.g. {@code "block-loop class"})
+     */
+    private Class<?> defineOrThrow(MethodHandles.Lookup caller, byte[] bytecode, String what) throws StitchingException {
+        try {
+            return caller.defineHiddenClass(bytecode, true).lookupClass();
+        } catch (LinkageError e) {
+            logger.warn("fused {} failed to link; falling back to unfused", what, e);
+            throw new StitchingException("failed to define fused " + what, e);
+        } catch (IllegalAccessException e) {
+            logger.warn("caller lookup [{}] cannot define fused {}; falling back to unfused", caller, what, e);
+            throw new StitchingException("caller lookup cannot define fused " + what, e);
+        }
+    }
+
+    /**
+     * Fails loud when a {@link FusionNode.Kernel}'s operand count does not match its descriptor's arity — a
+     * planner/tree construction bug, not a runtime input condition (so an unchecked exception, caught by no one, is
+     * correct). Shared by every emitter that splices a kernel body so the check reads identically on all paths.
+     */
+    private static void checkKernelArity(FusionNode.Kernel kernel, int expected, int actual) {
+        if (actual != expected) {
+            throw new IllegalArgumentException(
+                "kernel [" + kernel.descriptor().kernelMethod() + "] expects " + expected + " operands but the tree supplied " + actual
+            );
+        }
+    }
+
+    /**
      * Fuses the kernel identified by {@code descriptor} into a hidden class defined in {@code caller}'s module,
      * exposing a {@code public static} {@link #FUSED_METHOD_NAME} method whose descriptor matches the kernel's
      * (e.g. {@code (JJ)J}) and whose body is the kernel's computation.
@@ -135,18 +170,7 @@ public final class Stitcher {
      *                            unfused path
      */
     public Class<?> compile(MethodHandles.Lookup caller, FusionDescriptor descriptor) throws StitchingException {
-        byte[] bytecode = emit(caller, descriptor);
-        try {
-            MethodHandles.Lookup defined = caller.defineHiddenClass(bytecode, true);
-            return defined.lookupClass();
-        } catch (LinkageError e) {
-            // VerifyError is a LinkageError: a stitched body the verifier rejects lands here.
-            logger.warn("fused kernel [{}] failed to link; falling back to unfused", descriptor, e);
-            throw new StitchingException("failed to define fused class for kernel " + descriptor, e);
-        } catch (IllegalAccessException e) {
-            logger.warn("caller lookup [{}] cannot define fused class for kernel [{}]; falling back to unfused", caller, descriptor, e);
-            throw new StitchingException("caller lookup cannot define fused class for kernel " + descriptor, e);
-        }
+        return defineOrThrow(caller, emit(caller, descriptor), "class for kernel " + descriptor);
     }
 
     /**
@@ -350,16 +374,7 @@ public final class Stitcher {
      *                            fails JVM verification/linking — the caller should fall back to the unfused path
      */
     public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        byte[] bytecode = emitVectorLoop(caller, tree);
-        try {
-            return caller.defineHiddenClass(bytecode, true).lookupClass();
-        } catch (LinkageError e) {
-            logger.warn("fused vector loop failed to link; falling back to unfused", e);
-            throw new StitchingException("failed to define fused vector-loop class", e);
-        } catch (IllegalAccessException e) {
-            logger.warn("caller lookup [{}] cannot define fused vector-loop class; falling back to unfused", caller, e);
-            throw new StitchingException("caller lookup cannot define fused vector-loop class", e);
-        }
+        return defineOrThrow(caller, emitVectorLoop(caller, tree), "vector-loop class");
     }
 
     /**
@@ -537,16 +552,7 @@ public final class Stitcher {
      *                            unfused chain
      */
     public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        byte[] bytecode = emitVectorLoopChecked(caller, tree);
-        try {
-            return caller.defineHiddenClass(bytecode, true).lookupClass();
-        } catch (LinkageError e) {
-            logger.warn("fused checked vector loop failed to link; falling back to unfused", e);
-            throw new StitchingException("failed to define fused checked vector-loop class", e);
-        } catch (IllegalAccessException e) {
-            logger.warn("caller lookup [{}] cannot define fused checked vector-loop class; falling back to unfused", caller, e);
-            throw new StitchingException("caller lookup cannot define fused checked vector-loop class", e);
-        }
+        return defineOrThrow(caller, emitVectorLoopChecked(caller, tree), "checked vector-loop class");
     }
 
     /**
@@ -840,16 +846,7 @@ public final class Stitcher {
 
             Type[] argTypes = Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes();
             var children = kernel.children();
-            if (children.size() != argTypes.length) {
-                throw new IllegalArgumentException(
-                    "kernel ["
-                        + kernel.descriptor().kernelMethod()
-                        + "] expects "
-                        + argTypes.length
-                        + " operands but the tree supplied "
-                        + children.size()
-                );
-            }
+            checkKernelArity(kernel, argTypes.length, children.size());
             int offset = 0;
             for (int i = 0; i < argTypes.length; i++) {
                 // Each child produces this kernel's argument element (a cast child bridges a differing leaf element).
@@ -949,16 +946,7 @@ public final class Stitcher {
      *                            fails JVM verification/linking — the caller should fall back to the unfused path
      */
     public Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        byte[] bytecode = emitBlockLoop(caller, tree);
-        try {
-            return caller.defineHiddenClass(bytecode, true).lookupClass();
-        } catch (LinkageError e) {
-            logger.warn("fused block loop failed to link; falling back to unfused", e);
-            throw new StitchingException("failed to define fused block-loop class", e);
-        } catch (IllegalAccessException e) {
-            logger.warn("caller lookup [{}] cannot define fused block-loop class; falling back to unfused", caller, e);
-            throw new StitchingException("caller lookup cannot define fused block-loop class", e);
-        }
+        return defineOrThrow(caller, emitBlockLoop(caller, tree), "block-loop class");
     }
 
     /**
@@ -1262,16 +1250,7 @@ public final class Stitcher {
      *                            should fall back to the unfused path
      */
     public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        byte[] bytecode = emitLogicalBlockLoop(caller, tree);
-        try {
-            return caller.defineHiddenClass(bytecode, true).lookupClass();
-        } catch (LinkageError e) {
-            logger.warn("fused logical block loop failed to link; falling back to unfused", e);
-            throw new StitchingException("failed to define fused logical block-loop class", e);
-        } catch (IllegalAccessException e) {
-            logger.warn("caller lookup [{}] cannot define fused logical block-loop class; falling back to unfused", caller, e);
-            throw new StitchingException("caller lookup cannot define fused logical block-loop class", e);
-        }
+        return defineOrThrow(caller, emitLogicalBlockLoop(caller, tree), "logical block-loop class");
     }
 
     /**
@@ -1519,16 +1498,7 @@ public final class Stitcher {
      */
     public Class<?> compileFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
         throws StitchingException {
-        byte[] bytecode = emitFilterEvalBlockLoop(caller, predicateTree, projectionTree);
-        try {
-            return caller.defineHiddenClass(bytecode, true).lookupClass();
-        } catch (LinkageError e) {
-            logger.warn("fused filter-eval block loop failed to link; falling back to unfused", e);
-            throw new StitchingException("failed to define fused filter-eval block-loop class", e);
-        } catch (IllegalAccessException e) {
-            logger.warn("caller lookup [{}] cannot define fused filter-eval block-loop class; falling back to unfused", caller, e);
-            throw new StitchingException("caller lookup cannot define fused filter-eval block-loop class", e);
-        }
+        return defineOrThrow(caller, emitFilterEvalBlockLoop(caller, predicateTree, projectionTree), "filter-eval block-loop class");
     }
 
     /**
@@ -2523,16 +2493,7 @@ public final class Stitcher {
 
             Type[] argTypes = Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes();
             var children = kernel.children();
-            if (children.size() != argTypes.length) {
-                throw new IllegalArgumentException(
-                    "kernel ["
-                        + kernel.descriptor().kernelMethod()
-                        + "] expects "
-                        + argTypes.length
-                        + " operands but the tree supplied "
-                        + children.size()
-                );
-            }
+            checkKernelArity(kernel, argTypes.length, children.size());
             int offset = 0;
             for (int i = 0; i < argTypes.length; i++) {
                 emit(children.get(i), Element.of(argTypes[i]));
@@ -2653,16 +2614,7 @@ public final class Stitcher {
 
             Type[] argTypes = Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes();
             var children = kernel.children();
-            if (children.size() != argTypes.length) {
-                throw new IllegalArgumentException(
-                    "kernel ["
-                        + kernel.descriptor().kernelMethod()
-                        + "] expects "
-                        + argTypes.length
-                        + " operands but the tree supplied "
-                        + children.size()
-                );
-            }
+            checkKernelArity(kernel, argTypes.length, children.size());
             int kernelSlot = sourceIndices.get(kernel);
 
             // Pre-init value slot + argument slots to a typed zero for verifier definite-assignment (they are read only
