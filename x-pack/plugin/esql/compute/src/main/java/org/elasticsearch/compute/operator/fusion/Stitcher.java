@@ -494,7 +494,10 @@ public final class Stitcher {
         // leave the computed value on top, so a single array-store consumes all three.
         insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
         insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        StackKernelEmitter emitter = new StackKernelEmitter(insns, constantSlots, kernelBase,
+        StackKernelEmitter emitter = new StackKernelEmitter(
+            insns,
+            constantSlots,
+            kernelBase,
             // Plain-vector leaf: a<index>[p], read at this leaf's own element.
             input -> {
                 Element element = inputElements[input.index()];
@@ -718,7 +721,10 @@ public final class Stitcher {
             insns.add(tryStartOverflow);
         }
         insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        StackKernelEmitter emitter = new StackKernelEmitter(insns, constantSlots, kernelBase,
+        StackKernelEmitter emitter = new StackKernelEmitter(
+            insns,
+            constantSlots,
+            kernelBase,
             // Checked-vector leaf: the per-position value already read (no null/mv guard — the vector is dense).
             input -> {
                 Element element = inputElements[input.index()];
