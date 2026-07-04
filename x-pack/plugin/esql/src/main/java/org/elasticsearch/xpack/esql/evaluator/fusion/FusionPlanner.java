@@ -230,10 +230,7 @@ public final class FusionPlanner {
             // A lone kernel is not worth fusing — leave it to the generated evaluator.
             return null;
         }
-        int[] channels = new int[ctx.channels.size()];
-        for (int i = 0; i < channels.length; i++) {
-            channels[i] = ctx.channels.get(i);
-        }
+        int[] channels = toIntArray(ctx.channels);
         ElementKind[] inputElements = ctx.inputElements.toArray(new ElementKind[0]);
         // The build walk appends one element per leaf input as it assigns channels, so every index in [0, arity) is
         // populated densely and exactly once. (The Stitcher's inputElements() fills any gap defensively, but a
