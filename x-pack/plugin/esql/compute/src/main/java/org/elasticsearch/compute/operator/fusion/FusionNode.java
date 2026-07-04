@@ -7,7 +7,10 @@
 
 package org.elasticsearch.compute.operator.fusion;
 
+import org.elasticsearch.compute.operator.DriverContext;
+
 import java.util.List;
+import java.util.function.Function;
 
 /**
  * An expression tree the {@link Stitcher} fuses into a single per-position body.
@@ -78,12 +81,23 @@ public sealed interface FusionNode {
      *                {@code 'D'} (double). It must equal the homogeneous element of the tree the constant sits in, and
      *                it types the constant's trailing parameter slot on the fused method.
      */
-    record Constant(Object value, char element, Class<?> refType) implements FusionNode {
+    record Constant(Object value, char element, Class<?> refType, Function<DriverContext, Object> scratchSupplier) implements FusionNode {
         public Constant {
-            if (value == null) {
+            if (scratchSupplier != null) {
+                // A per-driver SCRATCH reference @Fixed operand (#8b): a mutable buffer (e.g. a reusable BytesRef, a
+                // UTF8CodePoint) that a THREAD_LOCAL @Fixed kernel parameter needs, created fresh per driver by the
+                // supplier (not captured at plan time like a Locale). It rides the same reference parameter slot as a
+                // captured reference constant (ALOAD) — only WHERE the value comes from differs — so it must be a
+                // reference ('L') with a declared refType and carries no plan-time value.
+                if (element != 'L') {
+                    throw new IllegalArgumentException("a scratch constant must be reference-typed (element 'L') but was [" + element + "]");
+                }
+                if (refType == null) {
+                    throw new IllegalArgumentException("a scratch constant must carry its declared refType");
+                }
+            } else if (value == null) {
                 throw new IllegalArgumentException("constant value must not be null");
-            }
-            if (element == 'L') {
+            } else if (element == 'L') {
                 // A reference-typed (object) @Fixed constant (B3b): its value is captured off the expression at plan
                 // time (e.g. a Locale from the query configuration, or an enum) and passed to the fused method as a
                 // reference parameter. refType is the DECLARED parameter type the kernel expects (e.g. java.util.Locale),
@@ -103,7 +117,7 @@ public sealed interface FusionNode {
 
         /** A primitive ({@code J}/{@code I}/{@code D}) constant leaf; the common case, carries no reference type. */
         public Constant(Object value, char element) {
-            this(value, element, null);
+            this(value, element, null, null);
         }
 
         /**
@@ -113,12 +127,28 @@ public sealed interface FusionNode {
          * a reference operand never rides the primitive vector fast paths.
          */
         public static Constant reference(Object value, Class<?> declaredType) {
-            return new Constant(value, 'L', declaredType);
+            return new Constant(value, 'L', declaredType, null);
+        }
+
+        /**
+         * A per-driver SCRATCH reference {@code @Fixed} operand (#8b): a {@code THREAD_LOCAL} mutable buffer the kernel
+         * needs (e.g. a reusable {@code BytesRef} / {@code UTF8CodePoint} for {@code LEFT}/{@code RIGHT}). {@code supplier}
+         * builds a fresh instance per driver ({@code context -> new BytesRef()}); {@code declaredType} is the parameter
+         * type the kernel declares. Unlike {@link #reference} it is not captured once at plan time — the factory calls
+         * the supplier in each {@code get(DriverContext)} so concurrent drivers never share one mutable buffer.
+         */
+        public static Constant scratch(Function<DriverContext, Object> supplier, Class<?> declaredType) {
+            return new Constant(null, 'L', declaredType, supplier);
         }
 
         /** Whether this is a reference-typed (object) constant rather than a primitive one. */
         public boolean isReference() {
             return element == 'L';
+        }
+
+        /** Whether this is a per-driver scratch operand (its value is built per {@code get(DriverContext)}, not captured). */
+        public boolean isScratch() {
+            return scratchSupplier != null;
         }
     }
 

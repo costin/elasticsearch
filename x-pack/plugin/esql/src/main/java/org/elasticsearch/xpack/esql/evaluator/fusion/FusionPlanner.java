@@ -7,6 +7,8 @@
 
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
+import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.UnicodeUtil;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.FilterEvalEvaluator;
 import org.elasticsearch.compute.operator.fusion.FusionAware;
@@ -23,6 +25,7 @@ import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Cast;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ChangeCase;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.Left;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.BinaryLogic;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
@@ -489,6 +492,12 @@ public final class FusionPlanner {
             // so it is recognised explicitly here and its Locale/Case captured as reference constants.
             return buildChangeCase(changeCase, ctx, expected, root);
         }
+        if (exp instanceof Left left) {
+            // LEFT(str, length) (#8b): a BytesRef -> BytesRef kernel whose first two @Fixed params are per-driver SCRATCH
+            // buffers (a reusable BytesRef + a UTF8CodePoint), created fresh per driver rather than captured. Its body
+            // loops over code points and calls only public methods, so it links from the fused hidden class's package.
+            return buildLeft(left, ctx, expected, root);
+        }
 
         ExpressionEvaluator.Factory factory = ctx.rawFactory.apply(exp);
         if ((factory instanceof FusionAware) == false) {
@@ -597,6 +606,56 @@ public final class FusionPlanner {
             )
         );
         ctx.kernelSources.put(kernel, changeCase.source());
+        if (root) {
+            ctx.outputElement = ElementKind.BYTES_REF;
+        }
+        return kernel;
+    }
+
+    /**
+     * The manually-built kernel descriptor for {@code Left#process(@Fixed BytesRef out, @Fixed UTF8CodePoint cp,
+     * BytesRef str, int length)}. The two leading {@code @Fixed} params are per-driver scratch buffers; the {@code $}
+     * inner-class descriptor for {@code UnicodeUtil.UTF8CodePoint} is written explicitly. Not overflow-checked; a null
+     * input yields null (the block emitter's present flag propagates it via the str/length operands).
+     */
+    private static final FusionDescriptor LEFT_DESCRIPTOR = new FusionDescriptor(
+        Left.class,
+        "process",
+        "(Lorg/apache/lucene/util/BytesRef;Lorg/apache/lucene/util/UnicodeUtil$UTF8CodePoint;"
+            + "Lorg/apache/lucene/util/BytesRef;I)Lorg/apache/lucene/util/BytesRef;",
+        false,
+        true
+    );
+
+    /**
+     * Builds the fused node for a {@code LEFT(str, length)} ({@link Left}) expression (#8b): a kernel over its BytesRef
+     * {@code str} + int {@code length} children, preceded by two per-driver SCRATCH reference operands — a reusable
+     * {@link BytesRef} and a {@link UnicodeUtil.UTF8CodePoint}, built fresh per driver by the same suppliers
+     * {@code Left#toEvaluator} uses. Produces a {@code BytesRef} (block-path only). Refuses unless it is the root or its
+     * parent expects a {@code BytesRef}, or if either child does not fuse.
+     */
+    private static FusionNode buildLeft(Left left, PlanContext ctx, ElementKind expected, boolean root) {
+        if (root == false && expected != ElementKind.BYTES_REF) {
+            return null;
+        }
+        FusionNode str = build(left.children().get(0), ctx, ElementKind.BYTES_REF, left.source(), false);
+        if (str == null) {
+            return null;
+        }
+        FusionNode length = build(left.children().get(1), ctx, ElementKind.INT, left.source(), false);
+        if (length == null) {
+            return null;
+        }
+        FusionNode.Kernel kernel = new FusionNode.Kernel(
+            LEFT_DESCRIPTOR,
+            List.of(
+                FusionNode.Constant.scratch(context -> new BytesRef(), BytesRef.class),
+                FusionNode.Constant.scratch(context -> new UnicodeUtil.UTF8CodePoint(), UnicodeUtil.UTF8CodePoint.class),
+                str,
+                length
+            )
+        );
+        ctx.kernelSources.put(kernel, left.source());
         if (root) {
             ctx.outputElement = ElementKind.BYTES_REF;
         }

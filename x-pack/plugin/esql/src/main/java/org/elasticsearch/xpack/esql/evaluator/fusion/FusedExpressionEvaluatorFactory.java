@@ -125,12 +125,13 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     private final ExpressionEvaluator.Factory unfused;
     private final String shape;
     /**
-     * The embedded constants' (boxed) values in the {@link Stitcher#constantsInEmitOrder canonical emit order}, one per
-     * trailing primitive parameter of the fused method. Appended (after the input vectors/blocks) to the invoke args at
-     * evaluation time; empty when the shape has no constant leaves. {@code invokeWithArguments} unboxes each to the
-     * primitive parameter type the resolved {@link MethodType} declares.
+     * The fused method's trailing constant operands in the {@link Stitcher#constantsInEmitOrder canonical emit order},
+     * one per trailing parameter. Each {@code get(DriverContext)} resolves them to values (see
+     * {@link #resolveConstantValues}): a primitive/captured-reference constant yields its plan-time value, while a
+     * per-driver SCRATCH operand (#8b) is freshly built from its supplier so concurrent drivers never share one mutable
+     * buffer. The resolved values are appended (after the input vectors/blocks) to the invoke args at evaluation time.
      */
-    private final Object[] constantValues;
+    private final List<FusionNode.Constant> constants;
 
     private FusedExpressionEvaluatorFactory(
         Source[] warningSources,
@@ -141,7 +142,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         VectorStrategy vectorStrategy,
         ExpressionEvaluator.Factory unfused,
         String shape,
-        Object[] constantValues
+        List<FusionNode.Constant> constants
     ) {
         this.warningSources = warningSources;
         this.inputChannels = inputChannels;
@@ -151,7 +152,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         this.vectorStrategy = vectorStrategy;
         this.unfused = unfused;
         this.shape = shape;
-        this.constantValues = constantValues;
+        this.constants = constants;
     }
 
     /**
@@ -200,7 +201,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         // appended to every resolved MethodType and their values are marshalled into the invoke args, both in the
         // Stitcher's single canonical emit order — so one stitched class serves every constant value.
         Class<?>[] constantParamTypes = constantParamTypes(constants);
-        Object[] constantValues = constantValues(constants);
         try {
             if (tree instanceof FusionNode.Logical) {
                 // A 3VL AND/OR tree is nullable boolean: block path only, no vector fast path (S3.1).
@@ -219,7 +219,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     VectorStrategy.NONE,
                     unfused,
                     shape,
-                    constantValues
+                    constants
                 );
             }
 
@@ -245,7 +245,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     VectorStrategy.NONE,
                     unfused,
                     shape,
-                    constantValues
+                    constants
                 );
             }
 
@@ -304,7 +304,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     VectorStrategy.NONE,
                     unfused,
                     shape,
-                    constantValues
+                    constants
                 );
             }
 
@@ -317,7 +317,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 strategy,
                 unfused,
                 shape,
-                constantValues
+                constants
             );
         } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError e) {
             // Any plan-time stitch failure must fall back to the unfused chain and record the shape (criterion #5):
@@ -345,7 +345,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             unfused,
             context,
             shape,
-            constantValues
+            resolveConstantValues(constants, context)
         );
     }
 
@@ -433,11 +433,18 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         return types;
     }
 
-    /** The (boxed) constant values in canonical emit order, marshalled into the invoke args at evaluation time. */
-    private static Object[] constantValues(List<FusionNode.Constant> constants) {
+    /**
+     * Resolves each constant operand (in canonical emit order) to the value marshalled into the invoke args for THIS
+     * driver: a primitive or captured-reference constant yields its plan-time value, while a per-driver SCRATCH operand
+     * (#8b) is built fresh from its supplier with {@code context} — so each driver owns its own mutable buffer (matching
+     * the {@code THREAD_LOCAL} {@code @Fixed} contract) and concurrent drivers never share one. Called once per
+     * {@code get(DriverContext)}, never per row.
+     */
+    private static Object[] resolveConstantValues(List<FusionNode.Constant> constants, DriverContext context) {
         Object[] values = new Object[constants.size()];
         for (int i = 0; i < values.length; i++) {
-            values[i] = constants.get(i).value();
+            FusionNode.Constant constant = constants.get(i);
+            values[i] = constant.isScratch() ? constant.scratchSupplier().apply(context) : constant.value();
         }
         return values;
     }
