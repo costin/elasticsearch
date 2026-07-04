@@ -1677,8 +1677,12 @@ public final class Stitcher {
         int arity = signature.arity();
         Element[] inputElements = inputElements(signature);
         Element outputElement = Element.of(rootReturnType(tree));
-        // Shape guard: a unary reference (BytesRef) input, a reference output, a non-throwing body. The planner only
-        // routes such convert kernels here; anything else is a planner bug — refuse rather than emit wrong code.
+        // Shape guard: a unary reference (BytesRef) input, a reference output, a NON-throwing body. The planner only
+        // routes such convert kernels here; anything else is a planner bug — refuse rather than emit wrong code. The
+        // hasOverflowException() clause deliberately rejects any warn-exception convert kernel: this loop opens the
+        // multi-value positionEntry EAGERLY (before the value loop), which is only correct when no value can fail; a
+        // warn-exception kernel (where some values null out and an all-fail position must become null) would need the
+        // lazy open-on-first-append the generated evalBlock uses, so such kernels must not reach here.
         if (arity != 1
             || inputElements[0].reference() == false
             || outputElement.reference() == false
