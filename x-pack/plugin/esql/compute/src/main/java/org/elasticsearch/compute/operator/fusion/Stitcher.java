@@ -3205,10 +3205,12 @@ public final class Stitcher {
                     "appendBoolean",
                     t
                 );
-                // BYTES_REF is an INPUT-only reference element (keyword/text). It is never a fused tree's OUTPUT element
-                // in this slice (no BytesRef-returning kernels), so the vector-path fields (rawValues array, ArrayVector
-                // forwarder, block builder/append) are left unset: a BytesRef-containing tree is routed through the
-                // BLOCK path only and only the block-read fields (blockInternalName + getBytesRef) are ever consulted.
+                // BYTES_REF is a reference element (keyword/text). The VECTOR-path fields (rawValues array + ArrayVector
+                // forwarder) stay unset: a variable-width BytesRef has no dense primitive backing array, so a
+                // BytesRef-in or BytesRef-OUT tree is always routed through the BLOCK path. As an INPUT it is read via
+                // getBytesRef(int, spare); as an OUTPUT (B3b: BytesRef-returning kernels like TO_LOWER) it is appended
+                // through the BytesRefBlock.Builder — appendBytesRef copies the (reused) spare's bytes into block
+                // storage, so the block-builder fields below are now populated for the output path.
                 case Type.OBJECT -> {
                     if (BYTES_REF.equals(t.getInternalName()) == false) {
                         throw new IllegalArgumentException("unsupported fused reference element type: " + t.getClassName());
@@ -3221,10 +3223,10 @@ public final class Stitcher {
                         null,
                         -1,
                         "org/elasticsearch/compute/data/BytesRefBlock",
-                        null,
-                        null,
+                        "org/elasticsearch/compute/data/BytesRefBlock$Builder",
+                        "newBytesRefBlockBuilder",
                         "getBytesRef",
-                        null,
+                        "appendBytesRef",
                         t
                     );
                 }

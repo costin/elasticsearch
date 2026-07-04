@@ -7,17 +7,20 @@
 
 package org.elasticsearch.compute.operator.fusion;
 
+import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.MockBigArrays;
 import org.elasticsearch.common.util.PageCacheRecycler;
 import org.elasticsearch.compute.data.BlockFactory;
+import org.elasticsearch.compute.data.BytesRefBlock;
 import org.elasticsearch.compute.data.DoubleBlock;
 import org.elasticsearch.compute.data.IntBlock;
 import org.elasticsearch.compute.data.LongBlock;
 import org.elasticsearch.compute.data.LongVector;
 import org.elasticsearch.compute.data.Vector;
 import org.elasticsearch.compute.operator.Warnings;
+import org.elasticsearch.compute.operator.fusion.BodyExtractorTests.KernelFixtures;
 import org.elasticsearch.core.Releasable;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.indices.breaker.CircuitBreakerService;
@@ -639,6 +642,60 @@ public class StitcherBlockFusionTests extends ESTestCase {
         FusionNode addNode = new FusionNode.Kernel(add, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
         FusionNode mulNode = new FusionNode.Kernel(mul, List.of(addNode, new FusionNode.Input(2)));
         return new FusionNode.Kernel(sub, List.of(mulNode, new FusionNode.Input(3)));
+    }
+
+    /**
+     * B3b: the block path now supports a BytesRef-OUTPUT element. Fuse a straight-line {@code BytesRef -> BytesRef}
+     * kernel (identity) over a keyword column that includes a null position, and assert the produced
+     * {@code BytesRefBlock} reproduces every value (copied into block storage by {@code appendBytesRef}) and the null.
+     * This exercises the fused block loop's reference value slot (ALOAD/ASTORE), the reusable input spare, and the
+     * {@code newBytesRefBlockBuilder}/{@code appendBytesRef}/{@code appendNull}/{@code build} output plumbing.
+     */
+    public void testBytesRefOutputBlockPath() throws Throwable {
+        FusionDescriptor identity = new FusionDescriptor(
+            KernelFixtures.class,
+            "processBytesRefIdentity",
+            "(Lorg/apache/lucene/util/BytesRef;)Lorg/apache/lucene/util/BytesRef;",
+            false,
+            true
+        );
+        FusionNode tree = new FusionNode.Kernel(identity, List.of(new FusionNode.Input(0)));
+
+        Class<?> fused = stitcher.compileBlockLoop(MethodHandles.lookup(), tree);
+        assertThat(fused.getPackageName(), equalTo(getClass().getPackageName()));
+        MethodType type = MethodType.methodType(BytesRefBlock.class, BlockFactory.class, Warnings[].class, int.class, BytesRefBlock.class);
+        MethodHandle handle = MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);
+
+        int positionCount = 5;
+        String[] vals = { "alpha", "", "keyword text δ", null, "z" };
+        BytesRefBlock in;
+        try (BytesRefBlock.Builder b = blockFactory.newBytesRefBlockBuilder(positionCount)) {
+            for (String s : vals) {
+                if (s == null) {
+                    b.appendNull();
+                } else {
+                    b.appendBytesRef(new BytesRef(s));
+                }
+            }
+            in = b.build();
+        }
+        BytesRefBlock out = null;
+        try {
+            out = (BytesRefBlock) handle.invoke(blockFactory, noopWarnings(tree), positionCount, in);
+            assertThat(out.getPositionCount(), equalTo(positionCount));
+            BytesRef scratch = new BytesRef();
+            for (int p = 0; p < positionCount; p++) {
+                if (vals[p] == null) {
+                    assertThat("p=" + p + " null", out.isNull(p), is(true));
+                } else {
+                    assertThat("p=" + p + " non-null", out.isNull(p), is(false));
+                    BytesRef got = out.getBytesRef(out.getFirstValueIndex(p), scratch);
+                    assertThat("p=" + p, got.utf8ToString(), equalTo(vals[p]));
+                }
+            }
+        } finally {
+            Releasables.closeExpectNoException(in, out);
+        }
     }
 
     /**

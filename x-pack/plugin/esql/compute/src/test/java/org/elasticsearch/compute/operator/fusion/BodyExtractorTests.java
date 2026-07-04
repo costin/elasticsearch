@@ -42,6 +42,16 @@ public class BodyExtractorTests extends ESTestCase {
         public static long processLongsMul(long lhs, long rhs) {
             return Math.multiplyExact(lhs, rhs);
         }
+
+        /**
+         * A straight-line {@code BytesRef -> BytesRef} kernel (identity) for exercising the fused block path's
+         * BytesRef-OUTPUT support (B3b): a single terminal {@code ARETURN}, no loops, so {@link BodyExtractor} can
+         * splice it. Returns the (reused input spare) reference — the block builder's {@code appendBytesRef} copies its
+         * bytes into block storage, so reuse across positions is safe.
+         */
+        public static org.apache.lucene.util.BytesRef processBytesRefIdentity(org.apache.lucene.util.BytesRef v) {
+            return v;
+        }
     }
 
     private static final String LONG_BINARY_TYPE = "(JJ)J";
