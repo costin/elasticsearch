@@ -549,7 +549,8 @@ public class EsqlPlugin extends Plugin implements ActionPlugin, ExtensiblePlugin
                 GROK_WATCHDOG_MAX_EXECUTION_TIME,
                 FusionSettings.FUSION_ENABLED_SETTING,
                 FusionSettings.FUSION_ADAPTIVE_MIN_ROWS_SETTING,
-                FusionSettings.FUSION_SAMPLE_SETTING
+                FusionSettings.FUSION_SAMPLE_SETTING,
+                FusionSettings.FUSION_SIMD_SETTING
             )
         );
         settings.addAll(PlannerSettings.settings());
