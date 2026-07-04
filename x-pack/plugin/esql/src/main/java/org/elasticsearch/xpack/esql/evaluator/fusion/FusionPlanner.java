@@ -12,6 +12,7 @@ import org.elasticsearch.compute.operator.FilterEvalEvaluator;
 import org.elasticsearch.compute.operator.fusion.FusionAware;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
+import org.elasticsearch.compute.operator.fusion.FusionSignature;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.compute.operator.fusion.TemplateRegistry;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
@@ -239,14 +240,17 @@ public final class FusionPlanner {
             : "planner must populate every input element densely; got " + java.util.Arrays.toString(inputElements);
         ExpressionEvaluator.Factory unfused = rawFactory.apply(exp);
         FusedClassCompiler compiler = compilerForTests != null ? compilerForTests : DEFAULT_COMPILER;
-        Source[] warningSources = warningSources(tree, ctx);
+        // One walk derives the whole positional contract (warning-source slots + constants-in-emit-order); the Stitcher
+        // re-derives the same facts when it emits, and both agree because FusionSignature is the single source of truth.
+        FusionSignature signature = FusionSignature.of(tree);
+        Source[] warningSources = warningSources(signature.warningSourceIndices(), ctx);
         ElementKind outputElement = ctx.outputElement;
         boolean overflowChecked = ctx.overflowChecked;
         String shape = shapeOf(tree);
         // The embedded constants in the single canonical emit order the Stitcher assigns their trailing parameter slots.
         // The factory both appends their primitive types to the resolved MethodTypes and marshals their values into the
         // invoke args in exactly this order — the byte-for-byte contract the Stitcher, planner and factory share.
-        List<FusionNode.Constant> constants = Stitcher.constantsInEmitOrder(tree);
+        List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
 
         long minRows = FusionSettings.adaptiveMinRows();
         if (minRows > 0) {
@@ -343,15 +347,19 @@ public final class FusionPlanner {
         ExpressionEvaluator.Factory unfusedProjection = rawFactory.apply(projection);
         FusedClassCompiler compiler = compilerForTests != null ? compilerForTests : DEFAULT_COMPILER;
 
+        // One walk per sub-tree derives its warning-source slots + constants-in-emit-order (single source of truth).
+        FusionSignature predicateSignature = FusionSignature.of(predicateTree);
+        FusionSignature projectionSignature = FusionSignature.of(projectionTree);
+
         // Combined per-source warnings: predicate sources first, then projection sources (matching the Stitcher offset).
-        Source[] predicateSources = warningSources(predicateTree, predCtx);
-        Source[] projectionSources = warningSources(projectionTree, projCtx);
+        Source[] predicateSources = warningSources(predicateSignature.warningSourceIndices(), predCtx);
+        Source[] projectionSources = warningSources(projectionSignature.warningSourceIndices(), projCtx);
         Source[] warningSources = new Source[predicateSources.length + projectionSources.length];
         System.arraycopy(predicateSources, 0, warningSources, 0, predicateSources.length);
         System.arraycopy(projectionSources, 0, warningSources, predicateSources.length, projectionSources.length);
 
-        List<FusionNode.Constant> predicateConstants = Stitcher.constantsInEmitOrder(predicateTree);
-        List<FusionNode.Constant> projectionConstants = Stitcher.constantsInEmitOrder(projectionTree);
+        List<FusionNode.Constant> predicateConstants = predicateSignature.constantsInEmitOrder();
+        List<FusionNode.Constant> projectionConstants = projectionSignature.constantsInEmitOrder();
 
         return FusedFilterEvalEvaluatorFactory.create(
             warningSources,
@@ -405,8 +413,7 @@ public final class FusionPlanner {
      * lands on a {@code Warnings} built from the kernel's real source — matching the unfused chain's per-node
      * attribution (criterion #1). The assignment is purely structural, so it does not affect the shape-keyed cache.
      */
-    private static Source[] warningSources(FusionNode tree, PlanContext ctx) {
-        Map<FusionNode, Integer> slots = Stitcher.warningsSourceIndices(tree);
+    private static Source[] warningSources(Map<FusionNode, Integer> slots, PlanContext ctx) {
         Source[] out = new Source[slots.size()];
         for (Map.Entry<FusionNode, Integer> e : slots.entrySet()) {
             Source source = ctx.kernelSources.get(e.getKey());

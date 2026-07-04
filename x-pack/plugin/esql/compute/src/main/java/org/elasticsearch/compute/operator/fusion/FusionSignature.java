@@ -42,7 +42,7 @@ import java.util.TreeSet;
  * (esql). The per-input {@code Element} typing (which needs a compute-only opcode table) is deliberately left to the
  * {@code Stitcher}; folding it in belongs with the {@code ElementKind}/{@code Element} unification.
  */
-final class FusionSignature {
+public final class FusionSignature {
 
     private final int arity;
     private final int[] consumedInputs;
@@ -65,7 +65,7 @@ final class FusionSignature {
     }
 
     /** Derives the signature of {@code tree} in a single pre-order walk and verifies its internal consistency. */
-    static FusionSignature of(FusionNode tree) {
+    public static FusionSignature of(FusionNode tree) {
         List<FusionNode.Constant> constants = new ArrayList<>();
         Map<FusionNode, Integer> warningSources = new IdentityHashMap<>();
         Set<String> overflow = new LinkedHashSet<>();
@@ -122,32 +122,32 @@ final class FusionSignature {
     }
 
     /** Number of distinct input vectors the tree references, i.e. one past the maximum {@link FusionNode.Input} index. */
-    int arity() {
+    public int arity() {
         return arity;
     }
 
     /** The distinct input indices the tree actually references, ascending (guard/read only what is consumed). */
-    int[] consumedInputs() {
+    public int[] consumedInputs() {
         return consumedInputs;
     }
 
     /** The {@link FusionNode.Constant} leaves in canonical emit order (their trailing-parameter order). */
-    List<FusionNode.Constant> constantsInEmitOrder() {
+    public List<FusionNode.Constant> constantsInEmitOrder() {
         return constantsInEmitOrder;
     }
 
     /** Each kernel's index into the runtime {@code Warnings[]} (its own warning source), by node identity. */
-    Map<FusionNode, Integer> warningSourceIndices() {
+    public Map<FusionNode, Integer> warningSourceIndices() {
         return warningSourceIndices;
     }
 
     /** The size of the runtime {@code Warnings[]} — one slot per kernel. */
-    int warningSourceCount() {
+    public int warningSourceCount() {
         return warningSourceIndices.size();
     }
 
     /** Distinct JVM internal names of the overflow exceptions the tree's kernels can throw (may be empty). */
-    Set<String> overflowExceptionInternalNames() {
+    public Set<String> overflowExceptionInternalNames() {
         return overflowExceptionInternalNames;
     }
 
