@@ -91,6 +91,23 @@ public class StitcherBudgetTests extends ESTestCase {
         public static boolean lt(long a, long b) {
             return a < b;
         }
+
+        /** {@code int} comparison shaped like the production comparison over ints (boolean return, never overflow). */
+        public static boolean gtInt(int a, int b) {
+            return a > b;
+        }
+    }
+
+    /**
+     * A {@code BytesRef -> int} string kernel shaped like the production {@code Length#process}: it reads a reference
+     * ({@code BytesRef}) argument and returns a primitive, exercising the {@code BYTES_REF} INPUT seam (a leaf read into
+     * a reusable spare via {@code getBytesRef}, ASTORE/ALOAD reference slots). {@code v.length} keeps the body a single
+     * straight-line read so the test measures the seam's own emit cost, not an unrelated kernel body.
+     */
+    public static final class StringKernels {
+        public static int length(org.apache.lucene.util.BytesRef v) {
+            return v.length;
+        }
     }
 
     /** Widening numeric cast kernels shaped like the implicit {@code Cast} evaluators (return element != arg element). */
@@ -112,6 +129,14 @@ public class StitcherBudgetTests extends ESTestCase {
     private static final FusionDescriptor LT = new FusionDescriptor(ComparisonKernels.class, "lt", "(JJ)Z", false, true);
     private static final FusionDescriptor INT_TO_LONG = new FusionDescriptor(CastKernels.class, "intToLong", "(I)J", false, true);
     private static final FusionDescriptor LONG_TO_DOUBLE = new FusionDescriptor(CastKernels.class, "longToDouble", "(J)D", false, true);
+    private static final FusionDescriptor GT_INT = new FusionDescriptor(ComparisonKernels.class, "gtInt", "(II)Z", false, true);
+    private static final FusionDescriptor LENGTH = new FusionDescriptor(
+        StringKernels.class,
+        "length",
+        "(Lorg/apache/lucene/util/BytesRef;)I",
+        false,
+        true
+    );
 
     private Stitcher stitcher;
 
@@ -279,6 +304,65 @@ public class StitcherBudgetTests extends ESTestCase {
         );
         assertStructurallyValid(stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), tree));
         assertStructurallyValid(stitcher.blockLoopBytecode(MethodHandles.lookup(), tree));
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // BYTES_REF INPUT seam (block path only) — a string kernel that consumes a BytesRef leaf and returns a primitive.
+    // -----------------------------------------------------------------------------------------------------------------
+
+    /**
+     * Depth-2 trees mixing a {@code BytesRef}-input string kernel with a numeric/comparison kernel —
+     * {@code gtInt(length(in0), length(in1))} (boolean root) and {@code mulInt(length(in0), length(in1))} (int root) —
+     * emit a structurally valid, boxing-free BLOCK-path class (the ONLY path a {@code BytesRef} tree takes: it is
+     * routed away from the vector fast paths because a keyword/text column may be ordinal-encoded). This covers the
+     * {@code getBytesRef}-into-a-spare leaf read and the reference ASTORE/ALOAD slots the seam introduces.
+     *
+     * <p><b>Budget.</b> The block loop is deliberately the UN-enforced general/fallback path
+     * ({@code serializeWithBudgetGuard(..., enforce=false)}), so — unlike the tight vector and logical paths — it is
+     * not refused when over {@link Stitcher#MAX_FUSED_METHOD_BYTECODES}. The size is asserted positive (a method was
+     * emitted) and logged so a regression in the seam's per-leaf emit cost is visible; the single-leaf shape below
+     * additionally proves the common {@code LENGTH(x) > k} tree stays inlinable.
+     */
+    public void testBytesRefInputBlockLoopStructurallyValidAndBoxingFree() throws Exception {
+        FusionNode booleanRoot = new FusionNode.Kernel(
+            GT_INT,
+            List.of(
+                new FusionNode.Kernel(LENGTH, List.of(new FusionNode.Input(0))),
+                new FusionNode.Kernel(LENGTH, List.of(new FusionNode.Input(1)))
+            )
+        );
+        FusionNode intRoot = new FusionNode.Kernel(
+            MUL_INT,
+            List.of(
+                new FusionNode.Kernel(LENGTH, List.of(new FusionNode.Input(0))),
+                new FusionNode.Kernel(LENGTH, List.of(new FusionNode.Input(1)))
+            )
+        );
+        for (FusionNode tree : List.of(booleanRoot, intRoot)) {
+            byte[] bytecode = stitcher.blockLoopBytecode(MethodHandles.lookup(), tree);
+            assertStructurallyValid(bytecode);
+            assertNoBoxingOrIndy(bytecode, "bytes-ref block");
+            int size = Stitcher.fusedMethodCodeLength(bytecode);
+            assertThat("emitted a fused BytesRef block method", size, greaterThan(0));
+            logger.info("BytesRef two-leaf block loop fused method size = {} bytecodes (block path is budget-unenforced)", size);
+        }
+    }
+
+    /**
+     * The common {@code LENGTH(x) > k}-shaped mixed tree over ONE {@code BytesRef} leaf (a {@code BytesRef}-consuming
+     * string kernel feeding a comparison over an {@code int} operand) emits a structurally valid block class whose
+     * fused method stays within the inlining budget — so the acceptance-target trees remain JIT-inlinable.
+     */
+    public void testBytesRefSingleLeafBlockLoopWithinBudget() throws Exception {
+        FusionNode tree = new FusionNode.Kernel(
+            GT_INT,
+            List.of(new FusionNode.Kernel(LENGTH, List.of(new FusionNode.Input(0))), new FusionNode.Input(1))
+        );
+        byte[] bytecode = stitcher.blockLoopBytecode(MethodHandles.lookup(), tree);
+        assertStructurallyValid(bytecode);
+        int size = Stitcher.fusedMethodCodeLength(bytecode);
+        logger.info("BytesRef single-leaf block loop fused method size = {} bytecodes", size);
+        assertThat("single BytesRef-leaf block body must be inlinable", size, lessThanOrEqualTo(Stitcher.MAX_FUSED_METHOD_BYTECODES));
     }
 
     // -----------------------------------------------------------------------------------------------------------------

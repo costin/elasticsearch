@@ -12,6 +12,7 @@ import org.apache.lucene.util.UnicodeUtil;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.index.mapper.blockloader.BlockLoaderFunctionConfig;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
@@ -78,6 +79,9 @@ public class Length extends UnaryScalarFunction implements BlockLoaderExpression
         return isString(field(), sourceText(), DEFAULT);
     }
 
+    // overflowChecked = false: codePointCount is a pure UTF-8 scan that cannot throw or overflow. First BytesRef-input
+    // string kernel wired for fusion (keyword/text -> int); its spliced body is a single INVOKESTATIC, far under budget.
+    @Fusable(overflowChecked = false)
     @Evaluator
     static int process(BytesRef val) {
         return UnicodeUtil.codePointCount(val);

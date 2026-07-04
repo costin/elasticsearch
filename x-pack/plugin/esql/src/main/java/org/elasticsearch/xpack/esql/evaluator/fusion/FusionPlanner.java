@@ -651,17 +651,22 @@ public final class FusionPlanner {
         return switch (to) {
             case LONG -> from == ElementKind.INT;
             case DOUBLE -> from == ElementKind.INT || from == ElementKind.LONG;
-            case INT, BOOLEAN -> false;
+            // No widening targets INT/BOOLEAN, and BYTES_REF is never a cast target in this slice (a keyword/text leaf
+            // always matches its consuming string kernel's BytesRef argument exactly, so no bridge is ever inserted).
+            case INT, BOOLEAN, BYTES_REF -> false;
         };
     }
 
-    /** The {@link DataType} for a numeric element kind (BOOLEAN has no cast source/target in scope). */
+    /** The {@link DataType} for a numeric element kind (BOOLEAN/BYTES_REF have no cast source/target in scope). */
     private static DataType dataTypeOf(ElementKind element) {
         return switch (element) {
             case LONG -> DataType.LONG;
             case INT -> DataType.INTEGER;
             case DOUBLE -> DataType.DOUBLE;
             case BOOLEAN -> DataType.BOOLEAN;
+            // Unreachable: BYTES_REF is never the source/target of a widening cast (guarded by supportedWidening),
+            // so castDescriptor never asks for its DataType. Mapped to KEYWORD for switch exhaustiveness only.
+            case BYTES_REF -> DataType.KEYWORD;
         };
     }
 
@@ -715,7 +720,10 @@ public final class FusionPlanner {
         }
         String kernelType = descriptor.kernelType();
         ElementKind argElement = homogeneousArgElement(kernelType);
-        if (argElement == null) {
+        if (argElement == null || argElement == ElementKind.BYTES_REF) {
+            // The 3VL logical emit path keys its comparison helpers off a primitive element and reads column operands
+            // as primitives; a BytesRef-argument comparison (e.g. keyword Equals) is out of the logical scope this
+            // slice (BytesRef fuses only through the single-expression block path), so refuse it here.
             return null;
         }
         int close = kernelType.indexOf(')');
@@ -779,8 +787,9 @@ public final class FusionPlanner {
      * the unfused evaluator already does).
      */
     private static FusionNode buildConstant(Literal literal, ElementKind expected, PlanContext ctx) {
-        if (expected == null || expected == ElementKind.BOOLEAN) {
-            // The consuming kernel's argument is always numeric; a boolean-typed constant leaf never arises here.
+        if (expected == null || expected == ElementKind.BOOLEAN || expected == ElementKind.BYTES_REF) {
+            // Only numeric constants are threaded as trailing primitive arguments. A boolean- or BytesRef-typed
+            // constant leaf is out of scope (no BytesRef constant marshalling this slice), so refuse to fuse it.
             return null;
         }
         Object value = literal.value();
@@ -798,39 +807,72 @@ public final class FusionPlanner {
             case LONG -> new FusionNode.Constant(number.longValue(), 'J');
             case INT -> new FusionNode.Constant(number.intValue(), 'I');
             case DOUBLE -> new FusionNode.Constant(number.doubleValue(), 'D');
-            case BOOLEAN -> null;
+            // Unreachable: BOOLEAN/BYTES_REF constant leaves are rejected by the guard above; listed for exhaustiveness.
+            case BOOLEAN, BYTES_REF -> null;
         };
     }
 
+    /** JVM descriptor of the one supported reference argument/leaf element, {@code org.apache.lucene.util.BytesRef}. */
+    private static final String BYTES_REF_DESC = "Lorg/apache/lucene/util/BytesRef;";
+
     /**
-     * The uniform primitive element kind of a kernel descriptor's <b>arguments</b> {@code (TT..)?}, or {@code null} if
-     * there are no arguments, they are not all the same {@code long}/{@code int}/{@code double}, or any is an
-     * object/array type. The return kind is validated separately by {@link #build}.
+     * Parses a kernel descriptor's <b>argument</b> list {@code (..)?} into one {@link ElementKind} per argument, or
+     * {@code null} if any argument is an unsupported type. Each argument is either a supported primitive
+     * ({@code long}/{@code int}/{@code double}) or the reference {@code BytesRef} ({@link ElementKind#BYTES_REF}); any
+     * other object/array type aborts the parse. The return kind is validated separately by {@link #build}.
+     */
+    private static List<ElementKind> argElements(String descriptor) {
+        int close = descriptor.indexOf(')');
+        if (close < 0) {
+            return null;
+        }
+        List<ElementKind> elements = new ArrayList<>();
+        int i = 1;
+        while (i < close) {
+            char c = descriptor.charAt(i);
+            if (c == 'L') {
+                int end = descriptor.indexOf(';', i);
+                if (end < 0 || end >= close || descriptor.substring(i, end + 1).equals(BYTES_REF_DESC) == false) {
+                    return null;
+                }
+                elements.add(ElementKind.BYTES_REF);
+                i = end + 1;
+            } else {
+                ElementKind element = elementOf(c);
+                if (element == null) {
+                    // Not a supported primitive (also rejects an array '[' argument).
+                    return null;
+                }
+                elements.add(element);
+                i++;
+            }
+        }
+        return elements;
+    }
+
+    /**
+     * The uniform element kind of a kernel descriptor's <b>arguments</b> {@code (TT..)?}, or {@code null} if there are
+     * no arguments or they are not all the same supported element (numeric {@code long}/{@code int}/{@code double}, or
+     * the reference {@code BytesRef}). The return kind is validated separately by {@link #build}.
      */
     private static ElementKind homogeneousArgElement(String descriptor) {
-        int close = descriptor.indexOf(')');
-        if (close < 2) {
-            // "()..." — a no-argument kernel is not fusable here.
+        List<ElementKind> elements = argElements(descriptor);
+        if (elements == null || elements.isEmpty()) {
             return null;
         }
-        char first = descriptor.charAt(1);
-        ElementKind element = elementOf(first);
-        if (element == null) {
-            // Not a supported primitive (also rejects an 'L'/'[' object/array first argument).
-            return null;
-        }
-        for (int i = 2; i < close; i++) {
-            if (descriptor.charAt(i) != first) {
+        ElementKind first = elements.get(0);
+        for (ElementKind element : elements) {
+            if (element != first) {
                 return null;
             }
         }
-        return element;
+        return first;
     }
 
-    /** Number of arguments in a homogeneous single-char-primitive descriptor (each arg is one char). */
+    /** Number of arguments in a kernel descriptor (a primitive is one char; a {@code BytesRef} is an {@code L..;} run). */
     private static int primitiveArgCount(String descriptor) {
-        int close = descriptor.indexOf(')');
-        return close - 1;
+        List<ElementKind> elements = argElements(descriptor);
+        return elements == null ? 0 : elements.size();
     }
 
     private static ElementKind elementOf(char primitive) {
@@ -842,7 +884,12 @@ public final class FusionPlanner {
         };
     }
 
-    /** The supported numeric element kind for a column/literal {@link DataType}, or {@code null} if not fusable. */
+    /**
+     * The supported element kind for a column/literal {@link DataType}, or {@code null} if not fusable. Numeric types
+     * map to their primitive element; {@code KEYWORD}/{@code TEXT} map to {@link ElementKind#BYTES_REF} so a string
+     * column can feed a {@code BytesRef}-consuming kernel (e.g. {@code LENGTH}). {@code BYTES_REF} is INPUT-only in this
+     * slice — the block path reads it via {@code getBytesRef} — so it never becomes a tree's output element.
+     */
     private static ElementKind elementOf(DataType type) {
         if (type == DataType.LONG) {
             return ElementKind.LONG;
@@ -852,6 +899,9 @@ public final class FusionPlanner {
         }
         if (type == DataType.DOUBLE) {
             return ElementKind.DOUBLE;
+        }
+        if (type == DataType.KEYWORD || type == DataType.TEXT) {
+            return ElementKind.BYTES_REF;
         }
         return null;
     }
@@ -867,6 +917,7 @@ public final class FusionPlanner {
             case INT -> type == DataType.INTEGER;
             case DOUBLE -> type == DataType.DOUBLE;
             case BOOLEAN -> type == DataType.BOOLEAN;
+            case BYTES_REF -> type == DataType.KEYWORD || type == DataType.TEXT;
         };
     }
 

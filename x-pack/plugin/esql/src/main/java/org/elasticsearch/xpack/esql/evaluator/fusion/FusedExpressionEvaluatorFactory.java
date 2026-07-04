@@ -13,6 +13,8 @@ import org.elasticsearch.compute.data.BlockFactory;
 import org.elasticsearch.compute.data.BooleanArrayVector;
 import org.elasticsearch.compute.data.BooleanBlock;
 import org.elasticsearch.compute.data.BooleanVector;
+import org.elasticsearch.compute.data.BytesRefBlock;
+import org.elasticsearch.compute.data.BytesRefVector;
 import org.elasticsearch.compute.data.DoubleArrayVector;
 import org.elasticsearch.compute.data.DoubleBlock;
 import org.elasticsearch.compute.data.DoubleVector;
@@ -240,6 +242,24 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 blockType(inputElements, outputElement, arity, constantParamTypes)
             );
 
+            if (hasBytesRefInput(inputElements)) {
+                // A BytesRef (keyword/text) column may be ordinal-encoded rather than a plain ArrayVector, so this
+                // slice deliberately does NOT compile a vector fast path for it — the tree always runs the block path
+                // (which reads each BytesRef via getBytesRef into a reusable spare). Block-only, like the 3VL logical
+                // trees, but with a real (non-null) block handle.
+                return new FusedExpressionEvaluatorFactory(
+                    warningSources,
+                    inputChannels,
+                    inputElements,
+                    blockHandle,
+                    null,
+                    VectorStrategy.NONE,
+                    unfused,
+                    shape,
+                    constantValues
+                );
+            }
+
             MethodHandle vectorHandle;
             VectorStrategy strategy;
             if (overflowChecked == false) {
@@ -319,6 +339,16 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     @Override
     public String toString() {
         return "Fused[shape=" + shape + ", strategy=" + vectorStrategy + ", unfused=" + unfused + "]";
+    }
+
+    /** Whether any input column is a {@code BYTES_REF} (keyword/text), which forces the block-only route (no vector fast path). */
+    private static boolean hasBytesRefInput(ElementKind[] inputElements) {
+        for (ElementKind element : inputElements) {
+            if (element == ElementKind.BYTES_REF) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static MethodType blockType(ElementKind[] inputElements, ElementKind outputElement, int arity, Class<?>[] constantParamTypes) {
@@ -403,7 +433,15 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         INT(IntBlock.class, IntVector.class, IntArrayVector.class),
         DOUBLE(DoubleBlock.class, DoubleVector.class, DoubleArrayVector.class),
         /** Output-only in this scope: the boolean result of a comparison-rooted tree (a > b, a + b > c, ...). */
-        BOOLEAN(BooleanBlock.class, BooleanVector.class, BooleanArrayVector.class);
+        BOOLEAN(BooleanBlock.class, BooleanVector.class, BooleanArrayVector.class),
+        /**
+         * Input-only in this scope: a keyword/text ({@code BytesRef}) column consumed by a string kernel (e.g.
+         * {@code LENGTH}) that returns a primitive/boolean. A {@code BytesRef} column may be ordinal-encoded rather than
+         * backed by a plain {@code ArrayVector}, so this slice takes the safe route: a tree with a {@code BYTES_REF}
+         * input is routed through the BLOCK path only (no vector fast path). {@code arrayVectorClass} is therefore never
+         * consulted for it; it is set to {@link BytesRefVector} purely to satisfy the enum contract.
+         */
+        BYTES_REF(BytesRefBlock.class, BytesRefVector.class, BytesRefVector.class);
 
         private final Class<? extends Block> blockClass;
         private final Class<? extends Vector> vectorClass;

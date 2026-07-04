@@ -255,6 +255,15 @@ public final class Stitcher {
     private static final String BLOCK = "org/elasticsearch/compute/data/Block";
 
     /**
+     * Internal name of {@code org.apache.lucene.util.BytesRef}, the reference type a {@code BYTES_REF} (keyword/text)
+     * input leaf reads into. Unlike the primitive elements a {@code BytesRef} is read into a reusable {@code BytesRef}
+     * "spare" local (allocated once outside the loop) via {@code BytesRefBlock.getBytesRef(int, BytesRef)}, then rides
+     * the fused body's reference slots ({@code ALOAD}/{@code ASTORE}). It is INPUT-only in this slice: a leaf/kernel-arg
+     * element, never a kernel's output element (no {@code BytesRef}-returning kernels are fused yet).
+     */
+    private static final String BYTES_REF = "org/apache/lucene/util/BytesRef";
+
+    /**
      * Internal name of {@code org.elasticsearch.core.Releasable}, the interface through which the block-path fused
      * method closes its output builder. The builder is a resource: {@code build()} transfers its breaker
      * accounting to the produced block, but on any abnormal exit (e.g. a {@code CircuitBreakingException} while
@@ -997,7 +1006,12 @@ public final class Stitcher {
         // multi-value warnings are NOT gated by {@code live}: each kernel emits them in its own operand order so they
         // match the unfused chain (which runs every kernel's loop fully), independent of ancestor short-circuits.
         int liveSlot = overflowExcSlot + 1;
-        int workBase = liveSlot + 1;
+        // A reusable BytesRef spare for any BYTES_REF (keyword/text) leaf, allocated once below the DFS work region and
+        // initialised before the loop. Reserved unconditionally (a one-slot gap when the tree has no reference input,
+        // so the layout is uniform); only initialised + consulted when a reference input is present.
+        int spareBytesRefSlot = liveSlot + 1;
+        int workBase = spareBytesRefSlot + 1;
+        boolean needsSpare = hasReferenceInput(inputElements);
 
         // Each kernel's warning-source slot into the runtime Warnings[]: its overflow warning and its direct leaf
         // operands' multi-value warnings register on warnings[its slot], matching the unfused per-node evaluator source.
@@ -1035,6 +1049,12 @@ public final class Stitcher {
             )
         );
         insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
+
+        // Allocate the reusable BytesRef spare once, before the loop, when any leaf reads a reference (BYTES_REF)
+        // column. It is a plain local (no breaker accounting), so it lives outside the builder's try region.
+        if (needsSpare) {
+            emitSpareBytesRefInit(insns, spareBytesRefSlot);
+        }
 
         // The builder is a resource: everything up to and including build() runs inside a try whose catch-all
         // handler closes it before rethrowing, so a break part-way through does not leak breaker bytes.
@@ -1083,6 +1103,7 @@ public final class Stitcher {
             sourceIndices,
             liveSlot,
             overflowExcSlot,
+            spareBytesRefSlot,
             workBase,
             constantSlots
         );
@@ -1797,7 +1818,8 @@ public final class Stitcher {
         int countSlot = constParamBase + constantParamSize(predConstants);
         int liveSlot = countSlot + 1;
         int overflowExcSlot = liveSlot + 1;
-        int workBase = overflowExcSlot + 1;
+        int spareBytesRefSlot = overflowExcSlot + 1;
+        int workBase = spareBytesRefSlot + 1;
 
         if (predicateTree instanceof FusionNode.Logical) {
             LogicalDfsEmitter emitter = new LogicalDfsEmitter(
@@ -1821,6 +1843,9 @@ public final class Stitcher {
             // map its present/value to a tri-state (present ? value(0/1) : null(2)).
             insns.add(new InsnNode(Opcodes.ICONST_1));
             insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
+            if (hasReferenceInput(predInputElements)) {
+                emitSpareBytesRefInit(insns, spareBytesRefSlot);
+            }
             BlockDfsEmitter emitter = new BlockDfsEmitter(
                 insns,
                 pred,
@@ -1832,6 +1857,7 @@ public final class Stitcher {
                 predSources,
                 liveSlot,
                 overflowExcSlot,
+                spareBytesRefSlot,
                 workBase,
                 constantSlots
             );
@@ -1885,10 +1911,14 @@ public final class Stitcher {
         int countSlot = constParamBase + constantParamSize(projConstants);
         int liveSlot = countSlot + 1;
         int overflowExcSlot = liveSlot + 1;
-        int workBase = overflowExcSlot + 1;
+        int spareBytesRefSlot = overflowExcSlot + 1;
+        int workBase = spareBytesRefSlot + 1;
 
         insns.add(new InsnNode(Opcodes.ICONST_1));
         insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
+        if (hasReferenceInput(projInputElements)) {
+            emitSpareBytesRefInit(insns, spareBytesRefSlot);
+        }
         BlockDfsEmitter emitter = new BlockDfsEmitter(
             insns,
             proj,
@@ -1900,6 +1930,7 @@ public final class Stitcher {
             mergedProjSources,
             liveSlot,
             overflowExcSlot,
+            spareBytesRefSlot,
             workBase,
             constantSlots
         );
@@ -2560,6 +2591,14 @@ public final class Stitcher {
         private final Map<FusionNode, Integer> sourceIndices;
         private final int liveSlot;
         private final int overflowExcSlot;
+        /**
+         * Slot of the reusable {@code BytesRef} "spare" a {@code BYTES_REF} leaf reads into via
+         * {@code getBytesRef(int, BytesRef)}. Allocated once by the host BEFORE the loop and passed in here; {@code -1}
+         * when the tree has no reference input (then no leaf ever consults it). Reusing one spare across positions is
+         * safe: the returned {@code BytesRef} is consumed by its kernel within the same position, exactly as the
+         * generated unfused evaluator's per-eval {@code valScratch} does.
+         */
+        private final int spareBytesRefSlot;
         private final Map<FusionNode.Constant, Integer> constantSlots;
         private int next;
 
@@ -2574,6 +2613,7 @@ public final class Stitcher {
             Map<FusionNode, Integer> sourceIndices,
             int liveSlot,
             int overflowExcSlot,
+            int spareBytesRefSlot,
             int workBase,
             Map<FusionNode.Constant, Integer> constantSlots
         ) {
@@ -2587,6 +2627,7 @@ public final class Stitcher {
             this.sourceIndices = sourceIndices;
             this.liveSlot = liveSlot;
             this.overflowExcSlot = overflowExcSlot;
+            this.spareBytesRefSlot = spareBytesRefSlot;
             this.constantSlots = constantSlots;
             this.next = workBase;
         }
@@ -2755,11 +2796,18 @@ public final class Stitcher {
             insns.add(new VarInsnNode(Opcodes.ISTORE, presentSlot));
             insns.add(new JumpInsnNode(Opcodes.GOTO, afterOperand));
             insns.add(leafSingle);
-            // v = block.get*(block.getFirstValueIndex(p)); store into this kernel's argument slot.
+            // Primitive: v = block.get*(block.getFirstValueIndex(p)). Reference (BytesRef): v =
+            // block.getBytesRef(block.getFirstValueIndex(p), spare) — the reusable spare is pushed as the extra arg
+            // before the call. Either way the value is stored into this kernel's argument slot (ASTORE for a reference,
+            // derived by Type#getOpcode).
             insns.add(new VarInsnNode(Opcodes.ALOAD, block));
             insns.add(new VarInsnNode(Opcodes.ALOAD, block));
             insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
             insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getFirstValueIndex", "(I)I", true));
+            if (inputElement.reference()) {
+                assert spareBytesRefSlot >= 0 : "a BytesRef leaf requires a spare slot allocated by the host";
+                insns.add(new VarInsnNode(Opcodes.ALOAD, spareBytesRefSlot));
+            }
             insns.add(
                 new MethodInsnNode(
                     Opcodes.INVOKEINTERFACE,
@@ -2783,6 +2831,12 @@ public final class Stitcher {
                 case Type.DOUBLE -> {
                     insns.add(new InsnNode(Opcodes.DCONST_0));
                     insns.add(new VarInsnNode(Opcodes.DSTORE, slot));
+                }
+                case Type.OBJECT -> {
+                    // A reference (BytesRef) argument slot: seed with null so the verifier sees it definitely assigned
+                    // (it is read only on the present path, where emitLeaf has stored the real BytesRef).
+                    insns.add(new InsnNode(Opcodes.ACONST_NULL));
+                    insns.add(new VarInsnNode(Opcodes.ASTORE, slot));
                 }
                 default -> {
                     // int / boolean (one slot, int category).
@@ -2842,6 +2896,28 @@ public final class Stitcher {
             collectInputElements(logical.right(), elements);
         }
         // FusionNode.Input at the root is impossible (depth ≥ 2); a bare Constant contributes no input slot.
+    }
+
+    /** Whether any input leaf reads a reference element (a {@code BYTES_REF}), i.e. the host must allocate a spare. */
+    private static boolean hasReferenceInput(Element[] inputElements) {
+        for (Element e : inputElements) {
+            if (e != null && e.reference()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Emits {@code slot = new BytesRef();} — the reusable spare a {@code BYTES_REF} leaf reads into. Called once by a
+     * host BEFORE its per-position loop so all positions reuse one spare (matching the generated evaluator's per-eval
+     * {@code valScratch}).
+     */
+    private static void emitSpareBytesRefInit(InsnList insns, int slot) {
+        insns.add(new TypeInsnNode(Opcodes.NEW, BYTES_REF));
+        insns.add(new InsnNode(Opcodes.DUP));
+        insns.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, BYTES_REF, "<init>", "()V", false));
+        insns.add(new VarInsnNode(Opcodes.ASTORE, slot));
     }
 
     /** Number of distinct input vectors the tree references, i.e. one past the maximum {@code Input} index. */
@@ -3157,8 +3233,41 @@ public final class Stitcher {
                     "appendBoolean",
                     t
                 );
+                // BYTES_REF is an INPUT-only reference element (keyword/text). It is never a fused tree's OUTPUT element
+                // in this slice (no BytesRef-returning kernels), so the vector-path fields (rawValues array, ArrayVector
+                // forwarder, block builder/append) are left unset: a BytesRef-containing tree is routed through the
+                // BLOCK path only and only the block-read fields (blockInternalName + getBytesRef) are ever consulted.
+                case Type.OBJECT -> {
+                    if (BYTES_REF.equals(t.getInternalName()) == false) {
+                        throw new IllegalArgumentException("unsupported fused reference element type: " + t.getClassName());
+                    }
+                    yield new Element(
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        -1,
+                        "org/elasticsearch/compute/data/BytesRefBlock",
+                        null,
+                        null,
+                        "getBytesRef",
+                        null,
+                        t
+                    );
+                }
                 default -> throw new IllegalArgumentException("unsupported fused output element type: " + t.getClassName());
             };
+        }
+
+        /**
+         * Whether this element is reference-typed (an object, i.e. {@code BYTES_REF}) rather than a primitive. A
+         * reference leaf is read into a reusable spare via {@code getBytesRef(int, BytesRef)} and rides {@code ALOAD}/
+         * {@code ASTORE} slots (both derived from {@link Type#getOpcode}); its argument slot is seeded with
+         * {@code null}. Primitive elements have no such spare and read via the one-arg {@code get*(int)} accessor.
+         */
+        boolean reference() {
+            return type.getSort() == Type.OBJECT;
         }
 
         /** JVM type descriptor of the concrete {@code *Block}, e.g. {@code Lorg/.../LongBlock;}. */
@@ -3202,8 +3311,17 @@ public final class Stitcher {
             return "(I)" + builderDescriptor();
         }
 
-        /** Descriptor of {@code *Block.get*(int)} -> primitive, e.g. {@code (I)J} for {@code getLong}. */
+        /**
+         * Descriptor of the concrete {@code *Block} value accessor. For a primitive element this is
+         * {@code *Block.get*(int)} -> primitive, e.g. {@code (I)J} for {@code getLong}. For a reference element it is
+         * {@code BytesRefBlock.getBytesRef(int, BytesRef)} -> {@code BytesRef}: the value is read into a caller-supplied
+         * reusable spare (pushed by the emitter before the call), e.g.
+         * {@code (ILorg/apache/lucene/util/BytesRef;)Lorg/apache/lucene/util/BytesRef;}.
+         */
         String getValueDescriptor() {
+            if (reference()) {
+                return "(I" + type.getDescriptor() + ")" + type.getDescriptor();
+            }
             return "(I)" + type.getDescriptor();
         }
 
