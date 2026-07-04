@@ -1281,12 +1281,13 @@ public final class Stitcher {
      * either side is null, else true; {@code OR} yields true if either side is true, else null if either side is null,
      * else false.
      *
-     * <p><b>Short-circuit.</b> The left operand is evaluated first; when it alone decides the result — {@code AND} with
-     * a false left, {@code OR} with a true left — the right operand helper is <b>not called</b>, so any multi-value
-     * warning the right subtree would have registered is suppressed. The unfused {@code BooleanLogicExpressionEvaluator}
-     * evaluates both sides eagerly (over the whole page), so the fused warning set is always a <b>subset</b> of the
-     * unfused set (ratified rule), while the 3VL <em>values and null positions remain identical</em> (short-circuit only
-     * skips work whose result cannot change the answer).
+     * <p><b>Both operands evaluated; only the VALUE short-circuits (B3a).</b> Both operand helpers are always called,
+     * so each sub-comparison's multi-value warning fires exactly as the unfused {@code BooleanLogicExpressionEvaluator}
+     * (which evaluates both sides eagerly over the whole page) would — <b>exact warning parity</b>, matching the
+     * arithmetic block path's per-kernel emission rather than the earlier subset. The 3VL result is then a pure
+     * function of the two tri-states (a decisive operand — {@code false} for {@code AND}, {@code true} for {@code OR} —
+     * still fixes the value without consulting the other), so <em>values and null positions are unchanged</em>; only
+     * which warnings fire changed (now equal to, still ⊆, the unfused set).
      *
      * <p><b>Multi-value on a logical operand → null, no warning.</b> The operands here are single-valued by
      * construction (a comparison/logical output is one boolean or null), so the logical node itself never sees a
@@ -2221,63 +2222,50 @@ public final class Stitcher {
 
         private void emitLogical(FusionNode.Logical logical, int tOut) {
             boolean and = logical.op() == FusionNode.BoolOp.AND;
+            // Evaluate BOTH operands unconditionally so each sub-comparison's multi-value warning fires — matching the
+            // unfused BooleanLogicExpressionEvaluator (which evaluates both sides over the whole page) and the
+            // arithmetic block path's per-kernel warning emission. The 3VL VALUE is then a pure function of the two
+            // tri-states, so dropping the eval-time short-circuit changes only WHICH warnings fire (now exact parity,
+            // still ⊆ unfused), never the value/null result.
             int tLeft = alloc(1);
             emit(logical.left(), tLeft);
             int tRight = alloc(1);
+            emit(logical.right(), tRight);
 
-            LabelNode setDecisive = new LabelNode(); // AND: result false; OR: result true
+            // The tri-state that, on either operand, decides the result — and equals it: false (0) for AND, true (1)
+            // for OR. When neither side is decisive nor null, the result is the "otherwise" value: true for AND (both
+            // true), false for OR (both false).
+            int decisive = and ? 0 : 1;
+            int otherwise = and ? 1 : 0;
+
+            LabelNode setDecisive = new LabelNode();
             LabelNode setNull = new LabelNode();
             LabelNode done = new LabelNode();
 
-            if (and) {
-                // Short-circuit: left == false (0) -> result false, skip the right operand entirely.
-                insns.add(new VarInsnNode(Opcodes.ILOAD, tLeft));
-                insns.add(new JumpInsnNode(Opcodes.IFEQ, setDecisive));
-                emit(logical.right(), tRight);
-                // right == false (0) -> result false.
-                insns.add(new VarInsnNode(Opcodes.ILOAD, tRight));
-                insns.add(new JumpInsnNode(Opcodes.IFEQ, setDecisive));
-                // else 3VL: either side null -> null; otherwise both true -> true.
-                insns.add(new VarInsnNode(Opcodes.ILOAD, tLeft));
-                insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
-                insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setNull));
-                insns.add(new VarInsnNode(Opcodes.ILOAD, tRight));
-                insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
-                insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setNull));
-                insns.add(new InsnNode(Opcodes.ICONST_1));
-                insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
-                insns.add(new JumpInsnNode(Opcodes.GOTO, done));
-                insns.add(setDecisive);
-                insns.add(new InsnNode(Opcodes.ICONST_0));
-                insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
-                insns.add(new JumpInsnNode(Opcodes.GOTO, done));
-            } else {
-                // Short-circuit: left == true (1) -> result true, skip the right operand entirely.
-                insns.add(new VarInsnNode(Opcodes.ILOAD, tLeft));
-                insns.add(new InsnNode(Opcodes.ICONST_1));
-                insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setDecisive));
-                emit(logical.right(), tRight);
-                // right == true (1) -> result true.
-                insns.add(new VarInsnNode(Opcodes.ILOAD, tRight));
-                insns.add(new InsnNode(Opcodes.ICONST_1));
-                insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setDecisive));
-                // else 3VL: either side null -> null; otherwise both false -> false.
-                insns.add(new VarInsnNode(Opcodes.ILOAD, tLeft));
-                insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
-                insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setNull));
-                insns.add(new VarInsnNode(Opcodes.ILOAD, tRight));
-                insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
-                insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setNull));
-                insns.add(new InsnNode(Opcodes.ICONST_0));
-                insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
-                insns.add(new JumpInsnNode(Opcodes.GOTO, done));
-                insns.add(setDecisive);
-                insns.add(new InsnNode(Opcodes.ICONST_1));
-                insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
-                insns.add(new JumpInsnNode(Opcodes.GOTO, done));
-            }
+            // if (left == decisive || right == decisive) -> decisive
+            insns.add(new VarInsnNode(Opcodes.ILOAD, tLeft));
+            insns.add(new InsnNode(Opcodes.ICONST_0 + decisive));
+            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setDecisive));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, tRight));
+            insns.add(new InsnNode(Opcodes.ICONST_0 + decisive));
+            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setDecisive));
+            // else if (left == null(2) || right == null(2)) -> null
+            insns.add(new VarInsnNode(Opcodes.ILOAD, tLeft));
+            insns.add(new InsnNode(Opcodes.ICONST_2));
+            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setNull));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, tRight));
+            insns.add(new InsnNode(Opcodes.ICONST_2));
+            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setNull));
+            // else -> otherwise (both non-null, non-decisive)
+            insns.add(new InsnNode(Opcodes.ICONST_0 + otherwise));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
+            insns.add(new JumpInsnNode(Opcodes.GOTO, done));
+            insns.add(setDecisive);
+            insns.add(new InsnNode(Opcodes.ICONST_0 + decisive));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
+            insns.add(new JumpInsnNode(Opcodes.GOTO, done));
             insns.add(setNull);
-            insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
+            insns.add(new InsnNode(Opcodes.ICONST_2));
             insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
             insns.add(done);
         }

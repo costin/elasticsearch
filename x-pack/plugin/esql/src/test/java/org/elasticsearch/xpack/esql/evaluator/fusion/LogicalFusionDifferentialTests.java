@@ -42,8 +42,9 @@ import static org.hamcrest.Matchers.is;
  * <ul>
  *   <li>{@link #testThreeValuedLogicDeterministic()} — every {@code (left, right)} combination of {true, false, null}
  *       checked against a hand-coded 3VL oracle AND the unfused chain;</li>
- *   <li>{@link #testShortCircuitSuppressesRightMultiValueWarning()} — a decisive left operand short-circuits and
- *       suppresses the right operand's multi-value warning (fused emits none, unfused does; values identical);</li>
+ *   <li>{@link #testBothOperandsEmitMultiValueWarning()} — both operands are evaluated for warnings even when the
+ *       left decides the value, so the fused path emits the right operand's multi-value warning too (exact parity
+ *       with the unfused chain; values identical);</li>
  *   <li>{@link #testDistinctSourceWarningsAttributedPerComparison()} — per-comparison warning-source attribution.</li>
  * </ul>
  */
@@ -140,17 +141,17 @@ public class LogicalFusionDifferentialTests extends FusionDifferentialTestCase {
 
     /**
      * The right operand ({@code c < d}) has a multi-value input at the only position, so evaluating it registers the
-     * single-value multi-value warning. The left operand decides the whole expression (AND: left false; OR: left true),
-     * so the fused loop short-circuits and never evaluates the right operand — hence emits NO warning. The unfused
-     * chain evaluates both operands eagerly and DOES emit the warning. Values remain identical, and the fused warning
-     * set is a strict subset, proving the short-circuit occurred.
+     * single-value multi-value warning. The left operand decides the whole expression (AND: left false; OR: left true).
+     * Post-B3a the fused logical path evaluates BOTH operands for their warnings (only the 3VL VALUE short-circuits),
+     * so the fused path emits the right operand's warning too — exact parity with the unfused (eager) chain, matching
+     * the arithmetic block path. Values remain identical.
      */
-    public void testShortCircuitSuppressesRightMultiValueWarning() {
-        assertShortCircuitSuppressesWarning(Connective.AND);
-        assertShortCircuitSuppressesWarning(Connective.OR);
+    public void testBothOperandsEmitMultiValueWarning() {
+        assertBothOperandsWarn(Connective.AND);
+        assertBothOperandsWarn(Connective.OR);
     }
 
-    private void assertShortCircuitSuppressesWarning(Connective connective) {
+    private void assertBothOperandsWarn(Connective connective) {
         FieldAttribute a = field("a", DataType.LONG);
         FieldAttribute b = field("b", DataType.LONG);
         FieldAttribute c = field("c", DataType.LONG);
@@ -196,18 +197,20 @@ public class LogicalFusionDifferentialTests extends FusionDifferentialTestCase {
             assertThat(connective + " value parity", fb.isNull(0), is(rb.isNull(0)));
             assertThat(connective + " value parity", fb.getBoolean(fb.getFirstValueIndex(0)), is(rb.getBoolean(rb.getFirstValueIndex(0))));
 
-            // Short-circuit evidence: unfused emits the right operand's multi-value warning, fused does not.
+            // B3a parity: both operands are evaluated for their warnings, so the fused path ALSO emits the right
+            // operand's multi-value warning — exact parity with the unfused (eager) chain (not merely a subset),
+            // matching the arithmetic block path. The 3VL VALUE above is still decided by the (unchanged) truth table.
             assertThat(
                 connective + " unfused (eager) must emit the right operand's multi-value warning",
                 referenceWarnings,
                 hasItem(containsString(MULTI_VALUE_MSG))
             );
             assertThat(
-                connective + " fused must SHORT-CIRCUIT and NOT emit the right operand's multi-value warning",
+                connective + " fused must ALSO emit the right operand's multi-value warning (both operands evaluated)",
                 containsWarning(fusedWarnings, MULTI_VALUE_MSG),
-                is(false)
+                is(true)
             );
-            assertWarningsSubset(fusedWarnings, referenceWarnings, connective + " short-circuit");
+            assertWarningsSubset(fusedWarnings, referenceWarnings, connective + " parity");
         } finally {
             Releasables.closeExpectNoException(fusedResult, referenceResult, fused, reference);
             if (page != null) {
