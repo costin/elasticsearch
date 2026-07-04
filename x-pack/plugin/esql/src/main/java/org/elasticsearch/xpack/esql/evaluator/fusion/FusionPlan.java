@@ -34,7 +34,13 @@ record FusionPlan(
     ElementKind outputElement,
     boolean overflowChecked,
     Source[] warningSources,
-    String shape
+    String shape,
+    /**
+     * When non-empty, the {@code jdk.incubator.vector.VectorOperators.Comparison} constant name for a SIMD-eligible
+     * boolean comparison of two same-primitive columns (B2) — set by the planner from the comparison {@code
+     * Expression}. Empty means "no SIMD variant" (the scalar plain-vector path is used).
+     */
+    String vectorComparison
 ) {
     /** The embedded constants in the Stitcher's canonical emit order — read from the signature (single source of truth). */
     List<FusionNode.Constant> constants() {

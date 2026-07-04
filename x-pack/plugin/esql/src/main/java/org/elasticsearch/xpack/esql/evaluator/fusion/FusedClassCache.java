@@ -101,7 +101,9 @@ final class FusedClassCache {
          * block-only. Its signature encodes BOTH the predicate and projection sub-shapes (see
          * {@link FusionPlanner#filterEvalShapeOf}).
          */
-        FILTER_EVAL_BLOCK
+        FILTER_EVAL_BLOCK,
+        /** {@link Stitcher#compileVectorLoopSimd}: the opt-in Panama Vector-API variant of the plain-vector path (B2). */
+        SIMD_VECTOR
     }
 
     /**

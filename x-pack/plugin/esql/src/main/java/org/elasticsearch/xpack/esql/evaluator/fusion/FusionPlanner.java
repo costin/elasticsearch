@@ -24,6 +24,7 @@ import org.elasticsearch.xpack.esql.expression.function.scalar.math.Cast;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.BinaryLogic;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.EsqlBinaryComparison;
 import org.elasticsearch.xpack.esql.planner.Layout;
 
 import java.lang.invoke.MethodHandles;
@@ -111,6 +112,16 @@ public final class FusionPlanner {
             throws Stitcher.StitchingException {
             throw new UnsupportedOperationException("compileFilterEvalBlockLoop not implemented by this compiler");
         }
+
+        /**
+         * Compiles the opt-in SIMD (Vector-API) variant of the plain-vector path for a boolean comparison (B2), where
+         * {@code comparison} is the {@code VectorOperators.Comparison} constant name. Defaulted so existing test doubles
+         * need not implement it; {@link FusionCompilationService} provides the real, cache-backed implementation.
+         */
+        default Class<?> compileVectorLoopSimd(MethodHandles.Lookup caller, FusionNode tree, String comparison)
+            throws Stitcher.StitchingException {
+            throw new UnsupportedOperationException("compileVectorLoopSimd not implemented by this compiler");
+        }
     }
 
     /**
@@ -177,7 +188,8 @@ public final class FusionPlanner {
             ctx.outputElement,
             ctx.overflowChecked,
             warningSources(signature.warningSourceIndices(), ctx),
-            shape
+            shape,
+            simdComparison(exp, tree, inputElements, ctx.outputElement, signature.constantsInEmitOrder())
         );
 
         long minRows = FusionSettings.adaptiveMinRows();
@@ -287,6 +299,45 @@ public final class FusionPlanner {
      */
     static String filterEvalShapeOf(FusionNode predicateTree, FusionNode projectionTree) {
         return "FILTER_EVAL(" + shapeOf(predicateTree) + "|" + shapeOf(projectionTree) + ")";
+    }
+
+    /**
+     * The {@code jdk.incubator.vector.VectorOperators.Comparison} constant name for a SIMD-eligible boolean comparison
+     * (B2), or {@code ""} when the tree is not eligible. Eligible iff the root {@code Expression} is an
+     * {@link EsqlBinaryComparison} and the built tree is a single comparison kernel over exactly two <b>column</b>
+     * operands of the same {@code int}/{@code long} element (double is deferred pending NaN/-0.0 parity coverage), with
+     * a boolean output and no embedded constants — the narrow shape the Vector-API lane compare actually accelerates.
+     */
+    private static String simdComparison(
+        Expression exp,
+        FusionNode tree,
+        ElementKind[] inputElements,
+        ElementKind outputElement,
+        List<FusionNode.Constant> constants
+    ) {
+        if (outputElement != ElementKind.BOOLEAN
+            || constants.isEmpty() == false
+            || inputElements.length != 2
+            || inputElements[0] != inputElements[1]
+            || (inputElements[0] != ElementKind.INT && inputElements[0] != ElementKind.LONG)
+            || exp instanceof EsqlBinaryComparison == false
+            || tree instanceof FusionNode.Kernel == false) {
+            return "";
+        }
+        FusionNode.Kernel root = (FusionNode.Kernel) tree;
+        if (root.children().size() != 2
+            || root.children().get(0) instanceof FusionNode.Input == false
+            || root.children().get(1) instanceof FusionNode.Input == false) {
+            return "";
+        }
+        return switch (((EsqlBinaryComparison) exp).getFunctionType()) {
+            case EQ -> "EQ";
+            case NEQ -> "NE";
+            case LT -> "LT";
+            case LTE -> "LE";
+            case GT -> "GT";
+            case GTE -> "GE";
+        };
     }
 
     private static int[] toIntArray(List<Integer> values) {

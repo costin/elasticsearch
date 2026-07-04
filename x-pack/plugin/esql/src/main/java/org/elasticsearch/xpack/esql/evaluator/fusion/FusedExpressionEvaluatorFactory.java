@@ -30,6 +30,7 @@ import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.Warnings;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
+import org.elasticsearch.compute.operator.fusion.FusionSimd;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.logging.LogManager;
 import org.elasticsearch.logging.Logger;
@@ -191,6 +192,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         boolean overflowChecked = plan.overflowChecked();
         String shape = plan.shape();
         List<FusionNode.Constant> constants = plan.constants();
+        // Opt-in SIMD (B2): a non-empty vectorComparison marks a SIMD-eligible boolean comparison; usable only when the
+        // node opted in AND the Vector API is available in this runtime. Otherwise the scalar plain-vector path is used.
+        boolean useSimd = plan.vectorComparison().isEmpty() == false && FusionSettings.isSimdEnabled() && FusionSimd.available();
         int arity = inputChannels.length;
         // Embedded constants are trailing primitive parameters of the fused method now (iter 30): their types are
         // appended to every resolved MethodType and their values are marshalled into the invoke args, both in the
@@ -249,7 +253,17 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             VectorStrategy strategy;
             try {
                 if (overflowChecked == false) {
-                    Class<?> vectorClass = compiler.compileVectorLoop(LOOKUP, tree);
+                    Class<?> vectorClass;
+                    if (useSimd) {
+                        // SIMD (B2): the plain-vector-shaped Vector-API variant. Grant this module a read edge to
+                        // jdk.incubator.vector before defining the hidden class (see FusionSimd), then compile the
+                        // lane-compare loop. The MethodType is the plain-vector shape, so eval-time dispatch is
+                        // unchanged (VectorStrategy.PLAIN_VECTOR).
+                        FusionSimd.enableReadsFrom(LOOKUP.lookupClass().getModule());
+                        vectorClass = compiler.compileVectorLoopSimd(LOOKUP, tree, plan.vectorComparison());
+                    } else {
+                        vectorClass = compiler.compileVectorLoop(LOOKUP, tree);
+                    }
                     vectorHandle = LOOKUP.findStatic(
                         vectorClass,
                         Stitcher.FUSED_METHOD_NAME,
