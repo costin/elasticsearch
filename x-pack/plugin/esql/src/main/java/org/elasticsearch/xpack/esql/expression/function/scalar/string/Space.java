@@ -94,7 +94,9 @@ public class Space extends UnaryScalarFunction {
         return scratch.bytesRefView();
     }
 
-    static void checkNumber(int number) {
+    // public (not package-private) so the bytecode-fusion stitcher can splice Space#process — whose body calls
+    // checkNumber(...) — into a fused hidden class defined in a different package without an IllegalAccessError.
+    public static void checkNumber(int number) {
         if (number < 0) {
             throw new IllegalArgumentException("Number parameter cannot be negative, found [" + number + "]");
         }
