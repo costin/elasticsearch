@@ -8,6 +8,7 @@
 package org.elasticsearch.xpack.esql.expression.function.scalar.math;
 
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ConstantEvaluators;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.EsqlIllegalArgumentException;
@@ -62,16 +63,33 @@ public class Cast {
         return new EsqlIllegalArgumentException("can’t process [" + current.typeName() + " -> " + required.typeName() + "]");
     }
 
+    // Cast vs TO_DOUBLE / TO_LONG / ... (clarification): this Cast is the planner-inserted IMPLICIT numeric coercion
+    // used by commonType (e.g. `double + int` becomes Add(double, castIntToDouble(int))). Its kernels are pure,
+    // single-valued primitive widenings with NO multi-value handling and NO warnings — they are only inserted where the
+    // type system guarantees a single-valued numeric operand. The user-facing TO_DOUBLE/TO_LONG/... convert FUNCTIONS
+    // (AbstractConvertFunction, @ConvertEvaluator) are a DIFFERENT family: multi-value-aware and warn-capable (e.g.
+    // TO_DOUBLE(keyword) can fail-to-null with a Warning). They are numerically identical for int/long->double but are
+    // NOT interchangeable — a convert function deliberately does NOT reuse these Cast evaluators (see the "would be a
+    // candidate, but not MV'd" notes in ToDouble.java). Fusion must therefore never swap one for the other; the
+    // mixed-type differential sweeps (FusionSpecDifferentialTests) prove the fused Cast path matches the unfused Cast
+    // chain in values, nulls and warnings.
+    //
+    // @Fusable: the numeric widening casts ESQL inserts via commonType (e.g. double + int => Add(double,
+    // castIntToDouble(int))) are pure primitive conversions with no overflow, so they fuse as intermediate kernels
+    // whose return element differs from their argument element — the seam that lets a mixed-type tree fuse end to end.
+    @Fusable
     @Evaluator(extraName = "IntToLong")
     static long castIntToLong(int v) {
         return v;
     }
 
+    @Fusable
     @Evaluator(extraName = "IntToDouble")
     static double castIntToDouble(int v) {
         return v;
     }
 
+    @Fusable
     @Evaluator(extraName = "LongToDouble")
     static double castLongToDouble(long v) {
         return v;

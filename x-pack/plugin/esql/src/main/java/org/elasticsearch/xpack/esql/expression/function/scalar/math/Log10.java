@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.expression.function.scalar.math;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.EsqlIllegalArgumentException;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
@@ -90,6 +91,10 @@ public class Log10 extends UnaryScalarFunction {
         throw EsqlIllegalArgumentException.illegalDataType(fieldType);
     }
 
+    // overflowChecked = true: forwards ArithmeticException (non-positive input) the fused checked path nulls + warns
+    // on, exactly like the unfused chain. Only the double (D)D kernel is fusable; the int/long variants return a
+    // double from a differently-typed argument (out of scope).
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Double", warnExceptions = ArithmeticException.class)
     static double process(double val) {
         if (val <= 0d) {

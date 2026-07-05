@@ -30,6 +30,8 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
+import javax.lang.model.type.ArrayType;
+import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 
@@ -39,6 +41,8 @@ import static org.elasticsearch.compute.gen.Types.CONSTANT_METHOD_RESULT_SPECIAL
 import static org.elasticsearch.compute.gen.Types.DRIVER_CONTEXT;
 import static org.elasticsearch.compute.gen.Types.EXPRESSION_EVALUATOR;
 import static org.elasticsearch.compute.gen.Types.EXPRESSION_EVALUATOR_FACTORY;
+import static org.elasticsearch.compute.gen.Types.FUSION_AWARE;
+import static org.elasticsearch.compute.gen.Types.FUSION_DESCRIPTOR;
 import static org.elasticsearch.compute.gen.Types.PAGE;
 import static org.elasticsearch.compute.gen.Types.RAM_USAGE_ESIMATOR;
 import static org.elasticsearch.compute.gen.Types.SOURCE;
@@ -50,12 +54,16 @@ import static org.elasticsearch.compute.gen.Types.vectorFixedBuilderType;
 import static org.elasticsearch.compute.gen.Types.vectorType;
 
 public class EvaluatorImplementer {
+    private final Elements elements;
     private final TypeElement declarationType;
     private final ProcessFunction processFunction;
     private final ClassName implementation;
     private final boolean processOutputsMultivalued;
     private final boolean vectorsUnsupported;
     private final boolean allNullsIsNull;
+    private final boolean fusable;
+    private final boolean overflowChecked;
+    private final String overflowExceptionType;
 
     public EvaluatorImplementer(
         Elements elements,
@@ -63,8 +71,11 @@ public class EvaluatorImplementer {
         ExecutableElement processFunction,
         String extraName,
         List<TypeMirror> warnExceptions,
-        boolean allNullsIsNull
+        boolean allNullsIsNull,
+        boolean fusable,
+        boolean overflowChecked
     ) {
+        this.elements = elements;
         this.declarationType = (TypeElement) processFunction.getEnclosingElement();
         this.processFunction = new ProcessFunction(types, processFunction, warnExceptions);
 
@@ -77,6 +88,15 @@ public class EvaluatorImplementer {
         boolean returnTypeWithoutVectorSupport = vectorType(elementType(this.processFunction.resultDataType(true))) == null;
         vectorsUnsupported = processOutputsMultivalued || anyParameterNotSupportingVectors || returnTypeWithoutVectorSupport;
         this.allNullsIsNull = allNullsIsNull;
+        this.fusable = fusable;
+        this.overflowChecked = overflowChecked;
+        // The overflow exception type the fused stitcher must catch around this kernel's spliced body (binding
+        // rule #3). It is the FQN of the first declared @Evaluator.warnExceptions entry — for every fusable
+        // overflow-checked kernel that is ArithmeticException — and empty when the kernel is not overflow-checked
+        // (or declares no warn exception), so the stitcher only wraps kernels that can actually throw.
+        this.overflowExceptionType = (fusable && overflowChecked && warnExceptions.isEmpty() == false)
+            ? elements.getBinaryName((TypeElement) ((DeclaredType) warnExceptions.get(0)).asElement()).toString()
+            : "";
     }
 
     public JavaFile sourceFile() {
@@ -384,16 +404,95 @@ public class EvaluatorImplementer {
     private TypeSpec factory() {
         TypeSpec.Builder builder = TypeSpec.classBuilder("Factory");
         builder.addSuperinterface(EXPRESSION_EVALUATOR_FACTORY);
+        // When the kernel is @Fusable the Factory also implements FusionAware so the stitcher can
+        // recover the kernel's bytecode template at plan time. When the kernel is not @Fusable the
+        // emitted Factory must remain byte-for-byte identical to the pre-fusion output (additive
+        // invariant), so every fusion-specific addition below is gated on `fusable`.
+        if (fusable) {
+            builder.addSuperinterface(FUSION_AWARE);
+        }
         builder.addModifiers(Modifier.STATIC);
 
         builder.addField(SOURCE, "source", Modifier.PRIVATE, Modifier.FINAL);
         processFunction.args.forEach(a -> a.declareFactoryField(builder));
 
+        if (fusable) {
+            builder.addField(fusionDescriptorField());
+        }
+
         builder.addMethod(processFunction.factoryCtor());
         builder.addMethod(processFunction.factoryGet(implementation));
         builder.addMethod(processFunction.factoryToStringMethod(implementation));
 
+        if (fusable) {
+            builder.addMethod(fusionDescriptorMethod());
+        }
+
         return builder.build();
+    }
+
+    private FieldSpec fusionDescriptorField() {
+        return FieldSpec.builder(FUSION_DESCRIPTOR, "FUSION_DESCRIPTOR", Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
+            .initializer(
+                "new $T($T.class, $S, $S, $L, $L, $S)",
+                FUSION_DESCRIPTOR,
+                ClassName.get(declarationType),
+                processFunction.function.getSimpleName().toString(),
+                kernelTypeDescriptor(),
+                overflowChecked,
+                allNullsIsNull,
+                overflowExceptionType
+            )
+            .build();
+    }
+
+    private MethodSpec fusionDescriptorMethod() {
+        return MethodSpec.methodBuilder("fusionDescriptor")
+            .addAnnotation(Override.class)
+            .addModifiers(Modifier.PUBLIC)
+            .returns(FUSION_DESCRIPTOR)
+            .addStatement("return FUSION_DESCRIPTOR")
+            .build();
+    }
+
+    /**
+     * The JVM method descriptor of the kernel {@code process} method (e.g. {@code (JJ)J} for
+     * {@code static long process(long lhs, long rhs)}), derived from the annotated method's signature
+     * rather than hardcoded. The stitcher uses this descriptor to locate the exact kernel method when
+     * reading its compiled bytecode template.
+     */
+    private String kernelTypeDescriptor() {
+        ExecutableElement method = processFunction.function;
+        StringBuilder descriptor = new StringBuilder("(");
+        for (VariableElement parameter : method.getParameters()) {
+            appendTypeDescriptor(descriptor, parameter.asType());
+        }
+        descriptor.append(')');
+        appendTypeDescriptor(descriptor, method.getReturnType());
+        return descriptor.toString();
+    }
+
+    private void appendTypeDescriptor(StringBuilder descriptor, TypeMirror type) {
+        switch (type.getKind()) {
+            case BOOLEAN -> descriptor.append('Z');
+            case BYTE -> descriptor.append('B');
+            case CHAR -> descriptor.append('C');
+            case SHORT -> descriptor.append('S');
+            case INT -> descriptor.append('I');
+            case LONG -> descriptor.append('J');
+            case FLOAT -> descriptor.append('F');
+            case DOUBLE -> descriptor.append('D');
+            case VOID -> descriptor.append('V');
+            case ARRAY -> {
+                descriptor.append('[');
+                appendTypeDescriptor(descriptor, ((ArrayType) type).getComponentType());
+            }
+            case DECLARED -> {
+                TypeElement element = (TypeElement) ((DeclaredType) type).asElement();
+                descriptor.append('L').append(elements.getBinaryName(element).toString().replace('.', '/')).append(';');
+            }
+            default -> throw new IllegalArgumentException("cannot derive JVM descriptor for kernel type [" + type + "]");
+        }
     }
 
     static class ProcessFunction {

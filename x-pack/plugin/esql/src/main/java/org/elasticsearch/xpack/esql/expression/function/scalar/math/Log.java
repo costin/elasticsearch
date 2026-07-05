@@ -11,6 +11,7 @@ import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.Literal;
@@ -122,6 +123,9 @@ public class Log extends EsqlScalarFunction implements OptionalArgument {
         return (base == null || base.foldable()) && value.foldable();
     }
 
+    // overflowChecked = true: the unary natural-log kernel forwards ArithmeticException (non-positive input) the fused
+    // checked path nulls + warns on, exactly like the unfused chain.
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Constant", warnExceptions = { ArithmeticException.class })
     static double process(double value) throws ArithmeticException {
         if (value <= 0d) {
@@ -130,6 +134,9 @@ public class Log extends EsqlScalarFunction implements OptionalArgument {
         return Math.log(value);
     }
 
+    // overflowChecked = true: the binary log-to-base kernel forwards ArithmeticException (non-positive input or base 1)
+    // the fused checked path nulls + warns on, exactly like the unfused chain.
+    @Fusable(overflowChecked = true)
     @Evaluator(warnExceptions = { ArithmeticException.class })
     static double process(double base, double value) throws ArithmeticException {
         if (base <= 0d || value <= 0d) {

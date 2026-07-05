@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.expression.function.scalar.math;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
@@ -76,6 +77,8 @@ public class Tanh extends AbstractTrigonometricFunction {
         return NodeInfo.create(this, Tanh::new, field());
     }
 
+    // overflowChecked = false: Math.tanh is a total java.base function (never throws; NaN/Inf pass through).
+    @Fusable(overflowChecked = false)
     @Evaluator
     static double process(double val) {
         return Math.tanh(val);
