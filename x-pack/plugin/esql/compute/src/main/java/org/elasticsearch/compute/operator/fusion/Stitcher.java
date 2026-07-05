@@ -148,7 +148,7 @@ public final class Stitcher {
      * planner/tree construction bug, not a runtime input condition (so an unchecked exception, caught by no one, is
      * correct). Shared by every emitter that splices a kernel body so the check reads identically on all paths.
      */
-    private static void checkKernelArity(FusionNode.Kernel kernel, int expected, int actual) {
+    static void checkKernelArity(FusionNode.Kernel kernel, int expected, int actual) {
         if (actual != expected) {
             throw new IllegalArgumentException(
                 "kernel [" + kernel.descriptor().kernelMethod() + "] expects " + expected + " operands but the tree supplied " + actual
@@ -312,7 +312,7 @@ public final class Stitcher {
      * input's per-position null/multi-value state through this common interface ({@code getValueCount},
      * {@code getFirstValueIndex}) before narrowing to the concrete {@code *Block} for the typed value read.
      */
-    private static final String BLOCK = "org/elasticsearch/compute/data/Block";
+    static final String BLOCK = "org/elasticsearch/compute/data/Block";
 
     /**
      * Internal name of {@code org.apache.lucene.util.BytesRef}, the reference type a {@code BYTES_REF} (keyword/text)
@@ -339,10 +339,10 @@ public final class Stitcher {
      * the generated unfused evaluator makes ({@code warnings().registerException(...)}), so a fused query records
      * identical warnings.
      */
-    private static final String WARNINGS = "org/elasticsearch/compute/operator/Warnings";
+    static final String WARNINGS = "org/elasticsearch/compute/operator/Warnings";
 
     /** Descriptor of {@code Warnings.registerException(Exception)} — used for an already-thrown overflow exception. */
-    private static final String WARNINGS_REGISTER_DESCRIPTOR = "(Ljava/lang/Exception;)V";
+    static final String WARNINGS_REGISTER_DESCRIPTOR = "(Ljava/lang/Exception;)V";
 
     /**
      * Descriptor of {@code Warnings.registerException(Class<? extends Exception>, String)} — the allocation-free
@@ -1568,6 +1568,7 @@ public final class Stitcher {
         insns.add(new InsnNode(Opcodes.ICONST_1));
         insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
         BlockDfsEmitter emitter = new BlockDfsEmitter(
+            templates,
             insns,
             host,
             inputElements,
@@ -2530,6 +2531,7 @@ public final class Stitcher {
                 emitSpareBytesRefInit(insns, spareBytesRefSlot);
             }
             BlockDfsEmitter emitter = new BlockDfsEmitter(
+                templates,
                 insns,
                 pred,
                 predInputElements,
@@ -2604,6 +2606,7 @@ public final class Stitcher {
             emitSpareBytesRefInit(insns, spareBytesRefSlot);
         }
         BlockDfsEmitter emitter = new BlockDfsEmitter(
+            templates,
             insns,
             proj,
             projInputElements,
@@ -2950,7 +2953,7 @@ public final class Stitcher {
      * multi-valued position. The resulting warning header is identical (that overload is what the {@code Exception}
      * overload delegates to), so the fused-⊆-unfused warning invariant is preserved.
      */
-    private static void emitMultiValueWarningOn(InsnList insns) {
+    static void emitMultiValueWarningOn(InsnList insns) {
         insns.add(new LdcInsnNode(Type.getObjectType(ILLEGAL_ARGUMENT_EXCEPTION)));
         insns.add(new LdcInsnNode(MULTI_VALUE_MESSAGE));
         insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, WARNINGS, "registerException", WARNINGS_REGISTER_CLASS_DESCRIPTOR, false));
@@ -2961,7 +2964,7 @@ public final class Stitcher {
      * {@code index} is the node's {@linkplain #warningsSourceIndices structural warning-source slot}, so the loaded
      * {@code Warnings} is the one built from that node's own source.
      */
-    private static void loadWarnings(InsnList insns, int warningsArraySlot, int index) {
+    static void loadWarnings(InsnList insns, int warningsArraySlot, int index) {
         insns.add(new VarInsnNode(Opcodes.ALOAD, warningsArraySlot));
         pushInt(insns, index);
         insns.add(new InsnNode(Opcodes.AALOAD));
@@ -2981,7 +2984,7 @@ public final class Stitcher {
      * {@code LLOAD} of a {@code long} where the kernel wants an {@code int}), which would only surface downstream as an
      * opaque {@link VerifyError}.
      */
-    private static void loadConstantParam(InsnList insns, Element element, FusionNode.Constant constant, int slot) {
+    static void loadConstantParam(InsnList insns, Element element, FusionNode.Constant constant, int slot) {
         if (constant.isReference()) {
             // A reference (object) @Fixed constant: loaded with ALOAD from its trailing reference parameter slot. It is
             // not typed by the ambient primitive Element (there is none for e.g. a Locale), so it does not consult it.
@@ -3057,7 +3060,7 @@ public final class Stitcher {
     }
 
     /** Pushes a non-negative {@code int} constant using the tightest of {@code ICONST}/{@code BIPUSH}/{@code SIPUSH}/{@code LDC}. */
-    private static void pushInt(InsnList insns, int value) {
+    static void pushInt(InsnList insns, int value) {
         if (value >= -1 && value <= 5) {
             insns.add(new InsnNode(Opcodes.ICONST_0 + value));
         } else if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
@@ -3092,420 +3095,6 @@ public final class Stitcher {
     }
 
     /** The disjoint local slots a {@link BlockDfsEmitter} node evaluates into: a {@code present} flag and its value. */
-
-    /**
-     * Depth-first emitter for the nullable/multi-valued <b>block</b> loop. Each node evaluates into two disjoint local
-     * slots for the current position {@code p}: a {@code present} flag ({@code 1} iff the node produced a value) and,
-     * when present, its value. The tree's VALUE / null position is exactly today's whole-tree short-circuit — the root
-     * is not present (⇒ {@code appendNull}) iff any consumed leaf is null / multi-value or any kernel on the value path
-     * overflows — so values and null positions are byte-for-byte unchanged.
-     *
-     * <p><b>Per-kernel multi-value warnings (match the unfused chain).</b> The unfused chain runs every generated
-     * evaluator's loop FULLY, so a leaf's {@code single-value function encountered multi-value} warning fires iff,
-     * within its own consuming kernel's operand order, that kernel's earlier operands are present at {@code p} —
-     * INDEPENDENT of whether an ancestor kernel already short-circuited the position. This emitter reproduces that
-     * exactly: it does NOT stop the DFS at the first not-present operand. Each kernel walks its operands in order,
-     * tracking its OWN running {@code present} flag; a leaf operand's multi-value warning is emitted iff that kernel's
-     * earlier operands were present (its own {@code present} still {@code true}), attributed to that kernel's warning
-     * source. A nested-kernel operand is always emitted (so its own subtree's per-kernel warnings fire regardless of an
-     * ancestor short-circuit), and every kernel body whose own operands are present is still run — its result feeds a
-     * consuming kernel's per-kernel gate even when that consumer is off the value path.
-     *
-     * <p><b>Value-dependent warnings stay the ratified subset.</b> A kernel body's overflow / div-by-zero warning is
-     * registered only while {@code live} (the value path has not yet short-circuited); a body that overflows off the
-     * value path is caught silently (its {@code present} still goes {@code false}, so a consuming kernel's per-kernel
-     * gate matches the unfused chain, but no warning is emitted — exactly today's behaviour).
-     *
-     * <p><b>Slots.</b> Each node claims a {@code present} slot, a value slot (its element's width) and a disjoint body
-     * range (the kernel body's {@code maxLocals}); the value + argument slots are pre-initialised to a typed zero so
-     * the verifier sees them definitely assigned (they are read only on the present path, but that correlation is
-     * value-level, not type-level, so an explicit zero-init is required).
-     *
-     * <p><b>Invariant spec (the {@code present}/{@code live} contract — do not drift when editing DFS emission).</b>
-     * <ol>
-     *   <li><b>Values/nulls are identical to unfused:</b> a position is null iff the root is not {@code present}, i.e.
-     *       iff any consumed leaf is null/multi-value or any kernel on the value path overflows.</li>
-     *   <li><b>Multi-value warnings are per-kernel, operand-order, ancestor-independent</b> (gated by the kernel's OWN
-     *       {@code present}, never by {@code live}): a leaf's mv warning fires iff its consuming kernel's earlier
-     *       operands are present — even if an ancestor already short-circuited the position. Pinned by
-     *       {@code ComparisonFusionDifferentialTests.testComparisonNullLeftLeafDoesNotSuppressArithmeticChildMultiValueWarning}
-     *       and {@code testArithmeticNullOperandBeforeMultiValueOperandSuppressesWarningWithinKernel}.</li>
-     *   <li><b>Value-dependent warnings (overflow/div-by-zero) are the ratified SUBSET</b> (gated by {@code live}): a
-     *       body that overflows off the value path is caught silently. Pinned by
-     *       {@code ComparisonFusionDifferentialTests.testSiblingOverflowOffValuePathIsSilentButNullMatches}.</li>
-     * </ol>
-     * Any fused warning set is therefore a subset of the unfused chain's; short-circuit only drops never-reached
-     * warnings, never adds a spurious one.
-     */
-    private final class BlockDfsEmitter {
-        private final InsnList insns;
-        private final MethodNode host;
-        private final Element[] inputElements;
-        private final int inputBase;
-        private final int pSlot;
-        private final int countSlot;
-        private final int warningsArraySlot;
-        private final Map<FusionNode, Integer> sourceIndices;
-        private final int liveSlot;
-        private final int overflowExcSlot;
-        /**
-         * Slot of the reusable {@code BytesRef} "spare" a {@code BYTES_REF} leaf reads into via
-         * {@code getBytesRef(int, BytesRef)}. Allocated once by the host BEFORE the loop and passed in here; {@code -1}
-         * when the tree has no reference input (then no leaf ever consults it). Reusing one spare across positions is
-         * safe: the returned {@code BytesRef} is consumed by its kernel within the same position, exactly as the
-         * generated unfused evaluator's per-eval {@code valScratch} does.
-         */
-        private final int spareBytesRefSlot;
-        private final Map<FusionNode.Constant, Integer> constantSlots;
-        private int next;
-
-        BlockDfsEmitter(
-            InsnList insns,
-            MethodNode host,
-            Element[] inputElements,
-            int inputBase,
-            int pSlot,
-            int countSlot,
-            int warningsArraySlot,
-            Map<FusionNode, Integer> sourceIndices,
-            int liveSlot,
-            int overflowExcSlot,
-            int spareBytesRefSlot,
-            int workBase,
-            Map<FusionNode.Constant, Integer> constantSlots
-        ) {
-            this.insns = insns;
-            this.host = host;
-            this.inputElements = inputElements;
-            this.inputBase = inputBase;
-            this.pSlot = pSlot;
-            this.countSlot = countSlot;
-            this.warningsArraySlot = warningsArraySlot;
-            this.sourceIndices = sourceIndices;
-            this.liveSlot = liveSlot;
-            this.overflowExcSlot = overflowExcSlot;
-            this.spareBytesRefSlot = spareBytesRefSlot;
-            this.constantSlots = constantSlots;
-            this.next = workBase;
-        }
-
-        /**
-         * Emits the DFS evaluation of the kernel {@code node} for the current position {@code p} into freshly claimed
-         * present/value slots, and returns them. {@code expected} is the element the node must produce (its consuming
-         * kernel's argument element, or the output element at the root); it types the value slot.
-         */
-        NodeSlots emit(FusionNode node, Element expected) {
-            FusionNode.Kernel kernel = (FusionNode.Kernel) node;
-            Body body = extractKernelBody(kernel);
-
-            // Claim this node's disjoint slots: a present flag, an expected-wide value slot, then the body's local
-            // range (arguments + temps). Children recurse and claim strictly higher slots, so no ranges collide.
-            int presentSlot = next++;
-            int valueSlot = next;
-            next += expected.type().getSize();
-            int nodeBase = next;
-            next += body.maxLocals();
-            SlotRemapper.shift(body.computation(), nodeBase);
-
-            Type[] argTypes = Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes();
-            var children = kernel.children();
-            // A variadic kernel's LAST parameter is an array gathering the trailing children (e.g. CONCAT's BytesRef[]);
-            // it has one child per FIXED arg plus zero-or-more varargs elements. A non-variadic kernel is 1:1.
-            boolean variadic = kernel.descriptor().variadic();
-            int fixedArgs = variadic ? argTypes.length - 1 : argTypes.length;
-            if (variadic) {
-                if (children.size() < fixedArgs) {
-                    throw new IllegalArgumentException(
-                        "variadic kernel [" + kernel.descriptor().kernelMethod() + "] needs at least " + fixedArgs + " operands"
-                    );
-                }
-            } else {
-                checkKernelArity(kernel, argTypes.length, children.size());
-            }
-            int kernelSlot = sourceIndices.get(kernel);
-
-            // Pre-init value slot + argument slots to a typed zero for verifier definite-assignment (they are read only
-            // on the present path, but the verifier cannot prove that value-level correlation). The variadic array arg
-            // is a reference, so storeZeroForType nulls it.
-            storeZero(valueSlot, expected);
-            int initOffset = 0;
-            for (Type argType : argTypes) {
-                // Type-based (not Element-based): an object @Fixed argument (e.g. Locale) has no Element, so seed it via
-                // the raw-type helper which nulls any reference type.
-                storeZeroForType(nodeBase + initOffset, argType);
-                initOffset += argType.getSize();
-            }
-
-            // present = true; each not-present operand (in this kernel's own order) sets it false.
-            insns.add(new InsnNode(Opcodes.ICONST_1));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, presentSlot));
-
-            int offset = 0;
-            for (int i = 0; i < fixedArgs; i++) {
-                Type argType = argTypes[i];
-                int argSlot = nodeBase + offset;
-                FusionNode child = children.get(i);
-                if (child instanceof FusionNode.Constant constant) {
-                    // A constant is always present and single-valued: load it into the argument slot unconditionally
-                    // (harmless when this kernel already short-circuited — the body will not run). A reference (object)
-                    // @Fixed constant has no primitive Element, so only a primitive constant resolves one.
-                    loadConstantParam(insns, constant.isReference() ? null : Element.of(argType), constant, constantSlots.get(constant));
-                    insns.add(new VarInsnNode(argType.getOpcode(Opcodes.ISTORE), argSlot));
-                } else if (child instanceof FusionNode.Input input) {
-                    // A leaf input is always a supported primitive/BytesRef element (a reference @Fixed value is a
-                    // Constant, never an Input), so Element.of is safe here.
-                    emitLeaf(input, Element.of(argType), argSlot, presentSlot, kernelSlot);
-                } else {
-                    // Nested kernel: ALWAYS emit it (so its own subtree's per-kernel warnings fire even when THIS
-                    // kernel already short-circuited), then fold its presence into this kernel's own present flag. A
-                    // nested kernel always produces a supported element, so Element.of is safe.
-                    Element argElem = Element.of(argType);
-                    NodeSlots childSlots = emit(child, argElem);
-                    LabelNode afterChild = new LabelNode();
-                    LabelNode childFail = new LabelNode();
-                    insns.add(new VarInsnNode(Opcodes.ILOAD, presentSlot));
-                    insns.add(new JumpInsnNode(Opcodes.IFEQ, afterChild)); // this kernel already short-circuited: ignore
-                    insns.add(new VarInsnNode(Opcodes.ILOAD, childSlots.present()));
-                    insns.add(new JumpInsnNode(Opcodes.IFEQ, childFail));
-                    insns.add(new VarInsnNode(argType.getOpcode(Opcodes.ILOAD), childSlots.value()));
-                    insns.add(new VarInsnNode(argType.getOpcode(Opcodes.ISTORE), argSlot));
-                    insns.add(new JumpInsnNode(Opcodes.GOTO, afterChild));
-                    insns.add(childFail);
-                    // A not-present operand on the value path short-circuits the position (live=false); it is idempotent
-                    // otherwise. present=false stops later operands of THIS kernel from warning.
-                    insns.add(new InsnNode(Opcodes.ICONST_0));
-                    insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
-                    insns.add(new InsnNode(Opcodes.ICONST_0));
-                    insns.add(new VarInsnNode(Opcodes.ISTORE, presentSlot));
-                    insns.add(afterChild);
-                }
-                offset += argType.getSize();
-            }
-
-            // Variadic kernel: build the trailing array argument from the remaining children (each a BytesRef column),
-            // gathering them into a fresh array at the array parameter's slot. Any null/multi-value element short-
-            // circuits the whole kernel (present=false), exactly like a fixed operand.
-            if (variadic) {
-                Element elementElem = Element.of(argTypes[argTypes.length - 1].getElementType());
-                emitVarargsGather(nodeBase + offset, elementElem, children.subList(fixedArgs, children.size()), presentSlot, kernelSlot);
-            }
-
-            // Run the body iff every operand of THIS kernel was present. An overflow-checked body is wrapped so an
-            // overflow (a) registers its warning only while live (ratified subset), (b) marks this kernel not present
-            // and short-circuits the value path.
-            LabelNode kDone = new LabelNode();
-            insns.add(new VarInsnNode(Opcodes.ILOAD, presentSlot));
-            insns.add(new JumpInsnNode(Opcodes.IFEQ, kDone));
-            if (kernel.descriptor().hasOverflowException()) {
-                String exType = kernel.descriptor().overflowExceptionType().replace('.', '/');
-                LabelNode tryStart = new LabelNode();
-                LabelNode tryEnd = new LabelNode();
-                LabelNode handler = new LabelNode();
-                LabelNode skipRegister = new LabelNode();
-                insns.add(tryStart);
-                insns.add(body.computation());
-                insns.add(new VarInsnNode(expected.type().getOpcode(Opcodes.ISTORE), valueSlot));
-                insns.add(tryEnd);
-                insns.add(new JumpInsnNode(Opcodes.GOTO, kDone));
-                insns.add(handler);
-                insns.add(new VarInsnNode(Opcodes.ASTORE, overflowExcSlot));
-                // Register on THIS kernel's own Warnings only while the value path is still live (matches the ratified
-                // short-circuit subset for value-dependent warnings); off the value path the overflow is caught
-                // silently but still marks the kernel not present.
-                insns.add(new VarInsnNode(Opcodes.ILOAD, liveSlot));
-                insns.add(new JumpInsnNode(Opcodes.IFEQ, skipRegister));
-                loadWarnings(insns, warningsArraySlot, kernelSlot);
-                insns.add(new VarInsnNode(Opcodes.ALOAD, overflowExcSlot));
-                insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, WARNINGS, "registerException", WARNINGS_REGISTER_DESCRIPTOR, false));
-                insns.add(skipRegister);
-                insns.add(new InsnNode(Opcodes.ICONST_0));
-                insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
-                insns.add(new InsnNode(Opcodes.ICONST_0));
-                insns.add(new VarInsnNode(Opcodes.ISTORE, presentSlot));
-                // fall through to kDone
-                host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, exType));
-            } else {
-                insns.add(body.computation());
-                insns.add(new VarInsnNode(expected.type().getOpcode(Opcodes.ISTORE), valueSlot));
-            }
-            insns.add(kDone);
-            return new NodeSlots(presentSlot, valueSlot);
-        }
-
-        /**
-         * Emits the null / multi-value guard for a leaf {@link FusionNode.Input} consumed by the kernel whose warning
-         * source is {@code kernelSlot} and whose running present flag is {@code presentSlot}. When the leaf is single-
-         * valued its value is read into {@code argSlot}; a multi-value ({@code getValueCount > 1}) leaf registers the
-         * single-value multi-value warning on {@code kernelSlot} — but ONLY when this kernel's earlier operands were
-         * present (its {@code presentSlot} still {@code true}), matching the unfused kernel's own operand-order
-         * short-circuit — and a null ({@code getValueCount == 0}) leaf registers no warning; both mark the kernel not
-         * present and short-circuit the value path ({@code live=false}).
-         */
-        private void emitLeaf(FusionNode.Input input, Element argElem, int argSlot, int presentSlot, int kernelSlot) {
-            Element inputElement = inputElements[input.index()];
-            int block = inputBase + input.index();
-            LabelNode afterOperand = new LabelNode();
-            LabelNode leafFail = new LabelNode();
-            LabelNode leafSingle = new LabelNode();
-            // If this kernel already short-circuited, skip the leaf entirely: the unfused kernel never inspects (nor
-            // warns about) an operand past its own short-circuit.
-            insns.add(new VarInsnNode(Opcodes.ILOAD, presentSlot));
-            insns.add(new JumpInsnNode(Opcodes.IFEQ, afterOperand));
-            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-            insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getValueCount", "(I)I", true));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, countSlot));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-            insns.add(new JumpInsnNode(Opcodes.IFEQ, leafFail)); // count == 0 -> null, no warning
-            insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-            insns.add(new InsnNode(Opcodes.ICONST_1));
-            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, leafSingle)); // count == 1 -> read the single value
-            // count > 1 -> register the multi-value warning on THIS kernel's own Warnings, then fail.
-            loadWarnings(insns, warningsArraySlot, kernelSlot);
-            emitMultiValueWarningOn(insns);
-            insns.add(leafFail);
-            insns.add(new InsnNode(Opcodes.ICONST_0));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
-            insns.add(new InsnNode(Opcodes.ICONST_0));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, presentSlot));
-            insns.add(new JumpInsnNode(Opcodes.GOTO, afterOperand));
-            insns.add(leafSingle);
-            // Primitive: v = block.get*(block.getFirstValueIndex(p)). Reference (BytesRef): v =
-            // block.getBytesRef(block.getFirstValueIndex(p), spare) — the reusable spare is pushed as the extra arg
-            // before the call. Either way the value is stored into this kernel's argument slot (ASTORE for a reference,
-            // derived by Type#getOpcode).
-            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-            insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getFirstValueIndex", "(I)I", true));
-            if (inputElement.reference()) {
-                assert spareBytesRefSlot >= 0 : "a BytesRef leaf requires a spare slot allocated by the host";
-                insns.add(new VarInsnNode(Opcodes.ALOAD, spareBytesRefSlot));
-            }
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKEINTERFACE,
-                    inputElement.blockInternalName(),
-                    inputElement.getValueMethod(),
-                    inputElement.getValueDescriptor(),
-                    true
-                )
-            );
-            insns.add(new VarInsnNode(argElem.type().getOpcode(Opcodes.ISTORE), argSlot));
-            insns.add(afterOperand);
-        }
-
-        /**
-         * Builds a variadic kernel's trailing array argument: {@code arraySlot = new E[elements.size()]}, then reads each
-         * element (a BytesRef column) with the same null / multi-value guard as {@link #emitLeaf} and stores it into the
-         * array. Any null or multi-value element short-circuits the whole kernel ({@code present=false}) and a
-         * multi-value element registers the single-value warning on {@code kernelSlot} — matching the unfused evaluator's
-         * per-argument semantics. Each element is read into a <b>fresh</b> {@code new E()} (not the shared reusable
-         * spare) because all elements coexist in the array; a shared spare would alias every slot to the last value.
-         */
-        private void emitVarargsGather(int arraySlot, Element elementElem, List<FusionNode> elements, int presentSlot, int kernelSlot) {
-            String elementInternalName = elementElem.type().getInternalName();
-            // array = new E[count]
-            pushInt(insns, elements.size());
-            insns.add(new TypeInsnNode(Opcodes.ANEWARRAY, elementInternalName));
-            insns.add(new VarInsnNode(Opcodes.ASTORE, arraySlot));
-            for (int k = 0; k < elements.size(); k++) {
-                FusionNode element = elements.get(k);
-                if ((element instanceof FusionNode.Input) == false) {
-                    // The planner only builds variadic trees whose elements are BytesRef column inputs.
-                    throw new IllegalArgumentException("a variadic array element must be a column input but was [" + element + "]");
-                }
-                FusionNode.Input input = (FusionNode.Input) element;
-                Element inputElement = inputElements[input.index()];
-                int block = inputBase + input.index();
-                LabelNode after = new LabelNode();
-                LabelNode fail = new LabelNode();
-                LabelNode single = new LabelNode();
-                // If the kernel already short-circuited, skip this element entirely.
-                insns.add(new VarInsnNode(Opcodes.ILOAD, presentSlot));
-                insns.add(new JumpInsnNode(Opcodes.IFEQ, after));
-                insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-                insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-                insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getValueCount", "(I)I", true));
-                insns.add(new VarInsnNode(Opcodes.ISTORE, countSlot));
-                insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-                insns.add(new JumpInsnNode(Opcodes.IFEQ, fail)); // count == 0 -> null, no warning
-                insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-                insns.add(new InsnNode(Opcodes.ICONST_1));
-                insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, single)); // count == 1 -> read
-                // count > 1 -> single-value multi-value warning on THIS kernel's source, then fail.
-                loadWarnings(insns, warningsArraySlot, kernelSlot);
-                emitMultiValueWarningOn(insns);
-                insns.add(fail);
-                insns.add(new InsnNode(Opcodes.ICONST_0));
-                insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
-                insns.add(new InsnNode(Opcodes.ICONST_0));
-                insns.add(new VarInsnNode(Opcodes.ISTORE, presentSlot));
-                insns.add(new JumpInsnNode(Opcodes.GOTO, after));
-                insns.add(single);
-                // array[k] = block.getBytesRef(block.getFirstValueIndex(p), new E()) — a fresh spare per element.
-                insns.add(new VarInsnNode(Opcodes.ALOAD, arraySlot));
-                pushInt(insns, k);
-                insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-                insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-                insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-                insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getFirstValueIndex", "(I)I", true));
-                insns.add(new TypeInsnNode(Opcodes.NEW, elementInternalName));
-                insns.add(new InsnNode(Opcodes.DUP));
-                insns.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, elementInternalName, "<init>", "()V", false));
-                insns.add(
-                    new MethodInsnNode(
-                        Opcodes.INVOKEINTERFACE,
-                        inputElement.blockInternalName(),
-                        inputElement.getValueMethod(),
-                        inputElement.getValueDescriptor(),
-                        true
-                    )
-                );
-                insns.add(new InsnNode(Opcodes.AASTORE));
-                insns.add(after);
-            }
-        }
-
-        /**
-         * Stores a type-correct zero into {@code slot} for a raw JVM {@link Type} (verifier definite-assignment). Unlike
-         * {@link #storeZero(int, Element)} this handles any reference/array type by seeding {@code null} directly, so it
-         * works for an object {@code @Fixed} argument type (e.g. {@code Locale}) that has no {@link Element}.
-         */
-        private void storeZeroForType(int slot, Type type) {
-            if (type.getSort() == Type.OBJECT || type.getSort() == Type.ARRAY) {
-                insns.add(new InsnNode(Opcodes.ACONST_NULL));
-                insns.add(new VarInsnNode(Opcodes.ASTORE, slot));
-            } else {
-                storeZero(slot, Element.of(type));
-            }
-        }
-
-        /** Stores a type-correct zero into {@code slot} (verifier definite-assignment for the present-path-only reads). */
-        private void storeZero(int slot, Element element) {
-            switch (element.type().getSort()) {
-                case Type.LONG -> {
-                    insns.add(new InsnNode(Opcodes.LCONST_0));
-                    insns.add(new VarInsnNode(Opcodes.LSTORE, slot));
-                }
-                case Type.DOUBLE -> {
-                    insns.add(new InsnNode(Opcodes.DCONST_0));
-                    insns.add(new VarInsnNode(Opcodes.DSTORE, slot));
-                }
-                case Type.OBJECT -> {
-                    // A reference (BytesRef) argument slot: seed with null so the verifier sees it definitely assigned
-                    // (it is read only on the present path, where emitLeaf has stored the real BytesRef).
-                    insns.add(new InsnNode(Opcodes.ACONST_NULL));
-                    insns.add(new VarInsnNode(Opcodes.ASTORE, slot));
-                }
-                default -> {
-                    // int / boolean (one slot, int category).
-                    insns.add(new InsnNode(Opcodes.ICONST_0));
-                    insns.add(new VarInsnNode(Opcodes.ISTORE, slot));
-                }
-            }
-        }
-    }
 
     /**
      * The per-input {@link Element}, indexed by {@link FusionNode.Input#index()}. With per-node typing a tree may mix
