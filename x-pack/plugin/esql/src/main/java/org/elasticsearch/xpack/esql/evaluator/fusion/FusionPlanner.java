@@ -27,8 +27,12 @@ import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFac
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Cast;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ChangeCase;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Concat;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.LTrim;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Left;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.RTrim;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.Right;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Space;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.Trim;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.BinaryLogic;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
@@ -516,11 +520,25 @@ public final class FusionPlanner {
             // fuse the ChangeCase). Locale + Case are captured as reference constants.
             return buildChangeCase(changeCase, ctx, root);
         }
-        if (exp instanceof Left left) {
+        if (exp instanceof Left) {
             // LEFT(str, length) (#8b): a BytesRef -> BytesRef kernel whose first two @Fixed params are per-driver SCRATCH
             // buffers (a reusable BytesRef + a UTF8CodePoint), created fresh per driver rather than captured. Its body
             // loops over code points and calls only public methods, so it links from the fused hidden class's package.
-            return buildLeft(left, ctx, expected, root);
+            return buildLeftRight(exp, ctx, expected, root, LEFT_DESCRIPTOR);
+        }
+        if (exp instanceof Right) {
+            // RIGHT(str, length): identical shape to LEFT (same two scratch operands + str + length, public-only body).
+            return buildLeftRight(exp, ctx, expected, root, RIGHT_DESCRIPTOR);
+        }
+        if (exp instanceof Trim) {
+            // TRIM(str): a unary BytesRef -> BytesRef kernel, no scratch/@Fixed; its loop body calls only public methods.
+            return buildUnaryStringFn(exp, ctx, expected, root, TRIM_DESCRIPTOR);
+        }
+        if (exp instanceof LTrim) {
+            return buildUnaryStringFn(exp, ctx, expected, root, LTRIM_DESCRIPTOR);
+        }
+        if (exp instanceof RTrim) {
+            return buildUnaryStringFn(exp, ctx, expected, root, RTRIM_DESCRIPTOR);
         }
         if (exp instanceof Space space) {
             // SPACE(number) (Releasable/breaker scratch): a BytesRef -> BytesRef kernel whose @Fixed param is a
@@ -760,27 +778,58 @@ public final class FusionPlanner {
         return kernel;
     }
 
+    /** The manually-built descriptor for {@code Right#process(@Fixed BytesRef out, @Fixed UTF8CodePoint cp, BytesRef str, int length)} — LEFT's shape. */
+    private static final FusionDescriptor RIGHT_DESCRIPTOR = new FusionDescriptor(
+        Right.class,
+        "process",
+        "(Lorg/apache/lucene/util/BytesRef;Lorg/apache/lucene/util/UnicodeUtil$UTF8CodePoint;"
+            + "Lorg/apache/lucene/util/BytesRef;I)Lorg/apache/lucene/util/BytesRef;",
+        false,
+        true
+    );
+
+    private static final FusionDescriptor TRIM_DESCRIPTOR = unaryStringDescriptor(Trim.class);
+    private static final FusionDescriptor LTRIM_DESCRIPTOR = unaryStringDescriptor(LTrim.class);
+    private static final FusionDescriptor RTRIM_DESCRIPTOR = unaryStringDescriptor(RTrim.class);
+
+    /** Descriptor for a unary {@code process(BytesRef) -> BytesRef} string kernel (TRIM/LTRIM/RTRIM). Not overflow-checked. */
+    private static FusionDescriptor unaryStringDescriptor(Class<?> kernelClass) {
+        return new FusionDescriptor(
+            kernelClass,
+            "process",
+            "(Lorg/apache/lucene/util/BytesRef;)Lorg/apache/lucene/util/BytesRef;",
+            false,
+            true
+        );
+    }
+
     /**
-     * Builds the fused node for a {@code LEFT(str, length)} ({@link Left}) expression (#8b): a kernel over its BytesRef
+     * Builds the fused node for a {@code LEFT}/{@code RIGHT}{@code (str, length)} expression: a kernel over its BytesRef
      * {@code str} + int {@code length} children, preceded by two per-driver SCRATCH reference operands — a reusable
      * {@link BytesRef} and a {@link UnicodeUtil.UTF8CodePoint}, built fresh per driver by the same suppliers
-     * {@code Left#toEvaluator} uses. Produces a {@code BytesRef} (block-path only). Refuses unless it is the root or its
-     * parent expects a {@code BytesRef}, or if either child does not fuse.
+     * {@code Left/Right#toEvaluator} use. Produces a {@code BytesRef} (block-path only). Refuses unless it is the root
+     * or its parent expects a {@code BytesRef}, or if either child does not fuse. {@code descriptor} selects LEFT vs RIGHT.
      */
-    private static FusionNode buildLeft(Left left, PlanContext ctx, ElementKind expected, boolean root) {
+    private static FusionNode buildLeftRight(
+        Expression exp,
+        PlanContext ctx,
+        ElementKind expected,
+        boolean root,
+        FusionDescriptor descriptor
+    ) {
         if (root == false && expected != ElementKind.BYTES_REF) {
             return null;
         }
-        FusionNode str = build(left.children().get(0), ctx, ElementKind.BYTES_REF, left.source(), false);
+        FusionNode str = build(exp.children().get(0), ctx, ElementKind.BYTES_REF, exp.source(), false);
         if (str == null) {
             return null;
         }
-        FusionNode length = build(left.children().get(1), ctx, ElementKind.INT, left.source(), false);
+        FusionNode length = build(exp.children().get(1), ctx, ElementKind.INT, exp.source(), false);
         if (length == null) {
             return null;
         }
         FusionNode.Kernel kernel = new FusionNode.Kernel(
-            LEFT_DESCRIPTOR,
+            descriptor,
             List.of(
                 FusionNode.Constant.scratch(context -> new BytesRef(), BytesRef.class),
                 FusionNode.Constant.scratch(context -> new UnicodeUtil.UTF8CodePoint(), UnicodeUtil.UTF8CodePoint.class),
@@ -788,7 +837,34 @@ public final class FusionPlanner {
                 length
             )
         );
-        ctx.kernelSources.put(kernel, left.source());
+        ctx.kernelSources.put(kernel, exp.source());
+        if (root) {
+            ctx.outputElement = ElementKind.BYTES_REF;
+        }
+        return kernel;
+    }
+
+    /**
+     * Builds the fused node for a unary {@code BytesRef -> BytesRef} string function (TRIM/LTRIM/RTRIM): a single kernel
+     * over its BytesRef field child, no scratch or {@code @Fixed} operand. Produces a {@code BytesRef} (block-path only).
+     * Refuses unless it is the root or its parent expects a {@code BytesRef}, or if the field child does not fuse.
+     */
+    private static FusionNode buildUnaryStringFn(
+        Expression exp,
+        PlanContext ctx,
+        ElementKind expected,
+        boolean root,
+        FusionDescriptor descriptor
+    ) {
+        if (root == false && expected != ElementKind.BYTES_REF) {
+            return null;
+        }
+        FusionNode field = build(exp.children().get(0), ctx, ElementKind.BYTES_REF, exp.source(), false);
+        if (field == null) {
+            return null;
+        }
+        FusionNode.Kernel kernel = new FusionNode.Kernel(descriptor, List.of(field));
+        ctx.kernelSources.put(kernel, exp.source());
         if (root) {
             ctx.outputElement = ElementKind.BYTES_REF;
         }
