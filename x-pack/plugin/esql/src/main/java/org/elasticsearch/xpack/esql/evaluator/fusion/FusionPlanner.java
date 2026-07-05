@@ -11,6 +11,7 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.UnicodeUtil;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.BreakingBytesRefBuilder;
+import org.elasticsearch.compute.operator.FilterEvalEvaluator;
 import org.elasticsearch.compute.operator.fusion.FusionAware;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
@@ -114,6 +115,16 @@ public final class FusionPlanner {
         Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
 
         Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
+
+        /**
+         * Compiles the fused WHERE-predicate + EVAL-projection block loop (S3.2a). Defaulted so existing
+         * {@link FusedClassCompiler} test doubles (which only exercise the single-expression paths) need not override it;
+         * the production {@link FusionCompilationService} compiler and any filter-eval-specific test double provide a real implementation.
+         */
+        default Class<?> compileFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
+            throws Stitcher.StitchingException {
+            throw new UnsupportedOperationException("compileFilterEvalBlockLoop not implemented by this compiler");
+        }
 
         /**
          * Compiles the opt-in SIMD (Vector-API) variant of the plain-vector path for a boolean comparison (B2), where
@@ -227,6 +238,100 @@ public final class FusionPlanner {
         }
         // Eager path (default, minRows == 0): stitch now at plan time, falling back to the unfused factory on failure.
         return FusedExpressionEvaluatorFactory.tryCreate(plan, unfused, compiler);
+    }
+
+    /**
+     * Attempts to fuse a WHERE {@code predicate} and a single EVAL {@code projection} into ONE
+     * {@link FusedFilterEvalEvaluatorFactory} (the plan-time product consumed by
+     * {@link org.elasticsearch.compute.operator.FilterEvalOperator}). Returns the fused factory on success, or
+     * {@code null} if either side is not fusable (the caller then builds the ordinary two-operator
+     * {@code Filter → Eval} chain — fusion stays strictly additive). This is S3.2a: it produces the factory but does
+     * <b>not</b> wire it into {@code LocalExecutionPlanner} (that is S3.2b).
+     *
+     * <p>Both sides must be fusable via the same {@link #build} eligibility used by {@link #maybeFuse} (including the
+     * delegating-function guard {@code descriptor.kernelClass() == exp.getClass()}), and additionally: the predicate
+     * must produce a boolean (a comparison {@link FusionNode.Kernel} or a 3VL {@link FusionNode.Logical}), and the
+     * projection must be an arithmetic kernel root (a numeric output). A stitch failure inside
+     * {@link FusedFilterEvalEvaluatorFactory#create} is handled there (it returns a fallback factory that reproduces
+     * {@code Filter → Eval} from the two unfused evaluators), so this method still returns a usable factory in that case.
+     *
+     * @param predicate  the WHERE predicate expression
+     * @param projection the EVAL projection expression
+     * @param layout     attribute-id → channel mapping, for resolving leaf inputs (shared by both sides)
+     * @param rawFactory builds the unfused generated factory for any expression (descriptor probe + fallback chain)
+     */
+    public static FilterEvalEvaluator.Factory maybeFuseFilterEval(
+        Expression predicate,
+        Expression projection,
+        Layout layout,
+        Function<Expression, ExpressionEvaluator.Factory> rawFactory
+    ) {
+        if (FusionSettings.isEnabled() == false) {
+            return null;
+        }
+        // Build the predicate tree: must be a boolean-producing comparison/logical subtree.
+        PlanContext predCtx = new PlanContext(layout, rawFactory);
+        FusionNode predicateTree = build(predicate, predCtx, null, null, true);
+        if (predicateTree == null || predCtx.outputElement != ElementKind.BOOLEAN || predCtx.inputElements.isEmpty()) {
+            return null;
+        }
+        // Build the projection tree: must be an arithmetic kernel root (numeric output); a bare column/constant EVAL or
+        // a boolean projection is not fused here.
+        PlanContext projCtx = new PlanContext(layout, rawFactory);
+        FusionNode projectionTree = build(projection, projCtx, null, null, true);
+        if (projectionTree == null
+            || projCtx.outputElement == null
+            || projCtx.outputElement == ElementKind.BOOLEAN
+            || projCtx.inputElements.isEmpty()
+            || (projectionTree instanceof FusionNode.Kernel) == false) {
+            return null;
+        }
+
+        int[] predicateChannels = toIntArray(predCtx.channels);
+        int[] projectionChannels = toIntArray(projCtx.channels);
+        ElementKind[] predicateInputElements = predCtx.inputElements.toArray(new ElementKind[0]);
+        ElementKind[] projectionInputElements = projCtx.inputElements.toArray(new ElementKind[0]);
+        assert noNullElements(predicateInputElements) && noNullElements(projectionInputElements)
+            : "planner must populate every input element densely";
+
+        ExpressionEvaluator.Factory unfusedPredicate = rawFactory.apply(predicate);
+        ExpressionEvaluator.Factory unfusedProjection = rawFactory.apply(projection);
+        FusedClassCompiler compiler = compilerForTests != null ? compilerForTests : COMPILATION.compiler();
+
+        // One walk per sub-tree derives its warning-source slots + constants-in-emit-order (single source of truth).
+        FusionSignature predicateSignature = FusionSignature.of(predicateTree);
+        FusionSignature projectionSignature = FusionSignature.of(projectionTree);
+
+        // Combined per-source warnings: predicate sources first, then projection sources (matching the Stitcher offset).
+        Source[] predicateSources = warningSources(predicateSignature.warningSourceIndices(), predCtx);
+        Source[] projectionSources = warningSources(projectionSignature.warningSourceIndices(), projCtx);
+        Source[] warningSources = new Source[predicateSources.length + projectionSources.length];
+        System.arraycopy(predicateSources, 0, warningSources, 0, predicateSources.length);
+        System.arraycopy(projectionSources, 0, warningSources, predicateSources.length, projectionSources.length);
+
+        FilterEvalPlan plan = new FilterEvalPlan(
+            predicateSignature,
+            projectionSignature,
+            predicateTree,
+            projectionTree,
+            predicateChannels,
+            projectionChannels,
+            predicateInputElements,
+            projectionInputElements,
+            projCtx.outputElement,
+            warningSources,
+            filterEvalShapeOf(predicateTree, projectionTree)
+        );
+        return FusedFilterEvalEvaluatorFactory.create(plan, unfusedPredicate, unfusedProjection, compiler);
+    }
+
+    /**
+     * A stable, column-/constant-value-independent signature of a fused filter+eval shape: the predicate sub-shape and
+     * the projection sub-shape (each via {@link #shapeOf}), so two {@code WHERE p EVAL e} pairs with the same operator
+     * arrangements share one stitched class regardless of columns or literal values.
+     */
+    static String filterEvalShapeOf(FusionNode predicateTree, FusionNode projectionTree) {
+        return "FILTER_EVAL(" + shapeOf(predicateTree) + "|" + shapeOf(projectionTree) + ")";
     }
 
     /**

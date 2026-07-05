@@ -55,6 +55,19 @@ final class FusionCompilationService {
         }
 
         @Override
+        public Class<?> compileFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
+            throws Stitcher.StitchingException {
+            // The fused class is fully determined by BOTH sub-shapes, so the cache key encodes both (and, for
+            // specificity, keys on the projection output element).
+            FusedClassCache.Shape shape = new FusedClassCache.Shape(
+                FusionPlanner.filterEvalShapeOf(predicateTree, projectionTree),
+                rootElement(projectionTree),
+                FusedClassCache.Path.FILTER_EVAL_BLOCK
+            );
+            return cache.get(shape, () -> stitcher.compileFilterEvalBlockLoop(caller, predicateTree, projectionTree));
+        }
+
+        @Override
         public Class<?> compileVectorLoopSimd(MethodHandles.Lookup caller, FusionNode tree, String comparison)
             throws Stitcher.StitchingException {
             // The comparison operator is part of the tree's shape (distinct comparison kernels -> distinct shapeOf),
