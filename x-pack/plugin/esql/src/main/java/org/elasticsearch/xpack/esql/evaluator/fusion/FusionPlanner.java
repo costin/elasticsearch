@@ -334,8 +334,10 @@ public final class FusionPlanner {
      * The {@code jdk.incubator.vector.VectorOperators.Comparison} constant name for a SIMD-eligible boolean comparison
      * (B2), or {@code ""} when the tree is not eligible. Eligible iff the root {@code Expression} is an
      * {@link EsqlBinaryComparison} and the built tree is a single comparison kernel over exactly two <b>column</b>
-     * operands of the same {@code int}/{@code long} element (double is deferred pending NaN/-0.0 parity coverage), with
-     * a boolean output and no embedded constants — the narrow shape the Vector-API lane compare actually accelerates.
+     * operands of the same {@code int}/{@code long}/{@code double} element, with a boolean output and no embedded
+     * constants — the narrow shape the Vector-API lane compare actually accelerates. Double is included because the
+     * lane compare's IEEE-754 unordered semantics match the Java operators the double kernels use (proven by a
+     * NaN/-0.0/Inf differential).
      */
     private static String simdComparison(
         Expression exp,
@@ -348,7 +350,7 @@ public final class FusionPlanner {
             || constants.isEmpty() == false
             || inputElements.length != 2
             || inputElements[0] != inputElements[1]
-            || (inputElements[0] != ElementKind.INT && inputElements[0] != ElementKind.LONG)
+            || (inputElements[0] != ElementKind.INT && inputElements[0] != ElementKind.LONG && inputElements[0] != ElementKind.DOUBLE)
             || exp instanceof EsqlBinaryComparison == false
             || tree instanceof FusionNode.Kernel == false) {
             return "";

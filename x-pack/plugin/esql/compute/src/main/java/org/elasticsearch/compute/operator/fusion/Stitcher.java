@@ -794,13 +794,16 @@ public final class Stitcher {
         Element operand = inputElements[0];
         // Defensive shape guard (the planner only routes eligible trees here): two same-primitive column operands,
         // no constants, boolean output. Anything else is a planner bug — refuse rather than emit wrong code.
+        int operandSort = operand.type().getSort();
         if (arity != 2
             || signature.constantsInEmitOrder().isEmpty() == false
-            || inputElements[1].type().getSort() != operand.type().getSort()
-            || (operand.type().getSort() != Type.INT && operand.type().getSort() != Type.LONG)) {
-            // int/long only: double lane compares differ from scalar on NaN/-0.0, so double is deliberately excluded
-            // here (self-guarding the emitter, not just relying on the planner's simdComparison gate).
-            throw new StitchingException("SIMD path requires two same-int/long column operands with no constants", null);
+            || inputElements[1].type().getSort() != operandSort
+            || (operandSort != Type.INT && operandSort != Type.LONG && operandSort != Type.DOUBLE)) {
+            // int/long/double only. Double is included because the Vector-API lane compare uses IEEE-754 unordered
+            // semantics identical to the Java relational/equality operators the ES double-comparison kernels use
+            // (NaN compares false for </<=/>/>=/==, true for !=; -0.0 == +0.0), so the SIMD mask matches the scalar
+            // tail exactly (proven by the NaN/-0.0/Inf differential). BytesRef/boolean operands are excluded.
+            throw new StitchingException("SIMD path requires two same-int/long/double column operands with no constants", null);
         }
         Element outputElement = Element.of(rootReturnType(tree));
         String eVector = simdVectorClass(operand);

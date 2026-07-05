@@ -459,6 +459,7 @@ public class ComparisonFusionDifferentialTests extends FusionDifferentialTestCas
         try {
             runSimdSweep(DataType.LONG);
             runSimdSweep(DataType.INTEGER);
+            runSimdSweep(DataType.DOUBLE);
         } finally {
             FusionSettings.setSimdEnabledForTests(false);
         }
@@ -493,7 +494,7 @@ public class ComparisonFusionDifferentialTests extends FusionDifferentialTestCas
                     }
                     a0 = blockFactory.newLongArrayVector(av, pc).asBlock();
                     b0 = blockFactory.newLongArrayVector(bv, pc).asBlock();
-                } else {
+                } else if (type == DataType.INTEGER) {
                     int[] av = new int[pc];
                     int[] bv = new int[pc];
                     for (int p = 0; p < pc; p++) {
@@ -502,6 +503,18 @@ public class ComparisonFusionDifferentialTests extends FusionDifferentialTestCas
                     }
                     a0 = blockFactory.newIntArrayVector(av, pc).asBlock();
                     b0 = blockFactory.newIntArrayVector(bv, pc).asBlock();
+                } else {
+                    // Double: mix IEEE specials (NaN/±Inf/-0.0) with normals so the SIMD lane compare's unordered
+                    // semantics are exercised against the scalar tail end to end.
+                    double[] pool = { Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 0.0, -0.0, 1.0, -1.0, 2.5 };
+                    double[] av = new double[pc];
+                    double[] bv = new double[pc];
+                    for (int p = 0; p < pc; p++) {
+                        av[p] = pool[randomIntBetween(0, pool.length - 1)];
+                        bv[p] = pool[randomIntBetween(0, pool.length - 1)];
+                    }
+                    a0 = blockFactory.newDoubleArrayVector(av, pc).asBlock();
+                    b0 = blockFactory.newDoubleArrayVector(bv, pc).asBlock();
                 }
                 // Dense vector-backed columns so the runtime takes the vector (SIMD) path, not the block path.
                 runDifferentialWarnings(fused, unfused, ElementKind.BOOLEAN, new Block[] { a0, b0 }, pc, label + " simd pc=" + pc);

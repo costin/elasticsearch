@@ -97,4 +97,48 @@ public class StitcherSimdFusionTests extends ESTestCase {
             }
         }
     }
+
+    /**
+     * Double SIMD parity: the Vector-API lane compare must equal the scalar Java operator for EVERY IEEE special value
+     * — NaN (false for &lt;/&lt;=/&gt;/&gt;=/==, true for !=), +0.0/-0.0 (equal), ±Inf — so a crafted grid of these
+     * against normals is compared to the scalar result. Runs the SIMD body directly (forcing the path). Covers GT and
+     * EQ (the ordered and the unordered-sensitive operators).
+     */
+    public void testDoubleSimdParityAcrossIeeeSpecials() throws Throwable {
+        FusionSimd.enableReadsFrom(getClass().getModule());
+        Stitcher stitcher = new Stitcher(new TemplateRegistry());
+        double[] specials = { Double.NaN, 0.0, -0.0, 1.0, -1.0, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 3.5, -3.5 };
+
+        for (String[] opKernel : new String[][] { { "GT", "processDoublesGreaterThan" }, { "EQ", "processDoublesEqual" } }) {
+            String op = opKernel[0];
+            FusionDescriptor cmp = new FusionDescriptor(KernelFixtures.class, opKernel[1], "(DD)Z", false, true);
+            FusionNode tree = new FusionNode.Kernel(cmp, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
+            Class<?> fused = stitcher.compileVectorLoopSimd(MethodHandles.lookup(), tree, op);
+            MethodType type = MethodType.methodType(BooleanVector.class, BlockFactory.class, int.class, Vector.class, Vector.class);
+            MethodHandle handle = MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);
+
+            // A grid of every (special x special) pair, padded past one SPECIES so both the SIMD body and the tail run.
+            int positionCount = specials.length * specials.length;
+            double[] a = new double[positionCount];
+            double[] b = new double[positionCount];
+            for (int i = 0; i < specials.length; i++) {
+                for (int j = 0; j < specials.length; j++) {
+                    a[i * specials.length + j] = specials[i];
+                    b[i * specials.length + j] = specials[j];
+                }
+            }
+            var v0 = blockFactory.newDoubleArrayVector(a, positionCount);
+            var v1 = blockFactory.newDoubleArrayVector(b, positionCount);
+            BooleanVector result = null;
+            try {
+                result = (BooleanVector) handle.invoke(blockFactory, positionCount, v0, v1);
+                for (int p = 0; p < positionCount; p++) {
+                    boolean expected = op.equals("GT") ? a[p] > b[p] : a[p] == b[p];
+                    assertThat(op + " p=" + p + " a=" + a[p] + " b=" + b[p], result.getBoolean(p), is(expected));
+                }
+            } finally {
+                Releasables.closeExpectNoException(v0, v1, result);
+            }
+        }
+    }
 }

@@ -58,6 +58,16 @@ public class BodyExtractorTests extends ESTestCase {
             return lhs > rhs;
         }
 
+        /** A straight-line {@code double > double -> boolean} comparison kernel for the double SIMD parity tests. */
+        public static boolean processDoublesGreaterThan(double lhs, double rhs) {
+            return lhs > rhs;
+        }
+
+        /** A straight-line {@code double == double -> boolean} comparison kernel (IEEE ==) for the double SIMD parity tests. */
+        public static boolean processDoublesEqual(double lhs, double rhs) {
+            return lhs == rhs;
+        }
+
         /**
          * A straight-line {@code BytesRef -> BytesRef} kernel that takes a reference (object) {@code @Fixed} constant (a
          * {@code String} suffix) — the structural shape of ToLower/ToUpper's {@code ChangeCase.process(BytesRef,
