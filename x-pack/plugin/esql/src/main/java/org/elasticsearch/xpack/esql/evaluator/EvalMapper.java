@@ -12,6 +12,7 @@ import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.expression.LoadFromPageEvaluator;
 import org.elasticsearch.compute.lucene.EmptyIndexedByShardId;
 import org.elasticsearch.compute.lucene.IndexedByShardId;
+import org.elasticsearch.compute.operator.FilterEvalEvaluator;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.index.analysis.AnalysisRegistry;
 import org.elasticsearch.xpack.esql.core.InvalidArgumentException;
@@ -85,6 +86,43 @@ public final class EvalMapper {
     }
 
     /**
+     * Attempts to fuse a WHERE {@code predicate} and a single EVAL {@code projection} into ONE
+     * {@link FilterEvalEvaluator.Factory} (S3.2b plan-time wiring, consumed by
+     * {@link org.elasticsearch.compute.operator.FilterEvalOperator}). Returns a {@link FilterEvalMapping} carrying
+     * either the fused factory (on success) or the ordinary predicate + projection factories to run as the usual
+     * {@code Filter -> Eval} chain (when the pair declines to fuse). Both sides are built from a single
+     * {@code unfusedMemo}, so every foldable subexpression folds exactly once — identical fold-budget consumption to
+     * the unfused baseline whether or not the pair fuses.
+     */
+    public static FilterEvalMapping toFilterEvalEvaluator(
+        FoldContext foldCtx,
+        Expression predicate,
+        Expression projection,
+        Layout layout,
+        IndexedByShardId<? extends ShardContext> shardContexts,
+        @Nullable AnalysisRegistry analysisRegistry
+    ) {
+        return new Builder(foldCtx, layout, shardContexts, analysisRegistry).toFilterEvalEvaluator(predicate, projection);
+    }
+
+    /**
+     * The product of a WHERE-predicate + single-EVAL-projection fusion attempt (S3.2b). Exactly one alternative is
+     * populated: {@link #fused} when the pair fused into a single {@link FilterEvalEvaluator.Factory}, or the
+     * {@link #predicate}/{@link #projection} pair when the pair declined to fuse and the caller must run the ordinary
+     * {@code Filter -> Eval} chain instead.
+     */
+    public record FilterEvalMapping(
+        @Nullable FilterEvalEvaluator.Factory fused,
+        @Nullable ExpressionEvaluator.Factory predicate,
+        @Nullable ExpressionEvaluator.Factory projection
+    ) {
+        /** Whether the predicate + projection fused into one {@link FilterEvalEvaluator.Factory}. */
+        public boolean isFused() {
+            return fused != null;
+        }
+    }
+
+    /**
      * A single {@link #toEvaluator} invocation. Holds the per-call state — most importantly the {@code unfusedMemo},
      * which guarantees each expression node's generated factory is built <b>exactly once</b> even though fusion
      * inspects the same nodes it may fall back to.
@@ -135,6 +173,21 @@ public final class EvalMapper {
             ExpressionEvaluator.Factory unfused = unfused(exp);
             ExpressionEvaluator.Factory fused = FusionPlanner.maybeFuse(exp, layout, this::unfused);
             return fused != null ? fused : unfused;
+        }
+
+        /**
+         * Attempts to fuse {@code predicate} + {@code projection} into one {@link FilterEvalEvaluator.Factory} through
+         * {@link FusionPlanner#maybeFuseFilterEval}, using this builder's memoized {@link #unfused} for descriptor
+         * probing and fallback. On decline it builds the ordinary predicate + projection factories via
+         * {@link #toEvaluator} (applying the same single-expression fusion {@code planFilter}/{@code planEval} would),
+         * reusing the shared memo so nothing folds twice.
+         */
+        FilterEvalMapping toFilterEvalEvaluator(Expression predicate, Expression projection) {
+            FilterEvalEvaluator.Factory fused = FusionPlanner.maybeFuseFilterEval(predicate, projection, layout, this::unfused);
+            if (fused != null) {
+                return new FilterEvalMapping(fused, null, null);
+            }
+            return new FilterEvalMapping(null, toEvaluator(predicate), toEvaluator(projection));
         }
 
         /** Returns the memoized unfused factory for {@code exp}, building it (and its subtree) once on first request. */
