@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.expression.function.scalar.math;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.EsqlIllegalArgumentException;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
@@ -77,6 +78,11 @@ public class Cbrt extends UnaryScalarFunction {
         throw EsqlIllegalArgumentException.illegalDataType(fieldType);
     }
 
+    // overflowChecked = false: Math.cbrt on a double is a total java.base function (never throws; NaN/Inf pass
+    // through). The @Evaluator's warnExceptions is defensive and never fires for this kernel, so the fused path can
+    // treat it as non-throwing (and vectorize) without diverging from the unfused chain. Only the double (D)D kernel
+    // is fusable; the int/long variants return a double from a differently-typed argument (out of scope).
+    @Fusable(overflowChecked = false)
     @Evaluator(extraName = "Double", warnExceptions = ArithmeticException.class)
     static double process(double val) {
         return Math.cbrt(val);

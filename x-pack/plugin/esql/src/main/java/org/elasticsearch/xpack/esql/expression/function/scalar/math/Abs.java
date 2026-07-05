@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.expression.function.scalar.math;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.EsqlIllegalArgumentException;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
@@ -67,16 +68,20 @@ public class Abs extends UnaryScalarFunction {
         return ENTRY.name;
     }
 
+    // overflowChecked = false: Math.abs on a double never throws (NaN/Inf pass through unchanged).
+    @Fusable(overflowChecked = false)
     @Evaluator(extraName = "Double")
     static double process(double fieldVal) {
         return Math.abs(fieldVal);
     }
 
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Long", warnExceptions = { ArithmeticException.class })
     static long process(long fieldVal) {
         return Math.absExact(fieldVal);
     }
 
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Int", warnExceptions = { ArithmeticException.class })
     static int process(int fieldVal) {
         return Math.absExact(fieldVal);

@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.expression.function.scalar.math;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.core.ESSloppyMath;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
@@ -77,6 +78,9 @@ public class Atanh extends AbstractTrigonometricFunction {
         return NodeInfo.create(this, Atanh::new, field());
     }
 
+    // overflowChecked = true: forwards ArithmeticException (out-of-domain input) the fused checked path nulls + warns
+    // on, exactly like the unfused chain.
+    @Fusable(overflowChecked = true)
     @Evaluator(warnExceptions = ArithmeticException.class)
     static double process(double val) {
         if (val <= -1.0 || val >= 1.0) {

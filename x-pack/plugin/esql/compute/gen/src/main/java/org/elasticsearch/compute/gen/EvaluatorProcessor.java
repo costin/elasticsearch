@@ -9,6 +9,7 @@ package org.elasticsearch.compute.gen;
 
 import org.elasticsearch.compute.ann.ConvertEvaluator;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.ann.MvEvaluator;
 
 import java.util.List;
@@ -73,6 +74,10 @@ public class EvaluatorProcessor implements Processor {
                 );
                 Evaluator evaluatorAnn = evaluatorMethod.getAnnotation(Evaluator.class);
                 if (evaluatorAnn != null) {
+                    // @Fusable is optional and decoupled from @Evaluator: a kernel that carries both gets
+                    // FusionAware metadata emitted on its generated Factory; a kernel without @Fusable is
+                    // generated exactly as before.
+                    Fusable fusableAnn = evaluatorMethod.getAnnotation(Fusable.class);
                     try {
                         AggregatorProcessor.write(
                             evaluatorMethod,
@@ -83,7 +88,9 @@ public class EvaluatorProcessor implements Processor {
                                 (ExecutableElement) evaluatorMethod,
                                 evaluatorAnn.extraName(),
                                 warnExceptionsTypes,
-                                evaluatorAnn.allNullsIsNull()
+                                evaluatorAnn.allNullsIsNull(),
+                                fusableAnn != null,
+                                fusableAnn != null && fusableAnn.overflowChecked()
                             ).sourceFile(),
                             env
                         );

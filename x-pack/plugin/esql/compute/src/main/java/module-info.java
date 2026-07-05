@@ -24,6 +24,7 @@ module org.elasticsearch.compute {
     requires org.elasticsearch.exponentialhistogram;
     requires org.elasticsearch.swisshash;
     requires org.objectweb.asm;  // for ConstantMethodResultSpecializer runtime bytecode generation
+    requires org.objectweb.asm.tree;  // for TemplateRegistry kernel-bytecode MethodNode parsing + cloning
     requires transitive org.apache.arrow.memory.core;
     requires org.apache.arrow.vector;
 
@@ -44,6 +45,7 @@ module org.elasticsearch.compute {
     exports org.elasticsearch.compute.querydsl.query;
     exports org.elasticsearch.compute.lucene.read;
     exports org.elasticsearch.compute.operator.fuse;
+    exports org.elasticsearch.compute.operator.fusion;
     exports org.elasticsearch.compute.lucene.query;
     exports org.elasticsearch.compute.expression;
 }

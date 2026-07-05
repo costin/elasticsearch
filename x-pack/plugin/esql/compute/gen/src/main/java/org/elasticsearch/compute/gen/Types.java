@@ -173,6 +173,11 @@ public class Types {
 
     public static final ClassName EXPRESSION_EVALUATOR = ClassName.get(EXPRESSION_PACKAGE, "ExpressionEvaluator");
     public static final ClassName EXPRESSION_EVALUATOR_FACTORY = ClassName.get(EXPRESSION_PACKAGE, "ExpressionEvaluator", "Factory");
+
+    // Referenced symbolically (not via the .class literals) because compute/gen must not take a
+    // compile-time dependency on the main compute module — doing so would create a build cycle.
+    static final ClassName FUSION_AWARE = ClassName.get(OPERATOR_PACKAGE + ".fusion", "FusionAware");
+    static final ClassName FUSION_DESCRIPTOR = ClassName.get(OPERATOR_PACKAGE + ".fusion", "FusionDescriptor");
     public static final ClassName ABSTRACT_MULTIVALUE_FUNCTION_EVALUATOR = ClassName.get(
         "org.elasticsearch.xpack.esql.expression.function.scalar.multivalue",
         "AbstractMultivalueFunction",

@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.EsqlIllegalArgumentException;
 import org.elasticsearch.xpack.esql.ExceptionUtils;
@@ -139,16 +140,20 @@ public class Neg extends UnaryScalarFunction {
         return new Neg(source(), newChildren.get(0));
     }
 
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Ints", warnExceptions = { ArithmeticException.class })
     static int processInts(int v) {
         return Math.negateExact(v);
     }
 
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Longs", warnExceptions = { ArithmeticException.class })
     static long processLongs(long v) {
         return Math.negateExact(v);
     }
 
+    // overflowChecked = false: negating a double is a pure bit flip that never throws (see body comment).
+    @Fusable(overflowChecked = false)
     @Evaluator(extraName = "Doubles")
     static double processDoubles(double v) {
         // This can never fail (including when `v` is +/- infinity or NaN) since negating a double is just a bit flip.

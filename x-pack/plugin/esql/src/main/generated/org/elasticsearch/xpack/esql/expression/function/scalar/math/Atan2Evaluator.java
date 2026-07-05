@@ -15,6 +15,8 @@ import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.Warnings;
+import org.elasticsearch.compute.operator.fusion.FusionAware;
+import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 
@@ -129,7 +131,9 @@ public final class Atan2Evaluator implements ExpressionEvaluator {
     return warnings;
   }
 
-  static class Factory implements ExpressionEvaluator.Factory {
+  static class Factory implements ExpressionEvaluator.Factory, FusionAware {
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Atan2.class, "process", "(DD)D", false, true, "");
+
     private final Source source;
 
     private final ExpressionEvaluator.Factory y;
@@ -150,6 +154,11 @@ public final class Atan2Evaluator implements ExpressionEvaluator {
     @Override
     public String toString() {
       return "Atan2Evaluator[" + "y=" + y + ", x=" + x + "]";
+    }
+
+    @Override
+    public FusionDescriptor fusionDescriptor() {
+      return FUSION_DESCRIPTOR;
     }
   }
 }
