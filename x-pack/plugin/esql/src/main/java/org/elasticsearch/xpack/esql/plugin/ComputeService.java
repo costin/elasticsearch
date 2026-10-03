@@ -414,6 +414,9 @@ public class ComputeService {
         if (execInfo != null && result.cpuNanos() > 0) {
             execInfo.queryProfile().addSplitDiscoveryCpuNanos(result.cpuNanos());
         }
+        if (execInfo != null && result.splitDiscoveryProbes() > 0) {
+            execInfo.queryProfile().addSplitDiscoveryProbes(result.splitDiscoveryProbes());
+        }
     }
 
     /**
