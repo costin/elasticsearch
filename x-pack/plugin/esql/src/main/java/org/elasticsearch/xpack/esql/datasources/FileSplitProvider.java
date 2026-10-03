@@ -389,7 +389,6 @@ public class FileSplitProvider implements SplitProvider {
      * treat unprobed offsets as missing or warn that the file was read whole.
      */
     private final Set<DeferredNewlineSplits> demandTruncatedFiles = Collections.newSetFromMap(new IdentityHashMap<>());
-    private volatile int discoveryRowLimit = FormatReader.NO_LIMIT;
     /**
      * What this discovery has to tell the query's author. Held per discovery, like
      * {@link #splitDiscoveryCpuNanos}: one discovery runs on a provider at a time, and the result is built after
@@ -888,7 +887,6 @@ public class FileSplitProvider implements SplitProvider {
             splitDiscoveryCpuNanos.set(0L);
             splitDiscoveryProbes.set(0);
             demandTruncatedFiles.clear();
-            discoveryRowLimit = context.rowLimit();
             List<PlanResult> planResults;
             int survivorCount = batch.size();
             // A file is planned only while the rows already covered fall short of what the query asked for; see
@@ -925,11 +923,15 @@ public class FileSplitProvider implements SplitProvider {
                 throw ExternalFailures.surface(e, "Failed to discover splits");
             }
 
-            // Phase 3: probe the deferred files' record boundaries. Every deferred file's stride offsets go into one
-            // flat batch under a single concurrency budget, so the number of in-flight probe reads is bounded by that
-            // budget no matter how many files are being probed. Probing per file instead would multiply the per-file
-            // budget by the number of files in flight.
+            // Phase 3: spend the listing-order quoted-walk budget, then probe strided offsets. Quoted files under
+            // demand share one W of cuts; files past that budget stay whole-file. Strided offsets share a separate
+            // W. Unlimited quoted files already walked in Phase 2.
             List<PlanResult> planned = new ArrayList<>(planResults);
+            try {
+                walkDeferredQuoted(planned, context.rowLimit(), isCancelled);
+            } catch (Exception e) {
+                throw ExternalFailures.surface(e, "Failed to discover splits");
+            }
             Map<DeferredNewlineSplits, List<RecordBoundaryProbe.Outcome>> probedOutcomes = probeDeferredBoundaries(
                 planned,
                 probeWindowBytes,
@@ -1078,7 +1080,6 @@ public class FileSplitProvider implements SplitProvider {
             splitDiscoveryCpuNanos.set(0L);
             splitDiscoveryProbes.set(0);
             demandTruncatedFiles.clear();
-            discoveryRowLimit = context.rowLimit();
             Executor fanOut = recordingDiscoveryCpu(withStorageRetryCancellation(discoveryFanOutExecutor(requestedExecutor), isCancelled));
             ActionListener<Attempt> completion = ActionListener.runAfter(listener, () -> StorageProviderCache.closeLease(hoistedProvider));
             gatherSkippingCachedFooters(
@@ -1089,6 +1090,12 @@ public class FileSplitProvider implements SplitProvider {
                 fanOut,
                 ActionListener.<List<PlanResult>>wrap(planResults -> {
                     List<PlanResult> planned = new ArrayList<>(planResults);
+                    try {
+                        walkDeferredQuoted(planned, context.rowLimit(), isCancelled);
+                    } catch (Exception e) {
+                        completion.onFailure(ExternalFailures.surface(e, "Failed to discover splits"));
+                        return;
+                    }
                     probeDeferredBoundariesAsync(
                         planned,
                         probeWindowBytes,
@@ -1564,7 +1571,7 @@ public class FileSplitProvider implements SplitProvider {
             if (isCancelled.getAsBoolean()) {
                 throw new TaskCancelledException(RecordBoundaryProbe.CANCELLED_MESSAGE);
             }
-            return processFileForSplits(task, hoistedProvider, strideBytes, isCancelled);
+            return processFileForSplits(task, hoistedProvider, strideBytes, isCancelled, batch.context().rowLimit());
         } finally {
             releaseFileTask();
         }
@@ -1836,7 +1843,17 @@ public class FileSplitProvider implements SplitProvider {
                         released.onFailure(new TaskCancelledException(RecordBoundaryProbe.CANCELLED_MESSAGE));
                         return;
                     }
-                    fanOut.execute(() -> processFileForSplitsAsync(task, hoistedProvider, strideBytes, isCancelled, fanOut, released));
+                    fanOut.execute(
+                        () -> processFileForSplitsAsync(
+                            task,
+                            hoistedProvider,
+                            strideBytes,
+                            isCancelled,
+                            fanOut,
+                            batch.context().rowLimit(),
+                            released
+                        )
+                    );
                 } catch (Exception e) {
                     released.onFailure(e);
                 }
@@ -1951,6 +1968,9 @@ public class FileSplitProvider implements SplitProvider {
                     }
                     splits.addAll(buildNewlineMacroSplits(deferred, starts));
                 }
+                case PlanResult.NeedsWalk needsWalk -> throw new IllegalStateException(
+                    "quoted walk still pending for " + needsWalk.deferred().task().filePath()
+                );
                 case PlanResult.Walked walked -> {
                     shortfall.recordWalk(walked);
                     splits.addAll(buildNewlineMacroSplits(walked.deferred(), walked.starts()));
@@ -2118,16 +2138,16 @@ public class FileSplitProvider implements SplitProvider {
             List<RecordBoundaryProbe.Outcome> fallbackOutcomes = fallback.isEmpty()
                 ? List.of()
                 : runProbeTasks(fallback, probeWindowBytes, isCancelled);
-            splitDiscoveryProbes.addAndGet(wave.size() + fallback.size());
+            if (isCancelled.getAsBoolean()) {
+                throw new TaskCancelledException(RecordBoundaryProbe.CANCELLED_MESSAGE);
+            }
+            recordPooledProbeCount(wave.size() + fallback.size());
             Map<DeferredNewlineSplits, List<RecordBoundaryProbe.Outcome>> outcomesByFile = groupProbeOutcomes(
                 wave,
                 waveOutcomes,
                 fallback,
                 fallbackOutcomes
             );
-            if (isCancelled.getAsBoolean()) {
-                throw new TaskCancelledException(RecordBoundaryProbe.CANCELLED_MESSAGE);
-            }
             return outcomesByFile;
         } catch (Exception e) {
             throw ExternalFailures.surface(e, "Failed to discover splits");
@@ -2179,11 +2199,11 @@ public class FileSplitProvider implements SplitProvider {
         BooleanSupplier isCancelled,
         ActionListener<Map<DeferredNewlineSplits, List<RecordBoundaryProbe.Outcome>>> listener
     ) {
-        splitDiscoveryProbes.addAndGet(wave.size() + fallback.size());
         if (isCancelled.getAsBoolean()) {
             listener.onFailure(new TaskCancelledException(RecordBoundaryProbe.CANCELLED_MESSAGE));
             return;
         }
+        recordPooledProbeCount(wave.size() + fallback.size());
         listener.onResponse(groupProbeOutcomes(wave, waveOutcomes, fallback, fallbackOutcomes));
     }
 
@@ -2203,9 +2223,10 @@ public class FileSplitProvider implements SplitProvider {
     }
 
     /**
-     * Cap on proven-walk starts (including the file start at 0) under the same formula as
-     * {@link #probeWaveSize}, without a position-count min because the walk does not know the grid
-     * in advance.
+     * Cap on proven-walk starts under demand, including the file start at 0.
+     * {@link #probeWaveSize} counts W stride cuts (0 is implicit in {@link RecordBoundaryProbe#reduce}).
+     * The walk's {@code maxBoundaries} includes 0, so the cap is W+1: one start plus W cuts.
+     * Without the extra slot the walk would emit about W-1 cuts against a strided wave of W probes.
      */
     int provenBoundaryCap(int rowLimit, long strideBytes) {
         if (rowLimit == FormatReader.NO_LIMIT || rowLimit <= 0 || strideBytes <= 0) {
@@ -2213,13 +2234,18 @@ public class FileSplitProvider implements SplitProvider {
         }
         long k = Math.ceilDiv((long) rowLimit * 4096L, strideBytes);
         long w = Math.max(k, (long) splitDiscoveryConcurrency());
-        return (int) Math.min(w, Integer.MAX_VALUE);
+        return (int) Math.min(w + 1L, Integer.MAX_VALUE);
     }
 
     /**
      * Takes a listing-order prefix of strided offsets totalling {@link #probeWaveSize}, and rewrites files
      * past that budget to whole-file splits with no probes. Partial files keep their leftover positions for
-     * {@link #fallbackProbeTasks}.
+     * {@link #fallbackProbeTasks}. Files rewritten to whole-file never re-enter fallback: leftover offsets
+     * on a later file would spend GETs the demand already decided not to spend, and would cut a file the
+     * query will not read past the LIMIT (2174-safe).
+     * <p>
+     * The first deferred file's stride sizes W. {@link #strideBoundedByProbeBudget} is query-wide, so every
+     * file's stride is that same number.
      */
     private List<ProbeTask> selectLeadingProbeTasks(
         List<PlanResult> planResults,
@@ -2259,13 +2285,18 @@ public class FileSplitProvider implements SplitProvider {
                 }
             }
         }
-        assert wave.size() <= MAX_SPLIT_PROBES_CEILING : "pooled probe count [" + wave.size() + "] above the ceiling";
         return wave;
+    }
+
+    private void recordPooledProbeCount(int issued) {
+        assert issued <= MAX_SPLIT_PROBES_CEILING : "pooled probe count [" + issued + "] above the ceiling";
+        splitDiscoveryProbes.addAndGet(issued);
     }
 
     /**
      * When a truncated file's wave found no boundary, probe the rest of that file's grid so a run of NONE
-     * cannot collapse it into a single whole-file split.
+     * cannot collapse it into a single whole-file split. Files past the listing-order budget are rewritten
+     * to whole-file splits before this runs, so they never appear in {@code remainingPositions}.
      */
     private List<ProbeTask> fallbackProbeTasks(
         List<ProbeTask> wave,
@@ -2532,8 +2563,11 @@ public class FileSplitProvider implements SplitProvider {
 
     /**
      * The outcome of planning one file: its final splits, a descriptor whose record boundaries still need
-     * probing, or a sequential walk that has already resolved them. Deferring the probing lets every strided file's
-     * probes share a single concurrency budget.
+     * probing, a quoted file waiting for the listing-order walk, or a sequential walk that has already
+     * resolved them. Deferring strided probing lets every strided file's probes share a single concurrency
+     * budget. Deferring quoted walks under demand lets every quoted file share one W of cuts in listing
+     * order; unlimited quoted files still walk in Phase 2 so the fan-out stays parallel. Mixed
+     * strided+quoted queries spend a separate W on each path.
      */
     private sealed interface PlanResult {
         /** A file whose splits are settled, because planning already did whatever reading they needed. */
@@ -2541,6 +2575,12 @@ public class FileSplitProvider implements SplitProvider {
 
         /** A file whose macro-splits can only be built once the probe phase has resolved its record boundaries. */
         record NeedsProbing(DeferredNewlineSplits deferred) implements PlanResult {}
+
+        /**
+         * A quoted or escaped file whose sequential walk is deferred until the listing-order budget pass.
+         * Unlimited scans never produce this: they walk in Phase 2.
+         */
+        record NeedsWalk(DeferredNewlineSplits deferred) implements PlanResult {}
 
         /**
          * A file the sequential walk has already resolved. It carries its starts rather than its splits so that
@@ -2665,7 +2705,8 @@ public class FileSplitProvider implements SplitProvider {
         FileTask task,
         @Nullable StorageProvider hoistedProvider,
         long strideBytes,
-        BooleanSupplier isCancelled
+        BooleanSupplier isCancelled,
+        int rowLimit
     ) throws IOException {
         if (isCancelled.getAsBoolean()) {
             throw new TaskCancelledException(RecordBoundaryProbe.CANCELLED_MESSAGE);
@@ -2674,7 +2715,7 @@ public class FileSplitProvider implements SplitProvider {
         // backoff inside the footer reads below can abort a parked sleep on cancel.
         return StorageRetryCancellation.callWithCancellation(
             isCancelled,
-            () -> computeFileSplits(task, hoistedProvider, strideBytes, isCancelled)
+            () -> computeFileSplits(task, hoistedProvider, strideBytes, isCancelled, rowLimit)
         );
     }
 
@@ -2684,6 +2725,7 @@ public class FileSplitProvider implements SplitProvider {
         long strideBytes,
         BooleanSupplier isCancelled,
         Executor fanOut,
+        int rowLimit,
         ActionListener<PlanResult> listener
     ) {
         try {
@@ -2742,7 +2784,7 @@ public class FileSplitProvider implements SplitProvider {
                         listener.onResponse(
                             StorageRetryCancellation.callWithCancellation(
                                 isCancelled,
-                                () -> planTextOrWholeFile(task, hoistedProvider, strideBytes, isCancelled, readerForText)
+                                () -> planTextOrWholeFile(task, hoistedProvider, strideBytes, isCancelled, readerForText, rowLimit)
                             )
                         );
                     } catch (Exception e) {
@@ -2759,7 +2801,8 @@ public class FileSplitProvider implements SplitProvider {
         FileTask task,
         @Nullable StorageProvider hoistedProvider,
         long strideBytes,
-        BooleanSupplier isCancelled
+        BooleanSupplier isCancelled,
+        int rowLimit
     ) throws IOException {
         List<ExternalSplit> fileSplits = new ArrayList<>();
 
@@ -2830,7 +2873,7 @@ public class FileSplitProvider implements SplitProvider {
             return new PlanResult.Splits(fileSplits);
         }
 
-        return planTextOrWholeFile(task, hoistedProvider, strideBytes, isCancelled, configuredReader);
+        return planTextOrWholeFile(task, hoistedProvider, strideBytes, isCancelled, configuredReader, rowLimit);
     }
 
     private PlanResult planTextOrWholeFile(
@@ -2838,7 +2881,8 @@ public class FileSplitProvider implements SplitProvider {
         @Nullable StorageProvider hoistedProvider,
         long strideBytes,
         BooleanSupplier isCancelled,
-        @Nullable FormatReader configuredReader
+        @Nullable FormatReader configuredReader,
+        int rowLimit
     ) throws IOException {
         List<ExternalSplit> fileSplits = new ArrayList<>();
         DeferredNewlineSplits deferred = newlineMacroSplitCandidate(task, strideBytes, hoistedProvider, configuredReader);
@@ -2859,8 +2903,54 @@ public class FileSplitProvider implements SplitProvider {
         if (deferred.positions().isEmpty() == false) {
             return new PlanResult.NeedsProbing(deferred);
         }
-        RecordBoundaryProbe.ProvenWalk walk = provenMacroSplitStarts(deferred, isCancelled);
+        // Unlimited quoted files walk here so Phase 2's fan-out stays parallel. Under demand, defer so
+        // every quoted file in listing order spends one shared W of cuts.
+        if (rowLimit != FormatReader.NO_LIMIT) {
+            return new PlanResult.NeedsWalk(deferred);
+        }
+        RecordBoundaryProbe.ProvenWalk walk = provenMacroSplitStarts(deferred, isCancelled, Integer.MAX_VALUE);
         return new PlanResult.Walked(deferred, walk.boundaries(), walk.stoppedBeforeEndOfFile());
+    }
+
+    /**
+     * Spends one W of proven-walk cuts across quoted files in listing order. Files past the budget become
+     * whole-file splits and never walk, matching the strided path. Unlimited scans never reach here: they
+     * walk in Phase 2. Mixed strided+quoted queries spend a separate W on each path.
+     * <p>
+     * The first quoted file's stride sizes W. {@link #strideBoundedByProbeBudget} is query-wide, so every
+     * file's stride is that same number.
+     */
+    private void walkDeferredQuoted(List<PlanResult> planResults, int rowLimit, BooleanSupplier isCancelled) throws IOException {
+        long strideBytes = 0L;
+        boolean anyWalk = false;
+        for (PlanResult planResult : planResults) {
+            if (planResult instanceof PlanResult.NeedsWalk needsWalk) {
+                anyWalk = true;
+                if (strideBytes == 0L) {
+                    strideBytes = needsWalk.deferred().strideBytes();
+                }
+            }
+        }
+        if (anyWalk == false) {
+            return;
+        }
+        int remainingCuts = probeWaveSize(rowLimit, strideBytes, Integer.MAX_VALUE);
+        for (int i = 0; i < planResults.size(); i++) {
+            if (planResults.get(i) instanceof PlanResult.NeedsWalk needsWalk) {
+                DeferredNewlineSplits deferred = needsWalk.deferred();
+                if (remainingCuts <= 0) {
+                    planResults.set(i, new PlanResult.Splits(buildNewlineMacroSplits(deferred, List.of(0L))));
+                    continue;
+                }
+                if (isCancelled.getAsBoolean()) {
+                    throw new TaskCancelledException(RecordBoundaryProbe.CANCELLED_MESSAGE);
+                }
+                int cap = remainingCuts == Integer.MAX_VALUE ? Integer.MAX_VALUE : remainingCuts + 1;
+                RecordBoundaryProbe.ProvenWalk walk = provenMacroSplitStarts(deferred, isCancelled, cap);
+                remainingCuts -= Math.max(0, walk.boundaries().size() - 1);
+                planResults.set(i, new PlanResult.Walked(deferred, walk.boundaries(), walk.stoppedBeforeEndOfFile()));
+            }
+        }
     }
 
     /**
@@ -2870,7 +2960,7 @@ public class FileSplitProvider implements SplitProvider {
      * to a whole-file split upstream; if one arrives here that gate failed, so fail loud rather than emit
      * mis-aligned macro-splits that silently mis-count rows.
      */
-    private RecordBoundaryProbe.ProvenWalk provenMacroSplitStarts(DeferredNewlineSplits deferred, BooleanSupplier isCancelled)
+    private RecordBoundaryProbe.ProvenWalk provenMacroSplitStarts(DeferredNewlineSplits deferred, BooleanSupplier isCancelled, int cap)
         throws IOException {
         RecordSplitter splitter = deferred.splitter();
         if (splitter.supportsProvenProbing() == false) {
@@ -2880,7 +2970,6 @@ public class FileSplitProvider implements SplitProvider {
                     + "] supports neither strided nor proven probing and cannot be macro-split"
             );
         }
-        int cap = provenBoundaryCap(discoveryRowLimit, deferred.strideBytes());
         RecordBoundaryProbe.ProvenWalk walk = RecordBoundaryProbe.provenBoundaries(
             splitter,
             deferred.storageObject(),
