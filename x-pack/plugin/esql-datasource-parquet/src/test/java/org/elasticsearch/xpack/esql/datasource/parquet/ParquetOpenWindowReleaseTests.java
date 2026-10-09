@@ -75,10 +75,10 @@ import static org.hamcrest.Matchers.lessThan;
  *
  * <p>The fixture is larger than {@code DEFAULT_WINDOW_SIZE} via an unprojected {@code pad}
  * column, so the window is 4 MiB rather than file-clamped. Footer-load and the reader stream
- * each charge one window; the guard requires both. On main (without the release)
+ * each charge one window; the guard requires both. Without the release,
  * {@link #testWindowReleasedAfterFilteredConstruction} fails: {@code WINDOW_BREAKER_LABEL}
  * stays charged. {@link #testOpenReadersHoldNoWindowsBeforeDrain} fails
- * {@code watermark.used() >= 6 × window} while six iterators are open.
+ * {@code watermark.used() >= window} while six iterators are open.
  */
 public class ParquetOpenWindowReleaseTests extends ESTestCase {
 
@@ -138,8 +138,8 @@ public class ParquetOpenWindowReleaseTests extends ESTestCase {
     }
 
     /**
-     * Six filtered iterators sharing one watermark. After construction, used is below six
-     * windows. Then all six drain. On main {@code used} is at least six windows.
+     * Six filtered iterators sharing one watermark. After construction, used is below one
+     * window and nothing is parked. Then all six drain.
      */
     public void testOpenReadersHoldNoWindowsBeforeDrain() throws Exception {
         long windowFootprint = HeapFootprint.byteArrayBytes(ParquetStorageObjectAdapter.DEFAULT_WINDOW_SIZE);
@@ -159,10 +159,12 @@ public class ParquetOpenWindowReleaseTests extends ESTestCase {
             );
             assertEquals("six reader windows must be refunded after the row-group filter", 0L, breaker.windowOutstanding());
             assertThat(
-                "six open iterators must not hold six windows; used=" + watermark.used() + " cap=" + cap,
+                "six open iterators must not hold a window; used=" + watermark.used() + " cap=" + cap,
                 watermark.used(),
-                lessThan(6 * windowFootprint)
+                lessThan(windowFootprint)
             );
+            assertEquals(0, watermark.waiterCount());
+            assertNull(watermark.nodeByteBudget().overshootOwner());
             for (CloseableIterator<Page> iter : iters) {
                 assertEquals(EXPECTED_MATCHING_ROWS, drain(iter));
             }

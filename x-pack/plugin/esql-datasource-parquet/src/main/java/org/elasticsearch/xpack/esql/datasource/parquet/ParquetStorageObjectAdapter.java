@@ -751,10 +751,7 @@ public class ParquetStorageObjectAdapter implements org.apache.parquet.io.InputF
                     closed = true;
                     windowStart = -1;
                     windowLength = 0;
-                    if (window != null) {
-                        charge = windowCharge;
-                        window = null;
-                    }
+                    charge = takeWindowCharge();
                     openStreams.remove(this);
                 }
             }
