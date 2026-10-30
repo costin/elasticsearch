@@ -149,6 +149,15 @@ record Element(
     }
 
     /**
+     * Internal name of the public {@code *Vector} interface this element reads through, e.g.
+     * {@code org/elasticsearch/compute/data/LongVector}. The dense-logical all-interface variant {@code CHECKCAST}s
+     * each input to this type (any vector kind) and calls {@link #getValueMethod} via {@code INVOKEINTERFACE}.
+     */
+    String vectorInternalName() {
+        return vectorDescriptor.substring(1, vectorDescriptor.length() - 1);
+    }
+
+    /**
      * Name of the {@link org.elasticsearch.compute.data.VectorUnsafe} static forwarder that returns this element's
      * backing array, e.g. {@code longs} for {@code long[]}. The fused vector loop calls it via {@code INVOKESTATIC}
      * (instead of the package-private {@code INVOKEVIRTUAL rawValues()}), so the hidden class can be defined in the

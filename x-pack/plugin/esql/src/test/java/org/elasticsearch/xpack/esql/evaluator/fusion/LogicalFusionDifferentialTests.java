@@ -7,8 +7,10 @@
 
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
+import org.elasticsearch.common.util.LongArray;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BooleanBlock;
+import org.elasticsearch.compute.data.LongBigArrayVector;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.core.Releasables;
@@ -16,6 +18,8 @@ import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.LastEvalPath;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.VectorStrategy;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
@@ -46,6 +50,10 @@ import static org.hamcrest.Matchers.is;
  *       left decides the value, so the fused path emits the right operand's multi-value warning too (exact parity
  *       with the unfused chain; values identical);</li>
  *   <li>{@link #testDistinctSourceWarningsAttributedPerComparison()} — per-comparison warning-source attribution.</li>
+ *   <li>Dense logical vector path (R2a) — {@link VectorStrategy#LOGICAL_VECTOR} over {@code *ArrayVector},
+     *       {@code ConstantLongVector}, and {@code LongBigArrayVector} inputs, AND and OR, long/int/double, matching the
+     *       unfused chain value-by-value. Null/multi-value pages stay on the 3VL block path above.
+     *       {@link #testDenseLogicalVectorPicksRawVsInterfaceVsBlock()} pins ALL-RAW vs ALL-INTERFACE vs BLOCK.</li>
  * </ul>
  */
 public class LogicalFusionDifferentialTests extends FusionDifferentialTestCase {
@@ -294,6 +302,244 @@ public class LogicalFusionDifferentialTests extends FusionDifferentialTestCase {
                 page.releaseBlocks();
             }
         }
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // Dense logical vector path (R2a): 2VL over any vector (no nulls / multi-values)
+    // ---------------------------------------------------------------------------------------------------------------
+
+    /**
+     * A dense-eligible {@code (a > b) AND (c < d)} tree must compile {@link VectorStrategy#LOGICAL_VECTOR} so the
+     * factory can take the dense 2VL vector path when every input {@code asVector()} is non-null. Pre-R2a the logical
+     * branch bound {@link VectorStrategy#NONE} (block-only).
+     */
+    public void testDenseLogicalTreeCompilesLogicalVectorStrategy() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        FieldAttribute d = field("d", DataType.LONG);
+        Layout layout = layout(a, b, c, d);
+        Expression expr = new And(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new LessThan(Source.EMPTY, c, d));
+        FusedExpressionEvaluatorFactory fused = assertFuses(fusedFactory(expr, layout), "dense AND tree");
+        assertThat(
+            "a dense-eligible logical tree must compile VectorStrategy.LOGICAL_VECTOR",
+            fused.vectorStrategy(),
+            is(VectorStrategy.LOGICAL_VECTOR)
+        );
+    }
+
+    /**
+     * Random dense {@code LongArrayVector} inputs: fused {@code AND}/{@code OR} of two long comparisons matches the
+     * unfused chain at every position, including empty / single / &ge;1024 shapes.
+     */
+    public void testDenseArrayVectorLongAndOrMatchesUnfused() {
+        assertDenseLongAndOr(this::longArrayVectorColumn, "LongArrayVector");
+    }
+
+    /**
+     * Dense {@code ConstantLongVector} inputs (asVector() non-null but not an {@code *ArrayVector}): the interface
+     * read variant must still match the unfused chain.
+     */
+    public void testDenseConstantLongVectorAndOrMatchesUnfused() {
+        assertDenseLongAndOr(this::constantLongVectorColumn, "ConstantLongVector");
+    }
+
+    /**
+     * Dense {@code LongBigArrayVector} inputs (asVector() non-null but not an {@code *ArrayVector}): the interface
+     * read variant must still match the unfused chain.
+     */
+    public void testDenseLongBigArrayVectorAndOrMatchesUnfused() {
+        assertDenseLongAndOr(this::longBigArrayVectorColumn, "LongBigArrayVector");
+    }
+
+    /**
+     * Mixed page: some inputs are {@code LongArrayVector} and some are {@code ConstantLongVector}. The factory must
+     * pick the all-interface variant (any non-array vector) and still match the unfused chain.
+     */
+    public void testDenseMixedArrayAndConstantLongVectorMatchesUnfused() {
+        for (Connective connective : Connective.values()) {
+            FieldAttribute a = field("a", DataType.LONG);
+            FieldAttribute b = field("b", DataType.LONG);
+            FieldAttribute c = field("c", DataType.LONG);
+            FieldAttribute d = field("d", DataType.LONG);
+            Layout layout = layout(a, b, c, d);
+            Expression expr = connective == Connective.AND
+                ? new And(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new LessThan(Source.EMPTY, c, d))
+                : new Or(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new LessThan(Source.EMPTY, c, d));
+            FusedExpressionEvaluatorFactory fused = assertFuses(fusedFactory(expr, layout), connective + " mixed");
+            assertThat(
+                "a dense-eligible logical tree must compile VectorStrategy.LOGICAL_VECTOR",
+                fused.vectorStrategy(),
+                is(VectorStrategy.LOGICAL_VECTOR)
+            );
+            ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+            for (int i = 0; i < 40; i++) {
+                int n = positionCountFor(i);
+                Block[] inputs = {
+                    longArrayVectorColumn(n, 0),
+                    constantLongVectorColumn(n, 1),
+                    longArrayVectorColumn(n, 2),
+                    constantLongVectorColumn(n, 3) };
+                runDifferential(fused, unfused, ElementKind.BOOLEAN, inputs, n, connective + " mixed@" + i);
+            }
+        }
+    }
+
+    /**
+     * Dense {@code IntArrayVector} and {@code DoubleArrayVector} comparisons under both {@code AND} and {@code OR}
+     * match the unfused chain. The compiled strategy is {@link VectorStrategy#LOGICAL_VECTOR} for both elements.
+     */
+    public void testDenseIntAndDoubleArrayVectorAndOrMatchesUnfused() {
+        assertDenseNumericAndOr(DataType.INTEGER, this::intArrayVectorColumn, "IntArrayVector");
+        assertDenseNumericAndOr(DataType.DOUBLE, this::doubleArrayVectorColumn, "DoubleArrayVector");
+    }
+
+    /**
+     * Pins the per-page RAW vs INTERFACE vs BLOCK choice so an always-interface (or always-raw) regression is
+     * caught even when values still match the unfused chain. Test-only {@link LastEvalPath} seam; production
+     * dispatch is unchanged.
+     */
+    public void testDenseLogicalVectorPicksRawVsInterfaceVsBlock() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        FieldAttribute d = field("d", DataType.LONG);
+        Layout layout = layout(a, b, c, d);
+        Expression expr = new And(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new LessThan(Source.EMPTY, c, d));
+        FusedExpressionEvaluatorFactory fused = assertFuses(fusedFactory(expr, layout), "dense AND tree");
+        assertThat(fused.vectorStrategy(), is(VectorStrategy.LOGICAL_VECTOR));
+
+        ExpressionEvaluator eval = fused.get(driverContext);
+        try {
+            int n = 8;
+            assertLastEvalPath(
+                eval,
+                LastEvalPath.RAW,
+                new Block[] {
+                    longArrayVectorColumn(n, 0),
+                    longArrayVectorColumn(n, 1),
+                    longArrayVectorColumn(n, 2),
+                    longArrayVectorColumn(n, 3) },
+                "exact *ArrayVector page must take ALL-RAW"
+            );
+            assertLastEvalPath(
+                eval,
+                LastEvalPath.INTERFACE,
+                new Block[] {
+                    constantLongVectorColumn(n, 0),
+                    constantLongVectorColumn(n, 1),
+                    constantLongVectorColumn(n, 2),
+                    constantLongVectorColumn(n, 3) },
+                "ConstantLongVector page must take ALL-INTERFACE"
+            );
+            assertLastEvalPath(
+                eval,
+                LastEvalPath.INTERFACE,
+                new Block[] {
+                    longBigArrayVectorColumn(n, 0),
+                    longBigArrayVectorColumn(n, 1),
+                    longBigArrayVectorColumn(n, 2),
+                    longBigArrayVectorColumn(n, 3) },
+                "LongBigArrayVector page must take ALL-INTERFACE"
+            );
+            assertLastEvalPath(
+                eval,
+                LastEvalPath.BLOCK,
+                new Block[] {
+                    longColumn(new Long[] { 1L, null, 3L, 4L }),
+                    longColumn(new Long[] { 0L, 1L, 2L, 3L }),
+                    longColumn(new Long[] { 0L, 1L, 2L, 3L }),
+                    longColumn(new Long[] { 1L, 2L, 3L, 4L }) },
+                "null-carrying page must take the 3VL BLOCK path"
+            );
+        } finally {
+            Releasables.closeExpectNoException(eval);
+        }
+    }
+
+    private static void assertLastEvalPath(ExpressionEvaluator eval, LastEvalPath expected, Block[] inputs, String ctx) {
+        int n = inputs[0].getPositionCount();
+        Page page = new Page(n, inputs);
+        Block result = null;
+        try {
+            result = eval.eval(page);
+            assertThat(ctx, FusedExpressionEvaluatorFactory.lastEvalPath(eval), is(expected));
+        } finally {
+            Releasables.closeExpectNoException(result);
+            page.releaseBlocks();
+        }
+    }
+
+    private void assertDenseLongAndOr(DenseColumnFactory columns, String kind) {
+        assertDenseNumericAndOr(DataType.LONG, columns, kind);
+    }
+
+    private void assertDenseNumericAndOr(DataType type, DenseColumnFactory columns, String kind) {
+        for (Connective connective : Connective.values()) {
+            FieldAttribute a = field("a", type);
+            FieldAttribute b = field("b", type);
+            FieldAttribute c = field("c", type);
+            FieldAttribute d = field("d", type);
+            Layout layout = layout(a, b, c, d);
+            Expression expr = connective == Connective.AND
+                ? new And(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new LessThan(Source.EMPTY, c, d))
+                : new Or(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new LessThan(Source.EMPTY, c, d));
+            FusedExpressionEvaluatorFactory fused = assertFuses(fusedFactory(expr, layout), connective + " " + kind);
+            assertThat(
+                "a dense-eligible logical tree must compile VectorStrategy.LOGICAL_VECTOR",
+                fused.vectorStrategy(),
+                is(VectorStrategy.LOGICAL_VECTOR)
+            );
+            ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+            for (int i = 0; i < 40; i++) {
+                int n = positionCountFor(i);
+                Block[] inputs = { columns.column(n, 0), columns.column(n, 1), columns.column(n, 2), columns.column(n, 3) };
+                runDifferential(fused, unfused, ElementKind.BOOLEAN, inputs, n, connective + " " + kind + "@" + i);
+            }
+        }
+    }
+
+    @FunctionalInterface
+    private interface DenseColumnFactory {
+        Block column(int positionCount, int seed);
+    }
+
+    private Block longArrayVectorColumn(int n, int seed) {
+        long[] v = new long[n];
+        for (int p = 0; p < n; p++) {
+            v[p] = ((p * 7L + seed * 3L) % 11) - 5;
+        }
+        return blockFactory.newLongArrayVector(v, n).asBlock();
+    }
+
+    private Block constantLongVectorColumn(int n, int seed) {
+        // A constant vector is dense (no nulls / multi-values) but not an *ArrayVector, so the factory must pick
+        // the all-interface read variant rather than VectorUnsafe.rawValues.
+        return blockFactory.newConstantLongVector(((seed * 3L) % 11) - 5, n).asBlock();
+    }
+
+    private Block longBigArrayVectorColumn(int n, int seed) {
+        LongArray array = bigArrays.newLongArray(n);
+        for (int p = 0; p < n; p++) {
+            array.set(p, ((p * 7L + seed * 3L) % 11) - 5);
+        }
+        return new LongBigArrayVector(array, n, blockFactory).asBlock();
+    }
+
+    private Block intArrayVectorColumn(int n, int seed) {
+        int[] v = new int[n];
+        for (int p = 0; p < n; p++) {
+            v[p] = ((p * 7 + seed * 3) % 11) - 5;
+        }
+        return blockFactory.newIntArrayVector(v, n).asBlock();
+    }
+
+    private Block doubleArrayVectorColumn(int n, int seed) {
+        double[] v = new double[n];
+        for (int p = 0; p < n; p++) {
+            v[p] = ((p * 7 + seed * 3) % 11) - 5;
+        }
+        return blockFactory.newDoubleArrayVector(v, n).asBlock();
     }
 
     // ---------------------------------------------------------------------------------------------------------------

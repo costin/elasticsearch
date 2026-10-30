@@ -117,6 +117,15 @@ public final class FusionPlanner {
         Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
 
         /**
+         * Compiles the dense 2VL logical vector loop (ALL-RAW + ALL-INTERFACE methods on one class). Defaulted so
+         * existing {@link FusedClassCompiler} test doubles need not override it; the production
+         * {@link FusionCompilationService} compiler provides the real, cache-backed implementation.
+         */
+        default Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+            throw new UnsupportedOperationException("compileLogicalVectorLoop not implemented by this compiler");
+        }
+
+        /**
          * Compiles the fused WHERE-predicate + EVAL-projection block loop (S3.2a). Defaulted so existing
          * {@link FusedClassCompiler} test doubles (which only exercise the single-expression paths) need not override it;
          * the production {@link FusionCompilationService} compiler and any filter-eval-specific test double provide a real implementation.
