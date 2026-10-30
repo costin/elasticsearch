@@ -55,6 +55,11 @@ final class FusionCompilationService {
         }
 
         @Override
+        public Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+            return cache.get(shapeKey(tree, FusedClassCache.Path.LOGICAL_VECTOR), () -> stitcher.compileLogicalVectorLoop(caller, tree));
+        }
+
+        @Override
         public Class<?> compileFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
             throws Stitcher.StitchingException {
             // The fused class is fully determined by BOTH sub-shapes, so the cache key encodes both (and, for

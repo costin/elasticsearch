@@ -396,8 +396,8 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
         assertProfilesCovered(cov, Profile.CLEAN, Profile.NULLS, Profile.MULTIVALUE, Profile.NULLS_AND_MULTIVALUE);
         assertThat("a multi-value input must register a warning", cov.multiValueWarnings, greaterThan(0));
         assertThat("the sweep must produce cross-category trees (LOGICAL over COMPARISON)", cov.crossCategory, greaterThan(0));
-        // A 3VL AND/OR tree is block-path only (no vector fast path); this is the only sweep that exercises NONE.
-        assertThat("logical trees must compile the block-only VectorStrategy.NONE", cov.none, greaterThan(0));
+        // A 3VL AND/OR tree compiles the dense LOGICAL_VECTOR path (null/MV pages still eval on the 3VL block path).
+        assertThat("logical trees must compile VectorStrategy.LOGICAL_VECTOR", cov.logicalVector, greaterThan(0));
     }
 
     /**
@@ -504,9 +504,9 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
 
     /**
      * Which constant-leaf shape a sweep iteration builds. Each embeds one or two literal constants (see
-     * {@link #constant}) into a depth &ge; 2 tree so it fuses, exercising the three emit paths a constant reaches:
-     * checked-vector (arithmetic-rooted / comparison-rooted with an overflow-checked child) and the block-only logical
-     * path (its {@code cmpN} comparison helpers embed the constant operand).
+     * {@link #constant}) into a depth &ge; 2 tree so it fuses, exercising the emit paths a constant reaches:
+     * checked-vector (arithmetic-rooted / comparison-rooted with an overflow-checked child) and LOGICAL_VECTOR
+     * (a 3VL {@code AND}/{@code OR} tree; null/MV pages still evaluate on the 3VL block path).
      */
     private enum ConstShape {
         /** {@code (a + b) > K} — comparison root over overflow-checked arithmetic; boolean output, checked-vector. */
@@ -521,8 +521,9 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
      * The iter-24 constant-leaf sweep: for each numeric element and profile it builds one of the three
      * {@link ConstShape}s with <b>random</b> constant values and asserts the fused body (which embeds each literal as a
      * bytecode constant, never a per-position read) matches the unfused chain in values, null positions and the
-     * ratified warning subset. Proves constants reach both the checked-vector and the block-only logical paths, and
-     * that overflow / multi-value warnings still fire identically when a column operand is abnormal.
+     * ratified warning subset. Proves constants reach both the checked-vector and the LOGICAL_VECTOR paths
+     * (null/MV pages still evaluate on the 3VL block path), and that overflow / multi-value warnings still fire
+     * identically when a column operand is abnormal.
      */
     public void testConstantLeafSpecSweepMatchesUnfused() {
         Coverage cov = new Coverage();
@@ -587,7 +588,7 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
         assertShapeMatrixCovered(cov);
         assertProfilesCovered(cov, Profile.CLEAN, Profile.NULLS, Profile.MULTIVALUE, Profile.OVERFLOW);
         assertThat("constant arithmetic/comparison trees must reach the checked-vector fast path", cov.checkedVector, greaterThan(0));
-        assertThat("logical-of-constant-comparisons must compile the block-only VectorStrategy.NONE", cov.none, greaterThan(0));
+        assertThat("logical-of-constant-comparisons must compile VectorStrategy.LOGICAL_VECTOR", cov.logicalVector, greaterThan(0));
         assertThat("an overflow in a constant arithmetic tree must null a position (warning)", cov.overflowWarnings, greaterThan(0));
         assertThat("a multi-value column operand next to a constant must register a warning", cov.multiValueWarnings, greaterThan(0));
     }
@@ -609,7 +610,11 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
         ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
         ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
         FusedExpressionEvaluatorFactory fusedFactory = assertFuses(fused, "a>5 AND b<10");
-        assertThat("a 3VL logical tree is block-path only", fusedFactory.vectorStrategy(), is(VectorStrategy.NONE));
+        assertThat(
+            "a 3VL logical tree compiles the dense LOGICAL_VECTOR path (null/MV pages still eval on the 3VL block path)",
+            fusedFactory.vectorStrategy(),
+            is(VectorStrategy.LOGICAL_VECTOR)
+        );
         assertDoesNotFuse(unfused, "a>5 AND b<10 kill switch OFF");
 
         // pos0: 3>5 F -> false; pos1: 6>5 T && 12<10 F -> false; pos2: 10>5 T && 9<10 T -> true; pos3: 5>5 F -> false.

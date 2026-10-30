@@ -35,7 +35,8 @@ import java.util.function.Function;
  *       or template: the {@link Stitcher} <em>emits</em> the short-circuit 3VL truth tables directly
  *       (matching {@code BinaryLogicOperation}). Its operands are boolean-producing comparison
  *       {@link Kernel}s (from S3.0) or nested {@link Logical}s; the output is a nullable boolean, so a
- *       {@code Logical}-rooted tree is stitched only through the block path.</li>
+ *       {@code Logical}-rooted tree is stitched through the 3VL block path, plus a dense 2VL vector path
+ *       when every input is a vector (no nulls / multi-values).</li>
  * </ul>
  *
  * <p>The stitcher walks this tree in post-order: it evaluates each child before the kernel that

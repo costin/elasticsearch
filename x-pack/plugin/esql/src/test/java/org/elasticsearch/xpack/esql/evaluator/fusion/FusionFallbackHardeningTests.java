@@ -13,6 +13,7 @@ import org.elasticsearch.common.util.MockBigArrays;
 import org.elasticsearch.common.util.PageCacheRecycler;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BlockFactory;
+import org.elasticsearch.compute.data.BooleanBlock;
 import org.elasticsearch.compute.data.DoubleBlock;
 import org.elasticsearch.compute.data.LongBlock;
 import org.elasticsearch.compute.data.Page;
@@ -20,6 +21,7 @@ import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
+import org.elasticsearch.compute.operator.fusion.TemplateRegistry;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.indices.breaker.CircuitBreakerService;
 import org.elasticsearch.test.ESTestCase;
@@ -31,8 +33,12 @@ import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.core.type.EsField;
 import org.elasticsearch.xpack.esql.evaluator.EvalMapper;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.VectorStrategy;
+import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.LessThan;
 import org.elasticsearch.xpack.esql.planner.Layout;
 import org.junit.After;
 import org.junit.Before;
@@ -213,6 +219,108 @@ public class FusionFallbackHardeningTests extends ESTestCase {
 
         // Latched: exactly one failure recorded for the shape regardless of how many pages were evaluated.
         assertMetricRecordedExactlyOnce(before);
+    }
+
+    /**
+     * A logical {@code AND}/{@code OR} tree whose dense-vector stitch fails must degrade to block-only fusion
+     * ({@link VectorStrategy#NONE}): keep the 3VL block handle, bump {@code vectorDegraded}, and still match the
+     * unfused chain on a dense page. Mirrors {@code EvalMapperFusionWiringTests#testVectorPathFailureDegradesToBlockOnly}
+     * for arithmetic.
+     */
+    public void testLogicalVectorPathFailureDegradesToBlockOnly() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        FieldAttribute d = field("d", DataType.LONG);
+        Layout layout = layout(a, b, c, d);
+        Expression expr = new And(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new LessThan(Source.EMPTY, c, d));
+
+        ExpressionEvaluator.Factory reference = unfusedReference(expr, layout);
+
+        Stitcher real = new Stitcher(new TemplateRegistry());
+        FusionPlanner.compilerForTests = new FusionPlanner.FusedClassCompiler() {
+            @Override
+            public Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return real.compileBlockLoop(caller, tree);
+            }
+
+            @Override
+            public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                throw new Stitcher.StitchingException("injected logical-vector failure", null);
+            }
+
+            @Override
+            public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                throw new Stitcher.StitchingException("injected logical-vector failure", null);
+            }
+
+            @Override
+            public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return real.compileLogicalBlockLoop(caller, tree);
+            }
+
+            @Override
+            public Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                throw new Stitcher.StitchingException("injected logical-vector failure", null);
+            }
+        };
+
+        long degradedBefore = FusionTelemetry.vectorDegraded();
+        ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+        assertThat(
+            "a logical-vector stitch failure must still fuse (block-only), not fall back to unfused",
+            candidate,
+            instanceOf(FusedExpressionEvaluatorFactory.class)
+        );
+        assertThat(
+            "degraded logical fusion keeps the 3VL block path only",
+            ((FusedExpressionEvaluatorFactory) candidate).vectorStrategy(),
+            is(VectorStrategy.NONE)
+        );
+        assertThat("the logical-vector degrade must be counted", FusionTelemetry.vectorDegraded(), is(degradedBefore + 1));
+
+        int positionCount = 128;
+        long[] av = new long[positionCount];
+        long[] bv = new long[positionCount];
+        long[] cv = new long[positionCount];
+        long[] dv = new long[positionCount];
+        for (int p = 0; p < positionCount; p++) {
+            av[p] = randomLongBetween(-1000, 1000);
+            bv[p] = randomLongBetween(-1000, 1000);
+            cv[p] = randomLongBetween(-1000, 1000);
+            dv[p] = randomLongBetween(-1000, 1000);
+        }
+        ExpressionEvaluator fused = candidate.get(driverContext);
+        ExpressionEvaluator ref = reference.get(driverContext);
+        Page page = null;
+        BooleanBlock fusedResult = null;
+        BooleanBlock refResult = null;
+        try {
+            page = new Page(
+                blockFactory.newLongArrayVector(av, positionCount).asBlock(),
+                blockFactory.newLongArrayVector(bv, positionCount).asBlock(),
+                blockFactory.newLongArrayVector(cv, positionCount).asBlock(),
+                blockFactory.newLongArrayVector(dv, positionCount).asBlock()
+            );
+            fusedResult = (BooleanBlock) fused.eval(page);
+            refResult = (BooleanBlock) ref.eval(page);
+            assertThat(fusedResult.getPositionCount(), is(positionCount));
+            for (int p = 0; p < positionCount; p++) {
+                assertThat("p=" + p + " null", fusedResult.isNull(p), is(refResult.isNull(p)));
+                if (refResult.isNull(p) == false) {
+                    assertThat(
+                        "p=" + p,
+                        fusedResult.getBoolean(fusedResult.getFirstValueIndex(p)),
+                        is(refResult.getBoolean(refResult.getFirstValueIndex(p)))
+                    );
+                }
+            }
+        } finally {
+            Releasables.closeExpectNoException(fusedResult, refResult, fused, ref);
+            if (page != null) {
+                page.releaseBlocks();
+            }
+        }
     }
 
     /**
@@ -426,6 +534,11 @@ public class FusionFallbackHardeningTests extends ESTestCase {
 
             @Override
             public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return failure.fail();
+            }
+
+            @Override
+            public Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
                 return failure.fail();
             }
         };

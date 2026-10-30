@@ -734,6 +734,7 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
         protected int large;
         protected int plainVector;
         protected int checkedVector;
+        protected int logicalVector;
         protected int none;
         protected int overflowWarnings;
         protected int multiValueWarnings;
@@ -770,6 +771,7 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
         switch (strategy) {
             case PLAIN_VECTOR -> cov.plainVector++;
             case CHECKED_VECTOR -> cov.checkedVector++;
+            case LOGICAL_VECTOR -> cov.logicalVector++;
             case NONE -> cov.none++;
         }
         cov.strategyByElement[element.ordinal()][strategy.ordinal()]++;
