@@ -134,6 +134,13 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * buffer. The resolved values are appended (after the input vectors/blocks) to the invoke args at evaluation time.
      */
     private final List<FusionNode.Constant> constants;
+    /**
+     * True only for the {@link FusionPlan#mapping()} construction path (TO_LOWER/TO_UPPER). The unfused encoding fast
+     * path computes per dictionary entry (and short-circuits constants), so for ordinal/constant inputs the fused
+     * per-row loop is both slower and loses the output encoding; the guard restores parity by deferring to the unfused
+     * evaluator for those pages only.
+     */
+    private final boolean mapping;
 
     private FusedExpressionEvaluatorFactory(
         Source[] warningSources,
@@ -144,7 +151,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         VectorStrategy vectorStrategy,
         ExpressionEvaluator.Factory unfused,
         String shape,
-        List<FusionNode.Constant> constants
+        List<FusionNode.Constant> constants,
+        boolean mapping
     ) {
         this.warningSources = warningSources;
         this.inputChannels = inputChannels;
@@ -155,6 +163,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         this.unfused = unfused;
         this.shape = shape;
         this.constants = constants;
+        this.mapping = mapping;
     }
 
     /**
@@ -222,7 +231,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     VectorStrategy.NONE,
                     unfused,
                     shape,
-                    constants
+                    constants,
+                    true
                 );
             }
             if (tree instanceof FusionNode.Logical) {
@@ -242,7 +252,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     VectorStrategy.NONE,
                     unfused,
                     shape,
-                    constants
+                    constants,
+                    false
                 );
             }
 
@@ -268,7 +279,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     VectorStrategy.NONE,
                     unfused,
                     shape,
-                    constants
+                    constants,
+                    false
                 );
             }
 
@@ -327,7 +339,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     VectorStrategy.NONE,
                     unfused,
                     shape,
-                    constants
+                    constants,
+                    false
                 );
             }
 
@@ -340,7 +353,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 strategy,
                 unfused,
                 shape,
-                constants
+                constants,
+                false
             );
         } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError e) {
             // Any plan-time stitch failure must fall back to the unfused chain and record the shape (criterion #5):
@@ -368,7 +382,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             unfused,
             context,
             shape,
-            resolveConstantValues(constants, context)
+            resolveConstantValues(constants, context),
+            mapping
         );
     }
 
@@ -537,6 +552,13 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         private final String shape;
         // The embedded constants' values, appended (after the input vectors/blocks) to the fused method's invoke args.
         private final Object[] constantValues;
+        /**
+         * True only for the mapping (TO_LOWER/TO_UPPER) construction path. The unfused encoding fast path computes per
+         * dictionary entry (and short-circuits constants), so for ordinal/constant inputs the fused per-row loop is
+         * both slower and loses the output encoding; the guard restores parity by deferring to the unfused evaluator
+         * for those pages only.
+         */
+        private final boolean mapping;
 
         // Spreaders bound ONCE per evaluator: handle.asSpreader(Object[].class, argCount) is resolved here (ctor)
         // rather than re-resolved every page by handle.invokeWithArguments (which does an Invokers.spreadInvoker
@@ -570,7 +592,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             ExpressionEvaluator.Factory unfusedFactory,
             DriverContext driverContext,
             String shape,
-            Object[] constantValues
+            Object[] constantValues,
+            boolean mapping
         ) {
             this.warningSources = warningSources;
             this.inputChannels = inputChannels;
@@ -582,6 +605,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             this.driverContext = driverContext;
             this.shape = shape;
             this.constantValues = constantValues;
+            this.mapping = mapping;
 
             int arity = inputChannels.length;
             int constCount = constantValues.length;
@@ -606,6 +630,21 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 // A prior page already hit an eval-time LinkageError; stay on the unfused chain for the rest of this
                 // evaluator's life rather than re-failing the fused handle per page.
                 return unfusedFallback().eval(page);
+            }
+            // Mapping convert kernels (TO_LOWER/TO_UPPER): the unfused encoding fast path computes per dictionary
+            // entry (and short-circuits constants), so for ordinal/constant inputs the fused per-row loop is both
+            // slower and loses the output encoding. Defer to the unfused evaluator for those pages only.
+            if (mapping && inputChannels.length == 1) {
+                Block input = page.getBlock(inputChannels[0]);
+                if (input instanceof BytesRefBlock block) {
+                    if (block.asOrdinals() != null) {
+                        return unfusedFallback().eval(page);
+                    }
+                    BytesRefVector vector = block.asVector();
+                    if (vector != null && (vector.isConstant() || vector.asOrdinals() != null)) {
+                        return unfusedFallback().eval(page);
+                    }
+                }
             }
             int arity = inputChannels.length;
             // Borrowed from the page; the page owns them, so we neither incRef nor close them.
