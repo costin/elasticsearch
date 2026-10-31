@@ -102,6 +102,16 @@ public final class Stitcher {
     public static final String FUSED_INTERFACE_METHOD_NAME = "fusedInterface";
 
     /**
+     * The overflow-abandoning raw-array sibling of {@link #FUSED_METHOD_NAME} on the checked-vector path. One hidden
+     * class carries both the builder-based {@code fused} method (nulls + warnings on overflow) and this {@code fusedRaw}
+     * method (dense {@code *ArrayVector} output, {@code return null} on the first declared overflow). The factory
+     * invokes {@code fusedRaw} first and falls back to {@code fused} only when a page overflows, so the common
+     * no-overflow page never touches a {@code *Block.Builder}. The {@code Warnings[]} parameter is kept so both
+     * methods share one descriptor and one invoke-arg scratch; {@code fusedRaw} never reads it.
+     */
+    public static final String FUSED_RAW_METHOD_NAME = "fusedRaw";
+
+    /**
      * HotSpot's default {@code FreqInlineSize} (criterion #6): a hot method above this many bytecodes is not inlined
      * into its caller, defeating the single-hot-body goal. The stitcher measures the emitted {@code fused} loop
      * method's {@code Code} length and refuses to fuse (throwing {@link StitchingException} so the caller falls back to
@@ -979,21 +989,32 @@ public final class Stitcher {
      * through a {@code *Block.Builder} so an overflowing position can become {@code null}. This is the "nulls-capable
      * output" the plain array-vector fast path cannot provide: an {@code ArrayVector} has no null bitmask, whereas
      * the unfused vector-path evaluator (e.g. {@code AddLongsEvaluator.eval(int, LongVector, LongVector)}) already
-     * builds a {@code *Block} via a builder and appends {@code null} on a caught {@code ArithmeticException}. The
-     * emitted {@link #FUSED_METHOD_NAME} has the shape
+     * builds a {@code *Block} via a builder and appends {@code null} on a caught {@code ArithmeticException}. One hidden
+     * class exposes both methods of the same descriptor:
      * <pre>{@code
-     * static LongBlock fused(BlockFactory bf, Warnings warnings, int positionCount, Vector in0, Vector in1) {
+     * static LongBlock fused(BlockFactory bf, Warnings[] warnings, int n, Vector in0, Vector in1) {
+     *     // builder path: appendLong; on overflow registerException + appendNull
      *     long[] a0 = VectorUnsafe.longs((LongArrayVector) in0);
      *     long[] a1 = VectorUnsafe.longs((LongArrayVector) in1);
-     *     LongBlock.Builder out = bf.newLongBlockBuilder(positionCount);
+     *     LongBlock.Builder out = bf.newLongBlockBuilder(n);
      *     try {
-     *         for (int p = 0; p < positionCount; p++) {
-     *             long v0 = a0[p], v1 = a1[p];
-     *             try { out.appendLong(process(v0, v1)); }
-     *             catch (ArithmeticException e) { warnings.registerException(e); out.appendNull(); }
+     *         for (int p = 0; p < n; p++) {
+     *             try { out.appendLong(process(a0[p], a1[p])); }
+     *             catch (ArithmeticException e) { warnings[k].registerException(e); out.appendNull(); }
      *         }
      *         return out.build();
      *     } finally { out.close(); }
+     * }
+     * static LongBlock fusedRaw(BlockFactory bf, Warnings[] warnings, int n, Vector in0, Vector in1) {
+     *     // dense ArrayVector path; warnings[] is unused (uniform binding). On the first overflow return null
+     *     // so the caller re-runs fused. An over-budget body is lifted into private static compute().
+     *     long[] a0 = VectorUnsafe.longs((LongArrayVector) in0);
+     *     long[] a1 = VectorUnsafe.longs((LongArrayVector) in1);
+     *     try {
+     *         long[] out = new long[n];
+     *         for (int p = 0; p < n; p++) out[p] = process(a0[p], a1[p]);
+     *         return bf.newLongArrayVector(out, n).asBlock();
+     *     } catch (ArithmeticException e) { return null; }
      * }
      * }</pre>
      *
@@ -1009,7 +1030,9 @@ public final class Stitcher {
      *
      * @param caller the caller's lookup (from the module that owns the kernels); the fused class is defined here
      * @param tree   the expression tree to fuse; all inputs are homogeneous no-null single-valued {@code *ArrayVector}s
-     * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME}
+     * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME} (builder, overflow → nulls +
+     *         warnings) and {@link #FUSED_RAW_METHOD_NAME} (dense {@code *ArrayVector}, overflow → {@code null} so the
+     *         caller re-runs {@code fused})
      * @throws StitchingException if the caller lacks the access to define the hidden class, or the emitted class
      *                            fails JVM verification/linking — the caller should fall back to the block path or
      *                            unfused chain
@@ -1019,9 +1042,11 @@ public final class Stitcher {
     }
 
     /**
-     * Builds the class bytes for the overflow-aware vector loop. Reads inputs from {@code rawValues()} arrays (no
-     * per-position null/multi-value guard — a vector is dense and single-valued) but appends through a builder and
-     * wraps the kernel evaluation in the overflow try/catch, so the only nulls it can produce are overflow nulls.
+     * Builds the class bytes for the overflow-aware vector loop. One hidden class carries two methods of the same
+     * descriptor: {@link #FUSED_METHOD_NAME} appends through a builder (null + warning on overflow) and
+     * {@link #FUSED_RAW_METHOD_NAME} writes a dense {@code *ArrayVector}, returning {@code null} on the first
+     * declared overflow so the caller can re-run {@code fused}. Reads inputs from {@code VectorUnsafe} arrays (no
+     * per-position null/multi-value guard — a vector is dense and single-valued).
      */
     private byte[] emitVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         // One walk derives arity, consumed inputs, constants-in-emit-order, warning-source indices and overflow types.
@@ -1244,8 +1269,276 @@ public final class Stitcher {
             hostMethodInterceptor.accept(host);
         }
 
-        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$CheckedVectorLoop"), host);
-        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "checked-vector loop", false);
+        String internalName = fusedClassName(caller, "Fused$$CheckedVectorLoop");
+        String checkedDesc = desc.toString();
+        MethodNode raw = emitCheckedVectorRawMethod(tree, inputElements, outputElement, constants, consumed, overflowTypes, checkedDesc);
+        ClassNode classNode = newFusedClass(internalName, host);
+        classNode.methods.add(raw);
+        byte[] inline = serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "checked-vector loop", false);
+        if (methodCodeLength(inline, FUSED_RAW_METHOD_NAME) <= MAX_FUSED_METHOD_BYTECODES) {
+            return inline;
+        }
+        // fusedRaw exceeded the inlining budget: lift the stitched expression into a private compute() helper
+        // (same split as emitVectorLoop) so the raw loop stays tiny. The builder-based fused method is unchanged.
+        MethodNode compute = emitVectorComputeHelper(tree, inputElements, outputElement, constants);
+        MethodNode splitRaw = emitCheckedVectorRawSplit(
+            inputElements,
+            outputElement,
+            constants,
+            overflowTypes,
+            checkedDesc,
+            compute,
+            internalName
+        );
+        ClassNode splitClass = newFusedClass(internalName, host);
+        splitClass.methods.add(splitRaw);
+        splitClass.methods.add(compute);
+        return serializeWithBudgetGuard(splitClass, frameComputingWriter(caller), "checked-vector loop (raw split)", false);
+    }
+
+    /**
+     * The no-overflow fast path of {@link #emitVectorLoopChecked}: writes {@code out[p] = <stitched expr>} into a
+     * transient uncharged primitive array (exactly as {@link #emitVectorLoop}) and returns
+     * {@code blockFactory.new*ArrayVector(out, n).asBlock()}. The whole loop sits in one try whose handlers catch
+     * each declared overflow type and {@code return null} — no warnings, no {@code currentKernel} bookkeeping.
+     * Non-overflow exceptions propagate. The {@code Warnings[]} parameter is accepted (same descriptor as {@code fused})
+     * and never read.
+     */
+    private MethodNode emitCheckedVectorRawMethod(
+        FusionNode tree,
+        Element[] inputElements,
+        Element outputElement,
+        List<FusionNode.Constant> constants,
+        int[] consumed,
+        Set<String> overflowTypes,
+        String descriptor
+    ) {
+        int arity = inputElements.length;
+        FrameLayout frame = new FrameLayout();
+        frame.slot();                                                       // [0] BlockFactory
+        frame.slot();                                                       // [1] Warnings[] (unused; uniform binding)
+        int pcSlot = frame.slot();                                          // [2] int positionCount
+        int inputBase = frame.slots(arity);                                 // [3 .. 3+arity) input Vectors
+        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
+        int rawArrayBase = frame.slots(arity);
+        int outSlot = frame.slot();
+        int pSlot = frame.slot();
+        int kernelBase = frame.mark();
+
+        MethodNode host = new MethodNode(
+            Opcodes.ASM9,
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            FUSED_RAW_METHOD_NAME,
+            descriptor,
+            null,
+            null
+        );
+        InsnList insns = host.instructions;
+
+        for (int i : consumed) {
+            Element inputElement = inputElements[i];
+            insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
+            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
+            insns.add(
+                new MethodInsnNode(
+                    Opcodes.INVOKESTATIC,
+                    VECTOR_UNSAFE,
+                    inputElement.vectorUnsafeMethod(),
+                    inputElement.vectorUnsafeDescriptor(),
+                    false
+                )
+            );
+            insns.add(new VarInsnNode(Opcodes.ASTORE, rawArrayBase + i));
+        }
+
+        LabelNode tryStart = overflowTypes.isEmpty() ? null : new LabelNode();
+        LabelNode tryEnd = overflowTypes.isEmpty() ? null : new LabelNode();
+        LabelNode handler = overflowTypes.isEmpty() ? null : new LabelNode();
+        if (tryStart != null) {
+            insns.add(tryStart);
+        }
+
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
+        insns.add(new IntInsnNode(Opcodes.NEWARRAY, outputElement.newArrayType()));
+        insns.add(new VarInsnNode(Opcodes.ASTORE, outSlot));
+
+        insns.add(new InsnNode(Opcodes.ICONST_0));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
+
+        LabelNode loopStart = new LabelNode();
+        LabelNode loopEnd = new LabelNode();
+        insns.add(loopStart);
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
+        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
+
+        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        StackKernelEmitter emitter = new StackKernelEmitter(insns, constantSlots, kernelBase, input -> {
+            Element element = inputElements[input.index()];
+            insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + input.index()));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+            insns.add(new InsnNode(element.type().getOpcode(Opcodes.IALOAD)));
+        }, kernel -> {});
+        emitter.emit(tree, outputElement);
+        insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
+
+        insns.add(new IincInsnNode(pSlot, 1));
+        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
+        insns.add(loopEnd);
+        if (tryEnd != null) {
+            insns.add(tryEnd);
+        }
+
+        emitReturnNewArrayVectorAsBlock(insns, outSlot, pcSlot, outputElement);
+
+        if (handler != null) {
+            insns.add(handler);
+            insns.add(new InsnNode(Opcodes.POP));
+            insns.add(new InsnNode(Opcodes.ACONST_NULL));
+            insns.add(new InsnNode(Opcodes.ARETURN));
+            for (String exType : overflowTypes) {
+                host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, exType));
+            }
+        }
+        return host;
+    }
+
+    /**
+     * Over-budget counterpart to {@link #emitCheckedVectorRawMethod}: the stitched expression lives in a
+     * {@code private static compute(...)} helper (reused from {@link #emitVectorComputeHelper}) and the {@code fusedRaw}
+     * loop only reads {@code a_i[p]}, calls {@code compute}, and stores {@code out[p]}. The overflow try still wraps
+     * the whole loop so a {@code Math.*Exact} throw from {@code compute} abandons the page with {@code return null}.
+     */
+    private MethodNode emitCheckedVectorRawSplit(
+        Element[] inputElements,
+        Element outputElement,
+        List<FusionNode.Constant> constants,
+        Set<String> overflowTypes,
+        String descriptor,
+        MethodNode compute,
+        String internalName
+    ) {
+        int arity = inputElements.length;
+        FrameLayout frame = new FrameLayout();
+        frame.slot();                                                       // [0] BlockFactory
+        frame.slot();                                                       // [1] Warnings[] (unused)
+        int pcSlot = frame.slot();                                          // [2] int positionCount
+        int inputBase = frame.slots(arity);
+        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
+        int rawArrayBase = frame.slots(arity);
+        int outSlot = frame.slot();
+        int pSlot = frame.slot();
+
+        MethodNode host = new MethodNode(
+            Opcodes.ASM9,
+            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            FUSED_RAW_METHOD_NAME,
+            descriptor,
+            null,
+            null
+        );
+        InsnList insns = host.instructions;
+
+        for (int i = 0; i < arity; i++) {
+            Element inputElement = inputElements[i];
+            insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
+            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
+            insns.add(
+                new MethodInsnNode(
+                    Opcodes.INVOKESTATIC,
+                    VECTOR_UNSAFE,
+                    inputElement.vectorUnsafeMethod(),
+                    inputElement.vectorUnsafeDescriptor(),
+                    false
+                )
+            );
+            insns.add(new VarInsnNode(Opcodes.ASTORE, rawArrayBase + i));
+        }
+
+        LabelNode tryStart = overflowTypes.isEmpty() ? null : new LabelNode();
+        LabelNode tryEnd = overflowTypes.isEmpty() ? null : new LabelNode();
+        LabelNode handler = overflowTypes.isEmpty() ? null : new LabelNode();
+        if (tryStart != null) {
+            insns.add(tryStart);
+        }
+
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
+        insns.add(new IntInsnNode(Opcodes.NEWARRAY, outputElement.newArrayType()));
+        insns.add(new VarInsnNode(Opcodes.ASTORE, outSlot));
+        insns.add(new InsnNode(Opcodes.ICONST_0));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
+
+        LabelNode loopStart = new LabelNode();
+        LabelNode loopEnd = new LabelNode();
+        insns.add(loopStart);
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
+        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
+
+        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        for (int i = 0; i < arity; i++) {
+            Element inputElement = inputElements[i];
+            insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + i));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+            insns.add(new InsnNode(inputElement.type().getOpcode(Opcodes.IALOAD)));
+        }
+        for (FusionNode.Constant constant : constants) {
+            insns.add(new VarInsnNode(constantType(constant).getOpcode(Opcodes.ILOAD), constantSlots.get(constant)));
+        }
+        insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, "compute", compute.desc, false));
+        insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
+
+        insns.add(new IincInsnNode(pSlot, 1));
+        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
+        insns.add(loopEnd);
+        if (tryEnd != null) {
+            insns.add(tryEnd);
+        }
+
+        emitReturnNewArrayVectorAsBlock(insns, outSlot, pcSlot, outputElement);
+
+        if (handler != null) {
+            insns.add(handler);
+            insns.add(new InsnNode(Opcodes.POP));
+            insns.add(new InsnNode(Opcodes.ACONST_NULL));
+            insns.add(new InsnNode(Opcodes.ARETURN));
+            for (String exType : overflowTypes) {
+                host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, exType));
+            }
+        }
+        return host;
+    }
+
+    /**
+     * {@code return blockFactory.new*ArrayVector(out, positionCount).asBlock();} — the dense-output epilogue shared by
+     * {@link #emitCheckedVectorRawMethod} and {@link #emitCheckedVectorRawSplit}. {@code new*ArrayVector} charges the
+     * breaker; the {@code out[]} written above is a transient uncharged array (same as {@link #emitVectorLoop}).
+     */
+    private static void emitReturnNewArrayVectorAsBlock(InsnList insns, int outSlot, int pcSlot, Element outputElement) {
+        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEVIRTUAL,
+                BLOCK_FACTORY,
+                outputElement.newVectorMethod(),
+                outputElement.newVectorDescriptor(),
+                false
+            )
+        );
+        insns.add(
+            new MethodInsnNode(
+                Opcodes.INVOKEINTERFACE,
+                outputElement.vectorInternalName(),
+                "asBlock",
+                "()" + outputElement.blockDescriptor(),
+                true
+            )
+        );
+        insns.add(new InsnNode(Opcodes.ARETURN));
     }
 
     /** Extracts a kernel's straight-line {@link Body} from its template {@link MethodNode} (registry lookup + lift). */
@@ -3469,6 +3762,14 @@ public final class Stitcher {
      * method or its {@code Code} attribute is absent (never expected for an emitted loop).
      */
     static int fusedMethodCodeLength(byte[] classBytes) {
+        return methodCodeLength(classBytes, FUSED_METHOD_NAME);
+    }
+
+    /**
+     * Same class-file walk as {@link #fusedMethodCodeLength} for an arbitrary static method name — used to budget
+     * {@link #FUSED_RAW_METHOD_NAME} independently of the builder-based {@code fused} sibling on the same class.
+     */
+    static int methodCodeLength(byte[] classBytes, String methodName) {
         java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(classBytes); // class files are big-endian, ByteBuffer's default
         buf.getInt();   // magic
         buf.getShort(); // minor_version
@@ -3515,7 +3816,7 @@ public final class Stitcher {
             int nameIndex = buf.getShort() & 0xFFFF;
             buf.getShort(); // descriptor_index
             int attributeCount = buf.getShort() & 0xFFFF;
-            boolean isFused = FUSED_METHOD_NAME.equals(utf8[nameIndex]);
+            boolean isFused = methodName.equals(utf8[nameIndex]);
             for (int a = 0; a < attributeCount; a++) {
                 int attrNameIndex = buf.getShort() & 0xFFFF;
                 int attrLength = buf.getInt();

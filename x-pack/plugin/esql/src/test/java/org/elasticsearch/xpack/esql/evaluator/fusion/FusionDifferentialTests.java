@@ -8,6 +8,7 @@
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.elasticsearch.compute.data.Block;
+import org.elasticsearch.compute.data.LongArrayVector;
 import org.elasticsearch.compute.data.LongBlock;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
@@ -22,10 +23,12 @@ import org.elasticsearch.xpack.esql.evaluator.EvalMapper;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Abs;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Div;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
 import org.elasticsearch.xpack.esql.planner.Layout;
 
 import java.util.List;
 
+import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
@@ -202,6 +205,105 @@ public class FusionDifferentialTests extends FusionDifferentialTestCase {
             assertThat("no root-source misattribution", containsWarning(fusedWarnings, "[OUTER_ADD]"), is(false));
         } finally {
             Releasables.closeExpectNoException(fusedResult, referenceResult, fused, reference);
+            if (page != null) {
+                page.releaseBlocks();
+            }
+        }
+    }
+
+    /**
+     * Task 3 (a) at eval: a CHECKED_VECTOR page with no overflow must return a {@link LongArrayVector}. A 1-row dense
+     * page is the discriminator — TODAY the builder-based checked loop collapses it to {@code ConstantLongVector}.
+     */
+    public void testCheckedVectorNoOverflowPageReturnsLongArrayVector() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression expr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+
+        ExpressionEvaluator.Factory fusedFactory = fusedFactory(expr, layout);
+        FusedExpressionEvaluatorFactory fused = assertFuses(fusedFactory, "checked-vector raw output");
+        assertThat(fused.vectorStrategy(), is(FusedExpressionEvaluatorFactory.VectorStrategy.CHECKED_VECTOR));
+
+        int positions = 1;
+        ExpressionEvaluator evaluator = fusedFactory.get(driverContext);
+        Page page = null;
+        Block result = null;
+        try {
+            page = new Page(
+                positions,
+                blockFactory.newLongArrayVector(new long[] { 3 }, positions).asBlock(),
+                blockFactory.newLongArrayVector(new long[] { 4 }, positions).asBlock(),
+                blockFactory.newLongArrayVector(new long[] { 5 }, positions).asBlock()
+            );
+            result = evaluator.eval(page);
+            assertThat(result.isNull(0), is(false));
+            assertThat(((LongBlock) result).getLong(0), equalTo(35L));
+            assertThat(
+                "CHECKED_VECTOR no-overflow page must return a LongArrayVector (not the builder's ConstantLongVector)",
+                result.asVector().getClass(),
+                equalTo(LongArrayVector.class)
+            );
+        } finally {
+            Releasables.closeExpectNoException(result, evaluator);
+            if (page != null) {
+                page.releaseBlocks();
+            }
+        }
+    }
+
+    /**
+     * Task 3 (b): a dense CHECKED_VECTOR page that overflows at row k is null at k and registers EXACTLY the unfused
+     * warnings (count and header text). fusedRaw abandons on the first overflow and the builder re-run supplies the
+     * warnings, matching unfused.
+     */
+    public void testCheckedVectorOverflowPageMatchesUnfusedWarningsExactly() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression expr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+
+        ExpressionEvaluator.Factory fusedFactory = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        assertFuses(fusedFactory, "checked-vector overflow abandon");
+        assertDoesNotFuse(unfused, "checked-vector overflow abandon");
+        assertThat(
+            ((FusedExpressionEvaluatorFactory) fusedFactory).vectorStrategy(),
+            is(FusedExpressionEvaluatorFactory.VectorStrategy.CHECKED_VECTOR)
+        );
+
+        int positions = 4;
+        // p0: intermediate add overflows. p1: clean. p2: root mul overflows. p3: clean.
+        long[] av = { Long.MAX_VALUE, 3, 2, 10 };
+        long[] bv = { 1, 4, 3, 20 };
+        long[] cv = { 7, 5, Long.MAX_VALUE, 2 };
+
+        ExpressionEvaluator fusedEval = fusedFactory.get(driverContext);
+        ExpressionEvaluator reference = unfused.get(driverContext);
+        Page page = null;
+        Block fusedResult = null;
+        Block referenceResult = null;
+        try {
+            page = new Page(
+                positions,
+                blockFactory.newLongArrayVector(av, positions).asBlock(),
+                blockFactory.newLongArrayVector(bv, positions).asBlock(),
+                blockFactory.newLongArrayVector(cv, positions).asBlock()
+            );
+            drainWarnings();
+            fusedResult = fusedEval.eval(page);
+            List<String> fusedWarnings = drainWarnings();
+            referenceResult = reference.eval(page);
+            List<String> unfusedWarnings = drainWarnings();
+
+            assertResultsEqual(ElementKind.LONG, fusedResult, referenceResult, positions, "checked-vector overflow");
+            assertThat("p0 overflow -> null", fusedResult.isNull(0), is(true));
+            assertThat("p2 overflow -> null", fusedResult.isNull(2), is(true));
+            assertThat("fused overflow warnings must equal unfused (count and header text)", fusedWarnings, equalTo(unfusedWarnings));
+        } finally {
+            Releasables.closeExpectNoException(fusedResult, referenceResult, fusedEval, reference);
             if (page != null) {
                 page.releaseBlocks();
             }
