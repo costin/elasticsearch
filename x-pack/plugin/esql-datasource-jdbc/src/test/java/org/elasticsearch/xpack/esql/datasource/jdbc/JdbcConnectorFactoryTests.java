@@ -12,6 +12,7 @@ import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.MockLog;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.type.DataType;
+import org.elasticsearch.xpack.esql.datasources.ExternalSourceResolver;
 import org.elasticsearch.xpack.esql.datasources.spi.Connector;
 import org.elasticsearch.xpack.esql.datasources.spi.QueryRequest;
 import org.elasticsearch.xpack.esql.datasources.spi.SourceMetadata;
@@ -97,6 +98,20 @@ public class JdbcConnectorFactoryTests extends ESTestCase {
                 "u",
                 JdbcConnectorFactory.CONFIG_PASSWORD,
                 "p"
+            )
+        );
+    }
+
+    public void testValidateConfigAcceptsInjectedSchemaResolution() {
+        // DatasetRewriter hydrates schema_resolution onto every dataset config. JDBC does not interpret
+        // it, but must claim it so planning does not fail with "unknown option [schema_resolution]".
+        factory.validateConfig(
+            jdbcUrl,
+            Map.of(
+                JdbcConnectorFactory.CONFIG_TABLE,
+                "EMPLOYEES",
+                ExternalSourceResolver.CONFIG_SCHEMA_RESOLUTION,
+                "union_by_name"
             )
         );
     }

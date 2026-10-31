@@ -15,6 +15,7 @@ import org.elasticsearch.xpack.esql.core.expression.Nullability;
 import org.elasticsearch.xpack.esql.core.expression.ReferenceAttribute;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
+import org.elasticsearch.xpack.esql.datasources.ExternalSourceResolver;
 import org.elasticsearch.xpack.esql.datasources.spi.ConfigKeyValidator;
 import org.elasticsearch.xpack.esql.datasources.spi.Connector;
 import org.elasticsearch.xpack.esql.datasources.spi.ConnectorFactory;
@@ -47,7 +48,11 @@ import java.util.Set;
  * <b>Config contract</b>: per-query options arrive in the {@code WITH (...)} map. The factory recognizes
  * {@code table}, {@code schema}, {@code catalog} (identifiers) and {@code user}, {@code password} (credentials --
  * decrypted by {@code DataSourceCredentials} before reaching {@link #open}). {@link ConfigKeyValidator} rejects
- * anything else, so a misspelled key does not silently disappear.
+ * anything else, so a misspelled key does not silently disappear. {@link ExternalSourceResolver#CONFIG_KEYS}
+ * (notably {@code schema_resolution}) are claimed as well: {@code DatasetRewriter} hydrates that coordinator
+ * key onto every dataset config, including JDBC, and the validator only skips underscore-prefixed framework
+ * keys. JDBC does not interpret schema-resolution itself (a table has one schema); claiming it keeps the
+ * injected key from failing planning as an unknown option.
  * <p>
  * <b>matchPriority</b>: a fixed {@code 10} for any URL that starts with {@code jdbc:}. A single {@code jdbc:} bucket
  * is enough because no other connector claims this prefix; the dialect is resolved from the precise vendor scheme
@@ -368,7 +373,7 @@ public final class JdbcConnectorFactory implements ConnectorFactory, java.io.Clo
 
     @Override
     public void validateConfig(String location, Map<String, Object> config) {
-        ConfigKeyValidator.check(config, List.of(CLAIMED_KEYS));
+        ConfigKeyValidator.check(config, List.of(CLAIMED_KEYS, ExternalSourceResolver.CONFIG_KEYS));
         // Fail fast at validation time on a bad connection_properties key (blocked/secret/not-allowlisted, or an
         // explicit TLS-disable when allow_plaintext is off) rather than deferring to the first connect in
         // resolveMetadata. parse() enforces the allowlist; the result is discarded.
