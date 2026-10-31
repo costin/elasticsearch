@@ -15,26 +15,21 @@ import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.IincInsnNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.IntInsnNode;
-import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.LineNumberNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
-import org.objectweb.asm.tree.TryCatchBlockNode;
 import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
 import java.lang.invoke.MethodHandles;
-import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -183,6 +178,9 @@ public final class Stitcher {
     }
 
     private final TemplateRegistry templates;
+    private final VectorLoopEmitter vectors;
+    private final BlockLoopEmitter blocks;
+    private final FilterEvalEmitter filterEval;
 
     /**
      * Test-only seam (the seed of {@code IMPLEMENTATION_PLAN} iter 18's {@code failureInjector}). When non-null,
@@ -195,6 +193,21 @@ public final class Stitcher {
 
     public Stitcher(TemplateRegistry templates) {
         this.templates = templates;
+        this.vectors = new VectorLoopEmitter(templates, mn -> {
+            if (hostMethodInterceptor != null) {
+                hostMethodInterceptor.accept(mn);
+            }
+        });
+        this.blocks = new BlockLoopEmitter(templates, mn -> {
+            if (hostMethodInterceptor != null) {
+                hostMethodInterceptor.accept(mn);
+            }
+        });
+        this.filterEval = new FilterEvalEmitter(templates, mn -> {
+            if (hostMethodInterceptor != null) {
+                hostMethodInterceptor.accept(mn);
+            }
+        }, this.blocks);
     }
 
     /**
@@ -334,7 +347,7 @@ public final class Stitcher {
      * <b>caller's</b> package, so {@code defineHiddenClass} places it in the caller's runtime package (the JVM then
      * appends a unique suffix). Every emit path derives its host class name here.
      */
-    private static String fusedClassName(MethodHandles.Lookup caller, String simpleName) {
+    static String fusedClassName(MethodHandles.Lookup caller, String simpleName) {
         String pkg = caller.lookupClass().getPackageName().replace('.', '/');
         return pkg.isEmpty() ? simpleName : pkg + "/" + simpleName;
     }
@@ -348,7 +361,7 @@ public final class Stitcher {
      * (stack traces render as {@code (SourceFile:kernelIndex)}) and a {@link #KERNEL_MAP_FIELD_NAME}
      * ConstantValue field. Neither adds instructions to the per-row body.
      */
-    private static ClassNode newFusedClass(String internalName, MethodNode host, FusedClassDebugInfo debug) {
+    static ClassNode newFusedClass(String internalName, MethodNode host, FusedClassDebugInfo debug) {
         ClassNode classNode = new ClassNode(Opcodes.ASM9);
         classNode.version = Opcodes.V21;
         classNode.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER;
@@ -378,7 +391,7 @@ public final class Stitcher {
      * through our splice-boundary line (the kernel index) rather than the template's Java source
      * lines under the fused {@code SourceFile} name. Labels stay; this is metadata only.
      */
-    private static void stripLineNumbers(InsnList insns) {
+    static void stripLineNumbers(InsnList insns) {
         AbstractInsnNode insn = insns.getFirst();
         while (insn != null) {
             AbstractInsnNode next = insn.getNext();
@@ -397,7 +410,7 @@ public final class Stitcher {
      * incompatible reference types, so this is a safety net rather than a hot dependency. (The depth-1 straight-line
      * {@link #emit} has no joins and uses a plain writer.)
      */
-    private static ClassWriter frameComputingWriter(MethodHandles.Lookup caller) {
+    static ClassWriter frameComputingWriter(MethodHandles.Lookup caller) {
         ClassLoader loader = caller.lookupClass().getClassLoader();
         return new ClassWriter(ClassWriter.COMPUTE_FRAMES) {
             @Override
@@ -411,7 +424,7 @@ public final class Stitcher {
      * Internal name of the {@code compute.data} package's {@code BlockFactory}, whose
      * {@code new*ArrayVector} factory the fused loop calls to wrap its output array.
      */
-    private static final String BLOCK_FACTORY = "org/elasticsearch/compute/data/BlockFactory";
+    static final String BLOCK_FACTORY = "org/elasticsearch/compute/data/BlockFactory";
 
     /**
      * Internal name of {@code org.elasticsearch.compute.data.VectorUnsafe}, the public static seam through which the
@@ -420,14 +433,14 @@ public final class Stitcher {
      * defined in the <b>caller's</b> module — unifying the lookup with the block path and letting non-{@code java.base}
      * kernels (e.g. {@code NumericUtils}) link on the vector path.
      */
-    private static final String VECTOR_UNSAFE = "org/elasticsearch/compute/data/VectorUnsafe";
+    static final String VECTOR_UNSAFE = "org/elasticsearch/compute/data/VectorUnsafe";
 
     /**
      * Internal name of the {@code compute.data} {@code Vector} base type. The fused method receives its inputs as
      * this common interface and narrows each once — outside the loop — to the concrete {@code *ArrayVector}
      * whose {@code rawValues()} it reads (JIT criterion #6: no per-position {@code checkcast}).
      */
-    private static final String VECTOR = "org/elasticsearch/compute/data/Vector";
+    static final String VECTOR = "org/elasticsearch/compute/data/Vector";
 
     /**
      * Internal name of the {@code compute.data} {@code Block} base type. The block-path fused method reads each
@@ -452,7 +465,7 @@ public final class Stitcher {
      * accounting to the produced block, but on any abnormal exit (e.g. a {@code CircuitBreakingException} while
      * growing the builder) the try/finally the fused method emits closes it so no breaker bytes leak.
      */
-    private static final String RELEASABLE = "org/elasticsearch/core/Releasable";
+    static final String RELEASABLE = "org/elasticsearch/core/Releasable";
 
     /**
      * Internal name of {@code org.elasticsearch.compute.operator.Warnings}, the per-evaluator warning collector.
@@ -475,7 +488,7 @@ public final class Stitcher {
      * ({@code registerException(Exception)} itself delegates to {@code registerException(getClass(), getMessage())}),
      * so this is byte-for-byte the same warning with no per-row allocation in the hot loop.
      */
-    private static final String WARNINGS_REGISTER_CLASS_DESCRIPTOR = "(Ljava/lang/Class;Ljava/lang/String;)V";
+    static final String WARNINGS_REGISTER_CLASS_DESCRIPTOR = "(Ljava/lang/Class;Ljava/lang/String;)V";
 
     /**
      * JVM descriptor of a {@code Warnings[]} parameter. The fused block / checked-vector / logical methods take a
@@ -486,16 +499,16 @@ public final class Stitcher {
      * keeps the fused warning headers a <b>subset</b> of the unfused chain's (criterion #1): reached warnings are equal;
      * short-circuit only drops the never-reached ones.
      */
-    private static final String WARNINGS_ARRAY_DESCRIPTOR = "[L" + WARNINGS + ";";
+    static final String WARNINGS_ARRAY_DESCRIPTOR = "[L" + WARNINGS + ";";
 
     /** Internal name of {@code java.lang.IllegalArgumentException}, the multi-value warning the unfused evaluator raises. */
-    private static final String ILLEGAL_ARGUMENT_EXCEPTION = "java/lang/IllegalArgumentException";
+    static final String ILLEGAL_ARGUMENT_EXCEPTION = "java/lang/IllegalArgumentException";
 
     /**
      * The exact message the generated unfused evaluator uses when a scalar (single-value) function meets a
      * multi-valued position. Mirrored verbatim so the fused block path's carried-forward warning matches.
      */
-    private static final String MULTI_VALUE_MESSAGE = "single-value function encountered multi-value";
+    static final String MULTI_VALUE_MESSAGE = "single-value function encountered multi-value";
 
     /**
      * Fuses an expression {@code tree} of primitive {@code *ArrayVector} inputs (no nulls) into a single counted
@@ -551,167 +564,6 @@ public final class Stitcher {
     }
 
     /**
-     * Builds the class bytes for the fused vector loop. One hidden class carries both the ALL-RAW {@code fused}
-     * method ({@code VectorUnsafe} + {@code xALOAD}) and the ALL-INTERFACE {@code fusedInterface} method (typed
-     * {@code *Vector.getX(p)}), same signature, so the factory picks per page without a second
-     * {@code defineHiddenClass}. Kept separate from {@link #compileVectorLoop} so the verification boundary is
-     * exactly the {@code defineHiddenClass} call — everything here is pure ASM tree manipulation on cloned kernel
-     * bodies.
-     */
-    private byte[] emitVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        // One walk derives every structural fact this emit path needs (arity, constants-in-emit-order, ...).
-        FusionSignature signature = FusionSignature.of(tree);
-        int[] consumed = signature.consumedInputs();
-        // Per-input leaf elements (a tree may mix int/long/double via cast kernels) vs the OUTPUT element (the output
-        // array + produced vector). They coincide for a homogeneous arithmetic root and differ for a comparison root
-        // (numeric inputs feed a boolean output) or any cast-bridged input.
-        Element[] inputElements = inputElements(signature);
-        Element outputElement = Element.of(rootReturnType(tree));
-        List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
-
-        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$VectorLoop", tree);
-        MethodNode raw = emitPlainVectorMethod(tree, inputElements, outputElement, constants, consumed, true, debug);
-        MethodNode iface = emitPlainVectorMethod(tree, inputElements, outputElement, constants, consumed, false, debug);
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(raw);
-            hostMethodInterceptor.accept(iface);
-        }
-        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$VectorLoop"), raw, debug);
-        classNode.methods.add(iface);
-        // The plain-vector fast path enforces the DontCompileHugeMethods huge-method guard on the inline body.
-        // An over-limit body is refused (→ unfused fallback) rather than split: 8000 is the size at which HotSpot
-        // will not JIT-compile the method at all, which is strictly worse than the unfused chain.
-        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "plain-vector loop", true);
-    }
-
-    /**
-     * One plain-vector method: {@code fused} when {@code raw} (VectorUnsafe + xALOAD) or {@code fusedInterface}
-     * (typed {@code *Vector.getX(p)}). Signature is {@code (BlockFactory, int, Vector..., constants...)*Vector};
-     * the loop writes {@code T[]} and returns {@code new*ArrayVector(out, n)}.
-     */
-    private MethodNode emitPlainVectorMethod(
-        FusionNode tree,
-        Element[] inputElements,
-        Element outputElement,
-        List<FusionNode.Constant> constants,
-        int[] consumed,
-        boolean raw,
-        FusedClassDebugInfo debug
-    ) {
-        int arity = inputElements.length;
-        // Frame layout: [0] BlockFactory, [1] int positionCount, [2 .. 2+arity) input Vectors, then one trailing
-        // primitive parameter per embedded constant (in canonical emit order). The per-input extracted refs (raw
-        // arrays OR typed *Vector), the output array, and the loop counter sit ABOVE the parameters.
-        FrameLayout frame = new FrameLayout();
-        frame.slot();                                                       // [0] BlockFactory
-        frame.slot();                                                       // [1] int positionCount
-        int inputBase = frame.slots(arity);                                 // [2 .. 2+arity) input Vectors
-        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
-        int extractedBase = frame.slots(arity);                             // per-input raw array OR typed *Vector
-        int outSlot = frame.slot();
-        int pSlot = frame.slot();
-        int kernelBase = frame.mark();
-
-        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";I");
-        for (int i = 0; i < arity; i++) {
-            desc.append("L").append(VECTOR).append(";");
-        }
-        appendConstantParamDescriptors(desc, constants);
-        desc.append(")").append(outputElement.vectorDescriptor());
-
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            raw ? FUSED_METHOD_NAME : FUSED_INTERFACE_METHOD_NAME,
-            desc.toString(),
-            null,
-            null
-        );
-        InsnList insns = host.instructions;
-
-        // Narrow each CONSUMED input once, outside the loop (JIT #6: no per-position checkcast).
-        for (int i : consumed) {
-            emitExtractConsumedInput(insns, inputElements[i], inputBase + i, extractedBase + i, raw);
-        }
-
-        // out = new T[positionCount]; T is the OUTPUT element (boolean[] for a comparison root).
-        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
-        insns.add(new IntInsnNode(Opcodes.NEWARRAY, outputElement.newArrayType()));
-        insns.add(new VarInsnNode(Opcodes.ASTORE, outSlot));
-
-        // int p = 0;
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
-
-        LabelNode loopStart = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
-        insns.add(loopStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
-
-        // out[p] = <stitched expression>; the array ref and index are pushed first, then the fused kernel bodies
-        // leave the computed value on top, so a single array-store consumes all three.
-        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        StackKernelEmitter emitter = new StackKernelEmitter(
-            insns,
-            constantSlots,
-            kernelBase,
-            input -> emitReadExtractedAtP(insns, inputElements[input.index()], extractedBase + input.index(), pSlot, raw),
-            // Plain vector has no overflow-checked kernels, so nothing runs before a body.
-            kernel -> {},
-            debug
-        );
-        emitter.emit(tree, outputElement);
-        // The computed value (an int 0/1 for a comparison root) is stored with the OUTPUT element's array-store opcode
-        // (BASTORE for boolean).
-        insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
-
-        insns.add(new IincInsnNode(pSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
-        insns.add(loopEnd);
-
-        // return blockFactory.new*ArrayVector(out, positionCount);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                BLOCK_FACTORY,
-                outputElement.newVectorMethod(),
-                outputElement.newVectorDescriptor(),
-                false
-            )
-        );
-        insns.add(new InsnNode(Opcodes.ARETURN));
-        return host;
-    }
-
-    /** The JVM {@link Type} of a constant's element: a primitive ({@code J}/{@code I}/{@code D}) or a reference type. */
-    private static Type constantType(FusionNode.Constant constant) {
-        if (constant.isReference()) {
-            return Type.getType(constant.refType());
-        }
-        return switch (constant.element()) {
-            case 'J' -> Type.LONG_TYPE;
-            case 'D' -> Type.DOUBLE_TYPE;
-            default -> Type.INT_TYPE;
-        };
-    }
-
-    /** The {@code jdk.incubator.vector.*Vector} internal name for a primitive operand element (int/long/double). */
-    private static String simdVectorClass(Element operand) {
-        return switch (operand.type().getSort()) {
-            case Type.INT -> FusionSimd.INT_VECTOR;
-            case Type.LONG -> FusionSimd.LONG_VECTOR;
-            case Type.DOUBLE -> FusionSimd.DOUBLE_VECTOR;
-            default -> throw new IllegalArgumentException("no SIMD vector class for element " + operand.type().getClassName());
-        };
-    }
-
-    /**
      * Compiles the opt-in Panama Vector-API (SIMD) variant of the plain-vector fast path (B2) for a boolean COMPARISON
      * of two same-primitive column operands (e.g. {@code a > b}), materialised as a hidden class. {@code comparison}
      * is the {@code jdk.incubator.vector.VectorOperators.Comparison} constant name (e.g. {@code "GT"}) supplied by the
@@ -722,202 +574,6 @@ public final class Stitcher {
      */
     public Class<?> compileVectorLoopSimd(MethodHandles.Lookup caller, FusionNode tree, String comparison) throws StitchingException {
         return defineOrThrow(caller, emitVectorLoopSimd(caller, tree, comparison), "SIMD vector-loop class");
-    }
-
-    /**
-     * Emits the SIMD comparison loop:
-     * <pre>{@code
-     * static BooleanVector fused(BlockFactory bf, int positionCount, Vector in0, Vector in1) {
-     *     int[] a = VectorUnsafe.ints((IntArrayVector) in0);
-     *     int[] b = VectorUnsafe.ints((IntArrayVector) in1);
-     *     boolean[] out = new boolean[positionCount];
-     *     VectorSpecies species = IntVector.SPECIES_PREFERRED;
-     *     int bound = species.loopBound(positionCount), len = species.length(), i = 0;
-     *     for (; i < bound; i += len) {                                   // SIMD body
-     *         IntVector.fromArray(species, a, i).compare(GT, IntVector.fromArray(species, b, i)).intoArray(out, i);
-     *     }
-     *     for (; i < positionCount; i++) out[i] = a[i] > b[i];            // scalar tail (spliced comparison kernel)
-     *     return bf.newBooleanArrayVector(out, positionCount);
-     * }
-     * }</pre>
-     */
-    private byte[] emitVectorLoopSimd(MethodHandles.Lookup caller, FusionNode tree, String comparison) throws StitchingException {
-        FusionSignature signature = FusionSignature.of(tree);
-        int arity = signature.arity();
-        Element[] inputElements = inputElements(signature);
-        Element operand = inputElements[0];
-        // Defensive shape guard (the planner only routes eligible trees here): two same-primitive column operands,
-        // no constants, boolean output. Anything else is a planner bug — refuse rather than emit wrong code.
-        int operandSort = operand.type().getSort();
-        if (arity != 2
-            || signature.constantsInEmitOrder().isEmpty() == false
-            || inputElements[1].type().getSort() != operandSort
-            || (operandSort != Type.INT && operandSort != Type.LONG && operandSort != Type.DOUBLE)) {
-            // int/long/double only. Double is included because the Vector-API lane compare uses IEEE-754 unordered
-            // semantics identical to the Java relational/equality operators the ES double-comparison kernels use
-            // (NaN compares false for </<=/>/>=/==, true for !=; -0.0 == +0.0), so the SIMD mask matches the scalar
-            // tail exactly (proven by the NaN/-0.0/Inf differential). BytesRef/boolean operands are excluded.
-            throw new StitchingException("SIMD path requires two same-int/long/double column operands with no constants", null);
-        }
-        Element outputElement = Element.of(rootReturnType(tree));
-        String eVector = simdVectorClass(operand);
-        String arrayDescriptor = operand.rawValuesDescriptor().substring(2);            // "()[I" -> "[I"
-        String speciesDescriptor = "L" + FusionSimd.VECTOR_SPECIES + ";";
-        String fromArrayDescriptor = "(" + speciesDescriptor + arrayDescriptor + "I)L" + eVector + ";";
-        String compareDescriptor = "(L" + FusionSimd.COMPARISON + ";L" + FusionSimd.VECTOR + ";)L" + FusionSimd.VECTOR_MASK + ";";
-
-        FrameLayout frame = new FrameLayout();
-        frame.slot();                                    // [0] BlockFactory
-        frame.slot();                                    // [1] int positionCount
-        int inputBase = frame.slots(arity);              // [2 .. 2+arity) input Vectors
-        int rawArrayBase = frame.slots(arity);           // per-input backing arrays
-        int outSlot = frame.slot();                      // boolean[]
-        int speciesSlot = frame.slot();                  // VectorSpecies
-        int boundSlot = frame.slot();                    // int loop bound
-        int lenSlot = frame.slot();                      // int species length
-        int iSlot = frame.slot();                        // int cursor (shared by SIMD body + scalar tail)
-        int vaSlot = frame.slot();                       // *Vector
-        int vbSlot = frame.slot();                       // *Vector
-        int maskSlot = frame.slot();                     // VectorMask
-        int kernelBase = frame.mark();                   // scalar-tail spliced comparison body
-
-        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";I");
-        for (int i = 0; i < arity; i++) {
-            desc.append("L").append(VECTOR).append(";");
-        }
-        desc.append(")").append(outputElement.vectorDescriptor());
-
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            FUSED_METHOD_NAME,
-            desc.toString(),
-            null,
-            null
-        );
-        InsnList insns = host.instructions;
-
-        // a = VectorUnsafe.<E>s((EArrayVector) inN); read each backing array once.
-        for (int i = 0; i < arity; i++) {
-            insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
-            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElements[i].arrayVectorInternalName()));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKESTATIC,
-                    VECTOR_UNSAFE,
-                    inputElements[i].vectorUnsafeMethod(),
-                    inputElements[i].vectorUnsafeDescriptor(),
-                    false
-                )
-            );
-            insns.add(new VarInsnNode(Opcodes.ASTORE, rawArrayBase + i));
-        }
-        // out = new boolean[positionCount]
-        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
-        insns.add(new IntInsnNode(Opcodes.NEWARRAY, outputElement.newArrayType()));
-        insns.add(new VarInsnNode(Opcodes.ASTORE, outSlot));
-        // species = EVector.SPECIES_PREFERRED
-        insns.add(new org.objectweb.asm.tree.FieldInsnNode(Opcodes.GETSTATIC, eVector, "SPECIES_PREFERRED", speciesDescriptor));
-        insns.add(new VarInsnNode(Opcodes.ASTORE, speciesSlot));
-        // bound = species.loopBound(positionCount)
-        insns.add(new VarInsnNode(Opcodes.ALOAD, speciesSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, FusionSimd.VECTOR_SPECIES, "loopBound", "(I)I", true));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, boundSlot));
-        // len = species.length()
-        insns.add(new VarInsnNode(Opcodes.ALOAD, speciesSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, FusionSimd.VECTOR_SPECIES, "length", "()I", true));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, lenSlot));
-        // i = 0
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, iSlot));
-
-        LabelNode simdStart = new LabelNode();
-        LabelNode tailStart = new LabelNode();
-        LabelNode tailEnd = new LabelNode();
-        insns.add(simdStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, boundSlot));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, tailStart));
-        // va = EVector.fromArray(species, a, i)
-        insns.add(new VarInsnNode(Opcodes.ALOAD, speciesSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, eVector, "fromArray", fromArrayDescriptor, false));
-        insns.add(new VarInsnNode(Opcodes.ASTORE, vaSlot));
-        // vb = EVector.fromArray(species, b, i)
-        insns.add(new VarInsnNode(Opcodes.ALOAD, speciesSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + 1));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, eVector, "fromArray", fromArrayDescriptor, false));
-        insns.add(new VarInsnNode(Opcodes.ASTORE, vbSlot));
-        // mask = va.compare(VectorOperators.<OP>, vb)
-        insns.add(new VarInsnNode(Opcodes.ALOAD, vaSlot));
-        insns.add(
-            new org.objectweb.asm.tree.FieldInsnNode(
-                Opcodes.GETSTATIC,
-                FusionSimd.VECTOR_OPERATORS,
-                comparison,
-                "L" + FusionSimd.COMPARISON + ";"
-            )
-        );
-        insns.add(new VarInsnNode(Opcodes.ALOAD, vbSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, eVector, "compare", compareDescriptor, false));
-        insns.add(new VarInsnNode(Opcodes.ASTORE, maskSlot));
-        // mask.intoArray(out, i)
-        insns.add(new VarInsnNode(Opcodes.ALOAD, maskSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, FusionSimd.VECTOR_MASK, "intoArray", "([ZI)V", false));
-        // i += len
-        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, lenSlot));
-        insns.add(new InsnNode(Opcodes.IADD));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, iSlot));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, simdStart));
-
-        // Scalar tail: for (; i < positionCount; i++) out[i] = <comparison>(a[i], b[i]).
-        insns.add(tailStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, tailEnd));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
-        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$SimdVectorLoop", tree);
-        StackKernelEmitter tail = new StackKernelEmitter(insns, java.util.Map.of(), kernelBase, input -> {
-            Element e = inputElements[input.index()];
-            insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + input.index()));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
-            insns.add(new InsnNode(e.type().getOpcode(Opcodes.IALOAD)));
-        }, kernel -> {}, debug);
-        tail.emit(tree, outputElement);
-        insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
-        insns.add(new IincInsnNode(iSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, tailStart));
-        insns.add(tailEnd);
-
-        // return bf.newBooleanArrayVector(out, positionCount)
-        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                BLOCK_FACTORY,
-                outputElement.newVectorMethod(),
-                outputElement.newVectorDescriptor(),
-                false
-            )
-        );
-        insns.add(new InsnNode(Opcodes.ARETURN));
-
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-        }
-        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$SimdVectorLoop"), host, debug);
-        // Not budget-enforced: the SIMD body is a fixed small sequence, but it is only used for the eligible
-        // single-comparison shape, so it never approaches the limit; measure/log only.
-        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "SIMD vector loop", false);
     }
 
     /**
@@ -978,613 +634,6 @@ public final class Stitcher {
      */
     public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         return defineOrThrow(caller, emitVectorLoopChecked(caller, tree), "checked vector-loop class");
-    }
-
-    /**
-     * Builds the class bytes for the overflow-aware vector loop. One hidden class carries four methods of the same
-     * descriptor so the factory picks ALL-RAW vs ALL-INTERFACE per page without a second {@code defineHiddenClass}:
-     * {@link #FUSED_METHOD_NAME}/{@link #FUSED_INTERFACE_METHOD_NAME} append through a builder (null + warning on
-     * overflow) and {@link #FUSED_RAW_METHOD_NAME}/{@link #FUSED_RAW_INTERFACE_METHOD_NAME} write a dense
-     * {@code *ArrayVector}, returning {@code null} on the first declared overflow so the caller can re-run the
-     * matching builder method. No per-position null/multi-value guard — a vector is dense and single-valued.
-     */
-    private byte[] emitVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        // One walk derives arity, consumed inputs, constants-in-emit-order, warning-source indices and overflow types.
-        FusionSignature signature = FusionSignature.of(tree);
-        int arity = signature.arity();
-        int[] consumed = signature.consumedInputs();
-        // Per-input leaf elements (a tree may mix int/long/double via cast kernels) vs the OUTPUT element (the builder +
-        // produced block). Each consumed input is read at its OWN element into a per-input value slot.
-        Element[] inputElements = inputElements(signature);
-        Element outputElement = Element.of(rootReturnType(tree));
-        Set<String> overflowTypes = signature.overflowExceptionInternalNames();
-        List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
-        Map<FusionNode, Integer> sourceIndices = signature.warningSourceIndices();
-
-        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
-        for (int i = 0; i < arity; i++) {
-            desc.append("L").append(VECTOR).append(";");
-        }
-        appendConstantParamDescriptors(desc, constants);
-        desc.append(")").append(outputElement.blockDescriptor());
-        String checkedDesc = desc.toString();
-        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$CheckedVectorLoop", tree);
-
-        MethodNode host = emitCheckedVectorBuilderMethod(
-            tree,
-            inputElements,
-            outputElement,
-            constants,
-            consumed,
-            overflowTypes,
-            sourceIndices,
-            checkedDesc,
-            true,
-            debug
-        );
-        MethodNode hostIface = emitCheckedVectorBuilderMethod(
-            tree,
-            inputElements,
-            outputElement,
-            constants,
-            consumed,
-            overflowTypes,
-            sourceIndices,
-            checkedDesc,
-            false,
-            debug
-        );
-        MethodNode raw = emitCheckedVectorRawMethod(
-            tree,
-            inputElements,
-            outputElement,
-            constants,
-            consumed,
-            overflowTypes,
-            checkedDesc,
-            true,
-            debug
-        );
-        MethodNode rawIface = emitCheckedVectorRawMethod(
-            tree,
-            inputElements,
-            outputElement,
-            constants,
-            consumed,
-            overflowTypes,
-            checkedDesc,
-            false,
-            debug
-        );
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-            hostMethodInterceptor.accept(hostIface);
-            hostMethodInterceptor.accept(raw);
-            hostMethodInterceptor.accept(rawIface);
-        }
-
-        String internalName = fusedClassName(caller, "Fused$$CheckedVectorLoop");
-        ClassNode classNode = newFusedClass(internalName, host, debug);
-        classNode.methods.add(hostIface);
-        classNode.methods.add(raw);
-        classNode.methods.add(rawIface);
-        // Checked-vector stays enforce=false: size is measured and DEBUG-logged, never refused. Deep arithmetic
-        // over the huge-method limit is astronomically deep and must not regress the differential suite; this
-        // path is a MethodHandle correctness fallback rather than a JIT-inline hot body.
-        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "checked-vector loop", false);
-    }
-
-    /**
-     * Builder-based checked-vector method: {@code fused} when {@code raw} (VectorUnsafe + xALOAD into value slots)
-     * or {@code fusedInterface} (typed {@code *Vector.getX(p)} into the same value slots). Overflow → null + warning
-     * on the currently-evaluating kernel's source. Output is always a {@code *Block.Builder}.
-     */
-    private MethodNode emitCheckedVectorBuilderMethod(
-        FusionNode tree,
-        Element[] inputElements,
-        Element outputElement,
-        List<FusionNode.Constant> constants,
-        int[] consumed,
-        Set<String> overflowTypes,
-        Map<FusionNode, Integer> sourceIndices,
-        String descriptor,
-        boolean raw,
-        FusedClassDebugInfo debug
-    ) {
-        int arity = inputElements.length;
-        // Frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input Vectors, then one
-        // trailing primitive parameter per embedded constant (in canonical emit order). The per-input extracted refs,
-        // the builder, loop counter, per-input value slots, built result, the two exception slots and the
-        // current-kernel slot sit ABOVE the parameters.
-        FrameLayout frame = new FrameLayout();
-        frame.slot();                                                       // [0] BlockFactory
-        int warningsArraySlot = frame.slot();                               // [1] Warnings[]
-        int pcSlot = frame.slot();                                          // [2] int positionCount
-        int inputBase = frame.slots(arity);                                 // [3 .. 3+arity) input Vectors
-        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
-        // Scratch region above the parameters. Per-input value slots are sized by each input's own element (a
-        // long/double takes two slots); an unused index (never expected) reserves one. The FrameLayout guarantees the
-        // widths never collide.
-        int extractedBase = frame.slots(arity);
-        int builderSlot = frame.slot();
-        int pSlot = frame.slot();
-        int[] valueSlots = new int[arity];
-        for (int i = 0; i < arity; i++) {
-            valueSlots[i] = inputElements[i] != null ? frame.slot(inputElements[i].type()) : frame.slot();
-        }
-        int resultSlot = frame.slot();
-        int excSlot = frame.slot();
-        int overflowExcSlot = frame.slot();
-        // Names the overflow-checked kernel currently evaluating; the shared overflow handler reads it to attribute the
-        // caught overflow to that kernel's own warning source.
-        int currentKernelSlot = frame.slot();
-        int kernelBase = frame.mark();
-
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            raw ? FUSED_METHOD_NAME : FUSED_INTERFACE_METHOD_NAME,
-            descriptor,
-            null,
-            null
-        );
-        InsnList insns = host.instructions;
-
-        // Narrow each CONSUMED input once, outside the loop (JIT #6).
-        for (int i : consumed) {
-            emitExtractConsumedInput(insns, inputElements[i], inputBase + i, extractedBase + i, raw);
-        }
-
-        // out = bf.new*BlockBuilder(positionCount); the builder is the OUTPUT element (BooleanBlock.Builder for a
-        // comparison root).
-        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                BLOCK_FACTORY,
-                outputElement.newBlockBuilderMethod(),
-                outputElement.newBlockBuilderDescriptor(),
-                false
-            )
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
-
-        LabelNode tryStart = new LabelNode();
-        LabelNode tryEnd = new LabelNode();
-        LabelNode handler = new LabelNode();
-        insns.add(tryStart);
-
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
-
-        LabelNode loopStart = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
-        LabelNode next = new LabelNode();
-        insns.add(loopStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
-
-        // v_i = extracted_i[p]; no null guard — a vector is dense and single-valued.
-        for (int i : consumed) {
-            Element inputElement = inputElements[i];
-            emitReadExtractedAtP(insns, inputElement, extractedBase + i, pSlot, raw);
-            insns.add(new VarInsnNode(inputElement.type().getOpcode(Opcodes.ISTORE), valueSlots[i]));
-        }
-
-        LabelNode tryStartOverflow = overflowTypes.isEmpty() ? null : new LabelNode();
-        LabelNode tryEndOverflow = overflowTypes.isEmpty() ? null : new LabelNode();
-        if (tryStartOverflow != null) {
-            // Seed currentKernelSlot (0) OUTSIDE the overflow try so it is definitely int-typed at the handler's frame
-            // merge; the emitter overwrites it with the real kernel slot immediately before each overflow-checked body.
-            insns.add(new InsnNode(Opcodes.ICONST_0));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, currentKernelSlot));
-            insns.add(tryStartOverflow);
-        }
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        StackKernelEmitter emitter = new StackKernelEmitter(
-            insns,
-            constantSlots,
-            kernelBase,
-            // Checked-vector leaf: the per-position value already read (no null/mv guard — the vector is dense).
-            input -> {
-                Element element = inputElements[input.index()];
-                insns.add(new VarInsnNode(element.type().getOpcode(Opcodes.ILOAD), valueSlots[input.index()]));
-            },
-            // Before an overflow-checked body, record which kernel is running so the shared overflow handler
-            // attributes a caught overflow to THIS kernel's own source (see the handler below).
-            kernel -> {
-                if (kernel.descriptor().hasOverflowException()) {
-                    pushInt(insns, sourceIndices.get(kernel));
-                    insns.add(new VarInsnNode(Opcodes.ISTORE, currentKernelSlot));
-                }
-            },
-            debug
-        );
-        emitter.emit(tree, outputElement);
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                outputElement.appendMethod(),
-                outputElement.appendDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
-        if (tryEndOverflow != null) {
-            insns.add(tryEndOverflow);
-        }
-        insns.add(new JumpInsnNode(Opcodes.GOTO, next));
-
-        for (String exType : overflowTypes) {
-            LabelNode overflowHandler = new LabelNode();
-            insns.add(overflowHandler);
-            insns.add(new VarInsnNode(Opcodes.ASTORE, overflowExcSlot));
-            // Register the overflow on the currently-evaluating kernel's OWN Warnings (warnings[currentKernelSlot]) so
-            // the header matches the unfused chain's per-node evaluator source.
-            insns.add(new VarInsnNode(Opcodes.ALOAD, warningsArraySlot));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, currentKernelSlot));
-            insns.add(new InsnNode(Opcodes.AALOAD));
-            insns.add(new VarInsnNode(Opcodes.ALOAD, overflowExcSlot));
-            insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, WARNINGS, "registerException", WARNINGS_REGISTER_DESCRIPTOR, false));
-            insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKEINTERFACE,
-                    outputElement.builderInternalName(),
-                    "appendNull",
-                    outputElement.appendNullDescriptor(),
-                    true
-                )
-            );
-            insns.add(new InsnNode(Opcodes.POP));
-            insns.add(new JumpInsnNode(Opcodes.GOTO, next));
-            host.tryCatchBlocks.add(new TryCatchBlockNode(tryStartOverflow, tryEndOverflow, overflowHandler, exType));
-        }
-
-        insns.add(next);
-        insns.add(new IincInsnNode(pSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
-
-        insns.add(loopEnd);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(Opcodes.INVOKEINTERFACE, outputElement.builderInternalName(), "build", outputElement.buildDescriptor(), true)
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
-        insns.add(tryEnd);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
-        insns.add(new InsnNode(Opcodes.ARETURN));
-
-        insns.add(handler);
-        insns.add(new VarInsnNode(Opcodes.ASTORE, excSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
-        insns.add(new InsnNode(Opcodes.ATHROW));
-
-        host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
-        return host;
-    }
-
-    /**
-     * The no-overflow fast path of {@link #emitVectorLoopChecked}: writes {@code out[p] = <stitched expr>} into a
-     * transient uncharged primitive array (exactly as {@link #emitVectorLoop}) and returns
-     * {@code blockFactory.new*ArrayVector(out, n).asBlock()}. The whole loop sits in one try whose handlers catch
-     * each declared overflow type and {@code return null} — no warnings, no {@code currentKernel} bookkeeping.
-     * Non-overflow exceptions propagate. The {@code Warnings[]} parameter is accepted (same descriptor as {@code fused})
-     * and never read. {@code raw} selects ALL-RAW ({@code fusedRaw}) vs ALL-INTERFACE ({@code fusedRawInterface}).
-     */
-    private MethodNode emitCheckedVectorRawMethod(
-        FusionNode tree,
-        Element[] inputElements,
-        Element outputElement,
-        List<FusionNode.Constant> constants,
-        int[] consumed,
-        Set<String> overflowTypes,
-        String descriptor,
-        boolean raw,
-        FusedClassDebugInfo debug
-    ) {
-        int arity = inputElements.length;
-        FrameLayout frame = new FrameLayout();
-        frame.slot();                                                       // [0] BlockFactory
-        frame.slot();                                                       // [1] Warnings[] (unused; uniform binding)
-        int pcSlot = frame.slot();                                          // [2] int positionCount
-        int inputBase = frame.slots(arity);                                 // [3 .. 3+arity) input Vectors
-        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
-        int extractedBase = frame.slots(arity);
-        int outSlot = frame.slot();
-        int pSlot = frame.slot();
-        int kernelBase = frame.mark();
-
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            raw ? FUSED_RAW_METHOD_NAME : FUSED_RAW_INTERFACE_METHOD_NAME,
-            descriptor,
-            null,
-            null
-        );
-        InsnList insns = host.instructions;
-
-        for (int i : consumed) {
-            emitExtractConsumedInput(insns, inputElements[i], inputBase + i, extractedBase + i, raw);
-        }
-
-        LabelNode tryStart = overflowTypes.isEmpty() ? null : new LabelNode();
-        LabelNode tryEnd = overflowTypes.isEmpty() ? null : new LabelNode();
-        LabelNode handler = overflowTypes.isEmpty() ? null : new LabelNode();
-        if (tryStart != null) {
-            insns.add(tryStart);
-        }
-
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(new IntInsnNode(Opcodes.NEWARRAY, outputElement.newArrayType()));
-        insns.add(new VarInsnNode(Opcodes.ASTORE, outSlot));
-
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
-
-        LabelNode loopStart = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
-        insns.add(loopStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
-
-        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        StackKernelEmitter emitter = new StackKernelEmitter(
-            insns,
-            constantSlots,
-            kernelBase,
-            input -> emitReadExtractedAtP(insns, inputElements[input.index()], extractedBase + input.index(), pSlot, raw),
-            kernel -> {},
-            debug
-        );
-        emitter.emit(tree, outputElement);
-        insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
-
-        insns.add(new IincInsnNode(pSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
-        insns.add(loopEnd);
-        if (tryEnd != null) {
-            insns.add(tryEnd);
-        }
-
-        emitReturnNewArrayVectorAsBlock(insns, outSlot, pcSlot, outputElement);
-
-        if (handler != null) {
-            insns.add(handler);
-            insns.add(new InsnNode(Opcodes.POP));
-            insns.add(new InsnNode(Opcodes.ACONST_NULL));
-            insns.add(new InsnNode(Opcodes.ARETURN));
-            for (String exType : overflowTypes) {
-                host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, exType));
-            }
-        }
-        return host;
-    }
-
-    /**
-     * {@code return blockFactory.new*ArrayVector(out, positionCount).asBlock();} — the dense-output epilogue shared by
-     * {@link #emitCheckedVectorRawMethod}. {@code new*ArrayVector} charges the
-     * breaker; the {@code out[]} written above is a transient uncharged array (same as {@link #emitVectorLoop}).
-     */
-    private static void emitReturnNewArrayVectorAsBlock(InsnList insns, int outSlot, int pcSlot, Element outputElement) {
-        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                BLOCK_FACTORY,
-                outputElement.newVectorMethod(),
-                outputElement.newVectorDescriptor(),
-                false
-            )
-        );
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.vectorInternalName(),
-                "asBlock",
-                "()" + outputElement.blockDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.ARETURN));
-    }
-
-    /**
-     * Narrows one consumed input once, outside the loop (JIT #6: no per-position checkcast). ALL-RAW: CHECKCAST to
-     * {@code *ArrayVector} and {@code VectorUnsafe} extract into {@code destSlot}. ALL-INTERFACE: CHECKCAST to the
-     * typed {@code *Vector} interface and store that reference — {@code Constant*Vector}/{@code *BigArrayVector} then
-     * read through {@code getX(p)} at the hidden class's own call sites.
-     */
-    private static void emitExtractConsumedInput(InsnList insns, Element inputElement, int inputSlot, int destSlot, boolean raw) {
-        insns.add(new VarInsnNode(Opcodes.ALOAD, inputSlot));
-        if (raw) {
-            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKESTATIC,
-                    VECTOR_UNSAFE,
-                    inputElement.vectorUnsafeMethod(),
-                    inputElement.vectorUnsafeDescriptor(),
-                    false
-                )
-            );
-        } else {
-            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.vectorInternalName()));
-        }
-        insns.add(new VarInsnNode(Opcodes.ASTORE, destSlot));
-    }
-
-    /**
-     * Pushes {@code extracted[p]} onto the stack. ALL-RAW: {@code xALOAD} from the backing array. ALL-INTERFACE:
-     * {@code INVOKEINTERFACE *Vector.getX(I)}.
-     */
-    private static void emitReadExtractedAtP(InsnList insns, Element element, int extractedSlot, int pSlot, boolean raw) {
-        insns.add(new VarInsnNode(Opcodes.ALOAD, extractedSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        if (raw) {
-            insns.add(new InsnNode(element.type().getOpcode(Opcodes.IALOAD)));
-        } else {
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKEINTERFACE,
-                    element.vectorInternalName(),
-                    element.getValueMethod(),
-                    element.getValueDescriptor(),
-                    true
-                )
-            );
-        }
-    }
-
-    /** Extracts a kernel's straight-line {@link Body} from its template {@link MethodNode} (registry lookup + lift). */
-    private Body extractKernelBody(FusionNode.Kernel kernel) {
-        return BodyExtractor.extract(templates.methodNode(kernel.descriptor()));
-    }
-
-    /**
-     * Emits an {@link FusionNode.Input} leaf's value for the current position onto the operand stack, typed to the
-     * leaf's own element. The two stack-based paths differ only here: the plain-vector and checked-raw fast paths
-     * inject {@link #emitReadExtractedAtP} after an outside-the-loop {@link #emitExtractConsumedInput} (ALL-RAW
-     * {@code xALOAD} or ALL-INTERFACE {@code *Vector.getX(p)}), while the checked-vector builder path reads a
-     * value already loaded into the leaf's value local.
-     */
-    @FunctionalInterface
-    private interface LeafReader {
-        void read(FusionNode.Input input);
-    }
-
-    /**
-     * A hook the {@link StackKernelEmitter} runs immediately before splicing a kernel's body (after its operands are
-     * stored into the body's argument slots). No-op for the plain-vector path; the checked-vector path uses it to
-     * record which overflow-checked kernel is about to run so the shared handler attributes a caught overflow to that
-     * kernel's own warning source.
-     */
-    @FunctionalInterface
-    private interface KernelPreBody {
-        void beforeBody(FusionNode.Kernel kernel);
-    }
-
-    /**
-     * Post-order emitter that leaves a tree's value for the current position on the operand stack — the shared core of
-     * the two <b>stack-based</b> fast paths (plain-vector {@link #emitVectorLoop} and checked-vector
-     * {@link #emitVectorLoopChecked}). Both walk the tree identically — a {@link FusionNode.Constant} loads from its
-     * trailing parameter slot; a {@link FusionNode.Kernel} claims a disjoint slot range (advanced by the body's
-     * {@code maxLocals}), shifts and splices its body, storing each child's value into the body's argument slots — and
-     * differ ONLY in two injected strategies: how an {@link FusionNode.Input} leaf is read ({@link LeafReader}) and
-     * what runs just before a kernel body ({@link KernelPreBody}). Sharing this walk keeps the two paths from drifting.
-     *
-     * <p>The dense-logical vector path ({@link #emitLogicalVectorLoop}) reuses this walk for comparison kernels
-     * and adds a 2VL {@link FusionNode.Logical} branch (plain boolean short-circuit, no tri-state) plus a
-     * {@link FusionNode.Not} flip ({@code ICONST_1}/{@code IXOR}). It is NOT used by the nullable/multi-valued
-     * {@link BlockDfsEmitter} or the 3VL {@link LogicalDfsEmitter}: those interleave present/live/warning control
-     * flow with the walk (they are real semantic forks), though they reuse the same
-     * {@link #extractKernelBody}/{@link #checkKernelArity}/{@link #loadConstantParam} primitives.
-     */
-    private final class StackKernelEmitter {
-        private final InsnList insns;
-        private final Map<FusionNode.Constant, Integer> constantSlots;
-        private final LeafReader leafReader;
-        private final KernelPreBody preBody;
-        private final FusedClassDebugInfo debug;
-        private int kernelBase;
-
-        StackKernelEmitter(
-            InsnList insns,
-            Map<FusionNode.Constant, Integer> constantSlots,
-            int kernelBase,
-            LeafReader leafReader,
-            KernelPreBody preBody,
-            FusedClassDebugInfo debug
-        ) {
-            this.insns = insns;
-            this.constantSlots = constantSlots;
-            this.kernelBase = kernelBase;
-            this.leafReader = leafReader;
-            this.preBody = preBody;
-            this.debug = debug;
-        }
-
-        /**
-         * Emits instructions that leave {@code node}'s value for the current position {@code p} on the operand stack.
-         * {@code expected} is the element {@code node} must produce (its consuming kernel's argument element, or the
-         * output element at the root) — used to type a leaf read / constant push under per-node typing.
-         */
-        void emit(FusionNode node, Element expected) {
-            if (node instanceof FusionNode.Input input) {
-                // A leaf reads at its OWN element (inputElements[index], == expected under per-node typing), via the
-                // injected strategy.
-                leafReader.read(input);
-                return;
-            }
-            if (node instanceof FusionNode.Constant constant) {
-                // Embedded literal: a baked constant is an immediate; otherwise load from its trailing param slot.
-                loadConstantParam(insns, expected, constant, constantSlots.get(constant));
-                return;
-            }
-            if (node instanceof FusionNode.Logical logical) {
-                // Dense 2VL: no nulls, so AND/OR are plain boolean short-circuit. Comparisons are spliced inline
-                // (C1 will not inline a >35-byte helper); the 3VL null machinery lives only on the block path.
-                emitLogical2vl(logical);
-                return;
-            }
-            if (node instanceof FusionNode.Not not) {
-                // Dense 2VL Not: child boolean on the stack, then ICONST_1 + IXOR. No null lane.
-                emit(not.child(), Element.of(Type.BOOLEAN_TYPE));
-                insns.add(new InsnNode(Opcodes.ICONST_1));
-                insns.add(new InsnNode(Opcodes.IXOR));
-                return;
-            }
-            FusionNode.Kernel kernel = (FusionNode.Kernel) node;
-            Body body = extractKernelBody(kernel);
-
-            // Claim this node's disjoint slot range, then shift the body's locals into it. Argument loads inside the
-            // body now read [nodeBase + argOffset]; the stores below feed exactly those slots.
-            int nodeBase = kernelBase;
-            kernelBase += body.maxLocals();
-            SlotRemapper.shift(body.computation(), nodeBase);
-
-            Type[] argTypes = Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes();
-            var children = kernel.children();
-            checkKernelArity(kernel, argTypes.length, children.size());
-            int offset = 0;
-            for (int i = 0; i < argTypes.length; i++) {
-                // Each child produces this kernel's argument element (a cast child bridges a differing leaf element).
-                emit(children.get(i), Element.of(argTypes[i]));
-                insns.add(new VarInsnNode(argTypes[i].getOpcode(Opcodes.ISTORE), nodeBase + offset));
-                offset += argTypes[i].getSize();
-            }
-            preBody.beforeBody(kernel);
-            // The spliced body reads its inputs from the shifted argument slots and leaves the result on the stack.
-            spliceKernelBody(insns, body.computation(), kernel, debug);
-        }
-
-        /**
-         * Emits a dense 2VL {@code AND}/{@code OR}: evaluate the left operand, skip the right when it cannot change
-         * the result ({@code false AND *}, {@code true OR *}), otherwise replace the left with the right. No tri-state
-         * and no warnings — dense vectors have no nulls, and comparisons do not warn.
-         */
-        private void emitLogical2vl(FusionNode.Logical logical) {
-            boolean and = logical.op() == FusionNode.BoolOp.AND;
-            LabelNode skipRight = new LabelNode();
-            emit(logical.left(), Element.of(Type.BOOLEAN_TYPE));
-            insns.add(new InsnNode(Opcodes.DUP));
-            insns.add(new JumpInsnNode(and ? Opcodes.IFEQ : Opcodes.IFNE, skipRight));
-            insns.add(new InsnNode(Opcodes.POP));
-            emit(logical.right(), Element.of(Type.BOOLEAN_TYPE));
-            insns.add(skipRight);
-        }
     }
 
     /**
@@ -1678,230 +727,6 @@ public final class Stitcher {
     }
 
     /**
-     * Builds the class bytes for the fused block loop. Kept separate from {@link #compileBlockLoop} so the
-     * verification boundary is exactly the {@code defineHiddenClass} call — everything here is pure ASM tree
-     * manipulation on cloned kernel bodies.
-     */
-    private byte[] emitBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        // One walk derives arity, constants-in-emit-order and warning-source indices for this emit path.
-        FusionSignature signature = FusionSignature.of(tree);
-        int arity = signature.arity();
-        // Only the inputs the tree actually references are null-checked and read. The method still takes one *Block
-        // parameter per index in [0, arity) (so callers bind positionally by leaf index), but guarding an input the
-        // expression never consumes would over-nullify: a null/multi-value in an unused input would wrongly null the
-        // whole position even though no kernel reads it. The unfused chain only inspects operands it actually uses,
-        // so we mirror that by iterating the consumed-input set.
-        // Per-input leaf elements (a tree may mix int/long/double via cast kernels) vs OUTPUT element (the builder +
-        // produced block). Each *Block parameter is typed to its input's own element.
-        Element[] inputElements = inputElements(signature);
-        Element outputElement = Element.of(rootReturnType(tree));
-        // Frame layout: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input *Blocks. The
-        // builder, loop counter, a scratch value-count slot, the built result slot, the caught-throwable slot
-        // (builder-safety), the per-kernel overflow-exception slot and the value-path {@code live} flag sit in the
-        // fixed region above the parameters; each node then gets a disjoint present/value/body range above that
-        // (allocated by the DFS emitter from {@code workBase}). The DFS emitter (see below) reads each consumed leaf
-        // inline into the enclosing kernel's operand slots, so there are no separate pre-read leaf value slots.
-        // One trailing primitive parameter per embedded constant (canonical emit order) sits between the input *Blocks
-        // and the scratch region, so every scratch base is shifted up by the constant parameters' total slot size.
-        List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
-        // Parameter region [0..): BlockFactory, Warnings[], positionCount, one *Block per input, one primitive per constant.
-        FrameLayout frame = new FrameLayout();
-        frame.slot();                                                       // [0] BlockFactory
-        int warningsArraySlot = frame.slot();                               // [1] Warnings[]
-        int pcSlot = frame.slot();                                          // [2] int positionCount
-        int inputBase = frame.slots(arity);                                 // [3 .. 3+arity) input *Blocks
-        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
-        // Scratch region above the parameters: the builder, loop counter, a scratch value-count slot, the built result
-        // slot, the caught-throwable slot (builder-safety), the per-kernel overflow-exception slot, then:
-        int builderSlot = frame.slot();
-        int pSlot = frame.slot();
-        int countSlot = frame.slot();
-        int resultSlot = frame.slot();
-        int excSlot = frame.slot();
-        // A scratch slot for the exception caught by any single kernel's overflow handler (handlers never overlap in
-        // execution, so one slot is shared).
-        int overflowExcSlot = frame.slot();
-        // The per-position value-path flag: {@code true} until the whole-tree short-circuit fires (the first null /
-        // multi-value / overflow the value DFS meets), then {@code false}. It gates ONLY the value-dependent overflow /
-        // div-by-zero warning registration to the ratified short-circuit subset — an off-value-path kernel body still
-        // runs (its result feeds a sibling's per-kernel multi-value gate) but its overflow is caught silently. Leaf
-        // multi-value warnings are NOT gated by {@code live}: each kernel emits them in its own operand order so they
-        // match the unfused chain (which runs every kernel's loop fully), independent of ancestor short-circuits.
-        int liveSlot = frame.slot();
-        // A reusable BytesRef spare for any BYTES_REF (keyword/text) leaf, allocated once below the DFS work region and
-        // initialised before the loop. Reserved unconditionally (a one-slot gap when the tree has no reference input,
-        // so the layout is uniform); only initialised + consulted when a reference input is present.
-        int spareBytesRefSlot = frame.slot();
-        int workBase = frame.mark();
-        boolean needsSpare = hasReferenceInput(inputElements);
-
-        // Each kernel's warning-source slot into the runtime Warnings[]: its overflow warning and its direct leaf
-        // operands' multi-value warnings register on warnings[its slot], matching the unfused per-node evaluator source.
-        Map<FusionNode, Integer> sourceIndices = signature.warningSourceIndices();
-
-        // Each input *Block param uses its OWN element; the returned block uses the OUTPUT element (BooleanBlock for a
-        // comparison root).
-        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
-        for (int i = 0; i < arity; i++) {
-            desc.append(inputElements[i].blockDescriptor());
-        }
-        appendConstantParamDescriptors(desc, constants);
-        desc.append(")").append(outputElement.blockDescriptor());
-
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            FUSED_METHOD_NAME,
-            desc.toString(),
-            null,
-            null
-        );
-        InsnList insns = host.instructions;
-
-        // out = bf.new*BlockBuilder(positionCount); the builder is the OUTPUT element.
-        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                BLOCK_FACTORY,
-                outputElement.newBlockBuilderMethod(),
-                outputElement.newBlockBuilderDescriptor(),
-                false
-            )
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
-
-        // Allocate the reusable BytesRef spare once, before the loop, when any leaf reads a reference (BYTES_REF)
-        // column. It is a plain local (no breaker accounting), so it lives outside the builder's try region.
-        if (needsSpare) {
-            emitSpareBytesRefInit(insns, spareBytesRefSlot);
-        }
-
-        // The builder is a resource: everything up to and including build() runs inside a try whose catch-all
-        // handler closes it before rethrowing, so a break part-way through does not leak breaker bytes.
-        LabelNode tryStart = new LabelNode();
-        LabelNode tryEnd = new LabelNode();
-        LabelNode handler = new LabelNode();
-        insns.add(tryStart);
-
-        // int p = 0;
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
-
-        LabelNode loopStart = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
-        LabelNode appendNull = new LabelNode();
-        LabelNode next = new LabelNode();
-        insns.add(loopStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
-
-        // Per-position DFS evaluation. Each node computes a {@code present} flag (did this node produce a value at
-        // {@code p}?) and, when present, its value, both into disjoint local slots. The tree VALUE / null position is
-        // exactly today's whole-tree short-circuit — a position is null iff the root is not present, i.e. iff any
-        // consumed leaf is null / multi-value or any kernel on the value path overflows.
-        //
-        // The difference from a single unified short-circuit DFS is WARNING fidelity: the unfused chain runs every
-        // generated evaluator's loop FULLY, so a leaf's multi-value warning fires iff, WITHIN its own consuming
-        // kernel's operand order, that kernel's earlier operands are present — INDEPENDENT of whether an ancestor
-        // kernel already short-circuited the position. So each kernel here emits its own leaf operands' multi-value
-        // warnings gated only by its OWN running {@code present} flag (never by an ancestor's), and every kernel body
-        // whose own operands are present is still run (its result feeds a sibling's per-kernel gate) even off the
-        // value path. Value-DEPENDENT warnings (overflow / div-by-zero) stay the ratified short-circuit subset: a
-        // body's overflow is registered only while {@code live} is true (the value path has not yet short-circuited),
-        // and caught silently otherwise. {@code live} is reset true here for each position.
-        insns.add(new InsnNode(Opcodes.ICONST_1));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
-        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$BlockLoop", tree);
-        BlockDfsEmitter emitter = new BlockDfsEmitter(
-            templates,
-            insns,
-            host,
-            inputElements,
-            inputBase,
-            pSlot,
-            countSlot,
-            warningsArraySlot,
-            sourceIndices,
-            liveSlot,
-            overflowExcSlot,
-            spareBytesRefSlot,
-            workBase,
-            constantSlots,
-            debug
-        );
-        NodeSlots root = emitter.emit(tree, outputElement);
-        // if (root not present) appendNull; else append the root value.
-        insns.add(new VarInsnNode(Opcodes.ILOAD, root.present()));
-        insns.add(new JumpInsnNode(Opcodes.IFEQ, appendNull));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new VarInsnNode(outputElement.type().getOpcode(Opcodes.ILOAD), root.value()));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                outputElement.appendMethod(),
-                outputElement.appendDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, next));
-
-        // out.appendNull(); reached when the root is not present (a null / multi-value leaf or an overflow on the value
-        // path short-circuited the position; any warning was already registered inline by the emitter).
-        insns.add(appendNull);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                "appendNull",
-                outputElement.appendNullDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
-
-        insns.add(next);
-        insns.add(new IincInsnNode(pSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
-
-        insns.add(loopEnd);
-        // result = out.build(); build() transfers the builder's breaker accounting to the produced block.
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(Opcodes.INVOKEINTERFACE, outputElement.builderInternalName(), "build", outputElement.buildDescriptor(), true)
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
-        insns.add(tryEnd);
-        // Normal exit: close the builder (a no-op after build()) and return the block.
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
-        insns.add(new InsnNode(Opcodes.ARETURN));
-
-        // Catch-all: close the builder to release its breaker bytes, then rethrow.
-        insns.add(handler);
-        insns.add(new VarInsnNode(Opcodes.ASTORE, excSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
-        insns.add(new InsnNode(Opcodes.ATHROW));
-
-        host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
-
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-        }
-
-        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$BlockLoop"), host, debug);
-        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "block loop", false);
-    }
-
-    /**
      * Compiles the MULTI-VALUE MAPPING block loop for a unary {@code @ConvertEvaluator}-style kernel (e.g.
      * {@code TO_LOWER}/{@code TO_UPPER}) — a kernel that maps over EVERY value of a multi-valued position rather than
      * treating a multi-value as a single-value error. The tree must be a single {@link FusionNode.Kernel} root with
@@ -1916,247 +741,6 @@ public final class Stitcher {
      */
     public Class<?> compileMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         return defineOrThrow(caller, emitMappingBlockLoop(caller, tree), "mapping block-loop class");
-    }
-
-    private byte[] emitMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        if (tree instanceof FusionNode.Kernel == false) {
-            throw new StitchingException("mapping path requires a single convert kernel root", null);
-        }
-        FusionNode.Kernel root = (FusionNode.Kernel) tree;
-        FusionSignature signature = FusionSignature.of(tree);
-        int arity = signature.arity();
-        Element[] inputElements = inputElements(signature);
-        Element outputElement = Element.of(rootReturnType(tree));
-        // Shape guard: a unary reference (BytesRef) input, a reference output, a NON-throwing body. The planner only
-        // routes such convert kernels here; anything else is a planner bug — refuse rather than emit wrong code. The
-        // hasOverflowException() clause deliberately rejects any warn-exception convert kernel: this loop opens the
-        // multi-value positionEntry EAGERLY (before the value loop), which is only correct when no value can fail; a
-        // warn-exception kernel (where some values null out and an all-fail position must become null) would need the
-        // lazy open-on-first-append the generated evalBlock uses, so such kernels must not reach here.
-        if (arity != 1
-            || inputElements[0].reference() == false
-            || outputElement.reference() == false
-            || root.descriptor().hasOverflowException()) {
-            throw new StitchingException("mapping path requires a unary BytesRef->BytesRef non-throwing convert kernel", null);
-        }
-        List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
-        Type[] argTypes = Type.getMethodType(root.descriptor().kernelType()).getArgumentTypes();
-        List<FusionNode> children = root.children();
-        Body body = extractKernelBody(root);
-
-        // Frame: [0] BlockFactory, [1] Warnings[] (unused; kept so the signature matches the factory's blockType), [2]
-        // positionCount, [3] the single input BytesRefBlock, then one reference param per @Fixed constant, then scratch.
-        FrameLayout frame = new FrameLayout();
-        frame.slot();                                    // [0] BlockFactory
-        frame.slot();                                    // [1] Warnings[]
-        int pcSlot = frame.slot();                       // [2] int positionCount
-        int inputBase = frame.slots(arity);              // [3] input BytesRefBlock
-        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
-        int builderSlot = frame.slot();
-        int pSlot = frame.slot();
-        int countSlot = frame.slot();
-        int fviSlot = frame.slot();
-        int iSlot = frame.slot();
-        int spareSlot = frame.slot();
-        int resultSlot = frame.slot();
-        int excSlot = frame.slot();
-        int bodyBase = frame.mark();
-        SlotRemapper.shift(body.computation(), bodyBase);
-
-        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
-        desc.append(inputElements[0].blockDescriptor());
-        appendConstantParamDescriptors(desc, constants);
-        desc.append(")").append(outputElement.blockDescriptor());
-
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            FUSED_METHOD_NAME,
-            desc.toString(),
-            null,
-            null
-        );
-        InsnList insns = host.instructions;
-
-        // builder = bf.new*BlockBuilder(positionCount); spare = new BytesRef();
-        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                BLOCK_FACTORY,
-                outputElement.newBlockBuilderMethod(),
-                outputElement.newBlockBuilderDescriptor(),
-                false
-            )
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
-        emitSpareBytesRefInit(insns, spareSlot);
-
-        LabelNode tryStart = new LabelNode();
-        LabelNode tryEnd = new LabelNode();
-        LabelNode handler = new LabelNode();
-        insns.add(tryStart);
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
-
-        LabelNode loopStart = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
-        LabelNode appendNull = new LabelNode();
-        LabelNode next = new LabelNode();
-        insns.add(loopStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
-        // count = in0.getValueCount(p)
-        insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getValueCount", "(I)I", true));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, countSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-        insns.add(new JumpInsnNode(Opcodes.IFEQ, appendNull)); // count == 0 -> appendNull
-
-        // if (count > 1) builder.beginPositionEntry();
-        LabelNode afterBegin = new LabelNode();
-        insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-        insns.add(new InsnNode(Opcodes.ICONST_1));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPLE, afterBegin));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                "beginPositionEntry",
-                "()" + outputElement.builderDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
-        insns.add(afterBegin);
-
-        // fvi = in0.getFirstValueIndex(p); i = 0;
-        insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getFirstValueIndex", "(I)I", true));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, fviSlot));
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, iSlot));
-
-        LabelNode valLoop = new LabelNode();
-        LabelNode valLoopEnd = new LabelNode();
-        insns.add(valLoop);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, valLoopEnd));
-        // Store each operand into the body's argument slot: the single Input reads value (fvi+i) into the reusable
-        // spare; each @Fixed reference constant is loaded from its parameter slot.
-        int off = 0;
-        for (int j = 0; j < children.size(); j++) {
-            Type argType = argTypes[j];
-            int argSlot = bodyBase + off;
-            FusionNode child = children.get(j);
-            if (child instanceof FusionNode.Input) {
-                insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase));
-                insns.add(new VarInsnNode(Opcodes.ILOAD, fviSlot));
-                insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
-                insns.add(new InsnNode(Opcodes.IADD));
-                insns.add(new VarInsnNode(Opcodes.ALOAD, spareSlot));
-                insns.add(
-                    new MethodInsnNode(
-                        Opcodes.INVOKEINTERFACE,
-                        inputElements[0].blockInternalName(),
-                        inputElements[0].getValueMethod(),
-                        inputElements[0].getValueDescriptor(),
-                        true
-                    )
-                );
-                insns.add(new VarInsnNode(Opcodes.ASTORE, argSlot));
-            } else {
-                FusionNode.Constant constant = (FusionNode.Constant) child;
-                loadConstantParam(insns, constant.isReference() ? null : Element.of(argType), constant, constantSlots.get(constant));
-                insns.add(new VarInsnNode(argType.getOpcode(Opcodes.ISTORE), argSlot));
-            }
-            off += argType.getSize();
-        }
-        // Run the (non-throwing) convert body; it leaves the converted value on the stack, then append it.
-        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$MappingBlockLoop", tree);
-        spliceKernelBody(insns, body.computation(), root, debug);
-        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                outputElement.appendMethod(),
-                outputElement.appendDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
-        insns.add(new IincInsnNode(iSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, valLoop));
-        insns.add(valLoopEnd);
-
-        // if (count > 1) builder.endPositionEntry();
-        insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-        insns.add(new InsnNode(Opcodes.ICONST_1));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPLE, next));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                "endPositionEntry",
-                "()" + outputElement.builderDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, next));
-
-        insns.add(appendNull);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                "appendNull",
-                outputElement.appendNullDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
-
-        insns.add(next);
-        insns.add(new IincInsnNode(pSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
-
-        insns.add(loopEnd);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(Opcodes.INVOKEINTERFACE, outputElement.builderInternalName(), "build", outputElement.buildDescriptor(), true)
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
-        insns.add(tryEnd);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
-        insns.add(new InsnNode(Opcodes.ARETURN));
-
-        insns.add(handler);
-        insns.add(new VarInsnNode(Opcodes.ASTORE, excSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
-        insns.add(new InsnNode(Opcodes.ATHROW));
-        host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
-
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-        }
-        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$MappingBlockLoop"), host, debug);
-        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "mapping block loop", false);
     }
 
     /**
@@ -2257,327 +841,6 @@ public final class Stitcher {
         return defineOrThrow(caller, emitLogicalVectorLoop(caller, tree), "logical vector-loop class");
     }
 
-    /**
-     * Builds the class bytes for the fused logical block loop: one {@code private static} {@code cmpN} helper per
-     * comparison operand plus the top-level {@code fused} loop that calls them and combines their tri-states with the
-     * short-circuit 3VL truth tables.
-     */
-    private byte[] emitLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        if (FusionNode.isBooleanLogic(tree) == false) {
-            throw new IllegalArgumentException("fused logical block loop requires a Logical or Not root, not " + tree);
-        }
-        // One walk derives arity, warning-source indices and constants-in-emit-order for this emit path.
-        FusionSignature signature = FusionSignature.of(tree);
-        int arity = signature.arity();
-        // INPUT element: the numeric kind of the comparison operands' columns (long/int/double). OUTPUT: nullable boolean.
-        Element inputElement = Element.of(logicalInputType(tree));
-        Element outputElement = Element.of(Type.BOOLEAN_TYPE);
-
-        String internalName = fusedClassName(caller, "Fused$$LogicalBlockLoop");
-        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$LogicalBlockLoop", tree);
-
-        // One helper per comparison operand, in DFS order; the map lets the loop emitter resolve each comparison's call.
-        Map<FusionNode, String> helperNames = new IdentityHashMap<>();
-        List<MethodNode> helpers = new ArrayList<>();
-        assignComparisonHelpers(tree, inputElement, helperNames, helpers, debug);
-        // Each comparison's warning-source slot into the runtime Warnings[]; a comparison registers its multi-value
-        // warning on warnings[its slot] so the header matches the unfused comparison evaluator's node source.
-        Map<FusionNode, Integer> sourceIndices = signature.warningSourceIndices();
-
-        // Frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input *Blocks, then one
-        // trailing primitive parameter per embedded constant (canonical emit order). Builder, loop counter, built
-        // result, and caught-throwable slots sit above (their bases shifted up by the constant parameters' slot size);
-        // the tri-state node slots start at workBase. The top-level loop loads each constant from its parameter slot
-        // and threads it into the relevant cmpN helper call.
-        List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
-        // Parameter region [0..): BlockFactory, Warnings[], positionCount, one *Block per input, one primitive per constant.
-        FrameLayout frame = new FrameLayout();
-        frame.slot();                                                       // [0] BlockFactory
-        int warningsArraySlot = frame.slot();                               // [1] Warnings[]
-        int pcSlot = frame.slot();                                          // [2] int positionCount
-        int inputBase = frame.slots(arity);                                 // [3 .. 3+arity) input *Blocks
-        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
-        // Scratch region above the parameters: builder, loop counter, built result, caught-throwable; the tri-state
-        // node slots start at workBase.
-        int builderSlot = frame.slot();
-        int pSlot = frame.slot();
-        int resultSlot = frame.slot();
-        int excSlot = frame.slot();
-        int workBase = frame.mark();
-
-        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
-        for (int i = 0; i < arity; i++) {
-            desc.append(inputElement.blockDescriptor());
-        }
-        appendConstantParamDescriptors(desc, constants);
-        desc.append(")").append(outputElement.blockDescriptor());
-
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            FUSED_METHOD_NAME,
-            desc.toString(),
-            null,
-            null
-        );
-        InsnList insns = host.instructions;
-
-        // out = bf.newBooleanBlockBuilder(positionCount);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                BLOCK_FACTORY,
-                outputElement.newBlockBuilderMethod(),
-                outputElement.newBlockBuilderDescriptor(),
-                false
-            )
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
-
-        LabelNode tryStart = new LabelNode();
-        LabelNode tryEnd = new LabelNode();
-        LabelNode handler = new LabelNode();
-        insns.add(tryStart);
-
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
-
-        LabelNode loopStart = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
-        LabelNode doNull = new LabelNode();
-        LabelNode next = new LabelNode();
-        insns.add(loopStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
-
-        // Evaluate the logical tree for position p into a tri-state (0 false / 1 true / 2 null) in tRoot.
-        LogicalDfsEmitter emitter = new LogicalDfsEmitter(
-            insns,
-            inputElement,
-            inputBase,
-            pSlot,
-            warningsArraySlot,
-            sourceIndices,
-            internalName,
-            helperNames,
-            workBase,
-            constantSlots
-        );
-        int tRoot = emitter.alloc(1);
-        emitter.emit(tree, tRoot);
-
-        insns.add(new VarInsnNode(Opcodes.ILOAD, tRoot));
-        insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, doNull));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, tRoot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                outputElement.appendMethod(),
-                outputElement.appendDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, next));
-
-        insns.add(doNull);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                "appendNull",
-                outputElement.appendNullDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
-
-        insns.add(next);
-        insns.add(new IincInsnNode(pSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
-
-        insns.add(loopEnd);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(Opcodes.INVOKEINTERFACE, outputElement.builderInternalName(), "build", outputElement.buildDescriptor(), true)
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
-        insns.add(tryEnd);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
-        insns.add(new InsnNode(Opcodes.ARETURN));
-
-        insns.add(handler);
-        insns.add(new VarInsnNode(Opcodes.ASTORE, excSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
-        insns.add(new InsnNode(Opcodes.ATHROW));
-
-        host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
-
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-        }
-
-        ClassNode classNode = newFusedClass(internalName, host, debug);
-        classNode.methods.addAll(helpers);
-        // Enforce the huge-method limit on the top-level loop method (criterion #6). The helpers keep it small even
-        // for nested trees; if it somehow exceeds the limit we refuse to fuse (→ unfused fallback) rather than emit
-        // a method HotSpot will not JIT-compile.
-        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "logical block loop", true);
-    }
-
-    /**
-     * Builds the class bytes for the dense logical vector loop: INTERFACE-only {@link #FUSED_INTERFACE_METHOD_NAME}
-     * (B2). The RAW sibling is not emitted.
-     */
-    private byte[] emitLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        if (FusionNode.isBooleanLogic(tree) == false) {
-            throw new IllegalArgumentException("fused logical vector loop requires a Logical or Not root, not " + tree);
-        }
-        FusionSignature signature = FusionSignature.of(tree);
-        int arity = signature.arity();
-        int[] consumed = signature.consumedInputs();
-        Element[] inputElements = inputElements(signature);
-        Element outputElement = Element.of(Type.BOOLEAN_TYPE);
-        List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
-
-        String internalName = fusedClassName(caller, "Fused$$LogicalVectorLoop");
-        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$LogicalVectorLoop", tree);
-        MethodNode iface = emitLogicalVectorMethod(tree, inputElements, outputElement, constants, consumed, arity, debug);
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(iface);
-        }
-        ClassNode classNode = newFusedClass(internalName, iface, debug);
-        // Not budget-enforced: a representative AND of two comparisons is a handful of bytecodes, and refusing a
-        // deep tree would drop the dense path (the whole point of this emit) back to the 3VL builder loop. Measure
-        // via the test seam; log-only like the checked-vector / block fallbacks. serializeWithBudgetGuard looks up
-        // fused (absent here); size 0 skips the log — the INTERFACE body is the only method and is not refused.
-        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "logical vector loop", false);
-    }
-
-    /**
-     * The dense-logical INTERFACE method {@code fusedInterface}: typed {@code *Vector.getX(p)} per input. Signature is
-     * {@code (BlockFactory, int, Vector..., constants...)BooleanBlock}; the loop writes {@code boolean[]} and
-     * returns {@code newBooleanArrayVector(out, n).asBlock()}. No RAW sibling (B2).
-     */
-    private MethodNode emitLogicalVectorMethod(
-        FusionNode tree,
-        Element[] inputElements,
-        Element outputElement,
-        List<FusionNode.Constant> constants,
-        int[] consumed,
-        int arity,
-        FusedClassDebugInfo debug
-    ) {
-        FrameLayout frame = new FrameLayout();
-        frame.slot();                                                       // [0] BlockFactory
-        frame.slot();                                                       // [1] int positionCount
-        int inputBase = frame.slots(arity);                                 // [2 .. 2+arity) input Vectors
-        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
-        int extractedBase = frame.slots(arity);                             // per-input typed *Vector (INTERFACE-only)
-        int outSlot = frame.slot();
-        int pSlot = frame.slot();
-        int kernelBase = frame.mark();
-
-        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";I");
-        for (int i = 0; i < arity; i++) {
-            desc.append("L").append(VECTOR).append(";");
-        }
-        appendConstantParamDescriptors(desc, constants);
-        desc.append(")").append(outputElement.blockDescriptor());
-
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            FUSED_INTERFACE_METHOD_NAME,
-            desc.toString(),
-            null,
-            null
-        );
-        InsnList insns = host.instructions;
-
-        // Narrow each CONSUMED input once, outside the loop (JIT #6: no per-position checkcast).
-        for (int i : consumed) {
-            Element inputElement = inputElements[i];
-            insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
-            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.vectorInternalName()));
-            insns.add(new VarInsnNode(Opcodes.ASTORE, extractedBase + i));
-        }
-
-        // out = new boolean[positionCount];
-        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
-        insns.add(new IntInsnNode(Opcodes.NEWARRAY, outputElement.newArrayType()));
-        insns.add(new VarInsnNode(Opcodes.ASTORE, outSlot));
-
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
-
-        LabelNode loopStart = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
-        insns.add(loopStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
-
-        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        StackKernelEmitter emitter = new StackKernelEmitter(insns, constantSlots, kernelBase, input -> {
-            Element element = inputElements[input.index()];
-            insns.add(new VarInsnNode(Opcodes.ALOAD, extractedBase + input.index()));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKEINTERFACE,
-                    element.vectorInternalName(),
-                    element.getValueMethod(),
-                    element.getValueDescriptor(),
-                    true
-                )
-            );
-        }, kernel -> {}, debug);
-        emitter.emit(tree, outputElement);
-        insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
-
-        insns.add(new IincInsnNode(pSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
-        insns.add(loopEnd);
-
-        // return blockFactory.newBooleanArrayVector(out, positionCount).asBlock();
-        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                BLOCK_FACTORY,
-                outputElement.newVectorMethod(),
-                outputElement.newVectorDescriptor(),
-                false
-            )
-        );
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.vectorInternalName(),
-                "asBlock",
-                "()" + outputElement.blockDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.ARETURN));
-        return host;
-    }
-
     // -----------------------------------------------------------------------------------------------------------------
     // Filter + Eval mega-fusion (S3.2a): fuse a WHERE predicate + a single EVAL projection into ONE per-position pass.
     // -----------------------------------------------------------------------------------------------------------------
@@ -2613,7 +876,7 @@ public final class Stitcher {
      * {@code Filter}, which evaluates the predicate over the whole page.
      *
      * <p><b>Reuse of the existing emit machinery.</b> The predicate is evaluated by the same block/logical DFS the
-     * standalone predicate paths use — {@link LogicalDfsEmitter} (for a 3VL {@code AND}/{@code OR}/{@code NOT} tree,
+     * standalone predicate paths use — {@link BlockLoopEmitter.LogicalDfsEmitter} (for a 3VL {@code AND}/{@code OR}/{@code NOT} tree,
      * with one {@code cmpN} helper per comparison) or {@link BlockDfsEmitter} (for a comparison
      * {@link FusionNode.Kernel}, including comparison-over-arithmetic). The projection is evaluated by the arithmetic
      * {@link BlockDfsEmitter} kernel DFS that {@link #emitBlockLoop} uses. To keep the top-level {@code fused} loop
@@ -2645,448 +908,8 @@ public final class Stitcher {
         return defineOrThrow(caller, emitFilterEvalBlockLoop(caller, predicateTree, projectionTree), "filter-eval block-loop class");
     }
 
-    /**
-     * Builds the class bytes for the fused filter+eval block loop: the {@code pred} helper (predicate tri-state), any
-     * {@code cmpN} comparison helpers a logical predicate needs, the {@code projAppend} helper (projection value/null
-     * append) and the top-level {@code fused} loop that calls them and records surviving positions. Kept separate from
-     * {@link #compileFilterEvalBlockLoop} so the verification boundary is exactly the {@code defineHiddenClass} call.
-     */
-    private byte[] emitFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
-        throws StitchingException {
-        // Shape guards: the projection root must be a kernel (a bare column/constant EVAL is not fused here), and the
-        // predicate must be a boolean-returning comparison kernel or a 3VL logical tree. An ill-shaped tree throws a
-        // bare RuntimeException before the define boundary, which the plan-time caller treats as a fusion failure and
-        // falls back to the unfused chain (criterion #5).
-        if ((projectionTree instanceof FusionNode.Kernel) == false) {
-            throw new IllegalArgumentException("fused filter-eval requires a kernel projection root, not " + projectionTree);
-        }
-        boolean predicateIsLogical = FusionNode.isBooleanLogic(predicateTree);
-        if (predicateIsLogical == false) {
-            if ((predicateTree instanceof FusionNode.Kernel) == false) {
-                throw new IllegalArgumentException("fused filter-eval requires a kernel/logical/Not predicate root, not " + predicateTree);
-            }
-            if (rootReturnType(predicateTree).getSort() != Type.BOOLEAN) {
-                throw new IllegalArgumentException("fused filter-eval predicate root must return boolean");
-            }
-        }
-
-        // One walk per sub-tree derives its arity, constants-in-emit-order and warning-source indices.
-        FusionSignature predSignature = FusionSignature.of(predicateTree);
-        FusionSignature projSignature = FusionSignature.of(projectionTree);
-        int predArity = predSignature.arity();
-        int projArity = projSignature.arity();
-        Element[] predInputElements = inputElements(predSignature);
-        Element predLogicalElement = predicateIsLogical ? Element.of(logicalInputType(predicateTree)) : null;
-        Element[] projInputElements = inputElements(projSignature);
-        Element projOutputElement = Element.of(rootReturnType(projectionTree));
-
-        List<FusionNode.Constant> predConstants = predSignature.constantsInEmitOrder();
-        List<FusionNode.Constant> projConstants = projSignature.constantsInEmitOrder();
-
-        // Per-source warning slots: the predicate's sources first, then the projection's (offset by predWarnCount), so
-        // the single runtime Warnings[] holds both and each kernel registers against its own node source.
-        Map<FusionNode, Integer> predSources = predSignature.warningSourceIndices();
-        int predWarnCount = predSources.size();
-        Map<FusionNode, Integer> projSourcesLocal = projSignature.warningSourceIndices();
-        Map<FusionNode, Integer> mergedProjSources = new IdentityHashMap<>();
-        for (Map.Entry<FusionNode, Integer> e : projSourcesLocal.entrySet()) {
-            mergedProjSources.put(e.getKey(), predWarnCount + e.getValue());
-        }
-
-        String internalName = fusedClassName(caller, "Fused$$FilterEvalBlockLoop");
-        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$FilterEvalBlockLoop", predicateTree, projectionTree);
-
-        // Build the helper methods. A logical predicate additionally needs one cmpN helper per comparison operand.
-        List<MethodNode> methods = new ArrayList<>();
-        Map<FusionNode, String> comparisonHelperNames = new IdentityHashMap<>();
-        if (predicateIsLogical) {
-            List<MethodNode> comparisonHelpers = new ArrayList<>();
-            assignComparisonHelpers(predicateTree, predLogicalElement, comparisonHelperNames, comparisonHelpers, debug);
-            methods.addAll(comparisonHelpers);
-        }
-        MethodNode predHelper = buildPredicateHelper(
-            predicateTree,
-            predArity,
-            predInputElements,
-            predLogicalElement,
-            predConstants,
-            predSources,
-            internalName,
-            comparisonHelperNames,
-            debug
-        );
-        MethodNode projHelper = buildProjectionAppendHelper(
-            projectionTree,
-            projArity,
-            projInputElements,
-            projOutputElement,
-            projConstants,
-            mergedProjSources,
-            debug
-        );
-        methods.add(predHelper);
-        methods.add(projHelper);
-
-        // Top-level fused loop frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3] int[] positions,
-        // [4 .. 4+predArity) predicate input *Blocks, then the projection input *Blocks, then the predicate constant
-        // params, then the projection constant params, then the scratch region.
-        FrameLayout frame = new FrameLayout();
-        frame.slot();                                                       // [0] BlockFactory
-        int warningsArraySlot = frame.slot();                               // [1] Warnings[]
-        int pcSlot = frame.slot();                                          // [2] int positionCount
-        int positionsSlot = frame.slot();                                   // [3] int[] positions
-        int predInputBase = frame.slots(predArity);                         // predicate input *Blocks
-        int projInputBase = frame.slots(projArity);                         // projection input *Blocks
-        Map<FusionNode.Constant, Integer> topPredConstantSlots = allocConstantSlots(predConstants, frame);
-        Map<FusionNode.Constant, Integer> topProjConstantSlots = allocConstantSlots(projConstants, frame);
-        // Scratch region above the parameters.
-        int builderSlot = frame.slot();
-        int pSlot = frame.slot();
-        int rowCountSlot = frame.slot();
-        int resultSlot = frame.slot();
-        int excSlot = frame.slot();
-        int tSlot = frame.slot();
-
-        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I[I");
-        for (int i = 0; i < predArity; i++) {
-            desc.append(predInputElements[i].blockDescriptor());
-        }
-        for (int i = 0; i < projArity; i++) {
-            desc.append(projInputElements[i].blockDescriptor());
-        }
-        appendConstantParamDescriptors(desc, predConstants);
-        appendConstantParamDescriptors(desc, projConstants);
-        desc.append(")").append(projOutputElement.blockDescriptor());
-
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            FUSED_METHOD_NAME,
-            desc.toString(),
-            null,
-            null
-        );
-        InsnList insns = host.instructions;
-
-        // out = bf.new<Proj>BlockBuilder(positionCount) — a COMPACT builder that receives one entry per surviving row.
-        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                BLOCK_FACTORY,
-                projOutputElement.newBlockBuilderMethod(),
-                projOutputElement.newBlockBuilderDescriptor(),
-                false
-            )
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
-
-        LabelNode tryStart = new LabelNode();
-        LabelNode tryEnd = new LabelNode();
-        LabelNode handler = new LabelNode();
-        insns.add(tryStart);
-
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, rowCountSlot));
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
-
-        LabelNode loopStart = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
-        LabelNode next = new LabelNode();
-        insns.add(loopStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
-
-        // t = pred(warnings, p, <predBlocks...>, <predConsts...>);
-        StringBuilder predCallDesc = new StringBuilder("(").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
-        insns.add(new VarInsnNode(Opcodes.ALOAD, warningsArraySlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        for (int i = 0; i < predArity; i++) {
-            insns.add(new VarInsnNode(Opcodes.ALOAD, predInputBase + i));
-            predCallDesc.append(predInputElements[i].blockDescriptor());
-        }
-        for (FusionNode.Constant constant : predConstants) {
-            pushConstantArg(insns, constant.element(), topPredConstantSlots.get(constant));
-        }
-        appendConstantParamDescriptors(predCallDesc, predConstants);
-        predCallDesc.append(")I");
-        insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, "pred", predCallDesc.toString(), false));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, tSlot));
-
-        // if (t != 1) skip this position entirely (false OR null ⇒ dropped, no projection evaluated).
-        insns.add(new VarInsnNode(Opcodes.ILOAD, tSlot));
-        insns.add(new InsnNode(Opcodes.ICONST_1));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPNE, next));
-
-        // projAppend(out, warnings, p, <projBlocks...>, <projConsts...>); — evaluates + appends the projection value/null.
-        StringBuilder projCallDesc = new StringBuilder("(").append(projOutputElement.builderDescriptor())
-            .append(WARNINGS_ARRAY_DESCRIPTOR)
-            .append("I");
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, warningsArraySlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        for (int i = 0; i < projArity; i++) {
-            insns.add(new VarInsnNode(Opcodes.ALOAD, projInputBase + i));
-            projCallDesc.append(projInputElements[i].blockDescriptor());
-        }
-        for (FusionNode.Constant constant : projConstants) {
-            pushConstantArg(insns, constant.element(), topProjConstantSlots.get(constant));
-        }
-        appendConstantParamDescriptors(projCallDesc, projConstants);
-        projCallDesc.append(")V");
-        insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, "projAppend", projCallDesc.toString(), false));
-
-        // positions[rowCount] = p; rowCount++;
-        insns.add(new VarInsnNode(Opcodes.ALOAD, positionsSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, rowCountSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new InsnNode(Opcodes.IASTORE));
-        insns.add(new IincInsnNode(rowCountSlot, 1));
-
-        insns.add(next);
-        insns.add(new IincInsnNode(pSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
-
-        insns.add(loopEnd);
-        // result = out.build(); the compact projection block's positionCount is exactly the surviving row count.
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                projOutputElement.builderInternalName(),
-                "build",
-                projOutputElement.buildDescriptor(),
-                true
-            )
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
-        insns.add(tryEnd);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
-        insns.add(new InsnNode(Opcodes.ARETURN));
-
-        insns.add(handler);
-        insns.add(new VarInsnNode(Opcodes.ASTORE, excSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
-        insns.add(new InsnNode(Opcodes.ATHROW));
-
-        host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
-
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-        }
-
-        ClassNode classNode = newFusedClass(internalName, host, debug);
-        classNode.methods.addAll(methods);
-        // The two per-position bodies are factored into the pred/projAppend (and cmpN) helpers, so the top-level fused
-        // loop stays small; enforce the huge-method limit on it (→ unfused fallback if a pathological shape exceeds).
-        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "filter-eval block loop", true);
-    }
-
-    /**
-     * Builds the {@code private static int pred(Warnings[] w, int p, <input *Blocks>, <constants>)} helper that
-     * evaluates the WHERE predicate for one position and returns its tri-state: {@code 0} false, {@code 1} true,
-     * {@code 2} null. A {@link FusionNode.Logical} or {@link FusionNode.Not} predicate reuses {@link LogicalDfsEmitter}
-     * (calling the {@code cmpN} comparison helpers); a comparison {@link FusionNode.Kernel} (incl.
-     * comparison-over-arithmetic) reuses {@link BlockDfsEmitter}, returning its boolean value when present and {@code 2}
-     * otherwise. Predicate warnings are attributed to each kernel's own source (indices {@code [0, predWarnCount)} of
-     * the shared {@code Warnings[]}).
-     */
-    private MethodNode buildPredicateHelper(
-        FusionNode predicateTree,
-        int predArity,
-        Element[] predInputElements,
-        Element predLogicalElement,
-        List<FusionNode.Constant> predConstants,
-        Map<FusionNode, Integer> predSources,
-        String internalName,
-        Map<FusionNode, String> comparisonHelperNames,
-        FusedClassDebugInfo debug
-    ) {
-        StringBuilder desc = new StringBuilder("(").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
-        for (int i = 0; i < predArity; i++) {
-            desc.append(predInputElements[i].blockDescriptor());
-        }
-        appendConstantParamDescriptors(desc, predConstants);
-        desc.append(")I");
-
-        MethodNode pred = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "pred", desc.toString(), null, null);
-        InsnList insns = pred.instructions;
-
-        // Params [0..): Warnings[], int p, one *Block per input, one primitive per constant. Then the scratch region.
-        FrameLayout frame = new FrameLayout();
-        int warningsArraySlot = frame.slot();
-        int pSlot = frame.slot();
-        int inputBase = frame.slots(predArity);
-        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(predConstants, frame);
-        int countSlot = frame.slot();
-        int liveSlot = frame.slot();
-        int overflowExcSlot = frame.slot();
-        int spareBytesRefSlot = frame.slot();
-        int workBase = frame.mark();
-
-        if (FusionNode.isBooleanLogic(predicateTree)) {
-            LogicalDfsEmitter emitter = new LogicalDfsEmitter(
-                insns,
-                predLogicalElement,
-                inputBase,
-                pSlot,
-                warningsArraySlot,
-                predSources,
-                internalName,
-                comparisonHelperNames,
-                workBase,
-                constantSlots
-            );
-            int tRoot = emitter.alloc(1);
-            emitter.emit(predicateTree, tRoot);
-            insns.add(new VarInsnNode(Opcodes.ILOAD, tRoot));
-            insns.add(new InsnNode(Opcodes.IRETURN));
-        } else {
-            // A comparison kernel (possibly over arithmetic): reset the value-path live flag, run the block DFS, and
-            // map its present/value to a tri-state (present ? value(0/1) : null(2)).
-            insns.add(new InsnNode(Opcodes.ICONST_1));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
-            if (hasReferenceInput(predInputElements)) {
-                emitSpareBytesRefInit(insns, spareBytesRefSlot);
-            }
-            BlockDfsEmitter emitter = new BlockDfsEmitter(
-                templates,
-                insns,
-                pred,
-                predInputElements,
-                inputBase,
-                pSlot,
-                countSlot,
-                warningsArraySlot,
-                predSources,
-                liveSlot,
-                overflowExcSlot,
-                spareBytesRefSlot,
-                workBase,
-                constantSlots,
-                debug
-            );
-            NodeSlots root = emitter.emit(predicateTree, Element.of(Type.BOOLEAN_TYPE));
-            LabelNode retNull = new LabelNode();
-            insns.add(new VarInsnNode(Opcodes.ILOAD, root.present()));
-            insns.add(new JumpInsnNode(Opcodes.IFEQ, retNull));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, root.value()));
-            insns.add(new InsnNode(Opcodes.IRETURN));
-            insns.add(retNull);
-            insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
-            insns.add(new InsnNode(Opcodes.IRETURN));
-        }
-        return pred;
-    }
-
-    /**
-     * Builds the {@code private static void projAppend(<Proj>Block.Builder out, Warnings[] w, int p, <input *Blocks>,
-     * <constants>)} helper that evaluates the EVAL projection for one (surviving) position with the arithmetic
-     * {@link BlockDfsEmitter} kernel DFS and appends its value — or {@code appendNull()} when the projection is not
-     * present at {@code p} (a null / multi-value leaf or an overflow short-circuited it), exactly as the unfused
-     * {@code Eval} would for that row. Projection warnings are attributed to each kernel's own source, offset into the
-     * shared {@code Warnings[]} after the predicate's sources.
-     */
-    private MethodNode buildProjectionAppendHelper(
-        FusionNode projectionTree,
-        int projArity,
-        Element[] projInputElements,
-        Element projOutputElement,
-        List<FusionNode.Constant> projConstants,
-        Map<FusionNode, Integer> mergedProjSources,
-        FusedClassDebugInfo debug
-    ) {
-        StringBuilder desc = new StringBuilder("(").append(projOutputElement.builderDescriptor())
-            .append(WARNINGS_ARRAY_DESCRIPTOR)
-            .append("I");
-        for (int i = 0; i < projArity; i++) {
-            desc.append(projInputElements[i].blockDescriptor());
-        }
-        appendConstantParamDescriptors(desc, projConstants);
-        desc.append(")V");
-
-        MethodNode proj = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "projAppend", desc.toString(), null, null);
-        InsnList insns = proj.instructions;
-
-        // Params [0..): builder, Warnings[], int p, one *Block per input, one primitive per constant. Then scratch.
-        FrameLayout frame = new FrameLayout();
-        int builderSlot = frame.slot();
-        int warningsArraySlot = frame.slot();
-        int pSlot = frame.slot();
-        int inputBase = frame.slots(projArity);
-        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(projConstants, frame);
-        int countSlot = frame.slot();
-        int liveSlot = frame.slot();
-        int overflowExcSlot = frame.slot();
-        int spareBytesRefSlot = frame.slot();
-        int workBase = frame.mark();
-
-        insns.add(new InsnNode(Opcodes.ICONST_1));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
-        if (hasReferenceInput(projInputElements)) {
-            emitSpareBytesRefInit(insns, spareBytesRefSlot);
-        }
-        BlockDfsEmitter emitter = new BlockDfsEmitter(
-            templates,
-            insns,
-            proj,
-            projInputElements,
-            inputBase,
-            pSlot,
-            countSlot,
-            warningsArraySlot,
-            mergedProjSources,
-            liveSlot,
-            overflowExcSlot,
-            spareBytesRefSlot,
-            workBase,
-            constantSlots,
-            debug
-        );
-        NodeSlots root = emitter.emit(projectionTree, projOutputElement);
-        LabelNode doNull = new LabelNode();
-        LabelNode done = new LabelNode();
-        insns.add(new VarInsnNode(Opcodes.ILOAD, root.present()));
-        insns.add(new JumpInsnNode(Opcodes.IFEQ, doNull));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new VarInsnNode(projOutputElement.type().getOpcode(Opcodes.ILOAD), root.value()));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                projOutputElement.builderInternalName(),
-                projOutputElement.appendMethod(),
-                projOutputElement.appendDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, done));
-        insns.add(doNull);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                projOutputElement.builderInternalName(),
-                "appendNull",
-                projOutputElement.appendNullDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
-        insns.add(done);
-        insns.add(new InsnNode(Opcodes.RETURN));
-        return proj;
-    }
-
     /** Type-correct {@code xLOAD} of a constant argument (by its {@code J}/{@code I}/{@code D} element) from {@code slot}. */
-    private static void pushConstantArg(InsnList insns, char element, int slot) {
+    static void pushConstantArg(InsnList insns, char element, int slot) {
         int opcode = switch (element) {
             case 'J' -> Opcodes.LLOAD;
             case 'I' -> Opcodes.ILOAD;
@@ -3094,319 +917,6 @@ public final class Stitcher {
             default -> throw new IllegalArgumentException("unsupported fused constant element [" + element + "]");
         };
         insns.add(new VarInsnNode(opcode, slot));
-    }
-
-    /**
-     * Assigns each comparison operand ({@link FusionNode.Kernel}) in {@code tree} a {@code private static} helper method
-     * (named {@code cmp0}, {@code cmp1}, … in DFS order) and records the name so the loop emitter can call it.
-     */
-    private void assignComparisonHelpers(
-        FusionNode node,
-        Element inputElement,
-        Map<FusionNode, String> names,
-        List<MethodNode> helpers,
-        FusedClassDebugInfo debug
-    ) {
-        if (node instanceof FusionNode.Logical logical) {
-            assignComparisonHelpers(logical.left(), inputElement, names, helpers, debug);
-            assignComparisonHelpers(logical.right(), inputElement, names, helpers, debug);
-            return;
-        }
-        if (node instanceof FusionNode.Not not) {
-            assignComparisonHelpers(not.child(), inputElement, names, helpers, debug);
-            return;
-        }
-        FusionNode.Kernel comparison = (FusionNode.Kernel) node;
-        String name = "cmp" + helpers.size();
-        names.put(comparison, name);
-        helpers.add(emitComparisonHelper(comparison, inputElement, name, debug));
-    }
-
-    /**
-     * Builds a {@code private static int cmpN(Warnings w, int p, <Block> b0, <Block> b1)} helper that reproduces the
-     * generated comparison evaluator's block path for one position and returns a tri-state: {@code 0} false, {@code 1}
-     * true, {@code 2} null. A {@code null} input ({@code getValueCount == 0}) returns {@code 2} with no warning; a
-     * multi-valued input registers the single-value multi-value warning and returns {@code 2}; otherwise the single
-     * value at {@code getFirstValueIndex(p)} is read and the spliced comparison kernel body's {@code 0}/{@code 1} is
-     * returned.
-     */
-    private MethodNode emitComparisonHelper(
-        FusionNode.Kernel comparison,
-        Element inputElement,
-        String methodName,
-        FusedClassDebugInfo debug
-    ) {
-        Body body = extractKernelBody(comparison);
-        int size = inputElement.type().getSize();
-        List<FusionNode> children = comparison.children();
-        // Only column ({@link FusionNode.Input}) operands become *Block parameters; a {@link FusionNode.Constant}
-        // operand is passed as a trailing primitive parameter (after the *Blocks, in canonical emit order) and loaded
-        // into the body's argument slot with no null / multi-value guard.
-        int columnOperands = 0;
-        for (FusionNode child : children) {
-            if (child instanceof FusionNode.Input) {
-                columnOperands++;
-            }
-        }
-        List<FusionNode.Constant> helperConstants = constantsInEmitOrder(comparison);
-
-        StringBuilder desc = new StringBuilder("(L").append(WARNINGS).append(";I");
-        for (int i = 0; i < columnOperands; i++) {
-            desc.append(inputElement.blockDescriptor());
-        }
-        appendConstantParamDescriptors(desc, helperConstants);
-        desc.append(")I");
-
-        MethodNode helper = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, methodName, desc.toString(), null, null);
-        InsnList insns = helper.instructions;
-
-        // Params [0..): Warnings, int p, one *Block per column operand, one primitive per constant. Then scratch + body.
-        FrameLayout frame = new FrameLayout();
-        int warningsSlot = frame.slot();
-        int pSlot = frame.slot();
-        int blockBase = frame.slots(columnOperands);         // block params occupy [2 .. 2+columnOperands)
-        Map<FusionNode.Constant, Integer> helperConstantSlots = allocConstantSlots(helperConstants, frame);
-        int countSlot = frame.slot();                        // scratch for getValueCount
-        int bodyBase = frame.mark();                         // the comparison body's shifted locals start here
-        SlotRemapper.shift(body.computation(), bodyBase);
-
-        LabelNode retNull = new LabelNode();
-        int offset = 0;         // running offset into the comparison body's argument slots (one per operand, in order)
-        int blockParam = 0;     // running index of the next *Block parameter (column operands only)
-        for (FusionNode child : children) {
-            if (child instanceof FusionNode.Constant constant) {
-                // Constant operand: load it from its trailing helper parameter into the body's shifted argument slot;
-                // no null / multi-value guard (a constant is always present and single-valued).
-                loadConstantParam(insns, inputElement, constant, helperConstantSlots.get(constant));
-                insns.add(new VarInsnNode(inputElement.type().getOpcode(Opcodes.ISTORE), bodyBase + offset));
-                offset += size;
-                continue;
-            }
-            int block = blockBase + blockParam;
-            blockParam++;
-            LabelNode read = new LabelNode();
-            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-            insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getValueCount", "(I)I", true));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, countSlot));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-            insns.add(new JumpInsnNode(Opcodes.IFEQ, retNull)); // count == 0 -> null, no warning
-            insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-            insns.add(new InsnNode(Opcodes.ICONST_1));
-            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, read)); // count == 1 -> single value
-            // count > 1 -> register the multi-value warning on this comparison's own Warnings (the caller resolved
-            // warnings[this-comparison's-source-slot] and passed it as the single w parameter), then null.
-            insns.add(new VarInsnNode(Opcodes.ALOAD, warningsSlot));
-            emitMultiValueWarningOn(insns);
-            insns.add(new JumpInsnNode(Opcodes.GOTO, retNull));
-            insns.add(read);
-            // v = block.get*(block.getFirstValueIndex(p)); store into the comparison body's shifted arg slot.
-            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-            insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, BLOCK, "getFirstValueIndex", "(I)I", true));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKEINTERFACE,
-                    inputElement.blockInternalName(),
-                    inputElement.getValueMethod(),
-                    inputElement.getValueDescriptor(),
-                    true
-                )
-            );
-            insns.add(new VarInsnNode(inputElement.type().getOpcode(Opcodes.ISTORE), bodyBase + offset));
-            offset += size;
-        }
-        // All operands present and single-valued: run the comparison body (leaves int 0/1) and return it.
-        spliceKernelBody(insns, body.computation(), comparison, debug);
-        insns.add(new InsnNode(Opcodes.IRETURN));
-        insns.add(retNull);
-        insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
-        insns.add(new InsnNode(Opcodes.IRETURN));
-        return helper;
-    }
-
-    /**
-     * The numeric input element of a logical tree: the argument kind of the first comparison operand reached by
-     * descending left spines and {@link FusionNode.Not} children. Every comparison in a fusable logical tree is
-     * homogeneous in the same primitive, so any one determines the element.
-     */
-    private static Type logicalInputType(FusionNode tree) {
-        if (tree instanceof FusionNode.Kernel kernel) {
-            return Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes()[0];
-        }
-        if (tree instanceof FusionNode.Not not) {
-            return logicalInputType(not.child());
-        }
-        return logicalInputType(((FusionNode.Logical) tree).left());
-    }
-
-    /**
-     * Post-order emitter for the fused logical block loop. Leaves each node's tri-state ({@code 0} false / {@code 1}
-     * true / {@code 2} null) in an assigned local slot; comparison operands call their {@code private static} helper,
-     * {@link FusionNode.Logical} nodes combine two child tri-states with the short-circuit 3VL truth tables of
-     * {@code BinaryLogicOperation}, and {@link FusionNode.Not} flips {@code 0↔1} keeping {@code 2}.
-     */
-    private final class LogicalDfsEmitter {
-        private final InsnList insns;
-        private final Element inputElement;
-        private final int inputBase;
-        private final int pSlot;
-        private final int warningsArraySlot;
-        private final Map<FusionNode, Integer> sourceIndices;
-        private final String internalName;
-        private final Map<FusionNode, String> helperNames;
-        private int nextSlot;
-        private final Map<FusionNode.Constant, Integer> constantSlots;
-
-        LogicalDfsEmitter(
-            InsnList insns,
-            Element inputElement,
-            int inputBase,
-            int pSlot,
-            int warningsArraySlot,
-            Map<FusionNode, Integer> sourceIndices,
-            String internalName,
-            Map<FusionNode, String> helperNames,
-            int workBase,
-            Map<FusionNode.Constant, Integer> constantSlots
-        ) {
-            this.insns = insns;
-            this.inputElement = inputElement;
-            this.inputBase = inputBase;
-            this.pSlot = pSlot;
-            this.warningsArraySlot = warningsArraySlot;
-            this.sourceIndices = sourceIndices;
-            this.internalName = internalName;
-            this.helperNames = helperNames;
-            this.nextSlot = workBase;
-            this.constantSlots = constantSlots;
-        }
-
-        /** Claims {@code size} fresh, disjoint local slots and returns the base. */
-        int alloc(int size) {
-            int slot = nextSlot;
-            nextSlot += size;
-            return slot;
-        }
-
-        /** Emits code leaving {@code node}'s tri-state value in {@code tSlot}. */
-        void emit(FusionNode node, int tSlot) {
-            if (node instanceof FusionNode.Logical logical) {
-                emitLogical(logical, tSlot);
-            } else if (node instanceof FusionNode.Not not) {
-                emitNot(not, tSlot);
-            } else {
-                emitComparisonCall((FusionNode.Kernel) node, tSlot);
-            }
-        }
-
-        /**
-         * Kleene 3VL negation: flip 0↔1, keep 2. The child tri-state is evaluated first (and its comparison
-         * warnings fire); Not itself is not a warning source.
-         */
-        private void emitNot(FusionNode.Not not, int tOut) {
-            int tChild = alloc(1);
-            emit(not.child(), tChild);
-            LabelNode setNull = new LabelNode();
-            LabelNode done = new LabelNode();
-            // if (child == 2) -> 2; else -> child XOR 1
-            insns.add(new VarInsnNode(Opcodes.ILOAD, tChild));
-            insns.add(new InsnNode(Opcodes.ICONST_2));
-            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setNull));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, tChild));
-            insns.add(new InsnNode(Opcodes.ICONST_1));
-            insns.add(new InsnNode(Opcodes.IXOR));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
-            insns.add(new JumpInsnNode(Opcodes.GOTO, done));
-            insns.add(setNull);
-            insns.add(new InsnNode(Opcodes.ICONST_2));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
-            insns.add(done);
-        }
-
-        private void emitComparisonCall(FusionNode.Kernel comparison, int tSlot) {
-            String name = helperNames.get(comparison);
-            // Column ({@link FusionNode.Input}) operands are passed as *Block arguments; constant operands follow as
-            // trailing primitive arguments (in canonical emit order), loaded from the top-level fused method's own
-            // constant parameter slots — so the helper is byte-identical for every constant value.
-            List<FusionNode.Constant> callConstants = constantsInEmitOrder(comparison);
-            StringBuilder callDesc = new StringBuilder("(L").append(WARNINGS).append(";I");
-            for (FusionNode child : comparison.children()) {
-                if (child instanceof FusionNode.Input) {
-                    callDesc.append(inputElement.blockDescriptor());
-                }
-            }
-            appendConstantParamDescriptors(callDesc, callConstants);
-            callDesc.append(")I");
-
-            // Pass this comparison's OWN Warnings (warnings[its source slot]) so its multi-value warning is attributed
-            // to the comparison's node source — the same header the unfused comparison evaluator would emit.
-            loadWarnings(insns, warningsArraySlot, sourceIndices.get(comparison));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-            for (FusionNode child : comparison.children()) {
-                if (child instanceof FusionNode.Input input) {
-                    insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + input.index()));
-                }
-            }
-            // Then the non-baked constant arguments, loaded from the top-level fused method's trailing parameter slots
-            // in canonical emit order. Baked constants are not helper params (the helper body pushes the immediate).
-            for (FusionNode.Constant constant : callConstants) {
-                pushConstantArg(insns, constant.element(), constantSlots.get(constant));
-            }
-            insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, name, callDesc.toString(), false));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, tSlot));
-        }
-
-        private void emitLogical(FusionNode.Logical logical, int tOut) {
-            boolean and = logical.op() == FusionNode.BoolOp.AND;
-            // Evaluate BOTH operands unconditionally so each sub-comparison's multi-value warning fires — matching the
-            // unfused BooleanLogicExpressionEvaluator (which evaluates both sides over the whole page) and the
-            // arithmetic block path's per-kernel warning emission. The 3VL VALUE is then a pure function of the two
-            // tri-states, so dropping the eval-time short-circuit changes only WHICH warnings fire (now exact parity,
-            // still ⊆ unfused), never the value/null result.
-            int tLeft = alloc(1);
-            emit(logical.left(), tLeft);
-            int tRight = alloc(1);
-            emit(logical.right(), tRight);
-
-            // The tri-state that, on either operand, decides the result — and equals it: false (0) for AND, true (1)
-            // for OR. When neither side is decisive nor null, the result is the "otherwise" value: true for AND (both
-            // true), false for OR (both false).
-            int decisive = and ? 0 : 1;
-            int otherwise = and ? 1 : 0;
-
-            LabelNode setDecisive = new LabelNode();
-            LabelNode setNull = new LabelNode();
-            LabelNode done = new LabelNode();
-
-            // if (left == decisive || right == decisive) -> decisive
-            insns.add(new VarInsnNode(Opcodes.ILOAD, tLeft));
-            insns.add(new InsnNode(Opcodes.ICONST_0 + decisive));
-            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setDecisive));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, tRight));
-            insns.add(new InsnNode(Opcodes.ICONST_0 + decisive));
-            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setDecisive));
-            // else if (left == null(2) || right == null(2)) -> null
-            insns.add(new VarInsnNode(Opcodes.ILOAD, tLeft));
-            insns.add(new InsnNode(Opcodes.ICONST_2));
-            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setNull));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, tRight));
-            insns.add(new InsnNode(Opcodes.ICONST_2));
-            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setNull));
-            // else -> otherwise (both non-null, non-decisive)
-            insns.add(new InsnNode(Opcodes.ICONST_0 + otherwise));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
-            insns.add(new JumpInsnNode(Opcodes.GOTO, done));
-            insns.add(setDecisive);
-            insns.add(new InsnNode(Opcodes.ICONST_0 + decisive));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
-            insns.add(new JumpInsnNode(Opcodes.GOTO, done));
-            insns.add(setNull);
-            insns.add(new InsnNode(Opcodes.ICONST_2));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
-            insns.add(done);
-        }
     }
 
     /**
@@ -3515,7 +1025,7 @@ public final class Stitcher {
      * {@link FusionNode.Constant} instances get distinct slots even when their values are equal (two equal-valued
      * literals are still separate leaves), so an {@link IdentityHashMap} keys on the node instance, not value-equality.
      */
-    private static Map<FusionNode.Constant, Integer> allocConstantSlots(List<FusionNode.Constant> constants, FrameLayout frame) {
+    static Map<FusionNode.Constant, Integer> allocConstantSlots(List<FusionNode.Constant> constants, FrameLayout frame) {
         Map<FusionNode.Constant, Integer> slots = new IdentityHashMap<>();
         for (FusionNode.Constant constant : constants) {
             if (constant.isBaked()) {
@@ -3526,7 +1036,7 @@ public final class Stitcher {
         return slots;
     }
 
-    private static int constantSlotSize(FusionNode.Constant constant) {
+    static int constantSlotSize(FusionNode.Constant constant) {
         return constant.element() == 'J' || constant.element() == 'D' ? 2 : 1;
     }
 
@@ -3536,7 +1046,7 @@ public final class Stitcher {
      * the full {@code L…;} descriptor of its declared type (e.g. {@code Ljava/util/Locale;}). Baked constants are
      * immediates and must not appear in the method descriptor.
      */
-    private static void appendConstantParamDescriptors(StringBuilder desc, List<FusionNode.Constant> constants) {
+    static void appendConstantParamDescriptors(StringBuilder desc, List<FusionNode.Constant> constants) {
         for (FusionNode.Constant constant : constants) {
             if (constant.isBaked()) {
                 continue;
@@ -3550,7 +1060,7 @@ public final class Stitcher {
     }
 
     /** Whether {@code element}'s JVM sort matches a {@link FusionNode.Constant#element()} descriptor char (J/I/D). */
-    private static boolean elementSortMatches(Element element, char constantElement) {
+    static boolean elementSortMatches(Element element, char constantElement) {
         int sort = element.type().getSort();
         return switch (constantElement) {
             case 'J' -> sort == Type.LONG;
@@ -3618,8 +1128,6 @@ public final class Stitcher {
         return FusionSignature.of(tree).warningSourceCount();
     }
 
-    /** The disjoint local slots a {@link BlockDfsEmitter} node evaluates into: a {@code present} flag and its value. */
-
     /**
      * The per-input {@link Element}, indexed by {@link FusionNode.Input#index()}. With per-node typing a tree may mix
      * element kinds — a leaf reads its column at the element the kernel that consumes it expects (its descriptor's
@@ -3629,7 +1137,7 @@ public final class Stitcher {
      * {@code int} array (the cast body then widens it). Every index in {@code [0, arity)} is populated (the planner
      * assigns input indices densely and each is consumed exactly once).
      */
-    private static Element[] inputElements(FusionSignature signature) {
+    static Element[] inputElements(FusionSignature signature) {
         // The per-input JVM types are derived once, in the FusionSignature walk (with the over-nullify fallback already
         // applied, so every slot is non-null); here we only map each to its bytecode-emission Element — no tree walk.
         Type[] types = signature.inputTypes();
@@ -3641,7 +1149,7 @@ public final class Stitcher {
     }
 
     /** Whether any input leaf reads a reference element (a {@code BYTES_REF}), i.e. the host must allocate a spare. */
-    private static boolean hasReferenceInput(Element[] inputElements) {
+    static boolean hasReferenceInput(Element[] inputElements) {
         for (Element e : inputElements) {
             if (e != null && e.reference()) {
                 return true;
@@ -3655,7 +1163,7 @@ public final class Stitcher {
      * host BEFORE its per-position loop so all positions reuse one spare (matching the generated evaluator's per-eval
      * {@code valScratch}).
      */
-    private static void emitSpareBytesRefInit(InsnList insns, int slot) {
+    static void emitSpareBytesRefInit(InsnList insns, int slot) {
         insns.add(new TypeInsnNode(Opcodes.NEW, BYTES_REF));
         insns.add(new InsnNode(Opcodes.DUP));
         insns.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, BYTES_REF, "<init>", "()V", false));
@@ -3663,7 +1171,7 @@ public final class Stitcher {
     }
 
     /** The tree's output element type — the return type of the root kernel, or boolean for a Logical/Not root. */
-    private Type rootReturnType(FusionNode tree) {
+    static Type rootReturnType(FusionNode tree) {
         if (tree instanceof FusionNode.Kernel kernel) {
             return Type.getMethodType(kernel.descriptor().kernelType()).getReturnType();
         }
@@ -3689,7 +1197,7 @@ public final class Stitcher {
      * message carries the measured bytecode size, and the single plan-time WARN is emitted once per shape by
      * {@code FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure}.
      */
-    private static byte[] serializeWithBudgetGuard(ClassNode classNode, ClassWriter writer, String pathName, boolean enforce)
+    static byte[] serializeWithBudgetGuard(ClassNode classNode, ClassWriter writer, String pathName, boolean enforce)
         throws StitchingException {
         classNode.accept(writer);
         byte[] bytecode = writer.toByteArray();
@@ -3721,6 +1229,39 @@ public final class Stitcher {
             );
         }
         return bytecode;
+    }
+
+    private byte[] emitVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return vectors.emitVectorLoop(caller, tree);
+    }
+
+    private byte[] emitVectorLoopSimd(MethodHandles.Lookup caller, FusionNode tree, String comparison) throws StitchingException {
+        return vectors.emitVectorLoopSimd(caller, tree, comparison);
+    }
+
+    private byte[] emitVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return vectors.emitVectorLoopChecked(caller, tree);
+    }
+
+    private byte[] emitLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return vectors.emitLogicalVectorLoop(caller, tree);
+    }
+
+    private byte[] emitBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return blocks.emitBlockLoop(caller, tree);
+    }
+
+    private byte[] emitMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return blocks.emitMappingBlockLoop(caller, tree);
+    }
+
+    private byte[] emitLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return blocks.emitLogicalBlockLoop(caller, tree);
+    }
+
+    private byte[] emitFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
+        throws StitchingException {
+        return filterEval.emitFilterEvalBlockLoop(caller, predicateTree, projectionTree);
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -3758,6 +1299,10 @@ public final class Stitcher {
 
     byte[] mappingBlockLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         return emitMappingBlockLoop(caller, tree);
+    }
+
+    byte[] simdVectorLoopBytecode(MethodHandles.Lookup caller, FusionNode tree, String comparison) throws StitchingException {
+        return emitVectorLoopSimd(caller, tree, comparison);
     }
 
     /**
