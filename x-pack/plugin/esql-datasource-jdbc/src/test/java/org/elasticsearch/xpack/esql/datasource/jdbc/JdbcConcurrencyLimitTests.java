@@ -9,6 +9,8 @@ package org.elasticsearch.xpack.esql.datasource.jdbc;
 
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.test.ESTestCase;
+import org.junit.After;
+import org.junit.Before;
 
 import java.sql.Connection;
 import java.util.List;
@@ -33,16 +35,14 @@ public class JdbcConcurrencyLimitTests extends ESTestCase {
 
     private JdbcDriverRegistry registry;
 
-    @Override
-    public void setUp() throws Exception {
-        super.setUp();
+    @Before
+    public void setUpJdbc() throws Exception {
         registry = JdbcDriverRegistry.fromClassLoader(getClass().getClassLoader());
     }
 
-    @Override
-    public void tearDown() throws Exception {
+    @After
+    public void tearDownJdbc() throws Exception {
         registry.close();
-        super.tearDown();
     }
 
     public void testSurplusBorrowersFailFastNotBlock() throws Exception {

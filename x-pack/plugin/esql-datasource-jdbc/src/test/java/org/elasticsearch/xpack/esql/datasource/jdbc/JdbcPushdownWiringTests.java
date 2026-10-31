@@ -19,6 +19,8 @@ import org.elasticsearch.xpack.esql.optimizer.rules.physical.local.PushFiltersTo
 import org.elasticsearch.xpack.esql.plan.physical.ExternalSourceExec;
 import org.elasticsearch.xpack.esql.plan.physical.FilterExec;
 import org.elasticsearch.xpack.esql.plan.physical.PhysicalPlan;
+import org.junit.After;
+import org.junit.Before;
 
 import java.util.List;
 import java.util.Map;
@@ -65,16 +67,14 @@ public class JdbcPushdownWiringTests extends ESTestCase {
 
     private JdbcDriverRegistry registry;
 
-    @Override
-    public void setUp() throws Exception {
-        super.setUp();
+    @Before
+    public void setUpJdbc() throws Exception {
         registry = JdbcDriverRegistry.fromClassLoader(getClass().getClassLoader());
     }
 
-    @Override
-    public void tearDown() throws Exception {
+    @After
+    public void tearDownJdbc() throws Exception {
         registry.close();
-        super.tearDown();
     }
 
     public void testBareColumnNumericFilterIsResolvedAndPushed() throws Exception {

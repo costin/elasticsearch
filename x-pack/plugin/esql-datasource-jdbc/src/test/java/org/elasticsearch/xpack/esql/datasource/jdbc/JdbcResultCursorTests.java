@@ -24,6 +24,7 @@ import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.core.type.EsField;
+import org.junit.Before;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -47,9 +48,8 @@ public class JdbcResultCursorTests extends ESTestCase {
     private BlockFactory blockFactory;
     private String jdbcUrl;
 
-    @Override
-    public void setUp() throws Exception {
-        super.setUp();
+    @Before
+    public void setUpJdbc() throws Exception {
         blockFactory = BlockFactory.builder(BigArrays.NON_RECYCLING_INSTANCE).breaker(new TrackingCircuitBreaker()).build();
         jdbcUrl = "jdbc:h2:mem:" + randomAlphaOfLength(10) + ";DB_CLOSE_DELAY=-1";
     }

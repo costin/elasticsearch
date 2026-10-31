@@ -8,6 +8,8 @@
 package org.elasticsearch.xpack.esql.datasource.jdbc;
 
 import org.elasticsearch.test.ESTestCase;
+import org.junit.After;
+import org.junit.Before;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -23,16 +25,14 @@ public class JdbcDriverRegistryTests extends ESTestCase {
 
     private JdbcDriverRegistry registry;
 
-    @Override
-    public void setUp() throws Exception {
-        super.setUp();
+    @Before
+    public void setUpJdbc() throws Exception {
         registry = JdbcDriverRegistry.fromClassLoader(JdbcDriverRegistryTests.class.getClassLoader());
     }
 
-    @Override
-    public void tearDown() throws Exception {
+    @After
+    public void tearDownJdbc() throws Exception {
         registry.close();
-        super.tearDown();
     }
 
     public void testFromClassLoaderFindsH2() {

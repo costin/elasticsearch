@@ -20,6 +20,8 @@ import org.elasticsearch.xpack.esql.core.type.EsField;
 import org.elasticsearch.xpack.esql.datasources.spi.QueryRequest;
 import org.elasticsearch.xpack.esql.datasources.spi.ResultCursor;
 import org.elasticsearch.xpack.esql.datasources.spi.Split;
+import org.junit.After;
+import org.junit.Before;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -46,9 +48,8 @@ public class JdbcTransientRetryTests extends ESTestCase {
     private String jdbcUrl;
     private Connection keepAlive;
 
-    @Override
-    public void setUp() throws Exception {
-        super.setUp();
+    @Before
+    public void setUpJdbc() throws Exception {
         blockFactory = BlockFactory.builder(BigArrays.NON_RECYCLING_INSTANCE)
             .breaker(new NoopCircuitBreaker(CircuitBreaker.REQUEST))
             .build();
@@ -61,10 +62,9 @@ public class JdbcTransientRetryTests extends ESTestCase {
         }
     }
 
-    @Override
-    public void tearDown() throws Exception {
+    @After
+    public void tearDownJdbc() throws Exception {
         keepAlive.close();
-        super.tearDown();
     }
 
     public void testTransientNetworkRetriedOnceThenSucceeds() throws Exception {

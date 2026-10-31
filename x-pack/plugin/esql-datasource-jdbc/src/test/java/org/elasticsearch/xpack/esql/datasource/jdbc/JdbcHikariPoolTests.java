@@ -15,6 +15,8 @@ import org.apache.logging.log4j.core.LogEvent;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.MockLog;
+import org.junit.After;
+import org.junit.Before;
 
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -54,14 +56,13 @@ public class JdbcHikariPoolTests extends ESTestCase {
         );
     }
 
-    @Override
-    public void setUp() throws Exception {
-        super.setUp();
+    @Before
+    public void setUpJdbc() throws Exception {
         registry = JdbcDriverRegistry.fromClassLoader(getClass().getClassLoader());
     }
 
-    @Override
-    public void tearDown() throws Exception {
+    @After
+    public void tearDownJdbc() throws Exception {
         for (JdbcHikariPool pool : poolsToClose) {
             pool.close();
         }
@@ -73,7 +74,6 @@ public class JdbcHikariPoolTests extends ESTestCase {
             }
         }
         registry.close();
-        super.tearDown();
     }
 
     private JdbcHikariPool newPool(JdbcRuntimeConfig config) {

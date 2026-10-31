@@ -21,6 +21,7 @@ import org.elasticsearch.xpack.esql.datasources.spi.DataSourcePlugin;
 import org.elasticsearch.xpack.esql.datasources.spi.ExternalSourceFactory;
 import org.elasticsearch.xpack.esql.datasources.spi.SourceMetadata;
 import org.elasticsearch.xpack.esql.datasources.spi.StoragePath;
+import org.junit.Before;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -60,9 +61,8 @@ public class JdbcDataSourceWiringTests extends ESTestCase {
         );
     }
 
-    @Override
-    public void setUp() throws Exception {
-        super.setUp();
+    @Before
+    public void setUpJdbc() throws Exception {
         blockFactory = BlockFactory.builder(BigArrays.NON_RECYCLING_INSTANCE).breaker(new NoopCircuitBreaker("test")).build();
     }
 

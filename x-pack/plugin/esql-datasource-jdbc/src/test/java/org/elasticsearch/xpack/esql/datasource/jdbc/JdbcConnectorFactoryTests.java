@@ -15,6 +15,8 @@ import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.datasources.spi.Connector;
 import org.elasticsearch.xpack.esql.datasources.spi.QueryRequest;
 import org.elasticsearch.xpack.esql.datasources.spi.SourceMetadata;
+import org.junit.After;
+import org.junit.Before;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -30,22 +32,20 @@ public class JdbcConnectorFactoryTests extends ESTestCase {
     private JdbcDriverRegistry registry;
     private JdbcConnectorFactory factory;
 
-    @Override
-    public void setUp() throws Exception {
-        super.setUp();
+    @Before
+    public void setUpJdbc() throws Exception {
         jdbcUrl = "jdbc:h2:mem:" + randomAlphaOfLength(10) + ";DB_CLOSE_DELAY=-1";
         registry = JdbcDriverRegistry.fromClassLoader(getClass().getClassLoader());
         factory = new JdbcConnectorFactory(registry);
         createMixedTypeTable();
     }
 
-    @Override
-    public void tearDown() throws Exception {
+    @After
+    public void tearDownJdbc() throws Exception {
         // Close the factory first: it owns the HikariCP pool built by the convenience constructor, and the pool must
         // be torn down before the registry (pooled connection teardown needs the registry's driver classloader).
         factory.close();
         registry.close();
-        super.tearDown();
     }
 
     private void createMixedTypeTable() throws Exception {
