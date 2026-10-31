@@ -11,9 +11,13 @@ import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.MockBigArrays;
 import org.elasticsearch.common.util.PageCacheRecycler;
+import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BlockFactory;
 import org.elasticsearch.compute.data.DoubleBlock;
+import org.elasticsearch.compute.data.LongArrayVector;
 import org.elasticsearch.compute.data.LongBlock;
+import org.elasticsearch.compute.data.LongVector;
+import org.elasticsearch.compute.data.Vector;
 import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.Warnings;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
@@ -37,6 +41,8 @@ import java.util.List;
 
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.nullValue;
 
 /**
  * Cross-module overflow acceptance for iter 12 (binding rule #3), the overflow counterpart to
@@ -277,6 +283,180 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
             Releasables.closeExpectNoException(va, vb, result);
         }
         assertWarnings(FIRST_EXCEPTION_HEADER, DOUBLE_OVERFLOW_WARNING);
+    }
+
+    /**
+     * Runtime (ii) of the over-budget {@code fusedRaw} split, forced with a deep left-leaning chain of the real
+     * {@code Add.processLongs} ({@code Math.addExact}). A no-overflow dense page must return a {@link LongArrayVector}.
+     * The class is asserted to expose {@code compute()} so this is the split shell, not the inline body.
+     */
+    public void testCheckedVectorRawSplitNoOverflowReturnsLongArrayVector() throws Throwable {
+        MethodHandles.Lookup lookup = MethodHandles.lookup();
+        SplitTree split = addChainThatSplitsRaw(lookup);
+        MethodType type = MethodType.methodType(
+            LongBlock.class,
+            BlockFactory.class,
+            Warnings[].class,
+            int.class,
+            Vector.class,
+            Vector.class
+        );
+        MethodHandle rawHandle = lookup.findStatic(split.fused, Stitcher.FUSED_RAW_METHOD_NAME, type);
+        Warnings warnings = collectingWarnings();
+
+        long[] a = { 2, 4, 6, 8 };
+        long[] b = { 1, 1, 1, 1 };
+        int positionCount = a.length;
+
+        LongVector va = null, vb = null;
+        Block rawResult = null;
+        try {
+            va = blockFactory.newLongArrayVector(a, positionCount);
+            vb = blockFactory.newLongArrayVector(b, positionCount);
+            rawResult = (Block) rawHandle.invoke(blockFactory, warningsArray(split.tree, warnings), positionCount, va, vb);
+            assertThat(
+                "split fusedRaw no-overflow page must wrap a LongArrayVector",
+                rawResult.asVector().getClass(),
+                equalTo(LongArrayVector.class)
+            );
+            assertThat(rawResult.getPositionCount(), equalTo(positionCount));
+            for (int p = 0; p < positionCount; p++) {
+                Long expected = refAddChain(split.depth, a[p], b[p]);
+                assertThat("p=" + p + " must not overflow at depth=" + split.depth, expected, not(nullValue()));
+                assertThat("p=" + p, rawResult.isNull(p), is(false));
+                assertThat("p=" + p, ((LongBlock) rawResult).getLong(p), equalTo(expected.longValue()));
+            }
+        } finally {
+            Releasables.closeExpectNoException(va, vb, rawResult);
+        }
+        assertWarnings();
+    }
+
+    /**
+     * Runtime (iii) of the over-budget {@code fusedRaw} split on the real {@code Add.processLongs} chain: overflow
+     * returns {@code null} from {@code fusedRaw} (no warnings), and the builder {@code fused} re-run matches unfused
+     * nulls + warnings.
+     */
+    public void testCheckedVectorRawSplitOverflowReturnsNullThenBuilderMatchesUnfused() throws Throwable {
+        MethodHandles.Lookup lookup = MethodHandles.lookup();
+        SplitTree split = addChainThatSplitsRaw(lookup);
+        MethodType type = MethodType.methodType(
+            LongBlock.class,
+            BlockFactory.class,
+            Warnings[].class,
+            int.class,
+            Vector.class,
+            Vector.class
+        );
+        MethodHandle rawHandle = lookup.findStatic(split.fused, Stitcher.FUSED_RAW_METHOD_NAME, type);
+        MethodHandle builderHandle = lookup.findStatic(split.fused, Stitcher.FUSED_METHOD_NAME, type);
+
+        long[] a = { Long.MAX_VALUE, 2, 4, 6 };
+        long[] b = { 1, 1, 1, 1 };
+        int positionCount = a.length;
+
+        LongVector va = null, vb = null;
+        Block rawResult = null;
+        LongBlock builderResult = null;
+        try {
+            va = blockFactory.newLongArrayVector(a, positionCount);
+            vb = blockFactory.newLongArrayVector(b, positionCount);
+
+            Warnings rawWarnings = collectingWarnings();
+            rawResult = (Block) rawHandle.invoke(blockFactory, warningsArray(split.tree, rawWarnings), positionCount, va, vb);
+            assertThat("split fusedRaw must abandon the page on the first overflow", rawResult, nullValue());
+            assertWarnings();
+
+            Warnings builderWarnings = collectingWarnings();
+            builderResult = (LongBlock) builderHandle.invoke(
+                blockFactory,
+                warningsArray(split.tree, builderWarnings),
+                positionCount,
+                va,
+                vb
+            );
+            for (int p = 0; p < positionCount; p++) {
+                Long expected = refAddChain(split.depth, a[p], b[p]);
+                if (expected == null) {
+                    assertThat("p=" + p, builderResult.isNull(p), is(true));
+                } else {
+                    assertThat("p=" + p, builderResult.isNull(p), is(false));
+                    assertThat("p=" + p, builderResult.getLong(builderResult.getFirstValueIndex(p)), equalTo(expected.longValue()));
+                }
+            }
+            assertThat("p0 overflow -> null", builderResult.isNull(0), is(true));
+        } finally {
+            Releasables.closeExpectNoException(va, vb, rawResult, builderResult);
+        }
+        assertWarnings(FIRST_EXCEPTION_HEADER, LONG_OVERFLOW_WARNING);
+    }
+
+    /**
+     * Left-leaning chain of {@code depth} real {@code Add.processLongs} kernels: {@code (((in0 + in1) + in1) + in1)...}.
+     */
+    private static FusionNode addChain(int depth) {
+        FusionDescriptor add = new FusionDescriptor(Add.class, "processLongs", "(JJ)J", true, true);
+        FusionNode node = new FusionNode.Kernel(add, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
+        for (int i = 1; i < depth; i++) {
+            node = new FusionNode.Kernel(add, List.of(node, new FusionNode.Input(1)));
+        }
+        return node;
+    }
+
+    /**
+     * Smallest power-of-two depth whose checked-vector class exposes {@code compute()} — the fusedRaw split. Doubling
+     * keeps the hidden-class defines bounded; production emit is not intercepted.
+     */
+    private SplitTree addChainThatSplitsRaw(MethodHandles.Lookup lookup) throws Exception {
+        FusionNode shallow = addChain(1);
+        Class<?> shallowFused = stitcher.compileVectorLoopChecked(lookup, shallow);
+        assertThat(
+            "depth-1 fusedRaw must stay inline (no compute helper) so the split assertion below is not a tautology",
+            hasCompute(shallowFused),
+            is(false)
+        );
+        for (int depth = 8; depth <= 128; depth *= 2) {
+            FusionNode tree = addChain(depth);
+            Class<?> fused = stitcher.compileVectorLoopChecked(lookup, tree);
+            if (hasCompute(fused)) {
+                return new SplitTree(depth, tree, fused);
+            }
+        }
+        throw new AssertionError("fusedRaw never split through depth 128; emitCheckedVectorRawSplit was not reached");
+    }
+
+    private static boolean hasCompute(Class<?> fused) {
+        for (Method m : fused.getDeclaredMethods()) {
+            if ("compute".equals(m.getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static final class SplitTree {
+        final int depth;
+        final FusionNode tree;
+        final Class<?> fused;
+
+        SplitTree(int depth, FusionNode tree, Class<?> fused) {
+            this.depth = depth;
+            this.tree = tree;
+            this.fused = fused;
+        }
+    }
+
+    /** Unfused reference for a depth-{@code depth} left-leaning {@code addExact} chain: {@code in0 + depth * in1}. */
+    private static Long refAddChain(int depth, long a, long b) {
+        try {
+            long acc = a;
+            for (int i = 0; i < depth; i++) {
+                acc = Math.addExact(acc, b);
+            }
+            return acc;
+        } catch (ArithmeticException e) {
+            return null;
+        }
     }
 
     private static Long refLong(Method unfused, long a, long b) throws Exception {

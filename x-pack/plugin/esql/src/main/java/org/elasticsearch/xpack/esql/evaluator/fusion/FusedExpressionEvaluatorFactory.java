@@ -61,7 +61,9 @@ import java.util.List;
  *   <li><b>Plain vector fast path</b> ({@link Stitcher#compileVectorLoop}) — compiled when <b>no</b> kernel is
  *       overflow-checked (so nothing can throw and an {@code ArrayVector} with no null bitmask is a valid output).</li>
  *   <li><b>Checked vector fast path</b> ({@link Stitcher#compileVectorLoopChecked}) — compiled when the tree is
- *       overflow-checked, for <b>every</b> numeric element (including {@code double}).</li>
+ *       overflow-checked, for <b>every</b> numeric element (including {@code double}). Eval invokes {@code fusedRaw}
+ *       first (dense {@code *ArrayVector} output); a {@code null} Block means the page overflowed and the builder-based
+ *       {@code fused} method re-runs that page.</li>
  *   <li><b>Dense logical vector path</b> ({@link Stitcher#compileLogicalVectorLoop}) — compiled for a 3VL
  *       {@code AND}/{@code OR} tree alongside its block path. At eval time, a page whose every input
  *       {@code asVector()} is non-null takes the 2VL vector loop (ALL-RAW or ALL-INTERFACE); otherwise the 3VL
@@ -104,7 +106,10 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     enum VectorStrategy {
         /** {@link Stitcher#compileVectorLoop}: dense no-null {@code ArrayVector} inputs, non-overflow kernels only. */
         PLAIN_VECTOR,
-        /** {@link Stitcher#compileVectorLoopChecked}: dense inputs, overflow-checked (any numeric element, incl. double). */
+        /**
+         * {@link Stitcher#compileVectorLoopChecked}: dense inputs, overflow-checked (any numeric element, incl. double).
+         * One hidden class, two methods: {@code fusedRaw} then builder {@code fused} on overflow-abandon.
+         */
         CHECKED_VECTOR,
         /**
          * {@link Stitcher#compileLogicalVectorLoop}: dense (any vector kind, no nulls / multi-values) 2VL evaluation
@@ -154,6 +159,14 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * Null on every other strategy. The factory picks {@link #vectorHandle} (ALL-RAW) vs this handle per page.
      */
     private final MethodHandle vectorHandleInterface;
+    /**
+     * The overflow-abandoning raw-array sibling of {@link #vectorHandle}, bound only for
+     * {@link VectorStrategy#CHECKED_VECTOR}. Null on every other strategy. Eval invokes this first; a {@code null}
+     * {@link Block} means the page overflowed and {@link #vectorHandle} (the builder-based {@code fused} method)
+     * re-runs it. Dedicated field — not {@link #vectorHandleInterface} — so LOGICAL_VECTOR's interface handle stays
+     * unambiguous.
+     */
+    private final MethodHandle vectorHandleRaw;
     private final VectorStrategy vectorStrategy;
     private final ExpressionEvaluator.Factory unfused;
     private final String shape;
@@ -192,6 +205,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             blockHandle,
             vectorHandle,
             null,
+            null,
             vectorStrategy,
             unfused,
             shape,
@@ -213,12 +227,43 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         List<FusionNode.Constant> constants,
         boolean mapping
     ) {
+        this(
+            warningSources,
+            inputChannels,
+            inputElements,
+            blockHandle,
+            vectorHandle,
+            vectorHandleInterface,
+            null,
+            vectorStrategy,
+            unfused,
+            shape,
+            constants,
+            mapping
+        );
+    }
+
+    private FusedExpressionEvaluatorFactory(
+        Source[] warningSources,
+        int[] inputChannels,
+        ElementKind[] inputElements,
+        MethodHandle blockHandle,
+        MethodHandle vectorHandle,
+        MethodHandle vectorHandleInterface,
+        MethodHandle vectorHandleRaw,
+        VectorStrategy vectorStrategy,
+        ExpressionEvaluator.Factory unfused,
+        String shape,
+        List<FusionNode.Constant> constants,
+        boolean mapping
+    ) {
         this.warningSources = warningSources;
         this.inputChannels = inputChannels;
         this.inputElements = inputElements;
         this.blockHandle = blockHandle;
         this.vectorHandle = vectorHandle;
         this.vectorHandleInterface = vectorHandleInterface;
+        this.vectorHandleRaw = vectorHandleRaw;
         this.vectorStrategy = vectorStrategy;
         this.unfused = unfused;
         this.shape = shape;
@@ -372,6 +417,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             }
 
             MethodHandle vectorHandle;
+            MethodHandle vectorHandleRaw = null;
             VectorStrategy strategy;
             try {
                 if (overflowChecked == false) {
@@ -397,13 +443,12 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     // the checked-vector path now: the fused class is defined in the caller's (esql-proper) module —
                     // reaching the backing array through the public VectorUnsafe forwarder rather than a compute.data
                     // teleport — so it links non-java.base kernel callees just like the block path. The old
-                    // double+overflow hard gate (VectorStrategy.NONE) is gone.
+                    // double+overflow hard gate (VectorStrategy.NONE) is gone. Both fused (builder) and fusedRaw
+                    // (dense ArrayVector, abandon on overflow) are bound from that one class.
                     Class<?> vectorClass = compiler.compileVectorLoopChecked(LOOKUP, tree);
-                    vectorHandle = LOOKUP.findStatic(
-                        vectorClass,
-                        Stitcher.FUSED_METHOD_NAME,
-                        checkedVectorType(outputElement, arity, constantParamTypes)
-                    );
+                    MethodType checkedType = checkedVectorType(outputElement, arity, constantParamTypes);
+                    vectorHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, checkedType);
+                    vectorHandleRaw = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_RAW_METHOD_NAME, checkedType);
                     strategy = VectorStrategy.CHECKED_VECTOR;
                 }
             } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError vectorFailure) {
@@ -437,6 +482,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 inputElements,
                 blockHandle,
                 vectorHandle,
+                null,
+                vectorHandleRaw,
                 strategy,
                 unfused,
                 shape,
@@ -466,6 +513,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             blockHandle,
             vectorHandle,
             vectorHandleInterface,
+            vectorHandleRaw,
             vectorStrategy,
             unfused,
             context,
@@ -689,6 +737,14 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         private final Object[] vectorScratch;
         /** ALL-INTERFACE spreader; null unless {@link VectorStrategy#LOGICAL_VECTOR}. Shares {@link #vectorScratch}. */
         private final MethodHandle vectorInterfaceSpreader;
+        /**
+         * {@code fusedRaw} spreader. Production {@link VectorStrategy#CHECKED_VECTOR} always binds this together with
+         * {@link #vectorSpreader} (a {@code findStatic(fusedRaw)} failure degrades the whole vector path to
+         * {@link VectorStrategy#NONE}, not a builder-only CHECKED_VECTOR). Null here is only a belt-and-braces guard
+         * for test compilers that emit {@code fused} without {@code fusedRaw}. Shares {@link #vectorScratch} with
+         * {@link #vectorSpreader} (same descriptor).
+         */
+        private final MethodHandle vectorRawSpreader;
 
         private Warnings[] warnings;
         // Lazily built only if a defensive LinkageError forces a per-page fallback; closed with this evaluator.
@@ -712,6 +768,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             MethodHandle blockHandle,
             MethodHandle vectorHandle,
             MethodHandle vectorHandleInterface,
+            MethodHandle vectorHandleRaw,
             VectorStrategy vectorStrategy,
             ExpressionEvaluator.Factory unfusedFactory,
             DriverContext driverContext,
@@ -741,6 +798,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 this.vectorSpreader = null;
                 this.vectorScratch = null;
                 this.vectorInterfaceSpreader = null;
+                this.vectorRawSpreader = null;
             } else {
                 // Plain / logical vector: (BlockFactory, int) + vectors + constants. Checked vector: adds Warnings[].
                 int vectorArgCount = (vectorStrategy == VectorStrategy.CHECKED_VECTOR ? 3 : 2) + arity + constCount;
@@ -749,6 +807,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 this.vectorInterfaceSpreader = vectorHandleInterface == null
                     ? null
                     : vectorHandleInterface.asSpreader(Object[].class, vectorArgCount);
+                this.vectorRawSpreader = vectorHandleRaw == null ? null : vectorHandleRaw.asSpreader(Object[].class, vectorArgCount);
             }
         }
 
@@ -818,13 +877,27 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                             Vector out = (Vector) vectorSpreader.invoke(args);
                             return out.asBlock();
                         }
-                        // CHECKED_VECTOR
+                        // CHECKED_VECTOR. Production binding is all-or-nothing: findStatic(fused) and
+                        // findStatic(fusedRaw) either both succeed, or the vector path degrades to
+                        // VectorStrategy.NONE (block-only) — there is no builder-only CHECKED_VECTOR mode.
+                        // vectorRawSpreader == null is only a belt-and-braces guard for test compilers that
+                        // emit fused without fusedRaw.
+                        // Invoke fusedRaw first. A null Block means the page overflowed — abandon the uncharged
+                        // out[] (GC) and re-run the same args through the builder-based fused method, which
+                        // produces the unfused nulls + warnings. fusedRaw ignores Warnings[]; they are populated
+                        // only on the re-run.
                         Object[] args = vectorScratch;
                         args[0] = blockFactory;
                         args[1] = warnings();
                         args[2] = positionCount;
                         System.arraycopy(vectors, 0, args, 3, arity);
                         System.arraycopy(constantValues, 0, args, 3 + arity, constCount);
+                        if (vectorRawSpreader != null) {
+                            Block raw = (Block) vectorRawSpreader.invoke(args);
+                            if (raw != null) {
+                                return raw;
+                            }
+                        }
                         return (Block) vectorSpreader.invoke(args);
                     }
                 }

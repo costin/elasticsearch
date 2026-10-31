@@ -11,7 +11,10 @@ import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.MockBigArrays;
 import org.elasticsearch.common.util.PageCacheRecycler;
+import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BlockFactory;
+import org.elasticsearch.compute.data.ConstantLongVector;
+import org.elasticsearch.compute.data.LongArrayVector;
 import org.elasticsearch.compute.data.LongBlock;
 import org.elasticsearch.compute.data.LongVector;
 import org.elasticsearch.compute.data.Vector;
@@ -23,15 +26,27 @@ import org.elasticsearch.indices.breaker.CircuitBreakerService;
 import org.elasticsearch.test.ESTestCase;
 import org.junit.After;
 import org.junit.Before;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassVisitor;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
+import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.lessThan;
+import static org.hamcrest.Matchers.lessThanOrEqualTo;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.nullValue;
 
 /**
  * Overflow proof for iter 12 (binding rule #3). The block path ({@link Stitcher#compileBlockLoop}) and the
@@ -344,6 +359,304 @@ public class StitcherOverflowTests extends ESTestCase {
         assertWarnings();
     }
 
+    /**
+     * Task 3 (a): a CHECKED_VECTOR page with no overflow must return a {@link LongArrayVector} from {@code fusedRaw}.
+     * The existing builder-based {@code fused} method is left unchanged: a single-row dense page still collapses to
+     * {@link ConstantLongVector} there. That TODAY class is pinned first so the new {@code fusedRaw} expectation is
+     * the assertion that fails before the emit lands.
+     */
+    public void testCheckedVectorRawPathNoOverflowReturnsLongArrayVector() throws Throwable {
+        FusionNode tree = addThenMulTree();
+        Class<?> fused = stitcher.compileVectorLoopChecked(MethodHandles.lookup(), tree);
+        MethodType type = checkedVectorType(3);
+        MethodHandle builderHandle = MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);
+        Warnings warnings = collectingWarnings();
+
+        // Single-row dense page: the builder path's 1-value collapse is ConstantLongVector TODAY.
+        long[] a = { 3 };
+        long[] b = { 4 };
+        long[] c = { 5 };
+        int positionCount = 1;
+
+        LongVector va = null, vb = null, vc = null;
+        Block builderResult = null;
+        Block rawResult = null;
+        try {
+            va = blockFactory.newLongArrayVector(a, positionCount);
+            vb = blockFactory.newLongArrayVector(b, positionCount);
+            vc = blockFactory.newLongArrayVector(c, positionCount);
+            builderResult = (Block) builderHandle.invoke(blockFactory, warningsArray(tree, warnings), positionCount, va, vb, vc);
+            assertThat(
+                "TODAY the builder-based fused method collapses a 1-row dense page to ConstantLongVector",
+                builderResult.asVector().getClass(),
+                equalTo(ConstantLongVector.class)
+            );
+
+            MethodHandle rawHandle = MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_RAW_METHOD_NAME, type);
+            rawResult = (Block) rawHandle.invoke(blockFactory, warningsArray(tree, warnings), positionCount, va, vb, vc);
+            assertThat(
+                "fusedRaw no-overflow page must wrap a LongArrayVector (not the builder's ConstantLongVector)",
+                rawResult.asVector().getClass(),
+                equalTo(LongArrayVector.class)
+            );
+            assertThat(rawResult.isNull(0), is(false));
+            assertThat(((LongBlock) rawResult).getLong(0), equalTo(35L));
+        } finally {
+            Releasables.closeExpectNoException(va, vb, vc, builderResult, rawResult);
+        }
+        assertWarnings();
+    }
+
+    /**
+     * Task 3 (b) at the stitcher: {@code fusedRaw} must abandon (return {@code null}, register no warnings) on the
+     * first overflow so the caller can re-run the builder-based {@code fused} method, which then produces the unfused
+     * nulls + warnings.
+     */
+    public void testCheckedVectorRawPathOverflowReturnsNullThenBuilderMatchesUnfused() throws Throwable {
+        FusionNode tree = addThenMulTree();
+        Class<?> fused = stitcher.compileVectorLoopChecked(MethodHandles.lookup(), tree);
+        MethodType type = checkedVectorType(3);
+        MethodHandle builderHandle = MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);
+        MethodHandle rawHandle = MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_RAW_METHOD_NAME, type);
+
+        // p0: intermediate add overflows. p1: clean. p2: root mul overflows. p3: clean.
+        long[] a = { Long.MAX_VALUE, 3, 2, 10 };
+        long[] b = { 1, 4, 3, 20 };
+        long[] c = { 7, 5, Long.MAX_VALUE, 2 };
+        int positionCount = a.length;
+
+        LongVector va = null, vb = null, vc = null;
+        Block rawResult = null;
+        LongBlock builderResult = null;
+        try {
+            va = blockFactory.newLongArrayVector(a, positionCount);
+            vb = blockFactory.newLongArrayVector(b, positionCount);
+            vc = blockFactory.newLongArrayVector(c, positionCount);
+
+            Warnings rawWarnings = collectingWarnings();
+            rawResult = (Block) rawHandle.invoke(blockFactory, warningsArray(tree, rawWarnings), positionCount, va, vb, vc);
+            assertThat("fusedRaw must abandon the page on the first overflow", rawResult, nullValue());
+            // fusedRaw must not register warnings — those come only from the builder re-run.
+            assertWarnings();
+
+            Warnings builderWarnings = collectingWarnings();
+            builderResult = (LongBlock) builderHandle.invoke(blockFactory, warningsArray(tree, builderWarnings), positionCount, va, vb, vc);
+            assertThat("p0 overflow -> null", builderResult.isNull(0), is(true));
+            assertThat("p2 overflow -> null", builderResult.isNull(2), is(true));
+            assertThat("p1 value", builderResult.getLong(builderResult.getFirstValueIndex(1)), equalTo(35L));
+            assertThat("p3 value", builderResult.getLong(builderResult.getFirstValueIndex(3)), equalTo(60L));
+        } finally {
+            Releasables.closeExpectNoException(va, vb, vc, rawResult, builderResult);
+        }
+        assertWarnings(FIRST_EXCEPTION_HEADER, OVERFLOW_WARNING);
+    }
+
+    /**
+     * Task 3 (c): {@code fusedRaw} must not touch any {@code *Block$Builder}. {@code INVOKEVIRTUAL BlockFactory.
+     * new*ArrayVector} is the allowed write; the builder-based {@code fused} sibling keeps its builder invokes.
+     */
+    public void testCheckedVectorRawMethodHasNoBlockBuilderInvokes() throws Exception {
+        FusionNode tree = addThenMulTree();
+        byte[] bytecode = stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), tree);
+
+        List<String> methods = new ArrayList<>();
+        List<String> rawBuilderInvokes = new ArrayList<>();
+        new ClassReader(bytecode).accept(new ClassVisitor(Opcodes.ASM9) {
+            @Override
+            public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                methods.add(name);
+                boolean isRaw = Stitcher.FUSED_RAW_METHOD_NAME.equals(name);
+                return new MethodVisitor(Opcodes.ASM9) {
+                    @Override
+                    public void visitMethodInsn(int opcode, String owner, String mName, String mDesc, boolean isInterface) {
+                        if (isRaw == false) {
+                            return;
+                        }
+                        boolean builderOwner = owner.contains("Block$Builder");
+                        if (builderOwner && (opcode == Opcodes.INVOKEINTERFACE || opcode == Opcodes.INVOKEVIRTUAL)) {
+                            rawBuilderInvokes.add(name + ": " + opcodeName(opcode) + " " + owner + "." + mName + mDesc);
+                        }
+                    }
+                };
+            }
+        }, 0);
+
+        assertThat("checked-vector class must emit fusedRaw", methods, hasItem(Stitcher.FUSED_RAW_METHOD_NAME));
+        assertThat("fusedRaw must not invoke *Block$Builder: " + rawBuilderInvokes, rawBuilderInvokes, is(empty()));
+    }
+
+    /**
+     * Over-budget {@code fusedRaw} is emitted via {@code emitCheckedVectorRawSplit}: the expression is lifted into a
+     * private {@code compute()} helper and the loop calls {@code compute()} inside the overflow try. Forced with a
+     * left-leaning {@code addExact} chain that exceeds {@link Stitcher#MAX_FUSED_METHOD_BYTECODES} — production emit is
+     * not altered. The representative depth-2 tree is asserted to stay inline so a passing {@code compute()} check is
+     * evidence the split was actually taken.
+     */
+    public void testCheckedVectorRawSplitHasNoBlockBuilderInvokes() throws Exception {
+        byte[] inline = stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), addThenMulTree());
+        assertThat(
+            "depth-2 fusedRaw must stay inline (no compute helper) so the split assertion below is not a tautology",
+            methodNames(inline),
+            not(hasItem("compute"))
+        );
+
+        SplitTree split = addChainThatSplitsRaw();
+        List<String> methods = methodNames(split.bytecode);
+        assertThat("over-budget fusedRaw must lift into compute()", methods, hasItem("compute"));
+        assertThat(methods, hasItem(Stitcher.FUSED_RAW_METHOD_NAME));
+
+        List<String> rawBuilderInvokes = new ArrayList<>();
+        boolean[] fusedRawCallsCompute = { false };
+        new ClassReader(split.bytecode).accept(new ClassVisitor(Opcodes.ASM9) {
+            @Override
+            public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                boolean isRaw = Stitcher.FUSED_RAW_METHOD_NAME.equals(name);
+                return new MethodVisitor(Opcodes.ASM9) {
+                    @Override
+                    public void visitMethodInsn(int opcode, String owner, String mName, String mDesc, boolean isInterface) {
+                        if (isRaw == false) {
+                            return;
+                        }
+                        if ("compute".equals(mName) && opcode == Opcodes.INVOKESTATIC) {
+                            fusedRawCallsCompute[0] = true;
+                        }
+                        boolean builderOwner = owner.contains("Block$Builder");
+                        if (builderOwner && (opcode == Opcodes.INVOKEINTERFACE || opcode == Opcodes.INVOKEVIRTUAL)) {
+                            rawBuilderInvokes.add(name + ": " + opcodeName(opcode) + " " + owner + "." + mName + mDesc);
+                        }
+                    }
+                };
+            }
+        }, 0);
+
+        assertThat("split fusedRaw loop must INVOKESTATIC compute()", fusedRawCallsCompute[0], is(true));
+        assertThat("split fusedRaw must not invoke *Block$Builder: " + rawBuilderInvokes, rawBuilderInvokes, is(empty()));
+
+        int rawSize = Stitcher.methodCodeLength(split.bytecode, Stitcher.FUSED_RAW_METHOD_NAME);
+        assertThat("split fusedRaw emitted a Code attribute", rawSize, greaterThan(0));
+        assertThat(
+            "split fusedRaw shell itself must stay within the inlining budget (does not refuse the unbudgeted builder)",
+            rawSize,
+            lessThanOrEqualTo(Stitcher.MAX_FUSED_METHOD_BYTECODES)
+        );
+        assertThat(
+            "split fusedRaw must be the tiny call-loop, not the inlined expression",
+            rawSize,
+            lessThan(Stitcher.MAX_FUSED_METHOD_BYTECODES / 2)
+        );
+    }
+
+    /**
+     * Split {@code fusedRaw} no-overflow dense page returns a {@link LongArrayVector}. Same deep addExact chain that
+     * tripped the split in {@link #testCheckedVectorRawSplitHasNoBlockBuilderInvokes}.
+     */
+    public void testCheckedVectorRawSplitNoOverflowReturnsLongArrayVector() throws Throwable {
+        SplitTree split = addChainThatSplitsRaw();
+        Class<?> fused = stitcher.compileVectorLoopChecked(MethodHandles.lookup(), split.tree);
+        MethodType type = checkedVectorType(2);
+        MethodHandle rawHandle = MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_RAW_METHOD_NAME, type);
+        Warnings warnings = collectingWarnings();
+
+        long[] a = { 2, 4, 6, 8 };
+        long[] b = { 1, 1, 1, 1 };
+        int positionCount = a.length;
+
+        LongVector va = null, vb = null;
+        Block rawResult = null;
+        try {
+            va = blockFactory.newLongArrayVector(a, positionCount);
+            vb = blockFactory.newLongArrayVector(b, positionCount);
+            rawResult = (Block) rawHandle.invoke(blockFactory, warningsArray(split.tree, warnings), positionCount, va, vb);
+            assertThat(
+                "split fusedRaw no-overflow page must wrap a LongArrayVector",
+                rawResult.asVector().getClass(),
+                equalTo(LongArrayVector.class)
+            );
+            assertThat(rawResult.getPositionCount(), equalTo(positionCount));
+            for (int p = 0; p < positionCount; p++) {
+                Long expected = refAddChain(split.depth, a[p], b[p]);
+                assertThat("p=" + p + " must not overflow at depth=" + split.depth, expected, not(nullValue()));
+                assertThat("p=" + p, rawResult.isNull(p), is(false));
+                assertThat("p=" + p, ((LongBlock) rawResult).getLong(p), equalTo(expected.longValue()));
+            }
+        } finally {
+            Releasables.closeExpectNoException(va, vb, rawResult);
+        }
+        assertWarnings();
+    }
+
+    /**
+     * Split {@code fusedRaw} abandons (returns {@code null}, no warnings) on the first overflow; the builder {@code fused}
+     * re-run then matches the unfused nulls + warnings.
+     */
+    public void testCheckedVectorRawSplitOverflowReturnsNullThenBuilderMatchesUnfused() throws Throwable {
+        SplitTree split = addChainThatSplitsRaw();
+        Class<?> fused = stitcher.compileVectorLoopChecked(MethodHandles.lookup(), split.tree);
+        MethodType type = checkedVectorType(2);
+        MethodHandle rawHandle = MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_RAW_METHOD_NAME, type);
+        MethodHandle builderHandle = MethodHandles.lookup().findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);
+
+        long[] a = { Long.MAX_VALUE, 2, 4, 6 };
+        long[] b = { 1, 1, 1, 1 };
+        int positionCount = a.length;
+
+        LongVector va = null, vb = null;
+        Block rawResult = null;
+        LongBlock builderResult = null;
+        try {
+            va = blockFactory.newLongArrayVector(a, positionCount);
+            vb = blockFactory.newLongArrayVector(b, positionCount);
+
+            Warnings rawWarnings = collectingWarnings();
+            rawResult = (Block) rawHandle.invoke(blockFactory, warningsArray(split.tree, rawWarnings), positionCount, va, vb);
+            assertThat("split fusedRaw must abandon the page on the first overflow", rawResult, nullValue());
+            assertWarnings();
+
+            Warnings builderWarnings = collectingWarnings();
+            builderResult = (LongBlock) builderHandle.invoke(
+                blockFactory,
+                warningsArray(split.tree, builderWarnings),
+                positionCount,
+                va,
+                vb
+            );
+            for (int p = 0; p < positionCount; p++) {
+                Long expected = refAddChain(split.depth, a[p], b[p]);
+                if (expected == null) {
+                    assertThat("p=" + p, builderResult.isNull(p), is(true));
+                } else {
+                    assertThat("p=" + p, builderResult.isNull(p), is(false));
+                    assertThat("p=" + p, builderResult.getLong(builderResult.getFirstValueIndex(p)), equalTo(expected.longValue()));
+                }
+            }
+            assertThat("p0 overflow -> null", builderResult.isNull(0), is(true));
+        } finally {
+            Releasables.closeExpectNoException(va, vb, rawResult, builderResult);
+        }
+        assertWarnings(FIRST_EXCEPTION_HEADER, OVERFLOW_WARNING);
+    }
+
+    private static String opcodeName(int opcode) {
+        return switch (opcode) {
+            case Opcodes.INVOKEINTERFACE -> "INVOKEINTERFACE";
+            case Opcodes.INVOKEVIRTUAL -> "INVOKEVIRTUAL";
+            case Opcodes.INVOKESTATIC -> "INVOKESTATIC";
+            case Opcodes.INVOKESPECIAL -> "INVOKESPECIAL";
+            default -> Integer.toString(opcode);
+        };
+    }
+
+    private static MethodType checkedVectorType(int arity) {
+        Class<?>[] params = new Class<?>[3 + arity];
+        params[0] = BlockFactory.class;
+        params[1] = Warnings[].class;
+        params[2] = int.class;
+        for (int i = 0; i < arity; i++) {
+            params[3 + i] = Vector.class;
+        }
+        return MethodType.methodType(LongBlock.class, params);
+    }
+
     // ---------------------------------------------------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------------------------------------------------
@@ -356,6 +669,72 @@ public class StitcherOverflowTests extends ESTestCase {
             mul,
             List.of(new FusionNode.Kernel(add, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
         );
+    }
+
+    /**
+     * Left-leaning chain of {@code depth} {@code addExact} kernels reusing two inputs:
+     * {@code (((in0 + in1) + in1) + in1)...}. Each additional kernel is one {@code Math.addExact} in the spliced body,
+     * so walking depth is a reliable way to push {@code fusedRaw} over {@link Stitcher#MAX_FUSED_METHOD_BYTECODES}.
+     */
+    private static FusionNode addChain(int depth) {
+        FusionDescriptor add = new FusionDescriptor(LongKernels.class, "add", "(JJ)J", true, true);
+        FusionNode node = new FusionNode.Kernel(add, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
+        for (int i = 1; i < depth; i++) {
+            node = new FusionNode.Kernel(add, List.of(node, new FusionNode.Input(1)));
+        }
+        return node;
+    }
+
+    /**
+     * Smallest left-leaning addExact chain whose checked-vector class emits a {@code compute()} helper — i.e. the
+     * {@code fusedRaw} split, not the inline body. Production emit is not intercepted.
+     */
+    private SplitTree addChainThatSplitsRaw() throws Exception {
+        for (int depth = 4; depth <= 128; depth++) {
+            FusionNode tree = addChain(depth);
+            byte[] bytecode = stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), tree);
+            if (methodNames(bytecode).contains("compute")) {
+                return new SplitTree(depth, tree, bytecode);
+            }
+        }
+        throw new AssertionError("fusedRaw never split through depth 128; emitCheckedVectorRawSplit was not reached");
+    }
+
+    private static List<String> methodNames(byte[] bytecode) {
+        List<String> names = new ArrayList<>();
+        new ClassReader(bytecode).accept(new ClassVisitor(Opcodes.ASM9) {
+            @Override
+            public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                names.add(name);
+                return null;
+            }
+        }, 0);
+        return names;
+    }
+
+    private static final class SplitTree {
+        final int depth;
+        final FusionNode tree;
+        final byte[] bytecode;
+
+        SplitTree(int depth, FusionNode tree, byte[] bytecode) {
+            this.depth = depth;
+            this.tree = tree;
+            this.bytecode = bytecode;
+        }
+    }
+
+    /** Unfused reference for a depth-{@code depth} left-leaning {@code addExact} chain: {@code in0 + depth * in1}. */
+    private static Long refAddChain(int depth, long a, long b) {
+        try {
+            long acc = a;
+            for (int i = 0; i < depth; i++) {
+                acc = Math.addExact(acc, b);
+            }
+            return acc;
+        } catch (ArithmeticException e) {
+            return null;
+        }
     }
 
     /** Unfused reference for {@code (a + b) * c}: null iff any {@code Math.*Exact} in the post-order chain overflows. */
