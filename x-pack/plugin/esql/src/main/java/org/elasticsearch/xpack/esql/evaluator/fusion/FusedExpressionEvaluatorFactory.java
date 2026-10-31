@@ -526,7 +526,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             // - RuntimeException: Stitcher.emit* can reject an ill-shaped tree with a bare IllegalArgumentException
             // before the define-hidden-class try-block, and we defensively treat any other unchecked failure the
             // same way — fusion is an optimization and must never break the query.
-            logger.warn(() -> "fusion stitch failed for shape [" + shape + "]; falling back to unfused evaluator chain", e);
+            // The single, deduplicated WARN for a failing shape is now emitted once by FusedClassCache; this catch
+            // also handles post-stitch reflect/link failures which are rare and logged at DEBUG.
+            logger.debug(() -> "fusion stitch failed for shape [" + shape + "]; falling back to unfused evaluator chain", e);
             FusionTelemetry.recordFailure(shape);
             return null;
         }

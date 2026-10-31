@@ -8,6 +8,8 @@
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.elasticsearch.compute.operator.fusion.Stitcher;
+import org.elasticsearch.logging.LogManager;
+import org.elasticsearch.logging.Logger;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
 
 import java.lang.ref.Reference;
@@ -66,12 +68,26 @@ import java.util.concurrent.atomic.LongAdder;
  * entry's monitor, so a stampede of {@code N} threads produces one {@code SPIN} and {@code N-1} {@code HIT}s, and a
  * cleared reference re-stitches once on the next access.
  *
+ * <h2>Negative cache</h2>
+ * A {@link Stitcher.StitchingException} is stored as a lightweight {@link Failure} marker (cause class name + message)
+ * so a failing shape is attempted exactly once per lifetime — bounded by {@link #MAX_ENTRIES} plus eviction, after which
+ * it re-attempts once. The single plan-time WARN is emitted here, once per shape, with repeats at DEBUG. Unchecked
+ * {@link RuntimeException}/{@link Error} are still treated as transient (entry dropped, not cached).
+ *
  * <h2>No admission filter (D3)</h2>
  * Every miss stitches immediately; there is no threshold-2 "stitch only on the second sighting" admission gate. See the
  * {@code ## Iter 15 Adjustment} note in the implementation plan and {@code iters/15/implementer-summary.md} for the
  * cost/cardinality reasoning behind dropping the {@code ConstantMethodResultSpecializer} precedent here.
  */
 final class FusedClassCache {
+
+    private static final Logger logger = LogManager.getLogger(FusedClassCache.class);
+
+    /**
+     * Lightweight negative-cache payload for a shape whose stitch failed with a {@link Stitcher.StitchingException}.
+     * Stored instead of a class so a failing shape is not re-attempted until the entry is evicted.
+     */
+    private record Failure(String causeClassName, String message) {}
 
     /**
      * Hard upper bound on distinct shapes retained. The cache is purely <b>opportunistic</b> — it only pays off when a
@@ -143,16 +159,20 @@ final class FusedClassCache {
     }
 
     /**
-     * One cache slot. Holds the stitched class through a {@link Reference} guarded by the entry monitor; the monitor is
-     * what serialises concurrent stitches of the same shape into a single spin.
+     * One cache slot. Holds either the stitched class through a {@link Reference}, or a {@link Failure} negative-cache
+     * marker when the stitch failed, both guarded by the entry monitor; the monitor is what serialises concurrent
+     * stitches of the same shape into a single spin (or a single first-failure WARN).
      */
     private final class Entry {
         // Volatile because the lock-free fast path in resolve() (and isEmpty()) reads it outside the monitor; all
         // writes happen under 'this'. Null until the first successful stitch; a non-null reference whose referent has
         // been cleared (GC reclaim or an explicit clear) triggers a re-stitch on the next access.
         private volatile Reference<Class<?>> ref;
+        // Null until a stitch fails with StitchingException; written under the monitor. A non-null marker is a
+        // negative-cache hit: later lookups throw without invoking the stitcher.
+        private volatile Failure failure;
 
-        Class<?> resolve(ClassStitcher stitcher) throws Stitcher.StitchingException {
+        Class<?> resolve(Shape shape, ClassStitcher stitcher) throws Stitcher.StitchingException {
             // Fast path: a live class is returned without taking the monitor, so steady-state hits never contend.
             Reference<Class<?>> current = ref;
             if (current != null) {
@@ -171,24 +191,44 @@ final class FusedClassCache {
                         hits.increment();
                         return cached;
                     }
+                }
+                if (failure != null) {
+                    negativeHits.increment();
+                    logger.debug(
+                        () -> "fusion stitch previously failed for shape ["
+                            + shape
+                            + "]; using cached failure ["
+                            + (failure.causeClassName() == null ? failure.message() : failure.causeClassName() + ": " + failure.message())
+                            + "] (falling back to unfused)"
+                    );
+                    throw new Stitcher.StitchingException(failure.message(), null);
+                }
+                if (current != null) {
                     // The reference existed but its referent was reclaimed/cleared: re-stitch this generation.
                     softRefCleared.increment();
                 } else {
                     misses.increment();
                 }
                 spins.increment();
-                Class<?> stitched = stitcher.stitch();
-                ref = wrap(stitched);
-                return stitched;
+                try {
+                    Class<?> stitched = stitcher.stitch();
+                    ref = wrap(stitched);
+                    return stitched;
+                } catch (Stitcher.StitchingException e) {
+                    this.failure = new Failure(e.getCause() == null ? null : e.getCause().getClass().getName(), e.getMessage());
+                    failures.increment();
+                    logger.warn(() -> "fusion stitch failed for shape [" + shape + "]; falling back to unfused evaluator chain", e);
+                    throw e;
+                }
             }
         }
 
         boolean isEmpty() {
-            // Lock-free: reads the volatile ref and the Reference's own referent, both safe without the monitor. Used
-            // by the atomic failure-cleanup guard in get(), which must not take the entry monitor while holding a map
-            // bin lock.
-            Reference<Class<?>> current = ref;
-            return current == null || current.get() == null;
+            // Lock-free: reads the volatile failure marker and ref (and the Reference's own referent), all safe
+            // without the monitor. A Failure marker is a retained negative-cache entry, so it is non-empty: the
+            // failure-cleanup guard and the "free wins" eviction pass keep it, while the arbitrary-victim pass can
+            // still drop it when over capacity.
+            return failure == null && (ref == null || ref.get() == null);
         }
 
         synchronized void clearReferent() {
@@ -207,6 +247,8 @@ final class FusedClassCache {
     private final LongAdder misses = new LongAdder();
     private final LongAdder spins = new LongAdder();
     private final LongAdder softRefCleared = new LongAdder();
+    private final LongAdder failures = new LongAdder();
+    private final LongAdder negativeHits = new LongAdder();
 
     FusedClassCache() {
         this(RefType.SOFT);
@@ -218,21 +260,29 @@ final class FusedClassCache {
 
     /**
      * Returns the cached class for {@code shape}, stitching it (exactly once across concurrent callers) via
-     * {@code stitcher} on a miss or after a cleared reference. A stitch failure is propagated to the caller (which
-     * falls back to the unfused chain) and never cached, so a transient failure does not poison the shape.
+     * {@code stitcher} on a miss or after a cleared reference. A {@link Stitcher.StitchingException} is negatively
+     * cached as a lightweight {@link Failure} marker (cause class name + message) so a failing shape is attempted
+     * exactly once per lifetime (bounded by {@link #MAX_ENTRIES} + eviction, after which it re-attempts once). The
+     * single plan-time WARN is emitted here, once per shape, with repeats at DEBUG. Unchecked {@link RuntimeException}/
+     * {@link Error} are still treated as transient (entry dropped, not cached).
      */
     Class<?> get(Shape shape, ClassStitcher stitcher) throws Stitcher.StitchingException {
         Entry entry = classes.computeIfAbsent(shape, unused -> new Entry());
         try {
-            Class<?> stitched = entry.resolve(stitcher);
+            Class<?> stitched = entry.resolve(shape, stitcher);
             evictIfOverCapacity(shape);
             return stitched;
-        } catch (Stitcher.StitchingException | RuntimeException | Error e) {
-            // Don't leave a poisoned empty slot behind: if the stitch failed and nothing else populated the entry, drop
-            // it so the next attempt for this shape starts clean (counted as a fresh miss, not a cleared ref). The
-            // check-and-remove is done atomically inside computeIfPresent so a concurrent single-flight success — which
-            // populates this same entry object — is never evicted: we remove only if the mapping is still this exact,
-            // still-empty entry.
+        } catch (Stitcher.StitchingException e) {
+            // The entry now holds the Failure marker, so keep it. Still trim so a flood of failing shapes cannot grow
+            // the cache without bound (an evicted failing shape re-attempts once later).
+            evictIfOverCapacity(shape);
+            throw e;
+        } catch (RuntimeException | Error e) {
+            // Don't leave a poisoned empty slot behind: if the stitch failed with a transient unchecked throwable and
+            // nothing else populated the entry, drop it so the next attempt starts clean (counted as a fresh miss, not
+            // a cleared ref). The check-and-remove is done atomically inside computeIfPresent so a concurrent
+            // single-flight success — which populates this same entry object — is never evicted: we remove only if the
+            // mapping is still this exact, still-empty entry.
             classes.computeIfPresent(shape, (unused, current) -> (current == entry && current.isEmpty()) ? null : current);
             throw e;
         }
@@ -292,6 +342,14 @@ final class FusedClassCache {
         return softRefCleared.sum();
     }
 
+    long failures() {
+        return failures.sum();
+    }
+
+    long negativeHits() {
+        return negativeHits.sum();
+    }
+
     /** Number of shapes currently tracked (live or awaiting re-stitch). */
     int size() {
         return classes.size();
@@ -315,5 +373,7 @@ final class FusedClassCache {
         misses.reset();
         spins.reset();
         softRefCleared.reset();
+        failures.reset();
+        negativeHits.reset();
     }
 }

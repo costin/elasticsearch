@@ -63,9 +63,10 @@ import java.util.function.Consumer;
  *
  * <p><b>Failure surface (binding rule #5).</b> A bytecode defect only surfaces when the JVM verifies the class
  * at {@code defineHiddenClass} time, as a {@link LinkageError} (of which {@link VerifyError} is a subtype). This
- * method catches those (and the access failure) and rethrows a typed {@link StitchingException} after a WARN,
- * so the plan-time caller (iter 13's {@code EvalMapper}) can catch it and fall back to the unfused evaluator
- * chain without the query path ever seeing an {@code Error}.
+ * method catches those (and the access failure) and rethrows a typed {@link StitchingException} after a DEBUG;
+ * the single plan-time WARN is emitted once per shape by FusedClassCache's negative cache, so the plan-time
+ * caller (iter 13's {@code EvalMapper}) can catch it and fall back to the unfused evaluator chain without the
+ * query path ever seeing an {@code Error}.
  *
  * <p><b>JIT discipline (criterion #6).</b> The emitted {@code fused} method is primitive-only: host inputs are
  * moved into the kernel's argument slots with type-correct {@code xLOAD}/{@code xSTORE} and the kernel body is
@@ -148,9 +149,11 @@ public final class Stitcher {
      * Defines {@code bytecode} as a hidden class in the {@code caller}'s module and returns it, mapping the two
      * failure modes of {@link MethodHandles.Lookup#defineHiddenClass} — a {@link LinkageError} (a {@link VerifyError}
      * from the JVM's own verifier is a subtype) and an {@link IllegalAccessException} — to a typed
-     * {@link StitchingException} after a WARN, so the plan-time caller falls back to the unfused chain without the
-     * query path ever seeing an {@code Error}. Every {@code compile*} entry point funnels through here, so the
-     * define-and-map-failure contract (binding rule #5's failure surface) lives once rather than being copied per path.
+     * {@link StitchingException} after a DEBUG. The single plan-time WARN is emitted once per shape by
+     * {@code FusedClassCache}'s negative cache (removing the duplicate WARN that used to fire here on every attempt),
+     * so the plan-time caller falls back to the unfused chain without the query path ever seeing an {@code Error}.
+     * Every {@code compile*} entry point funnels through here, so the define-and-map-failure contract (binding rule
+     * #5's failure surface) lives once rather than being copied per path.
      *
      * @param what names the emit path in the log/message (e.g. {@code "block-loop class"})
      */
@@ -161,10 +164,10 @@ public final class Stitcher {
         try {
             return caller.defineHiddenClass(bytecode, true).lookupClass();
         } catch (LinkageError e) {
-            logger.warn("fused {} failed to link; falling back to unfused", what, e);
+            logger.debug("fused {} failed to link; falling back to unfused", what, e);
             throw new StitchingException("failed to define fused " + what, e);
         } catch (IllegalAccessException e) {
-            logger.warn("caller lookup [{}] cannot define fused {}; falling back to unfused", caller, what, e);
+            logger.debug("caller lookup [{}] cannot define fused {}; falling back to unfused", caller, what, e);
             throw new StitchingException("caller lookup cannot define fused " + what, e);
         }
     }
@@ -3789,6 +3792,8 @@ public final class Stitcher {
      * The plain-vector path splits an oversize body into a {@code private static compute()} helper (B1,
      * {@link #emitVectorLoopSplit}) rather than refusing; this guard's {@code enforce=true} then applies only to the
      * resulting tiny call-loop. Splitting the checked-vector / block combined bodies the same way remains a follow-up.
+     * An enforced oversize body is logged at DEBUG here; the {@link StitchingException} message carries the measured
+     * bytecode size, and the single plan-time WARN is emitted once per shape by {@code FusedClassCache}'s negative cache.
      */
     private static byte[] serializeWithBudgetGuard(ClassNode classNode, ClassWriter writer, String pathName, boolean enforce)
         throws StitchingException {
@@ -3797,7 +3802,7 @@ public final class Stitcher {
         int size = fusedMethodCodeLength(bytecode);
         if (size > MAX_FUSED_METHOD_BYTECODES) {
             if (enforce) {
-                logger.warn(
+                logger.debug(
                     "fused {} method is [{}] bytecodes, over the inlining budget of [{}]; refusing to fuse (falling back to unfused)",
                     pathName,
                     size,
