@@ -16,6 +16,7 @@ import org.elasticsearch.compute.operator.BreakingBytesRefBuilder;
 import org.elasticsearch.compute.operator.Driver;
 import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.EvalOperator;
+import org.elasticsearch.compute.operator.FilterEvalOperator;
 import org.elasticsearch.core.Releasable;
 
 /**
@@ -70,6 +71,12 @@ import org.elasticsearch.core.Releasable;
  * {@link ExpressionEvaluator#baseRamBytesUsed} memory is tracked in {@link EvalOperator}.
  * Implementation that don't allocate any scratch memory need only implement this and
  * use {@link DriverContext#blockFactory()} to build results.
+ * </p>
+ * <p>
+ * The value may change after creation — an adaptive evaluator grows it when it switches to
+ * the fused path mid-query — so {@link EvalOperator} and {@link FilterEvalOperator} snapshot
+ * it once at construction and release exactly that amount at close, rather than re-reading
+ * it, to avoid circuit-breaker drift.
  * </p>
  * <p>
  * Implementations that <strong>do</strong> allocate memory should use {@link BreakingBytesRefBuilder}

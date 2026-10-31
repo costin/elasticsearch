@@ -16,6 +16,7 @@ import org.elasticsearch.compute.data.LongBlock;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
+import org.elasticsearch.compute.operator.EvalOperator;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.core.Releasables;
@@ -38,6 +39,7 @@ import org.junit.Before;
 import java.lang.invoke.MethodHandles;
 import java.util.Collections;
 
+import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
@@ -235,6 +237,36 @@ public class AdaptiveFusionEvaluatorTests extends ESTestCase {
         } finally {
             Releasables.closeExpectNoException(evaluator);
         }
+    }
+
+    // EvalOperator must release exactly the RAM it reserved at construction even after AdaptiveFusionEvaluator
+    // grows baseRamBytesUsed() by materialising the fused evaluator mid-query.
+    public void testEvalOperatorBreakerReturnsToZeroAfterAdaptiveSwitch() {
+        int pageSize = 64;
+        FusionSettings.setAdaptiveMinRowsForTests(pageSize);
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+
+        ExpressionEvaluator.Factory factory = EvalMapper.toEvaluator(FoldContext.small(), addMulLong(a, b, c), layout);
+        assertThat("min_rows>0 must produce an adaptive factory", factory, instanceOf(AdaptiveFusionEvaluatorFactory.class));
+
+        ExpressionEvaluator evaluator = factory.get(driverContext);
+        long ramAtConstruction = evaluator.baseRamBytesUsed();
+        try (EvalOperator operator = new EvalOperator(driverContext, evaluator)) {
+            for (int i = 0; i < 3; i++) {
+                Page page = longPage(pageSize, boundedLongs(pageSize), boundedLongs(pageSize), boundedLongs(pageSize));
+                operator.addInput(page);
+                Page output = operator.getOutput();
+                assertNotNull(output);
+                output.releaseBlocks();
+            }
+            operator.finish();
+            assertThat("threshold crossed: switched exactly once", FusionTelemetry.adaptiveSwitches(), is(1L));
+            assertThat(evaluator.baseRamBytesUsed(), greaterThan(ramAtConstruction));
+        }
+        assertThat(breaker.getUsed(), is(0L));
     }
 
     // The adaptive + sample Settings themselves: defaults and bounds parse as declared and latch through the node hook.

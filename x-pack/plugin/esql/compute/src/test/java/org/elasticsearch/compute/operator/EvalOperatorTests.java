@@ -80,6 +80,33 @@ public class EvalOperatorTests extends OperatorTestCase {
         public void close() {}
     }
 
+    /**
+     * Mimics an adaptive evaluator: {@link #baseRamBytesUsed()} is small until the first
+     * {@link #eval(Page)}, then grows as if a fused evaluator had been materialised mid-query.
+     */
+    static final class GrowingRamEvaluator implements ExpressionEvaluator {
+        static final long RAM_BEFORE_EVAL = 16L;
+        static final long RAM_AFTER_EVAL = 1024L;
+
+        private boolean grown;
+
+        @Override
+        public Block eval(Page page) {
+            grown = true;
+            Block block = page.getBlock(0);
+            block.incRef();
+            return block;
+        }
+
+        @Override
+        public long baseRamBytesUsed() {
+            return grown ? RAM_AFTER_EVAL : RAM_BEFORE_EVAL;
+        }
+
+        @Override
+        public void close() {}
+    }
+
     @Override
     protected Operator.OperatorFactory simple(SimpleOptions options) {
         return new EvalOperator.EvalOperatorFactory(new ExpressionEvaluator.Factory() {
@@ -144,5 +171,27 @@ public class EvalOperatorTests extends OperatorTestCase {
         assertThat(found, equalTo(LongStream.range(0, 10).mapToObj(Long::valueOf).collect(Collectors.toSet())));
         results.forEach(Page::releaseBlocks);
         assertThat(runner.context().breaker().getUsed(), equalTo(0L));
+    }
+
+    /**
+     * An evaluator whose reported RAM grows after {@code eval} (the adaptive-fusion switch) must not
+     * make {@link EvalOperator#close()} release more than it reserved, or the breaker drifts negative.
+     */
+    public void testBreakerReturnsToZeroWhenEvaluatorRamGrows() {
+        DriverContext ctx = driverContext();
+        GrowingRamEvaluator evaluator = new GrowingRamEvaluator();
+        assertThat(evaluator.baseRamBytesUsed(), equalTo(GrowingRamEvaluator.RAM_BEFORE_EVAL));
+        try (EvalOperator operator = new EvalOperator(ctx, evaluator)) {
+            for (int i = 0; i < 3; i++) {
+                Page page = new Page(ctx.blockFactory().newConstantLongBlockWith(i, 4));
+                operator.addInput(page);
+                Page output = operator.getOutput();
+                assertNotNull(output);
+                output.releaseBlocks();
+            }
+            operator.finish();
+            assertThat(evaluator.baseRamBytesUsed(), equalTo(GrowingRamEvaluator.RAM_AFTER_EVAL));
+        }
+        assertThat(ctx.breaker().getUsed(), equalTo(0L));
     }
 }

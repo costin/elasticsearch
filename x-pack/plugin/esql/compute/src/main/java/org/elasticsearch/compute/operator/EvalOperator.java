@@ -83,6 +83,13 @@ public class EvalOperator extends AbstractPageMappingOperator {
     private final DriverContext ctx;
     private final ExpressionEvaluator evaluator;
     /**
+     * Bytes reserved on the circuit breaker at construction. An evaluator's
+     * {@link ExpressionEvaluator#baseRamBytesUsed()} can change after construction (an adaptive
+     * evaluator grows it when it switches to the fused path mid-query), so the operator must
+     * release exactly this amount or the breaker drifts.
+     */
+    private final long reservedBytes;
+    /**
      * Cached {@link #toString()} representation. The evaluator tree is immutable after construction,
      * so its string form is deterministic. {@link Driver} reads this on every status update; caching
      * avoids walking the evaluator tree per call.
@@ -93,7 +100,8 @@ public class EvalOperator extends AbstractPageMappingOperator {
         this.ctx = ctx;
         this.evaluator = evaluator;
         this.description = getClass().getSimpleName() + "[evaluator=" + evaluator + "]";
-        ctx.breaker().addEstimateBytesAndMaybeBreak(BASE_RAM_BYTES_USED + evaluator.baseRamBytesUsed(), "ESQL");
+        this.reservedBytes = BASE_RAM_BYTES_USED + evaluator.baseRamBytesUsed();
+        ctx.breaker().addEstimateBytesAndMaybeBreak(reservedBytes, "ESQL");
     }
 
     @Override
@@ -109,10 +117,6 @@ public class EvalOperator extends AbstractPageMappingOperator {
 
     @Override
     public void close() {
-        Releasables.closeExpectNoException(
-            evaluator,
-            () -> ctx.breaker().addWithoutBreaking(-BASE_RAM_BYTES_USED - evaluator.baseRamBytesUsed()),
-            super::close
-        );
+        Releasables.closeExpectNoException(evaluator, () -> ctx.breaker().addWithoutBreaking(-reservedBytes), super::close);
     }
 }
