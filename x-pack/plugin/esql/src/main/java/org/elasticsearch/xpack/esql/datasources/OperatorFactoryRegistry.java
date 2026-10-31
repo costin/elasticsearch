@@ -73,7 +73,8 @@ public class OperatorFactoryRegistry {
         ExternalSourceFactory sf = sourceType != null ? sourceFactories.get(sourceType) : null;
         if (sf != null) {
             if (sf instanceof ConnectorFactory cf) {
-                Connector connector = cf.open(context.config());
+                String location = context.path() == null ? null : context.path().toString();
+                Connector connector = cf.open(location, context.config());
                 List<String> projectedColumns = new ArrayList<>(context.attributes().size());
                 for (Attribute attr : context.attributes()) {
                     projectedColumns.add(attr.name());

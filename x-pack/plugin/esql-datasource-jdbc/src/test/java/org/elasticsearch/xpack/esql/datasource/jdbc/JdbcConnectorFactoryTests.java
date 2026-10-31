@@ -287,6 +287,13 @@ public class JdbcConnectorFactoryTests extends ESTestCase {
         assertTrue("expected guard rejection, got: " + e.getMessage(), e.getMessage().contains("esql.jdbc.enabled is false"));
     }
 
+    public void testOpenUsesLocationWhenJdbcUrlAbsentFromConfig() throws Exception {
+        // DatasetConfigResolver rebind restores the dataset resource as sourcePath and drops plan-carried jdbc_url.
+        try (Connector connector = factory.open(jdbcUrl, Map.of(JdbcConnectorFactory.CONFIG_TABLE, "EMPLOYEES"))) {
+            assertNotNull(connector);
+        }
+    }
+
     public void testOpenRejectsSsrfDeniedHostInResolvedConfig() {
         // Defense against a planner-time pass that resolves a benign URL but somehow stores a hostile one in
         // the resolved config. The guard at open() time still refuses.

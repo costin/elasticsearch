@@ -802,6 +802,11 @@ public final class DataSourceModule implements Closeable {
         }
 
         @Override
+        public Connector open(String location, Map<String, Object> config) {
+            return resolveDelegate().open(location, credentials.decryptInPlace(config));
+        }
+
+        @Override
         public void testConnection(Map<String, Object> config) throws IOException {
             resolveDelegate().testConnection(credentials.decryptInPlace(config));
         }

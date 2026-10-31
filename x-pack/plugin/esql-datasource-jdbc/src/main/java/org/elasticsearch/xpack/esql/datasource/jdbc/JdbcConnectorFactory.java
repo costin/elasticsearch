@@ -481,14 +481,24 @@ public final class JdbcConnectorFactory implements ConnectorFactory, java.io.Clo
 
     @Override
     public Connector open(Map<String, Object> config) {
-        String jdbcUrl = stringConfig(config, RESOLVED_JDBC_URL);
+        return open(null, config);
+    }
+
+    /**
+     * {@code location} is the rebound dataset resource (the JDBC URL) after {@code DatasetConfigResolver}
+     * replaces plan-carried config with cluster-state settings. Fall back to {@link #RESOLVED_JDBC_URL}
+     * for callers that still stamp it in resolved metadata (unit tests, snapshot inline EXTERNAL).
+     */
+    @Override
+    public Connector open(String location, Map<String, Object> config) {
+        String jdbcUrl = location != null && location.isEmpty() == false ? location : stringConfig(config, RESOLVED_JDBC_URL);
         if (jdbcUrl == null) {
             throw new IllegalArgumentException("JDBC connector configuration is missing [" + RESOLVED_JDBC_URL + "]");
         }
         // Re-apply the guard at execution time too. A kill switch flip (or SSRF allowlist tighten) between
-        // resolveMetadata() and open() must be honored -- the resolved URL was captured at planning time and
-        // is forwarded here verbatim, so without this re-check a query in flight would still complete after
-        // an operator hit the kill switch.
+        // resolveMetadata() and open() must be honored -- the URL is the rebound dataset resource (or the
+        // plan-stamped jdbc_url on the snapshot inline path), so without this re-check a query in flight
+        // would still complete after an operator hit the kill switch.
         assertAllowed(jdbcUrl);
         // Re-check the resolved URL for BLOCKED driver properties at execution time too (a config assembled outside
         // resolveMetadata must not smuggle a ?socketFactory=... into Driver.connect).

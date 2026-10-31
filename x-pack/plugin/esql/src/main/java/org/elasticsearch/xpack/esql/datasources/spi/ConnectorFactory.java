@@ -36,6 +36,17 @@ public interface ConnectorFactory extends ExternalSourceFactory {
     Connector open(Map<String, Object> config);
 
     /**
+     * Opens a connector for {@code location} under {@code config}. The default ignores {@code location} and
+     * delegates to {@link #open(Map)} for factories that stash the address in resolved config (Flight's
+     * {@code endpoint}). Factories whose address is the dataset resource itself (JDBC's URL) override this
+     * so {@code DatasetConfigResolver} rebind — which restores path and settings from cluster state but
+     * drops plan-carried resolved keys such as {@code jdbc_url} — still has a URL to connect to.
+     */
+    default Connector open(String location, Map<String, Object> config) {
+        return open(config);
+    }
+
+    /**
      * Tests connectivity by opening and immediately closing a {@link Connector}. Connector implementations
      * that can perform a lighter-weight probe (e.g. a ping without allocating a full session) may override this.
      *
