@@ -69,10 +69,15 @@ import java.util.concurrent.atomic.LongAdder;
  * cleared reference re-stitches once on the next access.
  *
  * <h2>Negative cache</h2>
- * A {@link Stitcher.StitchingException} is stored as a lightweight {@link Failure} marker (cause class name + message)
- * so a failing shape is attempted exactly once per lifetime — bounded by {@link #MAX_ENTRIES} plus eviction, after which
- * it re-attempts once. The single plan-time WARN is emitted here, once per shape, with repeats at DEBUG. Unchecked
- * {@link RuntimeException}/{@link Error} are still treated as transient (entry dropped, not cached).
+ * The wrap covers {@link RuntimeException}, {@link ReflectiveOperationException}, and unwrapped {@link LinkageError}
+ * (turned into a {@link Stitcher.StitchingException} by {@link #wrapStitchFailures}) so a failing shape is stored as a
+ * lightweight {@link Failure} marker and attempted exactly once per lifetime — bounded by {@link #MAX_ENTRIES} plus
+ * eviction, after which it re-attempts once. The single plan-time WARN is emitted here, once per shape, with repeats
+ * at DEBUG. Other {@link Error}s, including {@link VirtualMachineError} (e.g. {@link OutOfMemoryError}) and siblings
+ * such as {@link AssertionError}, are treated as transient: they propagate unwrapped and {@link #get} drops the empty
+ * slot so a later attempt can succeed. {@link OutOfMemoryError} is a {@link VirtualMachineError}, which is an
+ * {@link Error} but <em>not</em> a {@link LinkageError} — wrapping {@code LinkageError} specifically (not {@code Error})
+ * is what keeps those transient failures retryable.
  *
  * <h2>No admission filter (D3)</h2>
  * Every miss stitches immediately; there is no threshold-2 "stitch only on the second sighting" admission gate. See the
@@ -152,10 +157,35 @@ final class FusedClassCache {
      */
     record Shape(String signature, ElementKind element, Path path) {}
 
-    /** The stitch operation deferred behind the cache; invoked at most once per live shape (single-flight). */
+    /**
+     * The stitch operation deferred behind the cache; invoked at most once per live shape (single-flight).
+     * {@link ReflectiveOperationException} is declared so a {@code findStatic} failure inside a stitch lambda can
+     * take the same wrap-and-negative-cache path as emit/{@code LinkageError} failures.
+     */
     @FunctionalInterface
     interface ClassStitcher {
-        Class<?> stitch() throws Stitcher.StitchingException;
+        Class<?> stitch() throws Stitcher.StitchingException, ReflectiveOperationException;
+    }
+
+    /**
+     * Converts a stitch-time {@link RuntimeException}, {@link ReflectiveOperationException}, or unwrapped
+     * {@link LinkageError} into a {@link Stitcher.StitchingException} (cause preserved) so the failure takes the
+     * negative-cache path and the single WARN. {@link VirtualMachineError} is rethrown unwrapped (explicit catch,
+     * documentation that OOM is not a {@link LinkageError}): a transient OOM must be retried, not remembered as a
+     * permanent shape failure. Other {@link Error}s are not caught here and fall through to {@link #get}'s empty-slot
+     * drop. Invoked only from {@link Entry#resolve} so every cache-backed stitch (plan-time and adaptive switch) is
+     * covered once.
+     */
+    private static Class<?> wrapStitchFailures(ClassStitcher stitcher) throws Stitcher.StitchingException {
+        try {
+            return stitcher.stitch();
+        } catch (Stitcher.StitchingException e) {
+            throw e;
+        } catch (VirtualMachineError e) {
+            throw e;
+        } catch (RuntimeException | LinkageError | ReflectiveOperationException e) {
+            throw new Stitcher.StitchingException(e.getMessage(), e);
+        }
     }
 
     /**
@@ -211,7 +241,7 @@ final class FusedClassCache {
                 }
                 spins.increment();
                 try {
-                    Class<?> stitched = stitcher.stitch();
+                    Class<?> stitched = wrapStitchFailures(stitcher);
                     ref = wrap(stitched);
                     return stitched;
                 } catch (Stitcher.StitchingException e) {
@@ -260,11 +290,13 @@ final class FusedClassCache {
 
     /**
      * Returns the cached class for {@code shape}, stitching it (exactly once across concurrent callers) via
-     * {@code stitcher} on a miss or after a cleared reference. A {@link Stitcher.StitchingException} is negatively
-     * cached as a lightweight {@link Failure} marker (cause class name + message) so a failing shape is attempted
-     * exactly once per lifetime (bounded by {@link #MAX_ENTRIES} + eviction, after which it re-attempts once). The
-     * single plan-time WARN is emitted here, once per shape, with repeats at DEBUG. Unchecked {@link RuntimeException}/
-     * {@link Error} are still treated as transient (entry dropped, not cached).
+     * {@code stitcher} on a miss or after a cleared reference. A {@link Stitcher.StitchingException} (including a
+     * {@link RuntimeException} / {@link ReflectiveOperationException} / {@link LinkageError} wrapped by
+     * {@link #wrapStitchFailures}) is negatively cached as a lightweight {@link Failure} marker so a failing shape is
+     * attempted exactly once per lifetime (bounded by {@link #MAX_ENTRIES} + eviction, after which it re-attempts
+     * once). The single plan-time WARN is emitted here, once per shape, with repeats at DEBUG. Other {@link Error}s
+     * (including {@link VirtualMachineError}) are treated as transient: they propagate and the empty slot is dropped
+     * so a later attempt can succeed.
      */
     Class<?> get(Shape shape, ClassStitcher stitcher) throws Stitcher.StitchingException {
         Entry entry = classes.computeIfAbsent(shape, unused -> new Entry());

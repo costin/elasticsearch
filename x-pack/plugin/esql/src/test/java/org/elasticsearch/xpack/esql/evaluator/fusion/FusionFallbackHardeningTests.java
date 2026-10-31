@@ -7,6 +7,7 @@
 
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
+import org.apache.logging.log4j.Level;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.MockBigArrays;
@@ -25,6 +26,8 @@ import org.elasticsearch.compute.operator.fusion.TemplateRegistry;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.indices.breaker.CircuitBreakerService;
 import org.elasticsearch.test.ESTestCase;
+import org.elasticsearch.test.MockLog;
+import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
@@ -33,6 +36,9 @@ import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.core.type.EsField;
 import org.elasticsearch.xpack.esql.evaluator.EvalMapper;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache.Path;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache.Shape;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.VectorStrategy;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
@@ -46,6 +52,7 @@ import org.junit.Before;
 import java.lang.invoke.MethodHandles;
 import java.util.Collections;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
@@ -100,9 +107,11 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         blockFactory = BlockFactory.builder(bigArrays).build();
         driverContext = new DriverContext(bigArrays, blockFactory, null);
         FusionTelemetry.resetForTests();
+        FusionPlanner.classCache().resetForTests();
         FusionPlanner.compilerForTests = null;
         FusedExpressionEvaluatorFactory.injectEvalLinkageErrorForTests = false;
         FusionSettings.setEnabledForTests(true);
+        FusionSettings.setAdaptiveMinRowsForTests(0);
     }
 
     @After
@@ -110,6 +119,8 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         FusionPlanner.compilerForTests = null;
         FusedExpressionEvaluatorFactory.injectEvalLinkageErrorForTests = false;
         FusionSettings.setEnabledForTests(true);
+        FusionSettings.setAdaptiveMinRowsForTests(0);
+        FusionPlanner.classCache().resetForTests();
         assertThat(breaker.getUsed(), is(0L));
     }
 
@@ -165,6 +176,160 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         Expression expr = addMul(a, b, c);
 
         runPlanTimeFallbackCase(expr, layout, () -> { throw new IllegalArgumentException("injected emit failure"); }, false);
+    }
+
+    /**
+     * A1(a): an {@link IllegalArgumentException} from the stitcher is wrapped onto the negative-cache path, so
+     * planning the same shape three times stitches once and the cache emits exactly one WARN. Repeats stay at DEBUG.
+     */
+    @TestLogging(
+        value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG",
+        reason = "assert an IAE stitch failure WARNs once then DEBUG on negative-cache hits"
+    )
+    public void testIllegalArgumentExceptionStitchesOnceAndWarnsOnce() {
+        FusionSettings.setAdaptiveMinRowsForTests(0);
+        try {
+            FieldAttribute a = field("a", DataType.LONG);
+            FieldAttribute b = field("b", DataType.LONG);
+            FieldAttribute c = field("c", DataType.LONG);
+            Layout layout = layout(a, b, c);
+            Expression expr = addMul(a, b, c);
+
+            FusedClassCache cache = FusionPlanner.classCache();
+            cache.resetForTests();
+            AtomicInteger invocations = new AtomicInteger();
+            FusionPlanner.compilerForTests = cacheBackedCompiler(cache, (caller, tree, path) -> {
+                invocations.incrementAndGet();
+                throw new IllegalArgumentException("injected emit failure");
+            });
+
+            try (var first = MockLog.capture(FusedClassCache.class)) {
+                first.addExpectation(
+                    new MockLog.SeenEventExpectation(
+                        "first-failure WARN",
+                        FusedClassCache.class.getCanonicalName(),
+                        Level.WARN,
+                        "*fusion stitch failed for shape*"
+                    )
+                );
+                ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+                assertThat(
+                    "eager minRows=0 must not produce an adaptive factory",
+                    candidate,
+                    not(instanceOf(AdaptiveFusionEvaluatorFactory.class))
+                );
+                assertThat(
+                    "IAE from the stitcher must fall back to the unfused factory",
+                    candidate,
+                    not(instanceOf(FusedExpressionEvaluatorFactory.class))
+                );
+                first.assertAllExpectationsMatched();
+            }
+            try (var repeats = MockLog.capture(FusedClassCache.class)) {
+                repeats.addExpectation(
+                    new MockLog.UnseenEventExpectation(
+                        "repeat must not WARN",
+                        FusedClassCache.class.getCanonicalName(),
+                        Level.WARN,
+                        "*fusion stitch*"
+                    )
+                );
+                repeats.addExpectation(
+                    new MockLog.SeenEventExpectation(
+                        "repeat DEBUG",
+                        FusedClassCache.class.getCanonicalName(),
+                        Level.DEBUG,
+                        "*previously failed for shape*"
+                    )
+                );
+                for (int i = 0; i < 2; i++) {
+                    ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+                    assertThat(candidate, not(instanceOf(AdaptiveFusionEvaluatorFactory.class)));
+                    assertThat(candidate, not(instanceOf(FusedExpressionEvaluatorFactory.class)));
+                }
+                repeats.assertAllExpectationsMatched();
+            }
+            assertThat("planning the shape 3× must stitch once", invocations.get(), is(1));
+            assertThat(cache.failures(), is(1L));
+            assertThat(cache.negativeHits(), is(2L));
+        } finally {
+            FusionSettings.setAdaptiveMinRowsForTests(0);
+        }
+    }
+
+    /**
+     * A1: the wrap covers the adaptive switch, not just eager plan-time. With {@code minRows > 0} the stitch is
+     * deferred until the row threshold is crossed; crossing it twice (two factories) stitches once and WARNs once.
+     */
+    @TestLogging(
+        value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG",
+        reason = "assert a deferred adaptive IAE stitch failure WARNs once then DEBUG on the second threshold crossing"
+    )
+    public void testAdaptiveIllegalArgumentExceptionStitchesOnceAndWarnsOnce() {
+        FusionSettings.setAdaptiveMinRowsForTests(50);
+        try {
+            FieldAttribute a = field("a", DataType.LONG);
+            FieldAttribute b = field("b", DataType.LONG);
+            FieldAttribute c = field("c", DataType.LONG);
+            Layout layout = layout(a, b, c);
+            Expression expr = addMul(a, b, c);
+
+            FusedClassCache cache = FusionPlanner.classCache();
+            cache.resetForTests();
+            AtomicInteger invocations = new AtomicInteger();
+            FusionPlanner.compilerForTests = cacheBackedCompiler(cache, (caller, tree, path) -> {
+                invocations.incrementAndGet();
+                throw new IllegalArgumentException("injected emit failure");
+            });
+
+            ExpressionEvaluator.Factory firstFactory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+            assertThat("minRows>0 must produce an adaptive factory", firstFactory, instanceOf(AdaptiveFusionEvaluatorFactory.class));
+            assertThat("no eager stitch at plan time", invocations.get(), is(0));
+            assertThat(cache.failures(), is(0L));
+
+            try (var first = MockLog.capture(FusedClassCache.class)) {
+                first.addExpectation(
+                    new MockLog.SeenEventExpectation(
+                        "first-failure WARN",
+                        FusedClassCache.class.getCanonicalName(),
+                        Level.WARN,
+                        "*fusion stitch failed for shape*"
+                    )
+                );
+                evalUntilAbandoned(firstFactory, 64);
+                first.assertAllExpectationsMatched();
+            }
+            assertThat("the first threshold crossing must stitch once", invocations.get(), is(1));
+            assertThat(cache.failures(), is(1L));
+
+            ExpressionEvaluator.Factory secondFactory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+            assertThat(secondFactory, instanceOf(AdaptiveFusionEvaluatorFactory.class));
+            try (var repeats = MockLog.capture(FusedClassCache.class)) {
+                repeats.addExpectation(
+                    new MockLog.UnseenEventExpectation(
+                        "second threshold crossing must not WARN",
+                        FusedClassCache.class.getCanonicalName(),
+                        Level.WARN,
+                        "*fusion stitch*"
+                    )
+                );
+                repeats.addExpectation(
+                    new MockLog.SeenEventExpectation(
+                        "second threshold crossing DEBUG",
+                        FusedClassCache.class.getCanonicalName(),
+                        Level.DEBUG,
+                        "*previously failed for shape*"
+                    )
+                );
+                evalUntilAbandoned(secondFactory, 64);
+                repeats.assertAllExpectationsMatched();
+            }
+            assertThat("two adaptive threshold crossings must stitch once", invocations.get(), is(1));
+            assertThat(cache.failures(), is(1L));
+            assertThat(cache.negativeHits(), is(1L));
+        } finally {
+            FusionSettings.setAdaptiveMinRowsForTests(0);
+        }
     }
 
     // Case 3: a stitch that verified at plan time but throws a LinkageError at the FIRST evaluation must be caught,
@@ -512,6 +677,75 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             case 1 -> 1;
             default -> shape % 20 == 0 ? 1024 + randomIntBetween(0, 512) : randomIntBetween(2, 256);
         };
+    }
+
+    /**
+     * Runs one page of {@code positionCount} rows through an adaptive factory so the deferred stitch fires (the page
+     * must be {@code >= minRows}). The stitch is expected to fail; the evaluator stays unfused. Releases every block.
+     */
+    private void evalUntilAbandoned(ExpressionEvaluator.Factory factory, int positionCount) {
+        ExpressionEvaluator evaluator = factory.get(driverContext);
+        Page page = null;
+        Block result = null;
+        try {
+            page = new Page(
+                randomLongBlock(positionCount, false),
+                randomLongBlock(positionCount, false),
+                randomLongBlock(positionCount, false)
+            );
+            result = evaluator.eval(page);
+        } finally {
+            Releasables.closeExpectNoException(result, evaluator);
+            if (page != null) {
+                page.releaseBlocks();
+            }
+        }
+    }
+
+    /**
+     * A compiler that still goes through {@code cache} (unlike {@link FusionPlanner#compilerForTests}'s usual bypass)
+     * so A1 can assert negative-cache + log-once against the real {@link FusedClassCache} while injecting a stitch
+     * failure. Production {@link FusionCompilationService} is the same shape: cache.get then stitch.
+     */
+    private static FusionPlanner.FusedClassCompiler cacheBackedCompiler(FusedClassCache cache, PathStitch stitch) {
+        return new FusionPlanner.FusedClassCompiler() {
+            private Class<?> cached(MethodHandles.Lookup caller, FusionNode tree, Path path) throws Stitcher.StitchingException {
+                // Long-arithmetic-only: non-Logical trees are keyed as LONG, unlike production rootElement().
+                ElementKind element = tree instanceof FusionNode.Logical ? ElementKind.BOOLEAN : ElementKind.LONG;
+                Shape shape = new Shape(FusionPlanner.shapeOf(tree), element, path);
+                return cache.get(shape, () -> stitch.stitch(caller, tree, path));
+            }
+
+            @Override
+            public Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return cached(caller, tree, Path.BLOCK);
+            }
+
+            @Override
+            public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return cached(caller, tree, Path.PLAIN_VECTOR);
+            }
+
+            @Override
+            public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return cached(caller, tree, Path.CHECKED_VECTOR);
+            }
+
+            @Override
+            public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return cached(caller, tree, Path.LOGICAL_BLOCK);
+            }
+
+            @Override
+            public Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return cached(caller, tree, Path.LOGICAL_VECTOR);
+            }
+        };
+    }
+
+    @FunctionalInterface
+    private interface PathStitch {
+        Class<?> stitch(MethodHandles.Lookup caller, FusionNode tree, Path path) throws Stitcher.StitchingException;
     }
 
     /** A {@link FusionPlanner.FusedClassCompiler} whose every stitch entry point throws the supplied failure. */
