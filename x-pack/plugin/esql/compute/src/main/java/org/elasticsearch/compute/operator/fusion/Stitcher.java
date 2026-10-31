@@ -13,6 +13,7 @@ import org.elasticsearch.logging.Logger;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
+import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.IincInsnNode;
 import org.objectweb.asm.tree.InsnList;
@@ -21,6 +22,7 @@ import org.objectweb.asm.tree.IntInsnNode;
 import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.LdcInsnNode;
+import org.objectweb.asm.tree.LineNumberNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TryCatchBlockNode;
@@ -95,6 +97,13 @@ public final class Stitcher {
      * {@code Lookup} they passed to {@link #compile} and a {@code MethodType} matching the kernel's signature.
      */
     public static final String FUSED_METHOD_NAME = "fused";
+
+    /**
+     * Name of the diagnostic {@code public static final String} ConstantValue field on every fused class.
+     * Value is {@code 0=kernelClass#kernelMethod;1=…} in the same post-order as {@code LineNumberTable}
+     * lines. Class metadata only — no {@code <clinit>} work beyond the constant, no per-row cost.
+     */
+    public static final String KERNEL_MAP_FIELD_NAME = "KERNEL_MAP";
 
     /**
      * ALL-INTERFACE sibling of {@link #FUSED_METHOD_NAME}: typed {@code *Vector.getX(p)} instead of
@@ -291,6 +300,11 @@ public final class Stitcher {
 
         // The kernel body now reads its inputs from the shifted slots and leaves the result on the stack; the
         // terminal return the extractor stripped is re-emitted here so the host method returns that value.
+        FusedClassDebugInfo debug = FusedClassDebugInfo.ofDescriptor(descriptor.kernelClass().getSimpleName() + "$$Fused", descriptor);
+        stripLineNumbers(body.computation());
+        LabelNode splice = new LabelNode();
+        host.instructions.add(splice);
+        host.instructions.add(new LineNumberNode(0, splice));
         host.instructions.add(body.computation());
         host.instructions.add(new InsnNode(body.returnOpcode()));
 
@@ -299,7 +313,7 @@ public final class Stitcher {
             hostMethodInterceptor.accept(host);
         }
 
-        ClassNode classNode = newFusedClass(hiddenClassInternalName(caller, descriptor), host);
+        ClassNode classNode = newFusedClass(hiddenClassInternalName(caller, descriptor), host, debug);
 
         // COMPUTE_FRAMES recomputes maxStack, maxLocals, and stack-map frames. Straight-line kernel bodies have
         // no control-flow joins, so getCommonSuperClass (which would need the caller's class loader) is never
@@ -331,15 +345,50 @@ public final class Stitcher {
      * A fused hidden-class {@link ClassNode}: {@code public final}, class-file {@code V21}, {@code Object}
      * superclass, carrying {@code host} as its (initial) method. The two helper-emitting paths (logical, filter-eval)
      * add their {@code cmpN}/{@code pred}/{@code projAppend} helper methods afterwards.
+     *
+     * <p>{@code debug} supplies diagnostic-only class metadata: a {@code SourceFile} naming the fused shape
+     * (stack traces render as {@code (SourceFile:kernelIndex)}) and a {@link #KERNEL_MAP_FIELD_NAME}
+     * ConstantValue field. Neither adds instructions to the per-row body.
      */
-    private static ClassNode newFusedClass(String internalName, MethodNode host) {
+    private static ClassNode newFusedClass(String internalName, MethodNode host, FusedClassDebugInfo debug) {
         ClassNode classNode = new ClassNode(Opcodes.ASM9);
         classNode.version = Opcodes.V21;
         classNode.access = Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER;
         classNode.name = internalName;
         classNode.superName = "java/lang/Object";
+        classNode.sourceFile = debug.sourceFile();
+        classNode.fields.add(debug.kernelMapField());
         classNode.methods.add(host);
         return classNode;
+    }
+
+    /**
+     * Marks this kernel splice with a {@code LineNumberTable} entry ({@code line = kernel index}) then
+     * concatenates the body. The {@link LabelNode} names the offset of the first body instruction — it
+     * is not itself an opcode, so {@code code_length} (and the budget guard) is unchanged.
+     */
+    static void spliceKernelBody(InsnList insns, InsnList computation, FusionNode.Kernel kernel, FusedClassDebugInfo debug) {
+        stripLineNumbers(computation);
+        LabelNode mark = new LabelNode();
+        insns.add(mark);
+        insns.add(new LineNumberNode(debug.indexOf(kernel), mark));
+        insns.add(computation);
+    }
+
+    /**
+     * Drops the original kernel's {@code LineNumberTable} entries so a fused-class stack trace maps
+     * through our splice-boundary line (the kernel index) rather than the template's Java source
+     * lines under the fused {@code SourceFile} name. Labels stay; this is metadata only.
+     */
+    private static void stripLineNumbers(InsnList insns) {
+        AbstractInsnNode insn = insns.getFirst();
+        while (insn != null) {
+            AbstractInsnNode next = insn.getNext();
+            if (insn instanceof LineNumberNode) {
+                insns.remove(insn);
+            }
+            insn = next;
+        }
     }
 
     /**
@@ -521,13 +570,14 @@ public final class Stitcher {
         Element outputElement = Element.of(rootReturnType(tree));
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
 
-        MethodNode raw = emitPlainVectorMethod(tree, inputElements, outputElement, constants, consumed, true);
-        MethodNode iface = emitPlainVectorMethod(tree, inputElements, outputElement, constants, consumed, false);
+        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$VectorLoop", tree);
+        MethodNode raw = emitPlainVectorMethod(tree, inputElements, outputElement, constants, consumed, true, debug);
+        MethodNode iface = emitPlainVectorMethod(tree, inputElements, outputElement, constants, consumed, false, debug);
         if (hostMethodInterceptor != null) {
             hostMethodInterceptor.accept(raw);
             hostMethodInterceptor.accept(iface);
         }
-        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$VectorLoop"), raw);
+        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$VectorLoop"), raw, debug);
         classNode.methods.add(iface);
         // Measure the inline body WITHOUT enforcing: an oversized inline loop is not refused (which would degrade to
         // block-only), it is split into a private static compute() helper (B1) so the fast path survives. The RAW
@@ -556,7 +606,8 @@ public final class Stitcher {
         Element outputElement,
         List<FusionNode.Constant> constants,
         int[] consumed,
-        boolean raw
+        boolean raw,
+        FusedClassDebugInfo debug
     ) {
         int arity = inputElements.length;
         // Frame layout: [0] BlockFactory, [1] int positionCount, [2 .. 2+arity) input Vectors, then one trailing
@@ -620,7 +671,8 @@ public final class Stitcher {
             kernelBase,
             input -> emitReadExtractedAtP(insns, inputElements[input.index()], extractedBase + input.index(), pSlot, raw),
             // Plain vector has no overflow-checked kernels, so nothing runs before a body.
-            kernel -> {}
+            kernel -> {},
+            debug
         );
         emitter.emit(tree, outputElement);
         // The computed value (an int 0/1 for a comparison root) is stored with the OUTPUT element's array-store opcode
@@ -665,17 +717,18 @@ public final class Stitcher {
         List<FusionNode.Constant> constants
     ) throws StitchingException {
         String internalName = fusedClassName(caller, "Fused$$VectorLoopSplit");
+        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$VectorLoopSplit", tree);
 
         // The compute helper: (v0, v1, …, c0, c1, …) -> result. Value params first (one per input, its own element),
         // then one primitive per constant in canonical emit order. Shared by both read variants.
-        MethodNode compute = emitVectorComputeHelper(tree, inputElements, outputElement, constants);
+        MethodNode compute = emitVectorComputeHelper(tree, inputElements, outputElement, constants, debug);
         MethodNode raw = emitPlainVectorSplitMethod(inputElements, outputElement, constants, true, compute, internalName);
         MethodNode iface = emitPlainVectorSplitMethod(inputElements, outputElement, constants, false, compute, internalName);
         if (hostMethodInterceptor != null) {
             hostMethodInterceptor.accept(raw);
             hostMethodInterceptor.accept(iface);
         }
-        ClassNode classNode = newFusedClass(internalName, raw);
+        ClassNode classNode = newFusedClass(internalName, raw, debug);
         classNode.methods.add(iface);
         classNode.methods.add(compute);
         // Enforce on the TOP-LEVEL loop only: it is now a handful of instructions (reads + one call + store), so this
@@ -778,7 +831,8 @@ public final class Stitcher {
         FusionNode tree,
         Element[] inputElements,
         Element outputElement,
-        List<FusionNode.Constant> constants
+        List<FusionNode.Constant> constants,
+        FusedClassDebugInfo debug
     ) {
         int arity = inputElements.length;
         FrameLayout frame = new FrameLayout();
@@ -804,7 +858,8 @@ public final class Stitcher {
             kernelBase,
             // Split-vector leaf: the input value passed as a parameter (read at this leaf's own element).
             input -> insns.add(new VarInsnNode(inputElements[input.index()].type().getOpcode(Opcodes.ILOAD), valueSlots[input.index()])),
-            kernel -> {}
+            kernel -> {},
+            debug
         );
         emitter.emit(tree, outputElement);
         insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IRETURN)));
@@ -1005,12 +1060,13 @@ public final class Stitcher {
         insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, tailEnd));
         insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
         insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
+        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$SimdVectorLoop", tree);
         StackKernelEmitter tail = new StackKernelEmitter(insns, java.util.Map.of(), kernelBase, input -> {
             Element e = inputElements[input.index()];
             insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + input.index()));
             insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
             insns.add(new InsnNode(e.type().getOpcode(Opcodes.IALOAD)));
-        }, kernel -> {});
+        }, kernel -> {}, debug);
         tail.emit(tree, outputElement);
         insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
         insns.add(new IincInsnNode(iSlot, 1));
@@ -1035,7 +1091,7 @@ public final class Stitcher {
         if (hostMethodInterceptor != null) {
             hostMethodInterceptor.accept(host);
         }
-        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$SimdVectorLoop"), host);
+        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$SimdVectorLoop"), host, debug);
         // Not budget-enforced: the SIMD body is a fixed small sequence, but it is only used for the eligible
         // single-comparison shape, so it never approaches the limit; measure/log only.
         return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "SIMD vector loop", false);
@@ -1129,6 +1185,7 @@ public final class Stitcher {
         appendConstantParamDescriptors(desc, constants);
         desc.append(")").append(outputElement.blockDescriptor());
         String checkedDesc = desc.toString();
+        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$CheckedVectorLoop", tree);
 
         MethodNode host = emitCheckedVectorBuilderMethod(
             tree,
@@ -1139,7 +1196,8 @@ public final class Stitcher {
             overflowTypes,
             sourceIndices,
             checkedDesc,
-            true
+            true,
+            debug
         );
         MethodNode hostIface = emitCheckedVectorBuilderMethod(
             tree,
@@ -1150,7 +1208,8 @@ public final class Stitcher {
             overflowTypes,
             sourceIndices,
             checkedDesc,
-            false
+            false,
+            debug
         );
         MethodNode raw = emitCheckedVectorRawMethod(
             tree,
@@ -1160,7 +1219,8 @@ public final class Stitcher {
             consumed,
             overflowTypes,
             checkedDesc,
-            true
+            true,
+            debug
         );
         MethodNode rawIface = emitCheckedVectorRawMethod(
             tree,
@@ -1170,7 +1230,8 @@ public final class Stitcher {
             consumed,
             overflowTypes,
             checkedDesc,
-            false
+            false,
+            debug
         );
         if (hostMethodInterceptor != null) {
             hostMethodInterceptor.accept(host);
@@ -1180,7 +1241,7 @@ public final class Stitcher {
         }
 
         String internalName = fusedClassName(caller, "Fused$$CheckedVectorLoop");
-        ClassNode classNode = newFusedClass(internalName, host);
+        ClassNode classNode = newFusedClass(internalName, host, debug);
         classNode.methods.add(hostIface);
         classNode.methods.add(raw);
         classNode.methods.add(rawIface);
@@ -1198,7 +1259,7 @@ public final class Stitcher {
         }
         // fusedRaw exceeded the inlining budget: lift the stitched expression into a private compute() helper
         // (same split as emitVectorLoop) so the raw loops stay tiny. Both builder methods are unchanged.
-        MethodNode compute = emitVectorComputeHelper(tree, inputElements, outputElement, constants);
+        MethodNode compute = emitVectorComputeHelper(tree, inputElements, outputElement, constants, debug);
         MethodNode splitRaw = emitCheckedVectorRawSplit(
             inputElements,
             outputElement,
@@ -1219,7 +1280,7 @@ public final class Stitcher {
             internalName,
             false
         );
-        ClassNode splitClass = newFusedClass(internalName, host);
+        ClassNode splitClass = newFusedClass(internalName, host, debug);
         splitClass.methods.add(hostIface);
         splitClass.methods.add(splitRaw);
         splitClass.methods.add(splitRawIface);
@@ -1241,7 +1302,8 @@ public final class Stitcher {
         Set<String> overflowTypes,
         Map<FusionNode, Integer> sourceIndices,
         String descriptor,
-        boolean raw
+        boolean raw,
+        FusedClassDebugInfo debug
     ) {
         int arity = inputElements.length;
         // Frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input Vectors, then one
@@ -1351,7 +1413,8 @@ public final class Stitcher {
                     pushInt(insns, sourceIndices.get(kernel));
                     insns.add(new VarInsnNode(Opcodes.ISTORE, currentKernelSlot));
                 }
-            }
+            },
+            debug
         );
         emitter.emit(tree, outputElement);
         insns.add(
@@ -1438,7 +1501,8 @@ public final class Stitcher {
         int[] consumed,
         Set<String> overflowTypes,
         String descriptor,
-        boolean raw
+        boolean raw,
+        FusedClassDebugInfo debug
     ) {
         int arity = inputElements.length;
         FrameLayout frame = new FrameLayout();
@@ -1494,7 +1558,8 @@ public final class Stitcher {
             constantSlots,
             kernelBase,
             input -> emitReadExtractedAtP(insns, inputElements[input.index()], extractedBase + input.index(), pSlot, raw),
-            kernel -> {}
+            kernel -> {},
+            debug
         );
         emitter.emit(tree, outputElement);
         insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
@@ -1739,6 +1804,7 @@ public final class Stitcher {
         private final Map<FusionNode.Constant, Integer> constantSlots;
         private final LeafReader leafReader;
         private final KernelPreBody preBody;
+        private final FusedClassDebugInfo debug;
         private int kernelBase;
 
         StackKernelEmitter(
@@ -1746,13 +1812,15 @@ public final class Stitcher {
             Map<FusionNode.Constant, Integer> constantSlots,
             int kernelBase,
             LeafReader leafReader,
-            KernelPreBody preBody
+            KernelPreBody preBody,
+            FusedClassDebugInfo debug
         ) {
             this.insns = insns;
             this.constantSlots = constantSlots;
             this.kernelBase = kernelBase;
             this.leafReader = leafReader;
             this.preBody = preBody;
+            this.debug = debug;
         }
 
         /**
@@ -1799,7 +1867,7 @@ public final class Stitcher {
             }
             preBody.beforeBody(kernel);
             // The spliced body reads its inputs from the shifted argument slots and leaves the result on the stack.
-            insns.add(body.computation());
+            spliceKernelBody(insns, body.computation(), kernel, debug);
         }
 
         /**
@@ -2046,6 +2114,7 @@ public final class Stitcher {
         // and caught silently otherwise. {@code live} is reset true here for each position.
         insns.add(new InsnNode(Opcodes.ICONST_1));
         insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
+        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$BlockLoop", tree);
         BlockDfsEmitter emitter = new BlockDfsEmitter(
             templates,
             insns,
@@ -2060,7 +2129,8 @@ public final class Stitcher {
             overflowExcSlot,
             spareBytesRefSlot,
             workBase,
-            constantSlots
+            constantSlots,
+            debug
         );
         NodeSlots root = emitter.emit(tree, outputElement);
         // if (root not present) appendNull; else append the root value.
@@ -2127,7 +2197,7 @@ public final class Stitcher {
             hostMethodInterceptor.accept(host);
         }
 
-        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$BlockLoop"), host);
+        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$BlockLoop"), host, debug);
         return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "block loop", false);
     }
 
@@ -2309,7 +2379,8 @@ public final class Stitcher {
             off += argType.getSize();
         }
         // Run the (non-throwing) convert body; it leaves the converted value on the stack, then append it.
-        insns.add(body.computation());
+        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$MappingBlockLoop", tree);
+        spliceKernelBody(insns, body.computation(), root, debug);
         insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
         insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
         insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
@@ -2384,7 +2455,7 @@ public final class Stitcher {
         if (hostMethodInterceptor != null) {
             hostMethodInterceptor.accept(host);
         }
-        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$MappingBlockLoop"), host);
+        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$MappingBlockLoop"), host, debug);
         return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "mapping block loop", false);
     }
 
@@ -2500,11 +2571,12 @@ public final class Stitcher {
         Element outputElement = Element.of(Type.BOOLEAN_TYPE);
 
         String internalName = fusedClassName(caller, "Fused$$LogicalBlockLoop");
+        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$LogicalBlockLoop", tree);
 
         // One helper per comparison operand, in DFS order; the map lets the loop emitter resolve each comparison's call.
         Map<FusionNode, String> helperNames = new IdentityHashMap<>();
         List<MethodNode> helpers = new ArrayList<>();
-        assignComparisonHelpers(tree, inputElement, helperNames, helpers);
+        assignComparisonHelpers(tree, inputElement, helperNames, helpers, debug);
         // Each comparison's warning-source slot into the runtime Warnings[]; a comparison registers its multi-value
         // warning on warnings[its slot] so the header matches the unfused comparison evaluator's node source.
         Map<FusionNode, Integer> sourceIndices = signature.warningSourceIndices();
@@ -2653,7 +2725,7 @@ public final class Stitcher {
             hostMethodInterceptor.accept(host);
         }
 
-        ClassNode classNode = newFusedClass(internalName, host);
+        ClassNode classNode = newFusedClass(internalName, host, debug);
         classNode.methods.addAll(helpers);
         // Enforce the inlining budget on the top-level loop method (criterion #6). The helpers keep it small even for
         // nested trees; if it somehow exceeds the budget we refuse to fuse (→ unfused fallback) rather than emit an
@@ -2677,11 +2749,12 @@ public final class Stitcher {
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
 
         String internalName = fusedClassName(caller, "Fused$$LogicalVectorLoop");
-        MethodNode iface = emitLogicalVectorMethod(tree, inputElements, outputElement, constants, consumed, arity);
+        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$LogicalVectorLoop", tree);
+        MethodNode iface = emitLogicalVectorMethod(tree, inputElements, outputElement, constants, consumed, arity, debug);
         if (hostMethodInterceptor != null) {
             hostMethodInterceptor.accept(iface);
         }
-        ClassNode classNode = newFusedClass(internalName, iface);
+        ClassNode classNode = newFusedClass(internalName, iface, debug);
         // Not budget-enforced: a representative AND of two comparisons is a handful of bytecodes, and refusing a
         // deep tree would drop the dense path (the whole point of this emit) back to the 3VL builder loop. Measure
         // via the test seam; log-only like the checked-vector / block fallbacks. serializeWithBudgetGuard looks up
@@ -2700,7 +2773,8 @@ public final class Stitcher {
         Element outputElement,
         List<FusionNode.Constant> constants,
         int[] consumed,
-        int arity
+        int arity,
+        FusedClassDebugInfo debug
     ) {
         FrameLayout frame = new FrameLayout();
         frame.slot();                                                       // [0] BlockFactory
@@ -2767,7 +2841,7 @@ public final class Stitcher {
                     true
                 )
             );
-        }, kernel -> {});
+        }, kernel -> {}, debug);
         emitter.emit(tree, outputElement);
         insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
 
@@ -2916,13 +2990,14 @@ public final class Stitcher {
         }
 
         String internalName = fusedClassName(caller, "Fused$$FilterEvalBlockLoop");
+        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$FilterEvalBlockLoop", predicateTree, projectionTree);
 
         // Build the helper methods. A logical predicate additionally needs one cmpN helper per comparison operand.
         List<MethodNode> methods = new ArrayList<>();
         Map<FusionNode, String> comparisonHelperNames = new IdentityHashMap<>();
         if (predicateIsLogical) {
             List<MethodNode> comparisonHelpers = new ArrayList<>();
-            assignComparisonHelpers(predicateTree, predLogicalElement, comparisonHelperNames, comparisonHelpers);
+            assignComparisonHelpers(predicateTree, predLogicalElement, comparisonHelperNames, comparisonHelpers, debug);
             methods.addAll(comparisonHelpers);
         }
         MethodNode predHelper = buildPredicateHelper(
@@ -2933,7 +3008,8 @@ public final class Stitcher {
             predConstants,
             predSources,
             internalName,
-            comparisonHelperNames
+            comparisonHelperNames,
+            debug
         );
         MethodNode projHelper = buildProjectionAppendHelper(
             projectionTree,
@@ -2941,7 +3017,8 @@ public final class Stitcher {
             projInputElements,
             projOutputElement,
             projConstants,
-            mergedProjSources
+            mergedProjSources,
+            debug
         );
         methods.add(predHelper);
         methods.add(projHelper);
@@ -3101,7 +3178,7 @@ public final class Stitcher {
             hostMethodInterceptor.accept(host);
         }
 
-        ClassNode classNode = newFusedClass(internalName, host);
+        ClassNode classNode = newFusedClass(internalName, host, debug);
         classNode.methods.addAll(methods);
         // The two per-position bodies are factored into the pred/projAppend (and cmpN) helpers, so the top-level fused
         // loop stays small and inlinable; enforce the budget on it (→ unfused fallback if a pathological shape exceeds).
@@ -3124,7 +3201,8 @@ public final class Stitcher {
         List<FusionNode.Constant> predConstants,
         Map<FusionNode, Integer> predSources,
         String internalName,
-        Map<FusionNode, String> comparisonHelperNames
+        Map<FusionNode, String> comparisonHelperNames,
+        FusedClassDebugInfo debug
     ) {
         StringBuilder desc = new StringBuilder("(").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
         for (int i = 0; i < predArity; i++) {
@@ -3187,7 +3265,8 @@ public final class Stitcher {
                 overflowExcSlot,
                 spareBytesRefSlot,
                 workBase,
-                constantSlots
+                constantSlots,
+                debug
             );
             NodeSlots root = emitter.emit(predicateTree, Element.of(Type.BOOLEAN_TYPE));
             LabelNode retNull = new LabelNode();
@@ -3216,7 +3295,8 @@ public final class Stitcher {
         Element[] projInputElements,
         Element projOutputElement,
         List<FusionNode.Constant> projConstants,
-        Map<FusionNode, Integer> mergedProjSources
+        Map<FusionNode, Integer> mergedProjSources,
+        FusedClassDebugInfo debug
     ) {
         StringBuilder desc = new StringBuilder("(").append(projOutputElement.builderDescriptor())
             .append(WARNINGS_ARRAY_DESCRIPTOR)
@@ -3262,7 +3342,8 @@ public final class Stitcher {
             overflowExcSlot,
             spareBytesRefSlot,
             workBase,
-            constantSlots
+            constantSlots,
+            debug
         );
         NodeSlots root = emitter.emit(projectionTree, projOutputElement);
         LabelNode doNull = new LabelNode();
@@ -3314,16 +3395,22 @@ public final class Stitcher {
      * Assigns each comparison operand ({@link FusionNode.Kernel}) in {@code tree} a {@code private static} helper method
      * (named {@code cmp0}, {@code cmp1}, … in DFS order) and records the name so the loop emitter can call it.
      */
-    private void assignComparisonHelpers(FusionNode node, Element inputElement, Map<FusionNode, String> names, List<MethodNode> helpers) {
+    private void assignComparisonHelpers(
+        FusionNode node,
+        Element inputElement,
+        Map<FusionNode, String> names,
+        List<MethodNode> helpers,
+        FusedClassDebugInfo debug
+    ) {
         if (node instanceof FusionNode.Logical logical) {
-            assignComparisonHelpers(logical.left(), inputElement, names, helpers);
-            assignComparisonHelpers(logical.right(), inputElement, names, helpers);
+            assignComparisonHelpers(logical.left(), inputElement, names, helpers, debug);
+            assignComparisonHelpers(logical.right(), inputElement, names, helpers, debug);
             return;
         }
         FusionNode.Kernel comparison = (FusionNode.Kernel) node;
         String name = "cmp" + helpers.size();
         names.put(comparison, name);
-        helpers.add(emitComparisonHelper(comparison, inputElement, name));
+        helpers.add(emitComparisonHelper(comparison, inputElement, name, debug));
     }
 
     /**
@@ -3334,7 +3421,12 @@ public final class Stitcher {
      * value at {@code getFirstValueIndex(p)} is read and the spliced comparison kernel body's {@code 0}/{@code 1} is
      * returned.
      */
-    private MethodNode emitComparisonHelper(FusionNode.Kernel comparison, Element inputElement, String methodName) {
+    private MethodNode emitComparisonHelper(
+        FusionNode.Kernel comparison,
+        Element inputElement,
+        String methodName,
+        FusedClassDebugInfo debug
+    ) {
         Body body = extractKernelBody(comparison);
         int size = inputElement.type().getSize();
         List<FusionNode> children = comparison.children();
@@ -3417,7 +3509,7 @@ public final class Stitcher {
             offset += size;
         }
         // All operands present and single-valued: run the comparison body (leaves int 0/1) and return it.
-        insns.add(body.computation());
+        spliceKernelBody(insns, body.computation(), comparison, debug);
         insns.add(new InsnNode(Opcodes.IRETURN));
         insns.add(retNull);
         insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
@@ -3875,6 +3967,10 @@ public final class Stitcher {
     byte[] filterEvalBlockLoopBytecode(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
         throws StitchingException {
         return emitFilterEvalBlockLoop(caller, predicateTree, projectionTree);
+    }
+
+    byte[] mappingBlockLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return emitMappingBlockLoop(caller, tree);
     }
 
     /**

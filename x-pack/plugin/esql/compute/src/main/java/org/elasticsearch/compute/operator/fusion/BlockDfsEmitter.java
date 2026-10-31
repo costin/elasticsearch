@@ -65,6 +65,7 @@ final class BlockDfsEmitter {
      */
     private final int spareBytesRefSlot;
     private final Map<FusionNode.Constant, Integer> constantSlots;
+    private final FusedClassDebugInfo debug;
     private int next;
 
     BlockDfsEmitter(
@@ -81,7 +82,8 @@ final class BlockDfsEmitter {
         int overflowExcSlot,
         int spareBytesRefSlot,
         int workBase,
-        Map<FusionNode.Constant, Integer> constantSlots
+        Map<FusionNode.Constant, Integer> constantSlots,
+        FusedClassDebugInfo debug
     ) {
         this.templates = templates;
         this.insns = insns;
@@ -96,6 +98,7 @@ final class BlockDfsEmitter {
         this.overflowExcSlot = overflowExcSlot;
         this.spareBytesRefSlot = spareBytesRefSlot;
         this.constantSlots = constantSlots;
+        this.debug = debug;
         this.next = workBase;
     }
 
@@ -218,7 +221,7 @@ final class BlockDfsEmitter {
             LabelNode handler = new LabelNode();
             LabelNode skipRegister = new LabelNode();
             insns.add(tryStart);
-            insns.add(body.computation());
+            Stitcher.spliceKernelBody(insns, body.computation(), kernel, debug);
             insns.add(new VarInsnNode(expected.type().getOpcode(Opcodes.ISTORE), valueSlot));
             insns.add(tryEnd);
             insns.add(new JumpInsnNode(Opcodes.GOTO, kDone));
@@ -248,7 +251,7 @@ final class BlockDfsEmitter {
             // fall through to kDone
             host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, exType));
         } else {
-            insns.add(body.computation());
+            Stitcher.spliceKernelBody(insns, body.computation(), kernel, debug);
             insns.add(new VarInsnNode(expected.type().getOpcode(Opcodes.ISTORE), valueSlot));
         }
         insns.add(kDone);
