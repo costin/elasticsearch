@@ -16,6 +16,7 @@ import org.elasticsearch.compute.data.IntVector;
 import org.elasticsearch.compute.data.OrdinalBytesRefVector;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
 import org.elasticsearch.xpack.esql.core.expression.FoldContext;
@@ -56,7 +57,8 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Helpers ({@code driverContext}, {@code longs}, {@code dictEntry}, {@code assertSameOutput}, ...) are reused from
  * {@link SlowPathFusionBenchmark}. Nested {@code TO_LOWER} cases are expected unfused today (until a later task);
- * {@code split} fuses today and {@link #setup} asserts the stitched class contains {@code compute()}.
+ * {@code split} fuses today and {@link #setup} asserts {@code compute()} is present when the effective budget is
+ * {@code <=} {@link Stitcher#DEFAULT_MAX_FUSED_METHOD_BYTECODES} and absent when the budget is raised (B3 unsplit).
  */
 @Warmup(iterations = 3, time = 2)
 @Measurement(iterations = 5, time = 2)
@@ -236,8 +238,19 @@ public class FusionFollowupBenchmark {
             if (SlowPathFusionBenchmark.isFused(fused) == false) {
                 throw new AssertionError(shape + " did not fuse with fusion=true: " + fused.getClass().getName());
             }
-            if (FusionPlanner.fusedClassHasMethod(fused, "compute") == false) {
-                throw new AssertionError(shape + " fused but the stitched class has no compute() split method: " + fused);
+            boolean expectSplit = Stitcher.maxFusedMethodBytecodes() <= Stitcher.DEFAULT_MAX_FUSED_METHOD_BYTECODES;
+            if (FusionPlanner.fusedClassHasMethod(fused, "compute") != expectSplit) {
+                throw new AssertionError(
+                    shape
+                        + " fused; expected compute() "
+                        + (expectSplit ? "present" : "absent")
+                        + " at budget "
+                        + Stitcher.maxFusedMethodBytecodes()
+                        + " (default "
+                        + Stitcher.DEFAULT_MAX_FUSED_METHOD_BYTECODES
+                        + "): "
+                        + fused
+                );
             }
         }
         this.page = shape.page(size);

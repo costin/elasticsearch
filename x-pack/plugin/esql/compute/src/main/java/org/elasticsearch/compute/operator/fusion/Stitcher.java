@@ -123,10 +123,18 @@ public final class Stitcher {
     public static final String FUSED_RAW_INTERFACE_METHOD_NAME = "fusedRawInterface";
 
     /**
+     * HotSpot's default {@code FreqInlineSize} (criterion #6). Public so {@code FusionFollowupBenchmark} can
+     * assert the {@code compute()} split against this default rather than hardcoding 325: {@code compute()} is
+     * present when the effective budget is {@code <=} this value and absent when the budget is raised (B3 unsplit).
+     */
+    public static final int DEFAULT_MAX_FUSED_METHOD_BYTECODES = 325;
+
+    /**
      * HotSpot's default {@code FreqInlineSize} (criterion #6). Mutable budget — not a constant — so it is not
-     * SCREAMING_CASE: production reads {@code -Desql.fusion.max_method_bytecodes} (default 325) once at class init;
-     * tests flip it via {@link #maxFusedMethodBytecodesForTests}. A hot method above this many bytecodes is not
-     * inlined into its caller, defeating the single-hot-body goal.
+     * SCREAMING_CASE: production reads {@code -Desql.fusion.max_method_bytecodes} (default
+     * {@link #DEFAULT_MAX_FUSED_METHOD_BYTECODES}) once at class init; tests flip it via
+     * {@link #maxFusedMethodBytecodesForTests}. A hot method above this many bytecodes is not inlined into its
+     * caller, defeating the single-hot-body goal.
      *
      * <p>This value governs <em>both</em> the plain/checked-vector {@code compute()} split (when the inline body
      * exceeds the budget, emit a helper rather than refuse) <em>and</em> the {@code enforce=true} refusals
@@ -135,8 +143,17 @@ public final class Stitcher {
      * everything. Not a node setting.
      */
     static volatile int maxFusedMethodBytecodes = resolveMaxFusedMethodBytecodes(
-        Integer.getInteger("esql.fusion.max_method_bytecodes", 325)
+        Integer.getInteger("esql.fusion.max_method_bytecodes", DEFAULT_MAX_FUSED_METHOD_BYTECODES)
     );
+
+    /**
+     * Current effective fused-method bytecode budget (the mutable field, possibly overridden by
+     * {@code -Desql.fusion.max_method_bytecodes} or the test setter). Public so {@code FusionFollowupBenchmark} can
+     * assert the split arm against the live budget instead of hardcoding 325.
+     */
+    public static int maxFusedMethodBytecodes() {
+        return maxFusedMethodBytecodes;
+    }
 
     /**
      * Test-only: sets the fused-method bytecode budget; restore in a finally. Rejects {@code <= 0}. Production reads
