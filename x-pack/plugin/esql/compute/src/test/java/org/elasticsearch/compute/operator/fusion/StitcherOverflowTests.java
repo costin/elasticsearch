@@ -486,7 +486,9 @@ public class StitcherOverflowTests extends ESTestCase {
 
     /**
      * Over-budget {@code fusedRaw} is emitted via {@code emitCheckedVectorRawSplit}: the expression is lifted into a
-     * private {@code compute()} helper and the loop calls {@code compute()} inside the overflow try. Forced with a
+     * private {@code compute()} helper and the loop calls {@code compute()} inside the overflow try. Both the
+     * {@code fusedRaw} shell and the lifted {@code compute()} body are scanned for {@code INVOKEINTERFACE}/
+     * {@code INVOKEVIRTUAL} on {@code Block}/{@code *Block} and any compute-data {@code *Builder}. Forced with a
      * left-leaning {@code addExact} chain that exceeds {@link Stitcher#MAX_FUSED_METHOD_BYTECODES} — production emit is
      * not altered. The representative depth-2 tree is asserted to stay inline so a passing {@code compute()} check is
      * evidence the split was actually taken.
@@ -510,16 +512,16 @@ public class StitcherOverflowTests extends ESTestCase {
             @Override
             public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
                 boolean isRaw = Stitcher.FUSED_RAW_METHOD_NAME.equals(name);
+                boolean isCompute = "compute".equals(name);
                 return new MethodVisitor(Opcodes.ASM9) {
                     @Override
                     public void visitMethodInsn(int opcode, String owner, String mName, String mDesc, boolean isInterface) {
-                        if (isRaw == false) {
-                            return;
-                        }
-                        if ("compute".equals(mName) && opcode == Opcodes.INVOKESTATIC) {
+                        if (isRaw && "compute".equals(mName) && opcode == Opcodes.INVOKESTATIC) {
                             fusedRawCallsCompute[0] = true;
                         }
-                        recordForbiddenHotPathInvoke(rawHotPathViolations, name, opcode, owner, mName, mDesc);
+                        if (isRaw || isCompute) {
+                            recordForbiddenHotPathInvoke(rawHotPathViolations, name, opcode, owner, mName, mDesc);
+                        }
                     }
                 };
             }
@@ -527,7 +529,7 @@ public class StitcherOverflowTests extends ESTestCase {
 
         assertThat("split fusedRaw loop must INVOKESTATIC compute()", fusedRawCallsCompute[0], is(true));
         assertThat(
-            "split fusedRaw must not invoke compute/data *Block or *Builder: " + rawHotPathViolations,
+            "split fusedRaw and compute() must not invoke compute/data *Block or *Builder: " + rawHotPathViolations,
             rawHotPathViolations,
             is(empty())
         );
