@@ -274,6 +274,16 @@ final class FusedClassCache {
     private final LongAdder failures = new LongAdder();
     private final LongAdder negativeHits = new LongAdder();
 
+    /**
+     * Test-only: when non-null, {@link #get} substitutes a failing stitch lambda for this {@link Path} so the real
+     * cache still single-flights and negatively caches the failure. WHY this lives on the cache rather than
+     * {@code FusionPlanner.compilerForTests}: that seam bypasses this cache entirely, so a vector-path-only degrade
+     * would not move {@link #failures()} / {@link #negativeHits()}. A natural production over-budget shape no longer
+     * fails only the vector path (plain/checked trees split instead of refusing; a deep logical tree refuses the
+     * <em>block</em> path and loses fusion). Never set in production; {@link #resetForTests} clears it.
+     */
+    volatile Path injectFailureForPathForTests;
+
     FusedClassCache() {
         this(RefType.SOFT);
     }
@@ -294,9 +304,17 @@ final class FusedClassCache {
      * the empty slot is dropped so a later attempt can succeed.
      */
     Class<?> get(Shape shape, ClassStitcher stitcher) throws Stitcher.StitchingException {
+        // Test hook: replace the caller-supplied stitch lambda for one Path so a vector-path-only failure still
+        // goes through this cache (single-flight + negative marker + failures()/negativeHits()). Production never
+        // sets injectFailureForPathForTests; the extra volatile read is plan-time only.
+        Path injected = injectFailureForPathForTests;
+        ClassStitcher toRun = stitcher;
+        if (injected != null && injected == shape.path()) {
+            toRun = () -> { throw new Stitcher.StitchingException("injected stitch failure for path [" + injected + "]", null); };
+        }
         Entry entry = classes.computeIfAbsent(shape, unused -> new Entry());
         try {
-            Class<?> stitched = entry.resolve(stitcher);
+            Class<?> stitched = entry.resolve(toRun);
             evictIfOverCapacity(shape);
             return stitched;
         } catch (Stitcher.StitchingException e) {
@@ -393,7 +411,7 @@ final class FusedClassCache {
         }
     }
 
-    /** Test-only: drops all entries and zeroes the counters so an assertion can observe behaviour in isolation. */
+    /** Test-only: drops all entries, zeroes the counters, and clears {@link #injectFailureForPathForTests}. */
     void resetForTests() {
         classes.clear();
         hits.reset();
@@ -402,5 +420,6 @@ final class FusedClassCache {
         softRefCleared.reset();
         failures.reset();
         negativeHits.reset();
+        injectFailureForPathForTests = null;
     }
 }
