@@ -41,13 +41,21 @@ public class FilterEvalOperator extends AbstractPageMappingOperator {
 
     private final DriverContext ctx;
     private final FilterEvalEvaluator evaluator;
+    /**
+     * Bytes reserved on the circuit breaker at construction. An evaluator's
+     * {@link FilterEvalEvaluator#baseRamBytesUsed()} can change after construction (an adaptive
+     * evaluator grows it when it switches to the fused path mid-query), so the operator must
+     * release exactly this amount or the breaker drifts.
+     */
+    private final long reservedBytes;
     private final String description;
 
     public FilterEvalOperator(DriverContext ctx, FilterEvalEvaluator evaluator) {
         this.ctx = ctx;
         this.evaluator = evaluator;
         this.description = "FilterEvalOperator[evaluator=" + evaluator + "]";
-        ctx.breaker().addEstimateBytesAndMaybeBreak(BASE_RAM_BYTES_USED + evaluator.baseRamBytesUsed(), "ESQL");
+        this.reservedBytes = BASE_RAM_BYTES_USED + evaluator.baseRamBytesUsed();
+        ctx.breaker().addEstimateBytesAndMaybeBreak(reservedBytes, "ESQL");
     }
 
     @Override
@@ -96,10 +104,6 @@ public class FilterEvalOperator extends AbstractPageMappingOperator {
 
     @Override
     public void close() {
-        Releasables.closeExpectNoException(
-            evaluator,
-            () -> ctx.breaker().addWithoutBreaking(-BASE_RAM_BYTES_USED - evaluator.baseRamBytesUsed()),
-            super::close
-        );
+        Releasables.closeExpectNoException(evaluator, () -> ctx.breaker().addWithoutBreaking(-reservedBytes), super::close);
     }
 }
