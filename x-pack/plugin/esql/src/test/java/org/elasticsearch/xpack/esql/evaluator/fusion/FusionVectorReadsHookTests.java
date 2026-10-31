@@ -20,16 +20,44 @@ import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFac
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Abs;
 import org.elasticsearch.xpack.esql.planner.Layout;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.List;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
 
 /**
  * Benchmark/test-only {@code esql.fusion.vector_reads} hook: default {@code auto} keeps ALL-RAW over exact
- * {@code *ArrayVector} inputs; flipping to {@code interface} (via {@link FusionSettings#setVectorReadsInterfaceForTests})
- * treats those same inputs as non-exact so eval takes ALL-INTERFACE, with unchanged values.
+ * {@code *ArrayVector} inputs; {@code interface} treats those same inputs as non-exact so eval takes ALL-INTERFACE,
+ * with unchanged values. The production flag is a class-init {@code static final}, so both paths are forced here via
+ * {@link FusedExpressionEvaluatorFactory#getForTests} rather than mutating global state.
  */
 public class FusionVectorReadsHookTests extends FusionDifferentialTestCase {
+
+    public void testVectorReadsFieldIsStaticFinal() throws Exception {
+        Field field = FusionSettings.class.getDeclaredField("VECTOR_READS_INTERFACE");
+        int modifiers = field.getModifiers();
+        assertThat("vector_reads must be static so class-init latches it once", Modifier.isStatic(modifiers), is(true));
+        assertThat("vector_reads must be final so C2 folds the production branch", Modifier.isFinal(modifiers), is(true));
+        assertThat("vector_reads must not be volatile (A9 per-page read)", Modifier.isVolatile(modifiers), is(false));
+    }
+
+    public void testResolveVectorReadsInterfaceAutoAndUnset() {
+        assertThat(FusionSettings.resolveVectorReadsInterface(null), is(false));
+        assertThat(FusionSettings.resolveVectorReadsInterface("auto"), is(false));
+        assertThat(FusionSettings.resolveVectorReadsInterface("interface"), is(true));
+    }
+
+    public void testUnknownVectorReadsPropertyIsRejected() {
+        IllegalArgumentException thrown = expectThrows(
+            IllegalArgumentException.class,
+            () -> FusionSettings.resolveVectorReadsInterface("raw")
+        );
+        assertThat(thrown.getMessage(), containsString("raw"));
+        expectThrows(IllegalArgumentException.class, () -> FusionSettings.resolveVectorReadsInterface(""));
+        expectThrows(IllegalArgumentException.class, () -> FusionSettings.resolveVectorReadsInterface("INTERFACE"));
+    }
 
     public void testVectorReadsInterfaceTreatsExactArrayVectorsAsNonExact() {
         assertThat("default auto is not the interface force", FusionSettings.isVectorReadsInterface(), is(false));
@@ -44,37 +72,34 @@ public class FusionVectorReadsHookTests extends FusionDifferentialTestCase {
         int n = 8;
         runDifferentialAssertingPath(
             fused,
+            false,
             unfused,
             denseColumn(ElementKind.DOUBLE, n, 0),
             n,
             LastEvalPath.RAW,
             "auto: exact DoubleArrayVector -> RAW"
         );
-
-        FusionSettings.setVectorReadsInterfaceForTests(true);
-        try {
-            runDifferentialAssertingPath(
-                fused,
-                unfused,
-                denseColumn(ElementKind.DOUBLE, n, 0),
-                n,
-                LastEvalPath.INTERFACE,
-                "interface: exact DoubleArrayVector -> INTERFACE"
-            );
-        } finally {
-            FusionSettings.setVectorReadsInterfaceForTests(false);
-        }
+        runDifferentialAssertingPath(
+            fused,
+            true,
+            unfused,
+            denseColumn(ElementKind.DOUBLE, n, 0),
+            n,
+            LastEvalPath.INTERFACE,
+            "interface: exact DoubleArrayVector -> INTERFACE"
+        );
     }
 
     private void runDifferentialAssertingPath(
         FusedExpressionEvaluatorFactory fusedFactory,
+        boolean vectorReadsInterface,
         ExpressionEvaluator.Factory unfusedFactory,
         Block input,
         int positionCount,
         LastEvalPath expectedPath,
         String ctx
     ) {
-        ExpressionEvaluator fused = fusedFactory.get(driverContext);
+        ExpressionEvaluator fused = fusedFactory.getForTests(driverContext, vectorReadsInterface);
         ExpressionEvaluator reference = unfusedFactory.get(driverContext);
         Page page = null;
         Block fusedResult = null;

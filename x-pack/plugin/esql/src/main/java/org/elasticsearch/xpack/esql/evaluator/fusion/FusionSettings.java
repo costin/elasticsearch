@@ -46,6 +46,12 @@ import java.util.concurrent.ThreadLocalRandom;
  * {@link #isVerifyEnabled()}): default {@link Assertions#ENABLED} so {@code -ea} test JVMs A/B every fused page
  * against the unfused evaluator, and production / JMH (no {@code -ea}) pay zero cost. {@code -Desql.fusion.verify=false}
  * disables the A/B even when assertions are on.
+ *
+ * <p>{@code esql.fusion.vector_reads} is likewise <b>not</b> a node {@link Setting}. It latches into a
+ * {@code static final} boolean (see {@link #isVectorReadsInterface()}): {@code auto} (default) keeps ALL-RAW over
+ * exact {@code *ArrayVector}s; {@code interface} forces ALL-INTERFACE. Unknown values throw at class init. Production
+ * / JMH (unset) pay zero cost — the dispatch branch is a constant the C2 JIT folds away. JMH sets the system property
+ * per fork rather than calling the accessor.
  */
 public final class FusionSettings {
 
@@ -135,14 +141,13 @@ public final class FusionSettings {
     private static volatile boolean stringDepth1Enabled = Boolean.parseBoolean(System.getProperty("esql.fusion.string_depth1", "false"));
 
     /**
-     * Benchmark/test-only {@code esql.fusion.vector_reads} = {@code auto} (default) | {@code interface}.
-     * <b>Not</b> a node {@link Setting}. When {@code interface}, eval treats exact {@code *ArrayVector} inputs as
-     * non-exact so the ALL-INTERFACE variant is taken. The effective value is initialized once from the system
-     * property; there is no per-row cost. The volatile is read once per dense page on purpose so an already-stitched
-     * factory honors a flipped hook on its next eval — it must not be latched at stitch/construction time.
-     * {@link #setVectorReadsInterfaceForTests} exists solely so a unit test can flip the chosen path in-process.
+     * Benchmark/test-only {@code esql.fusion.vector_reads}. <b>Not</b> a node {@link Setting}. WHY {@code static final}
+     * (not {@code volatile}): production dispatch must be a C2-foldable constant so an unset hook costs nothing per
+     * dense page. A9's per-page volatile read was the only hot-path difference vs. the stabilize tip. JMH sets
+     * {@code -Desql.fusion.vector_reads} per fork (class-init of this class in that fork); tests that need both
+     * modes in one JVM use {@link FusedExpressionEvaluatorFactory#getForTests}, not a mutable override of this flag.
      */
-    private static volatile boolean vectorReadsInterface = "interface".equals(System.getProperty("esql.fusion.vector_reads", "auto"));
+    private static final boolean VECTOR_READS_INTERFACE = resolveVectorReadsInterface(System.getProperty("esql.fusion.vector_reads"));
 
     /** The effective adaptive row threshold (0 = eager). Cold-path read; {@code volatile} is sufficient. */
     private static volatile long adaptiveMinRows = initialLongProperty("esql.fusion.adaptive.min_rows", 0L);
@@ -206,16 +211,30 @@ public final class FusionSettings {
     }
 
     /**
-     * Whether eval should treat exact {@code *ArrayVector} inputs as non-exact and take the ALL-INTERFACE variant.
-     * Benchmark/test-only; default {@code false} ({@code auto}).
+     * Whether eval should treat exact {@code *ArrayVector} inputs as non-exact and take ALL-INTERFACE.
+     * Benchmark/test-only; default {@code false} ({@code auto}). WHY package-private: production dispatch snapshots
+     * this into a {@code final} evaluator field at construction; JMH sets {@code -Desql.fusion.vector_reads} per
+     * fork (this {@code static final} reads it at class init) and must not reach across packages to toggle a runtime
+     * flag. WHY unknown values are rejected at {@link #resolveVectorReadsInterface}: a typo would silently keep RAW
+     * and an INTERFACE bench/test cell would look like {@code auto}.
      */
-    public static boolean isVectorReadsInterface() {
-        return vectorReadsInterface;
+    static boolean isVectorReadsInterface() {
+        return VECTOR_READS_INTERFACE;
     }
 
-    /** Test-only: flips {@code esql.fusion.vector_reads=interface}; restore in a finally. */
-    static void setVectorReadsInterfaceForTests(boolean value) {
-        vectorReadsInterface = value;
+    /**
+     * Resolves {@code esql.fusion.vector_reads}: unset/{@code auto} → {@code false} (RAW); {@code interface} →
+     * {@code true}. Anything else throws. Package-private so unit tests can pin the matrix without reloading this class.
+     */
+    static boolean resolveVectorReadsInterface(String property) {
+        String value = property == null ? "auto" : property;
+        return switch (value) {
+            case "auto" -> false;
+            case "interface" -> true;
+            default -> throw new IllegalArgumentException(
+                "unknown esql.fusion.vector_reads [" + value + "]; expected [auto] or [interface]"
+            );
+        };
     }
 
     /** Whether fusion may be attempted on this node. */

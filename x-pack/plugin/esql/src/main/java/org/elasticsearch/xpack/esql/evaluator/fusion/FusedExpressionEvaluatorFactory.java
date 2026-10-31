@@ -606,6 +606,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
     @Override
     public ExpressionEvaluator get(DriverContext context) {
+        // Production snapshots the class-init static-final so the per-page branch reads a final instance field
+        // assigned from a C2-foldable constant (false unless -Desql.fusion.vector_reads=interface).
         return new FusedExpressionEvaluator(
             warningSources,
             inputChannels,
@@ -620,7 +622,34 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             context,
             shape,
             resolveConstantValues(constants, context),
-            mapping
+            mapping,
+            FusionSettings.isVectorReadsInterface()
+        );
+    }
+
+    /**
+     * Test-only: like {@link #get} but forces the vector_reads INTERFACE vs RAW choice. WHY this lives here:
+     * {@code esql.fusion.vector_reads} is a {@code static final} resolved at class init (so production dispatch is
+     * C2-foldable), and a unit test cannot flip it in-process without a mutable static. This constructs an evaluator
+     * with the chosen boolean and leaves {@link FusionSettings} untouched. Never called in production.
+     */
+    ExpressionEvaluator getForTests(DriverContext context, boolean vectorReadsInterface) {
+        return new FusedExpressionEvaluator(
+            warningSources,
+            inputChannels,
+            inputElements,
+            blockHandle,
+            vectorHandle,
+            vectorHandleInterface,
+            vectorHandleRaw,
+            vectorHandleRawInterface,
+            vectorStrategy,
+            unfused,
+            context,
+            shape,
+            resolveConstantValues(constants, context),
+            mapping,
+            vectorReadsInterface
         );
     }
 
@@ -895,6 +924,14 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
          * production. See {@link LastEvalPath}.
          */
         private LastEvalPath lastEvalPath;
+        /**
+         * Snapshot of {@link FusionSettings#isVectorReadsInterface()} (a class-init {@code static final}). WHY an
+         * instance {@code final} rather than a per-page static/volatile read: production {@link #get} stores the
+         * compile-time constant (false unless {@code -Desql.fusion.vector_reads=interface}), so C2 sees a monomorphic
+         * evaluator whose field is constant-false and eliminates the {@link #allExactArrayVectors} branch; tests pass
+         * the other value through {@link #getForTests} without mutating global state. A9's per-page volatile is gone.
+         */
+        private final boolean vectorReadsInterface;
 
         FusedExpressionEvaluator(
             Source[] warningSources,
@@ -910,7 +947,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             DriverContext driverContext,
             String shape,
             Object[] constantValues,
-            boolean mapping
+            boolean mapping,
+            boolean vectorReadsInterface
         ) {
             this.warningSources = warningSources;
             this.inputChannels = inputChannels;
@@ -923,6 +961,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             this.shape = shape;
             this.constantValues = constantValues;
             this.mapping = mapping;
+            this.vectorReadsInterface = vectorReadsInterface;
 
             int arity = inputChannels.length;
             int constCount = constantValues.length;
@@ -1157,8 +1196,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             // so eval takes ALL-INTERFACE (typed *Vector.getX) instead of ALL-RAW (VectorUnsafe). SIMD PLAIN_VECTOR
             // has no interface sibling — forcing non-exact would fall through to BLOCK — so only force when an
             // INTERFACE spreader exists. That keeps the hook on the scalar RAW-vs-INTERFACE choice and leaves SIMD
-            // / block-only paths alone.
-            if (FusionSettings.isVectorReadsInterface() && (vectorInterfaceSpreader != null || vectorRawInterfaceSpreader != null)) {
+            // / block-only paths alone. Reads the instance final (production: class-init static-final snapshot),
+            // never a volatile.
+            if (vectorReadsInterface && (vectorInterfaceSpreader != null || vectorRawInterfaceSpreader != null)) {
                 return false;
             }
             for (int i = 0; i < vectors.length; i++) {
