@@ -7,10 +7,13 @@
 
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
+import org.apache.logging.log4j.Level;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.test.ESTestCase;
+import org.elasticsearch.test.MockLog;
+import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
@@ -43,9 +46,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
+import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.sameInstance;
 
 /**
@@ -64,6 +69,8 @@ import static org.hamcrest.Matchers.sameInstance;
  *   <li><b>Cleared reference re-stitches</b> on the next access ({@code SOFT_REF_CLEARED} bumps, a new class is
  *       returned), for both the {@link RefType#SOFT} default and the {@link RefType#WEAK} toggle.</li>
  *   <li><b>Admission</b>: no admission filter was adopted (D3), so a first-sight shape stitches immediately.</li>
+ *   <li><b>Negative stitch cache</b>: a failing shape is attempted once and retained as a marker (bounded by
+ *       {@link FusedClassCache#MAX_ENTRIES} + eviction); the first failure logs WARN, repeats log DEBUG.</li>
  * </ol>
  * A final smoke test proves the cache is wired into the plan-time path: two identical {@link EvalMapper} builds of the
  * same fusable shape stitch once and then hit the cache.
@@ -329,17 +336,121 @@ public class FusedClassCacheTests extends ESTestCase {
         assertThat("the just-resolved shape must be retained (not evicted by its own insert)", cache.hits(), is(hitsBefore + 1));
     }
 
-    public void testFailedStitchIsNotCachedAndPropagates() {
+    public void testFailedStitchIsNegativeCachedAndAttemptedOnce() {
         FusedClassCache cache = new FusedClassCache();
-        Stitcher.StitchingException thrown = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, () -> {
+        AtomicInteger invocations = new AtomicInteger();
+        FusedClassCache.ClassStitcher stitcher = () -> {
+            invocations.incrementAndGet();
             throw new Stitcher.StitchingException("boom", new VerifyError("injected"));
-        }));
-        assertThat(thrown.getMessage(), is("boom"));
-        assertThat("a failed stitch leaves no poisoned entry behind", cache.size(), is(0));
+        };
+        Stitcher.StitchingException first = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
+        assertThat(first.getMessage(), is("boom"));
+        assertThat("the original StitchingException keeps its cause", first.getCause(), instanceOf(VerifyError.class));
+        for (int i = 0; i < 2; i++) {
+            Stitcher.StitchingException repeat = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
+            assertThat(repeat.getMessage(), is("boom"));
+            assertThat("reconstructed marker exceptions drop the cause", repeat.getCause(), nullValue());
+        }
+        assertThat("a failing shape must be attempted exactly once", invocations.get(), is(1));
+        assertThat("the negative-cache marker is retained", cache.size(), is(1));
+        assertThat("one first-failure transition", cache.failures(), is(1L));
+        assertThat("two subsequent lookups are negative hits", cache.negativeHits(), is(2L));
+    }
 
-        // A later attempt for the same shape starts clean and can succeed.
-        Class<?> stitched = getUnchecked(cache, SHAPE_A, CLASS_1);
-        assertThat(stitched, sameInstance(CLASS_1));
+    @TestLogging(
+        value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG",
+        reason = "assert the single plan-time WARN then DEBUG on negative-cache hits"
+    )
+    public void testFailedStitchLogsWarnOnceThenDebug() {
+        FusedClassCache cache = new FusedClassCache();
+        FusedClassCache.ClassStitcher stitcher = () -> { throw new Stitcher.StitchingException("boom", new VerifyError("injected")); };
+        try (var mockLog = MockLog.capture(FusedClassCache.class)) {
+            mockLog.addExpectation(
+                new MockLog.SeenEventExpectation(
+                    "first-failure WARN",
+                    FusedClassCache.class.getCanonicalName(),
+                    Level.WARN,
+                    "*fusion stitch failed for shape*"
+                )
+            );
+            mockLog.addExpectation(
+                new MockLog.SeenEventExpectation(
+                    "repeat DEBUG",
+                    FusedClassCache.class.getCanonicalName(),
+                    Level.DEBUG,
+                    "*previously failed for shape*"
+                )
+            );
+            for (int i = 0; i < 3; i++) {
+                expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
+            }
+            mockLog.assertAllExpectationsMatched();
+        }
+        assertThat(cache.failures(), is(1L));
+        assertThat(cache.negativeHits(), is(2L));
+    }
+
+    public void testNegativeCacheIsBoundedInSize() {
+        // Negative markers count toward MAX_ENTRIES and survive the "free wins" pass, but the arbitrary-victim pass
+        // still drops them when over capacity — a flood of failing shapes must not grow the cache without bound.
+        FusedClassCache cache = new FusedClassCache();
+        FusedClassCache.ClassStitcher stitcher = () -> { throw new Stitcher.StitchingException("boom", new VerifyError("injected")); };
+        int inserted = FusedClassCache.MAX_ENTRIES * 3;
+        Shape last = null;
+        for (int i = 0; i < inserted; i++) {
+            Shape shape = new Shape("Add(#,#)#" + i, ElementKind.LONG, Path.BLOCK);
+            last = shape;
+            expectThrows(Stitcher.StitchingException.class, () -> cache.get(shape, stitcher));
+            assertThat("negative-cache size must never exceed the cap", cache.size(), is(lessThanOrEqualTo(FusedClassCache.MAX_ENTRIES)));
+        }
+        assertThat("far more failing shapes were inserted than the cap", inserted, is(greaterThan(FusedClassCache.MAX_ENTRIES)));
+        assertThat("the cache settled at the cap", cache.size(), is(FusedClassCache.MAX_ENTRIES));
+        // The shape resolved most recently is never the eviction victim of its own miss, so the marker is still there.
+        long negativeHitsBefore = cache.negativeHits();
+        Shape retained = last;
+        expectThrows(Stitcher.StitchingException.class, () -> cache.get(retained, stitcher));
+        assertThat("the just-failed shape must be retained as a negative hit", cache.negativeHits(), is(negativeHitsBefore + 1));
+    }
+
+    public void testConcurrentFailingStampedeAttemptsOnce() throws Exception {
+        FusedClassCache cache = new FusedClassCache();
+        int threads = 16;
+        AtomicInteger invocations = new AtomicInteger();
+        FusedClassCache.ClassStitcher stitcher = () -> {
+            invocations.incrementAndGet();
+            // Widen the critical section so latecomers must observe the cached Failure, not race a second stitch.
+            safeSleep(25);
+            throw new Stitcher.StitchingException("boom", new VerifyError("injected"));
+        };
+        CyclicBarrier startLine = new CyclicBarrier(threads);
+        ThreadFactory daemons = runnable -> {
+            Thread t = new Thread(runnable, "fused-class-cache-fail-stampede");
+            t.setDaemon(true);
+            return t;
+        };
+        ExecutorService pool = Executors.newFixedThreadPool(threads, daemons);
+        List<Future<Stitcher.StitchingException>> futures = new CopyOnWriteArrayList<>();
+        try {
+            for (int i = 0; i < threads; i++) {
+                futures.add(pool.submit(() -> {
+                    startLine.await();
+                    return expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
+                }));
+            }
+            for (Future<Stitcher.StitchingException> future : futures) {
+                Stitcher.StitchingException thrown = future.get(30, TimeUnit.SECONDS);
+                assertThat(thrown.getMessage(), is("boom"));
+            }
+        } finally {
+            pool.shutdownNow();
+            assertTrue("failing stampede pool must terminate", pool.awaitTermination(30, TimeUnit.SECONDS));
+        }
+
+        assertThat("the stitcher must be invoked exactly once", invocations.get(), is(1));
+        assertThat("one first-failure transition", cache.failures(), is(1L));
+        assertThat("the rest are negative hits", cache.negativeHits(), is((long) (threads - 1)));
+        assertThat("SPINS", cache.spins(), is(1L));
+        assertThat("MISSES", cache.misses(), is(1L));
         assertThat(cache.size(), is(1));
     }
 

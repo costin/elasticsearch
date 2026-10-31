@@ -140,7 +140,8 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
             );
             handle = LOOKUP.findStatic(fusedClass, Stitcher.FUSED_METHOD_NAME, type);
         } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError e) {
-            logger.warn(() -> "filter-eval fusion stitch failed for shape [" + shape + "]; falling back to unfused chain", e);
+            // The single, deduplicated plan-time WARN for a failing shape is now emitted once by FusedClassCache.
+            logger.debug(() -> "filter-eval fusion stitch failed for shape [" + shape + "]; falling back to unfused chain", e);
             FusionTelemetry.recordFailure(shape);
             handle = null;
         }
