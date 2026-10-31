@@ -10,7 +10,11 @@ package org.elasticsearch.xpack.esql.evaluator.fusion;
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BytesRefBlock;
+import org.elasticsearch.compute.data.BytesRefVector;
+import org.elasticsearch.compute.data.IntVector;
+import org.elasticsearch.compute.data.OrdinalBytesRefVector;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.core.Releasables;
 import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
@@ -23,6 +27,7 @@ import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
 import org.elasticsearch.xpack.esql.planner.Layout;
 
+import java.util.List;
 import java.util.function.Supplier;
 
 import static org.hamcrest.Matchers.is;
@@ -33,8 +38,8 @@ import static org.hamcrest.Matchers.is;
  * numeric/comparison kernels. This slice wires {@link Length} ({@code BytesRef -> int}) as the first such kernel; a
  * {@code BytesRef} leaf is read on the <b>block path only</b> (via {@code getBytesRef} into a reusable spare), so every
  * tree here must fuse with {@link VectorStrategy#NONE} (no vector fast path) and still match the unfused chain
- * byte-for-byte over dense / null / multi-value {@code BytesRef} inputs — including empty strings, non-ASCII/UTF-8
- * strings, and empty / large pages.
+ * byte-for-byte over dense / constant / ordinal / null / multi-value {@code BytesRef} inputs — including empty
+ * strings, non-ASCII/UTF-8 strings, and empty / large pages.
  *
  * <p>The trees mix a {@code BytesRef}-input string kernel with numeric/comparison kernels exactly as the Stage-7 goal
  * requires: {@code LENGTH(x) > const}, {@code LENGTH(x) + LENGTH(y)}, and {@code LENGTH(x) > LENGTH(y)}. Per-node typing
@@ -117,8 +122,8 @@ public class BytesRefInputFusionDifferentialTests extends FusionDifferentialTest
 
     /**
      * Drives {@code columns} keyword/text columns through the empty / single / large page shapes with a random mix of
-     * dense / constant / nullable / multi-value {@code BytesRef} encodings each iteration, asserting fused-vs-unfused
-     * value/null parity and the ratified warning-subset invariant on every one.
+     * dense / constant / ordinal / nullable / multi-value {@code BytesRef} encodings each iteration, asserting
+     * fused-vs-unfused value/null parity and the ratified warning-subset invariant on every one.
      */
     private void sweepColumns(
         ExpressionEvaluator.Factory fused,
@@ -144,6 +149,7 @@ public class BytesRefInputFusionDifferentialTests extends FusionDifferentialTest
     private enum BytesRefStructure {
         DENSE,
         CONSTANT,
+        ORDINAL,
         NULLABLE,
         MULTIVALUE
     }
@@ -165,6 +171,9 @@ public class BytesRefInputFusionDifferentialTests extends FusionDifferentialTest
                     return blockFactory.newBytesRefBlockBuilder(0).build();
                 }
                 return blockFactory.newConstantBytesRefBlockWith(values.get(), positions);
+            }
+            case ORDINAL -> {
+                return buildOrdinalBytesRefColumn(positions);
             }
             case NULLABLE -> {
                 try (BytesRefBlock.Builder builder = blockFactory.newBytesRefBlockBuilder(positions)) {
@@ -196,6 +205,34 @@ public class BytesRefInputFusionDifferentialTests extends FusionDifferentialTest
                 }
             }
             default -> throw new AssertionError(structure);
+        }
+    }
+
+    /**
+     * An {@link OrdinalBytesRefVector} column: dictionary of sampled strings, ordinals into that dictionary.
+     * LENGTH trees are block-only ({@link VectorStrategy#NONE}), so this feeds the encoding into the fused
+     * evaluator without requiring the D1 encoding-aware mapping path.
+     */
+    private Block buildOrdinalBytesRefColumn(int positions) {
+        List<String> dictionary = randomSubsetOf(randomIntBetween(1, SAMPLE_STRINGS.length), SAMPLE_STRINGS);
+        BytesRefVector dict = null;
+        IntVector ords = null;
+        try (BytesRefVector.Builder dictBuilder = blockFactory.newBytesRefVectorBuilder(dictionary.size())) {
+            for (String entry : dictionary) {
+                dictBuilder.appendBytesRef(new BytesRef(entry));
+            }
+            dict = dictBuilder.build();
+            int[] ordinals = new int[positions];
+            for (int p = 0; p < positions; p++) {
+                ordinals[p] = randomInt(dictionary.size() - 1);
+            }
+            ords = blockFactory.newIntArrayVector(ordinals, positions);
+            Block block = new OrdinalBytesRefVector(ords, dict).asBlock();
+            dict = null;
+            ords = null;
+            return block;
+        } finally {
+            Releasables.closeExpectNoException(dict, ords);
         }
     }
 }
