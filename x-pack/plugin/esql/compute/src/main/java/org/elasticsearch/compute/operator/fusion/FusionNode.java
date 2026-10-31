@@ -20,12 +20,16 @@ import java.util.function.Function;
  *   <li>{@link Input} — a leaf that reads position {@code p} of one of the fused method's input
  *       vectors. {@link Input#index()} selects which input (0-based); the fused method takes one
  *       vector parameter per distinct index in {@code [0, maxIndex]}.</li>
- *   <li>{@link Constant} — a leaf whose value is a compile-time literal passed to the fused method as a
- *       trailing primitive <em>method argument</em> (loaded from its parameter slot at each use site), so it
- *       costs no input vector, no page channel and no per-position array read — it never widens the fused
- *       method's <em>input-vector</em> arity. Because the value is a runtime argument rather than baked into the
- *       bytecode, two trees that differ only in a constant's value stitch to the <em>same</em> class (the value
- *       is <b>not</b> part of the cache key — only the constant's element-typed slot marker is).</li>
+ *   <li>{@link Constant} — a leaf whose value is a compile-time literal. The common case is a trailing
+ *       primitive <em>method argument</em> (loaded from its parameter slot at each use site), so it costs no
+ *       input vector, no page channel and no per-position array read — it never widens the fused method's
+ *       <em>input-vector</em> arity. Because that value is a runtime argument rather than baked into the
+ *       bytecode, two trees that differ only in a non-baked constant's value stitch to the <em>same</em> class
+ *       (the value is <b>not</b> part of the cache key — only the constant's element-typed slot marker is).
+ *       A <em>baked</em> constant is the exception: its value is pushed as a bytecode immediate
+ *       ({@code LDC}/{@code ICONST}/{@code LCONST}/{@code DCONST}) at each use site and <b>does</b> enter the
+ *       cache key, so distinct baked values stitch to distinct classes. Baking is reserved for a Div/Mod
+ *       divisor so HotSpot C2 can strength-reduce the division.</li>
  *   <li>{@link Kernel} — an inner node that applies a fusable arithmetic kernel (identified by a
  *       {@link FusionDescriptor}) to its children. The child count and each child's category must
  *       match the kernel's JVM argument descriptor (e.g. a {@code (JJ)J} kernel has exactly two
@@ -61,30 +65,54 @@ public sealed interface FusionNode {
     }
 
     /**
-     * A leaf whose value is a compile-time literal passed to the fused method as a trailing primitive
-     * <em>method argument</em>, rather than read from an input vector. It consumes no {@link Input} slot and does not
-     * widen the fused method's <em>input-vector</em> arity, so a {@code kernel(column, constant)} tree still reads
-     * exactly one input vector.
+     * A leaf whose value is a compile-time literal. The common case is a trailing primitive <em>method argument</em>,
+     * rather than a read from an input vector. It consumes no {@link Input} slot and does not widen the fused method's
+     * <em>input-vector</em> arity, so a {@code kernel(column, constant)} tree still reads exactly one input vector.
      *
-     * <p>The stitcher appends one primitive parameter per constant (in the canonical
+     * <p>The stitcher appends one primitive parameter per <em>non-baked</em> constant (in the canonical
      * {@link Stitcher#constantsInEmitOrder emit order}) after the fused method's existing parameters and, at each use
      * site, loads the constant from its parameter slot with the type-correct {@code xLOAD} (typed to match the consuming
-     * kernel's argument). Because the value is now a runtime argument — the planner reads it from {@link #value()} and
+     * kernel's argument). Because that value is a runtime argument — the planner reads it from {@link #value()} and
      * the factory marshals it into the invoke args — it is <b>not</b> baked into the bytecode and so is <b>not</b> part
      * of the fused class's cache key: {@code a > 5} and {@code a > 6} stitch to the <em>same</em> class and differ only
      * in the argument supplied at evaluation time. Only the constant's element-typed slot marker participates in the
      * shape, so a {@code long} and a {@code double} constant still stitch to distinct classes.
      *
+     * <p>A {@linkplain #baked(Object, char) baked} constant is the exception: the stitcher pushes its value as a
+     * bytecode immediate ({@code LDC}/{@code ICONST}/{@code LCONST}/{@code DCONST}) at each use site, it consumes no
+     * trailing parameter slot, and its value <b>does</b> enter the cache key (so {@code x/1000} and {@code x/500}
+     * stitch to distinct classes). Baking is reserved for a Div/Mod divisor so HotSpot C2 sees a compile-time constant
+     * and can strength-reduce the division; every other literal stays a runtime param.
+     *
      * @param value   the literal's value, boxed as {@link Long}/{@link Integer}/{@link Double} to match {@code element};
-     *                must not be {@code null} (a null literal is not fusable — the planner refuses that subtree). The
-     *                planner reads it to marshal the fused method's trailing argument at evaluation time.
+     *                must not be {@code null} (a null literal is not fusable — the planner refuses that subtree). For a
+     *                non-baked constant the planner reads it to marshal the fused method's trailing argument at
+     *                evaluation time; for a baked constant the stitcher reads it to emit the immediate.
      * @param element the primitive JVM type descriptor char of the value: {@code 'J'} (long), {@code 'I'} (int) or
      *                {@code 'D'} (double). It must equal the homogeneous element of the tree the constant sits in, and
-     *                it types the constant's trailing parameter slot on the fused method.
+     *                for a non-baked constant it types the trailing parameter slot on the fused method.
+     * @param baked   {@code true} when this constant is pushed as a bytecode immediate rather than loaded from a
+     *                trailing method parameter. A baked constant must be a primitive ({@code J}/{@code I}/{@code D}),
+     *                carry a non-null {@code value}, and must not carry a {@code scratchSupplier} or {@code refType}.
      */
-    record Constant(Object value, char element, Class<?> refType, Function<DriverContext, Object> scratchSupplier) implements FusionNode {
+    record Constant(Object value, char element, Class<?> refType, Function<DriverContext, Object> scratchSupplier, boolean baked)
+        implements
+            FusionNode {
         public Constant {
-            if (scratchSupplier != null) {
+            if (baked) {
+                if (scratchSupplier != null) {
+                    throw new IllegalArgumentException("a baked constant must not carry a scratchSupplier");
+                }
+                if (refType != null) {
+                    throw new IllegalArgumentException("a baked constant must not carry a refType");
+                }
+                if (value == null) {
+                    throw new IllegalArgumentException("constant value must not be null");
+                }
+                if (element != 'J' && element != 'I' && element != 'D') {
+                    throw new IllegalArgumentException("a baked constant must be primitive (element J/I/D) but was [" + element + "]");
+                }
+            } else if (scratchSupplier != null) {
                 // A per-driver SCRATCH reference @Fixed operand (#8b): a mutable buffer (e.g. a reusable BytesRef, a
                 // UTF8CodePoint) that a THREAD_LOCAL @Fixed kernel parameter needs, created fresh per driver by the
                 // supplier (not captured at plan time like a Locale). It rides the same reference parameter slot as a
@@ -120,7 +148,7 @@ public sealed interface FusionNode {
 
         /** A primitive ({@code J}/{@code I}/{@code D}) constant leaf; the common case, carries no reference type. */
         public Constant(Object value, char element) {
-            this(value, element, null, null);
+            this(value, element, null, null, false);
         }
 
         /**
@@ -130,7 +158,7 @@ public sealed interface FusionNode {
          * a reference operand never rides the primitive vector fast paths.
          */
         public static Constant reference(Object value, Class<?> declaredType) {
-            return new Constant(value, 'L', declaredType, null);
+            return new Constant(value, 'L', declaredType, null, false);
         }
 
         /**
@@ -141,7 +169,15 @@ public sealed interface FusionNode {
          * the supplier in each {@code get(DriverContext)} so concurrent drivers never share one mutable buffer.
          */
         public static Constant scratch(Function<DriverContext, Object> supplier, Class<?> declaredType) {
-            return new Constant(null, 'L', declaredType, supplier);
+            return new Constant(null, 'L', declaredType, supplier, false);
+        }
+
+        /**
+         * A primitive ({@code J}/{@code I}/{@code D}) constant whose value is baked into the fused bytecode as an
+         * immediate rather than passed as a trailing method argument. Distinct baked values stitch to distinct classes.
+         */
+        public static Constant baked(Object value, char element) {
+            return new Constant(value, element, null, null, true);
         }
 
         /** Whether this is a reference-typed (object) constant rather than a primitive one. */
@@ -152,6 +188,11 @@ public sealed interface FusionNode {
         /** Whether this is a per-driver scratch operand (its value is built per {@code get(DriverContext)}, not captured). */
         public boolean isScratch() {
             return scratchSupplier != null;
+        }
+
+        /** Whether this constant is pushed as a bytecode immediate rather than loaded from a trailing method parameter. */
+        public boolean isBaked() {
+            return baked;
         }
     }
 

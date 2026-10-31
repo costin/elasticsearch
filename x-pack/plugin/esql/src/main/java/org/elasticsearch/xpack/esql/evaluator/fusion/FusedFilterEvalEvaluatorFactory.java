@@ -246,17 +246,37 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
     }
 
     private static Class<?>[] constantParamTypes(List<FusionNode.Constant> constants) {
-        Class<?>[] types = new Class<?>[constants.size()];
-        for (int i = 0; i < types.length; i++) {
-            types[i] = constantParamClass(constants.get(i).element());
+        int n = 0;
+        for (FusionNode.Constant constant : constants) {
+            if (constant.isBaked() == false) {
+                n++;
+            }
+        }
+        Class<?>[] types = new Class<?>[n];
+        int i = 0;
+        for (FusionNode.Constant constant : constants) {
+            if (constant.isBaked()) {
+                continue;
+            }
+            types[i++] = constantParamClass(constant.element());
         }
         return types;
     }
 
     private static Object[] constantValues(List<FusionNode.Constant> constants) {
-        Object[] values = new Object[constants.size()];
-        for (int i = 0; i < values.length; i++) {
-            values[i] = constants.get(i).value();
+        int n = 0;
+        for (FusionNode.Constant constant : constants) {
+            if (constant.isBaked() == false) {
+                n++;
+            }
+        }
+        Object[] values = new Object[n];
+        int i = 0;
+        for (FusionNode.Constant constant : constants) {
+            if (constant.isBaked()) {
+                continue;
+            }
+            values[i++] = constant.value();
         }
         return values;
     }

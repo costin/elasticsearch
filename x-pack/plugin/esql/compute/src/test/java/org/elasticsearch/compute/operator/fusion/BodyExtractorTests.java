@@ -44,6 +44,17 @@ public class BodyExtractorTests extends ESTestCase {
         }
 
         /**
+         * A java.base-only mirror of {@code Div.processLongs}: the same zero-guard + {@code lhs/rhs} body the fused
+         * path splices (not {@code *ByConstant}, which omits the zero check). Used by structural bake-divisor tests.
+         */
+        public static long processLongsDiv(long lhs, long rhs) {
+            if (rhs == 0L) {
+                throw new ArithmeticException("/ by zero");
+            }
+            return lhs / rhs;
+        }
+
+        /**
          * A straight-line {@code BytesRef -> BytesRef} kernel (identity) for exercising the fused block path's
          * BytesRef-OUTPUT support (B3b): a single terminal {@code ARETURN}, no loops, so {@link BodyExtractor} can
          * splice it. Returns the (reused input spare) reference — the block builder's {@code appendBytesRef} copies its

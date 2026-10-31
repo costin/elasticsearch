@@ -35,6 +35,8 @@ import org.elasticsearch.xpack.esql.expression.function.scalar.string.Trim;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.BinaryLogic;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Div;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mod;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.EsqlBinaryComparison;
 import org.elasticsearch.xpack.esql.planner.Layout;
 
@@ -646,10 +648,21 @@ public final class FusionPlanner {
         }
 
         ExpressionEvaluator.Factory factory = ctx.rawFactory.apply(exp);
-        if ((factory instanceof FusionAware) == false) {
+        FusionDescriptor descriptor;
+        if (factory instanceof FusionAware fusionAware) {
+            descriptor = fusionAware.fusionDescriptor();
+        } else if ((exp instanceof Div || exp instanceof Mod) && exp.children().size() == 2 && exp.children().get(1) instanceof Literal) {
+            // The unfused constant-RHS fast path returns *ByConstant, which is NOT @Fusable (it omits the zero
+            // check, relying on excludeZeroRhs). Fusion must still splice process* with a baked divisor so
+            // divide-by-zero / MIN/-1 semantics stay byte-identical to the unfused binary path. Recover the
+            // process* descriptor from the expression's numeric element; unsigned_long / dense_vector yield null.
+            descriptor = bakedDivModDescriptor(exp.getClass(), elementOf(exp.dataType()));
+            if (descriptor == null) {
+                return null;
+            }
+        } else {
             return null;
         }
-        FusionDescriptor descriptor = ((FusionAware) factory).fusionDescriptor();
         if (descriptor.mapping()) {
             return buildMapping(exp, (FusionAware) factory, descriptor, ctx, expected, root);
         }
@@ -694,10 +707,19 @@ public final class FusionPlanner {
         ctx.overflowChecked |= descriptor.overflowChecked();
 
         List<FusionNode> childNodes = new ArrayList<>(children.size());
-        for (Expression child : children) {
-            // Each child must output this kernel's argument element; a mismatch is bridged by a widening cast inside
-            // the child build, attributed to THIS kernel's source (as Cast.cast(source(), ...) does when unfused).
-            FusionNode childNode = build(child, ctx, argElement, exp.source(), false);
+        for (int i = 0; i < children.size(); i++) {
+            Expression child = children.get(i);
+            // F1: bake ONLY the Literal in the divisor (rhs / second operand) of a Div or Mod kernel, so C2 sees a
+            // compile-time constant and strength-reduces the division. The lhs, and constants of every other kernel,
+            // stay runtime params so `a>5` and `a>6` still share a class. Keep the kernel = process* (not *ByConstant).
+            FusionNode childNode;
+            if (i == 1 && child instanceof Literal literal && (exp instanceof Div || exp instanceof Mod)) {
+                childNode = buildConstant(literal, argElement, ctx, true);
+            } else {
+                // Each child must output this kernel's argument element; a mismatch is bridged by a widening cast inside
+                // the child build, attributed to THIS kernel's source (as Cast.cast(source(), ...) does when unfused).
+                childNode = build(child, ctx, argElement, exp.source(), false);
+            }
             if (childNode == null) {
                 return null;
             }
@@ -1221,13 +1243,18 @@ public final class FusionPlanner {
     /**
      * Builds a {@link FusionNode.Constant} at the {@code expected} element the consuming kernel requires, from a
      * numeric or keyword {@link Literal}, or {@code null} if it cannot be fused. Numeric literals are trailing
-     * primitive arguments (with a supported widening into {@code expected}). A keyword/text literal is a captured
+     * primitive arguments (with a supported widening into {@code expected}), unless {@code baked} is true — then the
+     * primitive is a bytecode immediate (F1: a Div/Mod divisor). A keyword/text literal is a captured
      * {@link FusionNode.Constant#reference reference} {@code BytesRef} (F3), loaded with {@code ALOAD} via the D2
      * reference-constant machinery. A {@code null} literal is <b>refused</b>, so a subtree containing one falls back
      * to the unfused chain — the correct + simplest handling (ESQL normally folds null literals away, and a
      * per-position "constant is null" would just null every row, which the unfused evaluator already does).
      */
     private static FusionNode buildConstant(Literal literal, ElementKind expected, PlanContext ctx) {
+        return buildConstant(literal, expected, ctx, false);
+    }
+
+    private static FusionNode buildConstant(Literal literal, ElementKind expected, PlanContext ctx, boolean baked) {
         if (expected == null || expected == ElementKind.BOOLEAN) {
             // A boolean-typed constant leaf is out of scope, so refuse to fuse it.
             return null;
@@ -1237,6 +1264,10 @@ public final class FusionPlanner {
             return null;
         }
         if (expected == ElementKind.BYTES_REF) {
+            if (baked) {
+                // Baking is primitive-only (J/I/D); a keyword literal keeps the captured-reference path.
+                return null;
+            }
             if (value instanceof BytesRef bytesRef) {
                 // Keyword/text literal: captured reference constant, same trailing-arg path as a converter @Fixed.
                 return FusionNode.Constant.reference(bytesRef, BytesRef.class);
@@ -1254,10 +1285,31 @@ public final class FusionPlanner {
         // the value the unfused Cast.cast(literal) would produce at runtime (e.g. (double) longValue, same precision).
         Number number = (Number) value;
         return switch (expected) {
-            case LONG -> new FusionNode.Constant(number.longValue(), 'J');
-            case INT -> new FusionNode.Constant(number.intValue(), 'I');
-            case DOUBLE -> new FusionNode.Constant(number.doubleValue(), 'D');
+            case LONG -> baked ? FusionNode.Constant.baked(number.longValue(), 'J') : new FusionNode.Constant(number.longValue(), 'J');
+            case INT -> baked ? FusionNode.Constant.baked(number.intValue(), 'I') : new FusionNode.Constant(number.intValue(), 'I');
+            case DOUBLE -> baked
+                ? FusionNode.Constant.baked(number.doubleValue(), 'D')
+                : new FusionNode.Constant(number.doubleValue(), 'D');
             // Unreachable: BOOLEAN is rejected by the guard above; BYTES_REF is handled before this switch.
+            case BOOLEAN, BYTES_REF -> null;
+        };
+    }
+
+    /**
+     * The {@code process*} (not {@code *ByConstant}) {@link FusionDescriptor} for a Div/Mod kernel at {@code element},
+     * or {@code null} if the element is not a fusable primitive. Used when the unfused factory is the constant-RHS
+     * {@code *ByConstant} evaluator, which is not {@link FusionAware}.
+     */
+    private static FusionDescriptor bakedDivModDescriptor(Class<?> kernelClass, ElementKind element) {
+        if (element == null) {
+            return null;
+        }
+        // 6-arg form matches the generated DivLongsEvaluator / ModLongsEvaluator FUSION_DESCRIPTOR literally
+        // (explicit ArithmeticException, not variadic, not mapping).
+        return switch (element) {
+            case LONG -> new FusionDescriptor(kernelClass, "processLongs", "(JJ)J", true, true, "java.lang.ArithmeticException");
+            case INT -> new FusionDescriptor(kernelClass, "processInts", "(II)I", true, true, "java.lang.ArithmeticException");
+            case DOUBLE -> new FusionDescriptor(kernelClass, "processDoubles", "(DD)D", true, true, "java.lang.ArithmeticException");
             case BOOLEAN, BYTES_REF -> null;
         };
     }
@@ -1510,13 +1562,18 @@ public final class FusionPlanner {
             }
             sb.append(')');
         } else if (node instanceof FusionNode.Constant constant) {
-            // The constant's VALUE is now passed as a trailing method argument, NOT baked into the bytecode, so it is
+            // A non-baked constant's VALUE is a trailing method argument, NOT baked into the bytecode, so it is
             // deliberately EXCLUDED from the cache key: `a > 5` and `a > 6` stitch to the SAME class and differ only in
             // the argument supplied at eval time. Only the element-typed slot marker (`#C:<element>`) participates, so
             // a long constant and a double constant still key distinct classes (their emit paths differ), while all
             // values of one element share one hidden class — collapsing the former one-class-per-value cardinality.
-            // (An Input leaf, by contrast, stays `#` — its column binding is likewise not in the bytecode.)
+            // A baked constant (F1: a Div/Mod divisor) IS an immediate, so its value participates (`#C:J:1000`) —
+            // `x/1000` and `x/500` stitch to distinct classes. (An Input leaf, by contrast, stays `#` — its column
+            // binding is likewise not in the bytecode.)
             sb.append("#C:").append(constant.element());
+            if (constant.isBaked()) {
+                sb.append(':').append(constant.value());
+            }
         } else {
             // FusionNode.Input: rendered as a bare '#' so column identities are excluded from the shape.
             sb.append('#');

@@ -798,6 +798,9 @@ public final class Stitcher {
             emitReadExtractedAtP(insns, inputElements[i], extractedBase + i, pSlot, raw);
         }
         for (FusionNode.Constant constant : constants) {
+            if (constant.isBaked()) {
+                continue;
+            }
             insns.add(new VarInsnNode(constantType(constant).getOpcode(Opcodes.ILOAD), constantSlots.get(constant)));
         }
         insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, "compute", compute.desc, false));
@@ -1653,6 +1656,9 @@ public final class Stitcher {
             emitReadExtractedAtP(insns, inputElements[i], extractedBase + i, pSlot, raw);
         }
         for (FusionNode.Constant constant : constants) {
+            if (constant.isBaked()) {
+                continue;
+            }
             insns.add(new VarInsnNode(constantType(constant).getOpcode(Opcodes.ILOAD), constantSlots.get(constant)));
         }
         insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, "compute", compute.desc, false));
@@ -1836,7 +1842,7 @@ public final class Stitcher {
                 return;
             }
             if (node instanceof FusionNode.Constant constant) {
-                // Embedded literal: load it from its trailing method-parameter slot (no leaf read, no input slot).
+                // Embedded literal: a baked constant is an immediate; otherwise load from its trailing param slot.
                 loadConstantParam(insns, expected, constant, constantSlots.get(constant));
                 return;
             }
@@ -3611,12 +3617,10 @@ public final class Stitcher {
                     insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + input.index()));
                 }
             }
-            // Then the constant arguments, loaded from the top-level fused method's trailing parameter slots in child
-            // order (which equals canonical emit order for a single comparison's operands).
-            for (FusionNode child : comparison.children()) {
-                if (child instanceof FusionNode.Constant constant) {
-                    insns.add(new VarInsnNode(inputElement.type().getOpcode(Opcodes.ILOAD), constantSlots.get(constant)));
-                }
+            // Then the non-baked constant arguments, loaded from the top-level fused method's trailing parameter slots
+            // in canonical emit order. Baked constants are not helper params (the helper body pushes the immediate).
+            for (FusionNode.Constant constant : callConstants) {
+                pushConstantArg(insns, constant.element(), constantSlots.get(constant));
             }
             insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, name, callDesc.toString(), false));
             insns.add(new VarInsnNode(Opcodes.ISTORE, tSlot));
@@ -3706,20 +3710,31 @@ public final class Stitcher {
     }
 
     /**
-     * Emits a type-correct {@code xLOAD} of a {@link FusionNode.Constant} from its trailing <b>method-parameter</b>
-     * slot, typed to {@code element}, so a constant leaf reads no array and occupies no {@link FusionNode.Input} slot on
-     * any emit path. This replaces the former embedded-literal push ({@code LDC}/{@code ICONST}/…): the value now
-     * arrives as a runtime argument in {@code slot} (a single-assignment, loop-invariant parameter local), so one
-     * stitched class serves every constant value — {@code a > 5} and {@code a > 6} share it and differ only in the
-     * argument supplied at evaluation time.
+     * Emits a constant leaf at a use site: a <em>baked</em> constant is pushed as a bytecode immediate
+     * ({@code LDC}/{@code ICONST}/{@code LCONST}/{@code DCONST}), while a non-baked constant is loaded from its
+     * trailing <b>method-parameter</b> slot with the type-correct {@code xLOAD}. A constant leaf reads no array and
+     * occupies no {@link FusionNode.Input} slot on any emit path. Non-baked values arrive as runtime arguments so
+     * {@code a > 5} and {@code a > 6} share one stitched class; a baked divisor is an immediate so C2 can
+     * strength-reduce the division.
      *
      * <p>{@code element} is the ambient element of the tree the constant sits in (the consuming kernel's argument
      * kind). It <b>must</b> equal {@code constant.element()} — the planner guarantees this, and it types the parameter
-     * — so a defensive assertion fails loud here rather than silently emitting a wrong-category load (e.g. an
-     * {@code LLOAD} of a {@code long} where the kernel wants an {@code int}), which would only surface downstream as an
-     * opaque {@link VerifyError}.
+     * or immediate — so a defensive assertion fails loud here rather than silently emitting a wrong-category load
+     * (e.g. an {@code LLOAD} of a {@code long} where the kernel wants an {@code int}), which would only surface
+     * downstream as an opaque {@link VerifyError}. {@code slot} is unused (and may be {@code null}) for a baked
+     * constant, which has no trailing-param slot.
      */
-    static void loadConstantParam(InsnList insns, Element element, FusionNode.Constant constant, int slot) {
+    static void loadConstantParam(InsnList insns, Element element, FusionNode.Constant constant, Integer slot) {
+        if (constant.isBaked()) {
+            assert elementSortMatches(element, constant.element())
+                : "baked constant element ["
+                    + constant.element()
+                    + "] does not match the ambient tree element ["
+                    + (element == null ? "null" : element.type().getClassName())
+                    + "]";
+            pushBakedImmediate(insns, constant);
+            return;
+        }
         if (constant.isReference()) {
             // A reference (object) @Fixed constant: loaded with ALOAD from its trailing reference parameter slot. It is
             // not typed by the ambient primitive Element (there is none for e.g. a Locale), so it does not consult it.
@@ -3733,6 +3748,16 @@ public final class Stitcher {
                 + element.type().getClassName()
                 + "]";
         insns.add(new VarInsnNode(element.type().getOpcode(Opcodes.ILOAD), slot));
+    }
+
+    /** Pushes a baked primitive constant as a bytecode immediate typed to {@code constant.element()}. */
+    static void pushBakedImmediate(InsnList insns, FusionNode.Constant constant) {
+        switch (constant.element()) {
+            case 'I' -> pushInt(insns, (Integer) constant.value());
+            case 'J' -> pushLong(insns, (Long) constant.value());
+            case 'D' -> pushDouble(insns, (Double) constant.value());
+            default -> throw new IllegalArgumentException("baked constant element must be J/I/D but was [" + constant.element() + "]");
+        }
     }
 
     /**
@@ -3750,8 +3775,9 @@ public final class Stitcher {
     }
 
     /**
-     * Reserves one trailing parameter slot per constant from {@code frame} (in {@link #constantsInEmitOrder canonical
-     * emit order}, each sized by its element width) and maps each constant (by identity) to its slot. The frame
+     * Reserves one trailing parameter slot per <em>non-baked</em> constant from {@code frame} (in
+     * {@link #constantsInEmitOrder canonical emit order}, each sized by its element width) and maps each constant
+     * (by identity) to its slot. Baked constants consume no slot — they are bytecode immediates. The frame
      * guarantees a {@code long}/{@code double} constant gets its two slots without hand-rolled arithmetic. Distinct
      * {@link FusionNode.Constant} instances get distinct slots even when their values are equal (two equal-valued
      * literals are still separate leaves), so an {@link IdentityHashMap} keys on the node instance, not value-equality.
@@ -3759,6 +3785,9 @@ public final class Stitcher {
     private static Map<FusionNode.Constant, Integer> allocConstantSlots(List<FusionNode.Constant> constants, FrameLayout frame) {
         Map<FusionNode.Constant, Integer> slots = new IdentityHashMap<>();
         for (FusionNode.Constant constant : constants) {
+            if (constant.isBaked()) {
+                continue;
+            }
             slots.put(constant, frame.reserve(constantSlotSize(constant)));
         }
         return slots;
@@ -3769,12 +3798,16 @@ public final class Stitcher {
     }
 
     /**
-     * Appends one JVM parameter descriptor per constant: for a primitive constant the element char {@code J}/{@code I}/
-     * {@code D} is itself the descriptor; for a reference (object) {@code @Fixed} constant it is the full
-     * {@code L…;} descriptor of its declared type (e.g. {@code Ljava/util/Locale;}).
+     * Appends one JVM parameter descriptor per <em>non-baked</em> constant: for a primitive constant the element char
+     * {@code J}/{@code I}/{@code D} is itself the descriptor; for a reference (object) {@code @Fixed} constant it is
+     * the full {@code L…;} descriptor of its declared type (e.g. {@code Ljava/util/Locale;}). Baked constants are
+     * immediates and must not appear in the method descriptor.
      */
     private static void appendConstantParamDescriptors(StringBuilder desc, List<FusionNode.Constant> constants) {
         for (FusionNode.Constant constant : constants) {
+            if (constant.isBaked()) {
+                continue;
+            }
             if (constant.isReference()) {
                 desc.append(Type.getType(constant.refType()).getDescriptor());
             } else {
@@ -3794,7 +3827,7 @@ public final class Stitcher {
         };
     }
 
-    /** Pushes a non-negative {@code int} constant using the tightest of {@code ICONST}/{@code BIPUSH}/{@code SIPUSH}/{@code LDC}. */
+    /** Pushes an {@code int} constant using the tightest of {@code ICONST}/{@code BIPUSH}/{@code SIPUSH}/{@code LDC}. */
     static void pushInt(InsnList insns, int value) {
         if (value >= -1 && value <= 5) {
             insns.add(new InsnNode(Opcodes.ICONST_0 + value));
@@ -3802,6 +3835,28 @@ public final class Stitcher {
             insns.add(new IntInsnNode(Opcodes.BIPUSH, value));
         } else if (value >= Short.MIN_VALUE && value <= Short.MAX_VALUE) {
             insns.add(new IntInsnNode(Opcodes.SIPUSH, value));
+        } else {
+            insns.add(new LdcInsnNode(value));
+        }
+    }
+
+    /** Pushes a {@code long} constant using {@code LCONST_0}/{@code LCONST_1}/{@code LDC}. */
+    static void pushLong(InsnList insns, long value) {
+        if (value == 0L) {
+            insns.add(new InsnNode(Opcodes.LCONST_0));
+        } else if (value == 1L) {
+            insns.add(new InsnNode(Opcodes.LCONST_1));
+        } else {
+            insns.add(new LdcInsnNode(value));
+        }
+    }
+
+    /** Pushes a {@code double} constant using {@code DCONST_0}/{@code DCONST_1}/{@code LDC}. */
+    static void pushDouble(InsnList insns, double value) {
+        if (Double.doubleToRawLongBits(value) == Double.doubleToRawLongBits(0.0)) {
+            insns.add(new InsnNode(Opcodes.DCONST_0));
+        } else if (value == 1.0) {
+            insns.add(new InsnNode(Opcodes.DCONST_1));
         } else {
             insns.add(new LdcInsnNode(value));
         }

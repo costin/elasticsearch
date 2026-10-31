@@ -160,8 +160,9 @@ final class BlockDfsEmitter {
             FusionNode child = children.get(i);
             if (child instanceof FusionNode.Constant constant) {
                 // A constant is always present and single-valued: load it into the argument slot unconditionally
-                // (harmless when this kernel already short-circuited — the body will not run). A reference (object)
-                // @Fixed constant has no primitive Element, so only a primitive constant resolves one.
+                // (harmless when this kernel already short-circuited — the body will not run). A baked constant is an
+                // immediate (no param slot); a reference (object) @Fixed constant has no primitive Element, so only a
+                // primitive non-baked constant resolves one from its trailing slot.
                 Stitcher.loadConstantParam(
                     insns,
                     constant.isReference() ? null : Element.of(argType),

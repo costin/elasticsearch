@@ -89,4 +89,26 @@ public class FusionSignatureTests extends ESTestCase {
         assertThat(Stitcher.warningsSourceIndices(root), equalTo(sig.warningSourceIndices()));
         assertThat(Stitcher.warningsSourceCount(root), equalTo(sig.warningSourceCount()));
     }
+
+    /**
+     * F1: a baked constant is an immediate, not a trailing method parameter, so {@link FusionSignature#constantsInEmitOrder}
+     * must exclude it. A following non-baked constant still occupies a dense slot 0 (the baked node must not consume a
+     * slot or shift later non-baked constants).
+     */
+    public void testBakedConstantsAreExcludedFromEmitOrderAndDoNotShiftFollowingSlots() {
+        FusionNode.Constant baked = FusionNode.Constant.baked(1000L, 'J');
+        FusionNode.Constant runtime = new FusionNode.Constant(7L, 'J');
+        // Pre-order: baked first (Div's rhs), then the Add's runtime addend — skipping baked must leave [runtime] only.
+        FusionNode.Kernel div = new FusionNode.Kernel(overflowKernel("(JJ)J"), List.of(new FusionNode.Input(0), baked));
+        FusionNode.Kernel add = new FusionNode.Kernel(plainKernel("(JJ)J"), List.of(div, runtime));
+
+        FusionSignature sig = FusionSignature.of(add);
+        assertThat(sig.constantsInEmitOrder(), contains(runtime));
+        assertThat(baked.isBaked(), is(true));
+        assertThat(runtime.isBaked(), is(false));
+
+        // The same baked node in a tree with no other constants yields an empty trailing-param list.
+        FusionSignature bakedOnly = FusionSignature.of(div);
+        assertThat(bakedOnly.constantsInEmitOrder(), empty());
+    }
 }

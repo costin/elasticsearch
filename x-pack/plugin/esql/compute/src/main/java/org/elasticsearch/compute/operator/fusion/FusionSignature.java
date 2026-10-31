@@ -133,8 +133,13 @@ public final class FusionSignature {
             // The leaf's element is the type its consuming kernel expects at this operand position ({@code expected}).
             inputTypeByIndex.put(input.index(), expected);
         } else if (node instanceof FusionNode.Constant constant) {
-            // Embedded literal: contributes a trailing parameter, no input vector, no warning source.
-            constants.add(constant);
+            // Embedded literal: a non-baked constant contributes a trailing parameter; a baked constant is an
+            // immediate in the bytecode (no slot, no descriptor param) so it must not consume a trailing-param
+            // index or shift a following non-baked constant. The Stitcher still visits the node during the tree
+            // walk and pushes the immediate at the use site.
+            if (constant.isBaked() == false) {
+                constants.add(constant);
+            }
         } else if (node instanceof FusionNode.Kernel kernel) {
             // Pre-order: this kernel claims the next warning-source slot before its operands are visited.
             warningSources.put(kernel, warningSources.size());
@@ -170,7 +175,11 @@ public final class FusionSignature {
         return consumedInputs;
     }
 
-    /** The {@link FusionNode.Constant} leaves in canonical emit order (their trailing-parameter order). */
+    /**
+     * The <em>non-baked</em> {@link FusionNode.Constant} leaves in canonical emit order (their trailing-parameter
+     * order). Baked constants are excluded: they are bytecode immediates, not invoke arguments, so they must not
+     * occupy a param slot or shift the slot of a following non-baked constant.
+     */
     public List<FusionNode.Constant> constantsInEmitOrder() {
         return constantsInEmitOrder;
     }

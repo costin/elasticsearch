@@ -810,31 +810,51 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     }
 
     /**
-     * The parameter type for each constant (in canonical emit order), for the resolved {@link MethodType}: the
-     * primitive class for a primitive constant, or the declared reference type for an object {@code @Fixed} constant
-     * (B3b) — matching the {@code L…;} descriptor the Stitcher emitted for it.
+     * The parameter type for each <em>non-baked</em> constant (in canonical emit order), for the resolved
+     * {@link MethodType}: the primitive class for a primitive constant, or the declared reference type for an object
+     * {@code @Fixed} constant (B3b) — matching the {@code L…;} descriptor the Stitcher emitted for it. Baked constants
+     * live in the bytecode and are not invoke arguments.
      */
     private static Class<?>[] constantParamTypes(List<FusionNode.Constant> constants) {
-        Class<?>[] types = new Class<?>[constants.size()];
-        for (int i = 0; i < types.length; i++) {
-            FusionNode.Constant constant = constants.get(i);
-            types[i] = constant.isReference() ? constant.refType() : constantParamClass(constant.element());
+        int n = 0;
+        for (FusionNode.Constant constant : constants) {
+            if (constant.isBaked() == false) {
+                n++;
+            }
+        }
+        Class<?>[] types = new Class<?>[n];
+        int i = 0;
+        for (FusionNode.Constant constant : constants) {
+            if (constant.isBaked()) {
+                continue;
+            }
+            types[i++] = constant.isReference() ? constant.refType() : constantParamClass(constant.element());
         }
         return types;
     }
 
     /**
-     * Resolves each constant operand (in canonical emit order) to the value marshalled into the invoke args for THIS
-     * driver: a primitive or captured-reference constant yields its plan-time value, while a per-driver SCRATCH operand
-     * (#8b) is built fresh from its supplier with {@code context} — so each driver owns its own mutable buffer (matching
-     * the {@code THREAD_LOCAL} {@code @Fixed} contract) and concurrent drivers never share one. Called once per
-     * {@code get(DriverContext)}, never per row.
+     * Resolves each <em>non-baked</em> constant operand (in canonical emit order) to the value marshalled into the
+     * invoke args for THIS driver: a primitive or captured-reference constant yields its plan-time value, while a
+     * per-driver SCRATCH operand (#8b) is built fresh from its supplier with {@code context} — so each driver owns its
+     * own mutable buffer (matching the {@code THREAD_LOCAL} {@code @Fixed} contract) and concurrent drivers never share
+     * one. Baked constants are bytecode immediates, not invoke arguments. Called once per {@code get(DriverContext)},
+     * never per row.
      */
     private static Object[] resolveConstantValues(List<FusionNode.Constant> constants, DriverContext context) {
-        Object[] values = new Object[constants.size()];
-        for (int i = 0; i < values.length; i++) {
-            FusionNode.Constant constant = constants.get(i);
-            values[i] = constant.isScratch() ? constant.scratchSupplier().apply(context) : constant.value();
+        int n = 0;
+        for (FusionNode.Constant constant : constants) {
+            if (constant.isBaked() == false) {
+                n++;
+            }
+        }
+        Object[] values = new Object[n];
+        int i = 0;
+        for (FusionNode.Constant constant : constants) {
+            if (constant.isBaked()) {
+                continue;
+            }
+            values[i++] = constant.isScratch() ? constant.scratchSupplier().apply(context) : constant.value();
         }
         return values;
     }

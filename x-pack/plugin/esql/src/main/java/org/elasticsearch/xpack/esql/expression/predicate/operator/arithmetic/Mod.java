@@ -11,6 +11,7 @@ import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.compute.ann.Evaluator;
 import org.elasticsearch.compute.ann.Fixed;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
 import org.elasticsearch.xpack.esql.core.tree.Source;
@@ -83,6 +84,10 @@ public class Mod extends EsqlArithmeticOperation {
         return new Mod(source(), left, right);
     }
 
+    // overflowChecked = true: this kernel throws ArithmeticException on divide-by-zero (and integer remainder can also
+    // overflow on MIN_VALUE % -1 on some paths), so the fused path must keep the per-kernel try/catch boundary. Keep
+    // the kernel = process* (NOT *ByConstant): *ByConstant omits the zero check.
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Ints", warnExceptions = { ArithmeticException.class })
     static int processInts(int lhs, int rhs) {
         if (rhs == 0) {
@@ -91,6 +96,9 @@ public class Mod extends EsqlArithmeticOperation {
         return lhs % rhs;
     }
 
+    // overflowChecked = true: this kernel throws ArithmeticException on divide-by-zero, so the fused path must keep
+    // the per-kernel try/catch boundary. Keep the kernel = process* (NOT *ByConstant).
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Longs", warnExceptions = { ArithmeticException.class })
     static long processLongs(long lhs, long rhs) {
         if (rhs == 0L) {
@@ -107,6 +115,9 @@ public class Mod extends EsqlArithmeticOperation {
         return longToUnsignedLong(Long.remainderUnsigned(longToUnsignedLong(lhs, true), longToUnsignedLong(rhs, true)), true);
     }
 
+    // overflowChecked = true: this kernel throws ArithmeticException on a non-finite remainder (divide-by-zero), so
+    // the fused path must keep the per-kernel try/catch boundary. Keep the kernel = process* (NOT *ByConstant).
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Doubles", warnExceptions = { ArithmeticException.class })
     static double processDoubles(double lhs, double rhs) {
         double value = lhs % rhs;

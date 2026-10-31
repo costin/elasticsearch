@@ -33,27 +33,31 @@ import java.util.concurrent.atomic.LongAdder;
  *
  * <h2>Cache key — {@link Shape}</h2>
  * The key is the <b>structure</b> of the fused subtree. It deliberately <b>excludes column bindings</b> (which columns a
- * leaf reads) and, since iter 30, also <b>excludes literal constant values</b> (which arrive as trailing method
- * arguments rather than baked-in bytecode), keeping only the constant's element-typed slot marker:
+ * leaf reads) and, since iter 30, also <b>excludes non-baked literal constant values</b> (which arrive as trailing method
+ * arguments rather than baked-in bytecode), keeping only the constant's element-typed slot marker. A <b>baked</b>
+ * constant (F1: a Div/Mod divisor pushed as a bytecode immediate) <em>does</em> participate in the key:
  * <ul>
  *   <li><b>op-tree structure + kernel set</b> — {@link FusionPlanner#shapeOf} renders every <em>column</em> leaf as
  *       {@code #} and every kernel as {@code KernelClass.method(...)}, so {@code (a+b)*c} and {@code (x+y)*z} collapse to
  *       one signature;</li>
- *   <li><b>literal constants (value-independent)</b> — a {@link org.elasticsearch.compute.operator.fusion.FusionNode.Constant}
- *       leaf renders as {@code #C:<element>} (its element only, <em>no</em> value). Because the constant is now passed as
- *       a trailing method argument (not pushed as a bytecode constant), {@code (a+b)>5} and {@code (a+b)>6} stitch to the
- *       <em>same</em> class and differ only in the argument supplied at eval time — so they <em>share</em> one shape and
- *       one cached class. Retaining the element marker keeps a {@code long} tree distinct from a {@code double} tree
- *       (their emit paths and parameter types differ);</li>
+ *   <li><b>literal constants (value-independent unless baked)</b> — a non-baked
+ *       {@link org.elasticsearch.compute.operator.fusion.FusionNode.Constant} leaf renders as {@code #C:<element>} (its
+ *       element only, <em>no</em> value). Because that constant is passed as a trailing method argument (not pushed as a
+ *       bytecode constant), {@code (a+b)>5} and {@code (a+b)>6} stitch to the <em>same</em> class and differ only in the
+ *       argument supplied at eval time — so they <em>share</em> one shape and one cached class. A baked constant renders
+ *       as {@code #C:<element>:<value>} (e.g. {@code #C:J:1000}), so {@code x/1000} and {@code x/500} stitch to distinct
+ *       classes — intended and bounded (few distinct divisors in practice). Retaining the element marker keeps a
+ *       {@code long} tree distinct from a {@code double} tree (their emit paths and parameter types differ);</li>
  *   <li><b>element type</b> — the uniform primitive of the homogeneous tree (already implied by the kernel method names
  *       such as {@code processLongs} vs {@code processDoubles}, but pinned explicitly for clarity). It also keeps a long
  *       tree with constant {@code 5} distinct from a double tree with constant {@code 5.0};</li>
  *   <li><b>{@link Path}</b> — which of the {@link Stitcher}'s three emit shapes this class is (block / plain-vector /
  *       checked-vector). One shape maps to up to three distinct classes, so the path is part of the key.</li>
  * </ul>
- * Excluding <em>column</em> bindings and constant <em>values</em> is what makes the cache useful: a dashboard that runs
- * {@code metric_a + metric_b > threshold} against a thousand different column pairs and threshold values stitches once,
- * not a thousand times — the threshold rides in as a method argument, so all values of one element share a hidden class.
+ * Excluding <em>column</em> bindings and non-baked constant <em>values</em> is what makes the cache useful: a dashboard
+ * that runs {@code metric_a + metric_b > threshold} against a thousand different column pairs and threshold values
+ * stitches once, not a thousand times — the threshold rides in as a method argument, so all values of one element share
+ * a hidden class. Baked divisors are the bounded exception: each distinct compile-time divisor is a distinct class.
  *
  * <h2>Reference type — {@link SoftReference} default, {@link WeakReference} toggle</h2>
  * Entries hold the {@link Class} through a {@link Reference}. By default a {@link SoftReference} keeps the class alive

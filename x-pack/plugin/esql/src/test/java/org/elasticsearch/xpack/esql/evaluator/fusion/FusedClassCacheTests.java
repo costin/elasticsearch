@@ -208,6 +208,43 @@ public class FusedClassCacheTests extends ESTestCase {
         assertThat(cache.size(), is(1));
     }
 
+    /**
+     * F1: a baked Div/Mod divisor IS part of the cache key (it is an immediate in the bytecode), so {@code x/1000}
+     * and {@code x/500} stitch to distinct shapes/classes, while {@code x/1000} twice reuses one class. Comparison
+     * constants stay value-independent — {@link #testDifferentConstantValuesShareOneShapeAndClass} stays green.
+     */
+    public void testBakedDivisorValuesGetDistinctClasses() {
+        FusionNode div1000 = div(input(0), FusionNode.Constant.baked(1000L, 'J'));
+        FusionNode div500 = div(input(0), FusionNode.Constant.baked(500L, 'J'));
+        FusionNode div1000Again = div(input(0), FusionNode.Constant.baked(1000L, 'J'));
+
+        String signature1000 = FusionPlanner.shapeOf(div1000);
+        String signature500 = FusionPlanner.shapeOf(div500);
+        String signature1000Again = FusionPlanner.shapeOf(div1000Again);
+        assertThat("a baked divisor's VALUE must appear in the shape signature", signature1000, containsString("#C:J:1000"));
+        assertThat(signature500, containsString("#C:J:500"));
+        assertThat("distinct baked divisors must produce distinct signatures", signature1000, not(is(signature500)));
+        assertThat("the same baked divisor must reuse one signature", signature1000, is(signature1000Again));
+
+        Shape shape1000 = new Shape(signature1000, ElementKind.LONG, Path.CHECKED_VECTOR);
+        Shape shape500 = new Shape(signature500, ElementKind.LONG, Path.CHECKED_VECTOR);
+        Shape shape1000Again = new Shape(signature1000Again, ElementKind.LONG, Path.CHECKED_VECTOR);
+        assertThat("distinct baked divisors must be distinct cache keys", shape1000, not(is(shape500)));
+        assertThat("the same baked divisor must be an equal cache key", shape1000, is(shape1000Again));
+
+        FusedClassCache cache = new FusedClassCache();
+        Class<?> class1000 = getUnchecked(cache, shape1000, CLASS_1);
+        Class<?> class500 = getUnchecked(cache, shape500, CLASS_2);
+        Class<?> reused = getUnchecked(cache, shape1000Again, null); // stitcher must NOT be invoked for the repeat
+        assertThat(class1000, sameInstance(CLASS_1));
+        assertThat(class500, sameInstance(CLASS_2));
+        assertThat("distinct baked divisors must not share a cached class", class1000, not(sameInstance(class500)));
+        assertThat("x/1000 twice must reuse the first stitched class", reused, sameInstance(class1000));
+        assertThat(cache.spins(), is(2L));
+        assertThat(cache.hits(), is(1L));
+        assertThat(cache.size(), is(2));
+    }
+
     public void testDifferentKernelSameStructureGetDifferentClasses() {
         // Two STRUCTURALLY IDENTICAL trees (same shape, same element, same arity) differing ONLY in the child kernel:
         // (a + b) * c using an "Add"-named kernel vs (a - b) * c using a "Sub"-named kernel. Different kernels stitch to
@@ -717,6 +754,10 @@ public class FusedClassCacheTests extends ESTestCase {
 
     private static FusionNode mul(FusionNode left, FusionNode right) {
         return new FusionNode.Kernel(descriptor("mulExact"), List.of(left, right));
+    }
+
+    private static FusionNode div(FusionNode left, FusionNode right) {
+        return new FusionNode.Kernel(descriptor("floorDiv"), List.of(left, right));
     }
 
     /** A binary kernel node over {@code kernelClass}/{@code method} with a {@code (JJ)J} descriptor. */

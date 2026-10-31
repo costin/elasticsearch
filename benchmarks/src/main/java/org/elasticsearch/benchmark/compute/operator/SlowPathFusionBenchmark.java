@@ -39,10 +39,12 @@ import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.core.type.EsField;
 import org.elasticsearch.xpack.esql.evaluator.EvalMapper;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
+import org.elasticsearch.xpack.esql.expression.function.scalar.math.Round;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToLower;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Div;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Sub;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
@@ -318,6 +320,47 @@ public class SlowPathFusionBenchmark {
                 }
             }
         },
+        /**
+         * F1: {@code (a * b) / 1000} over long vectors. Depth ≥ 2 so it fuses; the compile-time divisor is baked as an
+         * immediate so C2 can strength-reduce the division. Kernel is still {@code processLongs}, not
+         * {@code *ByConstant}.
+         */
+        LONG_DIV_CONST {
+            @Override
+            Built build() {
+                FieldAttribute a = field("a", DataType.LONG), b = field("b", DataType.LONG);
+                Expression mul = new Mul(Source.EMPTY, a, b);
+                return new Built(new Div(Source.EMPTY, mul, new Literal(Source.EMPTY, 1000L, DataType.LONG)), layout(a, b));
+            }
+
+            @Override
+            Page page(int size) {
+                return new Page(longs(size, i -> i % 1000), longs(size, i -> 1 + i % 100));
+            }
+        },
+        /**
+         * {@code ROUND(d * 1.1, 3)} over double vectors. Round fusion is deferred (Round is a delegating expression,
+         * not {@code @Fusable}); this cell is an unfused baseline so a later round can measure a fused version against
+         * it. {@code fusesToday()==false}.
+         */
+        ROUND3 {
+            @Override
+            Built build() {
+                FieldAttribute d = field("d", DataType.DOUBLE);
+                Expression scaled = new Mul(Source.EMPTY, d, new Literal(Source.EMPTY, 1.1, DataType.DOUBLE));
+                return new Built(new Round(Source.EMPTY, scaled, new Literal(Source.EMPTY, 3, DataType.INTEGER)), layout(d));
+            }
+
+            @Override
+            boolean fusesToday() {
+                return false;
+            }
+
+            @Override
+            Page page(int size) {
+                return new Page(doubles(size, i -> i % 100));
+            }
+        },
         /** {@code (a + b) * c}, long, dense, but 10% of rows overflow on {@code a + b} -> null + warning. */
         OVERFLOW10_ADD_MUL_LONG {
             @Override
@@ -355,7 +398,10 @@ public class SlowPathFusionBenchmark {
 
         abstract Page page(int size);
 
-        /** {@code true} where fusion is expected today. Lone mapping cells ({@code TO_LOWER_*}) stay unfused (D4). */
+        /**
+         * {@code true} where fusion is expected today. Lone mapping cells ({@code TO_LOWER_*}) stay unfused (D4);
+         * {@code ROUND3} stays unfused (Round fusion is deferred).
+         */
         boolean fusesToday() {
             return true;
         }
@@ -401,7 +447,7 @@ public class SlowPathFusionBenchmark {
                 throw new AssertionError(shape + " did not fuse with fusion=true: " + fused.getClass().getName());
             }
         } else if (isFused(fused)) {
-            throw new AssertionError(shape + " fused with fusion=true but is a lone mapping (D4 unfused): " + fused);
+            throw new AssertionError(shape + " fused with fusion=true but fusesToday=false: " + fused);
         }
         this.page = shape.page(size);
         assertSameOutput(shape, fused.get(driverContext).eval(page), unfused.get(driverContext).eval(page));

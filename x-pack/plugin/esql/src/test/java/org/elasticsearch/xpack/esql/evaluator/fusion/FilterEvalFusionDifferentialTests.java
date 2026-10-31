@@ -239,6 +239,41 @@ public class FilterEvalFusionDifferentialTests extends FusionDifferentialTestCas
         assertProjectionOverflowsWhenSurviving(a, b, layout, av, bv, positionCount);
     }
 
+    /**
+     * F1 mixed-slot FilterEval: the WHERE comparison constant stays a trailing runtime param, while the EVAL Div
+     * divisor is baked as a bytecode immediate. {@code WHERE b > 5 EVAL a / 1000} must fuse, and the runtime {@code 5}
+     * must occupy the correct predicate slot (the baked {@code 1000} consumes none on the projection side). Survivors,
+     * projected values, and warnings match the unfused {@code Filter → Eval} chain.
+     */
+    public void testBakedDivisorProjectionWithRuntimePredicateConstantMatchesUnfused() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        Layout layout = layout(a, b);
+        Expression predicate = new GreaterThan(Source.EMPTY, b, literal(5, DataType.LONG));
+        Expression projection = new Div(Source.EMPTY, a, literal(1000, DataType.LONG));
+
+        FilterEvalEvaluator.Factory fusedFactory = fuse(predicate, projection, layout);
+        assertFilterEvalFuses(fusedFactory, "WHERE b > 5 EVAL a/1000 baked+runtime");
+
+        int positionCount = 16;
+        long[] av = { 0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000, 12000, 13000, 14000, 15000 };
+        long[] bv = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }; // b > 5 survives 6..15
+        Block[] columns = {
+            blockFactory.newLongArrayVector(av, positionCount).asBlock(),
+            blockFactory.newLongArrayVector(bv, positionCount).asBlock() };
+        RunResult result = runBothChains(
+            fusedFactory,
+            predicate,
+            projection,
+            layout,
+            ElementKind.LONG,
+            columns,
+            positionCount,
+            "WHERE b > 5 EVAL a/1000 baked+runtime"
+        );
+        assertThat("b > 5 over 0..15 must keep 10 rows (6..15)", result.survivors, is(10));
+    }
+
     /** Control for {@link #testDroppedRowsEmitNoProjectionWarning}: {@code a * b} over the same values overflows/warns. */
     private void assertProjectionOverflowsWhenSurviving(FieldAttribute a, FieldAttribute b, Layout layout, long[] av, long[] bv, int n) {
         Expression projection = new Mul(Source.EMPTY, a, b);

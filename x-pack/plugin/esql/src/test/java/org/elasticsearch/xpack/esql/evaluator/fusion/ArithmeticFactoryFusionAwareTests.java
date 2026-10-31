@@ -12,6 +12,8 @@ import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Abs;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Div;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mod;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Neg;
 
@@ -72,6 +74,49 @@ public class ArithmeticFactoryFusionAwareTests extends ESTestCase {
         );
     }
 
+    public void testModLongsFactoryIsFusionAware() throws Exception {
+        assertFusionDescriptor(
+            "org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.ModLongsEvaluator$Factory",
+            Mod.class,
+            "processLongs",
+            "(JJ)J",
+            true
+        );
+    }
+
+    /**
+     * FusionPlanner.bakedDivModDescriptor synthesizes the 6-arg FusionDescriptor (explicit ArithmeticException)
+     * so it matches the generated DivLongsEvaluator / ModLongsEvaluator form literally. The records must equal.
+     */
+    public void testBakedDivModDescriptorEqualsGeneratedLongsFactories() throws Exception {
+        FusionDescriptor synthesizedDiv = new FusionDescriptor(
+            Div.class,
+            "processLongs",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException"
+        );
+        FusionDescriptor synthesizedMod = new FusionDescriptor(
+            Mod.class,
+            "processLongs",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException"
+        );
+        assertEquals(
+            "synthesized Div processLongs descriptor must equal generated DivLongsEvaluator$Factory.FUSION_DESCRIPTOR",
+            synthesizedDiv,
+            readFusionDescriptor("org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.DivLongsEvaluator$Factory")
+        );
+        assertEquals(
+            "synthesized Mod processLongs descriptor must equal generated ModLongsEvaluator$Factory.FUSION_DESCRIPTOR",
+            synthesizedMod,
+            readFusionDescriptor("org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.ModLongsEvaluator$Factory")
+        );
+    }
+
     public void testAbsDoubleFactoryIsFusionAware() throws Exception {
         // Math.abs(double) never throws (NaN/Inf pass through); overflowChecked=false.
         assertFusionDescriptor(
@@ -119,5 +164,11 @@ public class ArithmeticFactoryFusionAwareTests extends ESTestCase {
         // must catch; non-overflow kernels carry the empty string.
         assertEquals(expectedOverflowChecked ? "java.lang.ArithmeticException" : "", descriptor.overflowExceptionType());
         assertEquals(expectedOverflowChecked, descriptor.hasOverflowException());
+    }
+
+    private static FusionDescriptor readFusionDescriptor(String factoryFqn) throws Exception {
+        Field field = Class.forName(factoryFqn).getDeclaredField("FUSION_DESCRIPTOR");
+        field.setAccessible(true);
+        return (FusionDescriptor) field.get(null);
     }
 }

@@ -33,6 +33,7 @@ import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Div;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.EsqlArithmeticOperation;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mod;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Neg;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Sub;
@@ -179,6 +180,7 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
         op("Sub", Category.ARITHMETIC, 2, NUMERIC, true, false, a -> new Sub(Source.EMPTY, a.get(0), a.get(1), EsqlTestUtils.TEST_CFG)),
         op("Mul", Category.ARITHMETIC, 2, NUMERIC, true, false, a -> new Mul(Source.EMPTY, a.get(0), a.get(1))),
         op("Div", Category.ARITHMETIC, 2, NUMERIC, true, true, a -> new Div(Source.EMPTY, a.get(0), a.get(1))),
+        op("Mod", Category.ARITHMETIC, 2, NUMERIC, true, true, a -> new Mod(Source.EMPTY, a.get(0), a.get(1))),
         // --- arithmetic (NOT overflow-checked unary -> keeps the plain-vector fast path reachable) ---
         op("Neg", Category.ARITHMETIC, 1, NUMERIC, false, false, a -> new Neg(Source.EMPTY, a.get(0))),
         op("Abs", Category.ARITHMETIC, 1, NUMERIC, false, false, a -> new Abs(Source.EMPTY, a.get(0))),
@@ -942,6 +944,102 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
     }
 
     /**
+     * F1: a compile-time constant divisor of {@code Div} is baked as an immediate. {@code (a * b) / K} fuses (depth
+     * ≥ 2) and matches the unfused chain for int/long/double, including a baked {@code 0} (warn+null) and {@code MIN/-1}
+     * integer overflow (fused values+warnings == unfused). The spliced kernel is still {@code process*}, not
+     * {@code *ByConstant}.
+     */
+    public void testConstantDivisorDivMatchesUnfused() {
+        assertConstantDivisorMatches(true, ElementKind.LONG, 1000L, false);
+        assertConstantDivisorMatches(true, ElementKind.INT, 1000L, false);
+        assertConstantDivisorMatches(true, ElementKind.DOUBLE, 1000L, false);
+        assertConstantDivisorMatches(true, ElementKind.LONG, 0L, true);
+        assertConstantDivisorMatches(true, ElementKind.INT, 0L, true);
+        assertConstantDivisorMatches(true, ElementKind.DOUBLE, 0L, true);
+        assertConstantDivisorMinNegOne(true, ElementKind.LONG);
+        assertConstantDivisorMinNegOne(true, ElementKind.INT);
+    }
+
+    /**
+     * F1: {@code Mod.process*} is {@code @Fusable(overflowChecked=true)}, so a constant-divisor {@code (a * b) % K}
+     * fuses with a baked divisor exactly like Div, including baked {@code 0} → warn+null and {@code MIN % -1}.
+     */
+    public void testConstantDivisorModMatchesUnfused() {
+        assertConstantDivisorMatches(false, ElementKind.LONG, 7L, false);
+        assertConstantDivisorMatches(false, ElementKind.INT, 7L, false);
+        assertConstantDivisorMatches(false, ElementKind.DOUBLE, 7L, false);
+        assertConstantDivisorMatches(false, ElementKind.LONG, 0L, true);
+        assertConstantDivisorMatches(false, ElementKind.INT, 0L, true);
+        assertConstantDivisorMatches(false, ElementKind.DOUBLE, 0L, true);
+        assertConstantDivisorMinNegOne(false, ElementKind.LONG);
+        assertConstantDivisorMinNegOne(false, ElementKind.INT);
+    }
+
+    /** {@code (a * b) / K} or {@code (a * b) % K} over a dense page of {@code element}, fused vs unfused. */
+    private void assertConstantDivisorMatches(boolean div, ElementKind element, long k, boolean expectDivZero) {
+        FieldAttribute a = field("a", dataType(element));
+        FieldAttribute b = field("b", dataType(element));
+        Layout layout = layout(a, b);
+        Literal divisor = constant(element, k);
+        Expression mul = new Mul(Source.EMPTY, a, b);
+        Expression expr = div ? new Div(Source.EMPTY, mul, divisor) : new Mod(Source.EMPTY, mul, divisor);
+        String op = div ? "/" : "%";
+        String ctx = "(a*b)" + op + k + " " + element;
+        int positions = 64;
+        Block[] inputs = { denseColumn(element, positions, 1), denseColumn(element, positions, 2) };
+        DifferentialWarnings warnings = runConstantDifferential(expr, layout, element, inputs, positions, ctx);
+        if (expectDivZero) {
+            assertThat("unfused " + ctx + " must warn " + DIV_ZERO_MSG, containsWarning(warnings.reference(), DIV_ZERO_MSG), is(true));
+            assertFusedEmitsWarning(warnings.fused(), DIV_ZERO_MSG, ctx);
+        }
+    }
+
+    /**
+     * {@code (MIN * 1) / -1} or {@code %} — the two's-complement overflow edge. Java {@code /} and {@code %} wrap
+     * rather than throw for MIN/-1, so both paths must agree on the wrapped value (and not invent a warning).
+     */
+    private void assertConstantDivisorMinNegOne(boolean div, ElementKind element) {
+        FieldAttribute a = field("a", dataType(element));
+        FieldAttribute b = field("b", dataType(element));
+        Layout layout = layout(a, b);
+        Literal minusOne = constant(element, -1L);
+        Expression mul = new Mul(Source.EMPTY, a, b);
+        Expression expr = div ? new Div(Source.EMPTY, mul, minusOne) : new Mod(Source.EMPTY, mul, minusOne);
+        String op = div ? "/" : "%";
+        String ctx = "(MIN*1)" + op + "-1 " + element;
+        int positions = 4;
+        Block[] inputs = switch (element) {
+            case LONG -> new Block[] {
+                blockFactory.newLongArrayVector(new long[] { Long.MIN_VALUE, Long.MIN_VALUE, -1L, 0L }, positions).asBlock(),
+                blockFactory.newLongArrayVector(new long[] { 1L, 1L, 1L, 1L }, positions).asBlock() };
+            case INT -> new Block[] {
+                blockFactory.newIntArrayVector(new int[] { Integer.MIN_VALUE, Integer.MIN_VALUE, -1, 0 }, positions).asBlock(),
+                blockFactory.newIntArrayVector(new int[] { 1, 1, 1, 1 }, positions).asBlock() };
+            case DOUBLE, BOOLEAN, BYTES_REF -> throw new AssertionError("MIN/-1 is an int/long edge: " + element);
+        };
+        runConstantDifferential(expr, layout, element, inputs, positions, ctx);
+    }
+
+    /**
+     * F1 mixed-tree key case: a BAKED Div divisor and a RUNTIME-PARAM comparison constant in the same tree
+     * ({@code (a * b) / 1000 > 5}). The runtime {@code 5} must still occupy the correct trailing-param slot (the baked
+     * {@code 1000} consumes none and must not shift it). Asserts the tree fuses and values+warnings match unfused.
+     */
+    public void testBakedDivisorWithRuntimeComparisonConstantMatchesUnfused() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        Layout layout = layout(a, b);
+        Expression expr = new GreaterThan(
+            Source.EMPTY,
+            new Div(Source.EMPTY, new Mul(Source.EMPTY, a, b), constant(ElementKind.LONG, 1000L)),
+            constant(ElementKind.LONG, 5L)
+        );
+        int positions = 64;
+        Block[] inputs = { denseColumn(ElementKind.LONG, positions, 1), denseColumn(ElementKind.LONG, positions, 2) };
+        runConstantDifferential(expr, layout, ElementKind.BOOLEAN, inputs, positions, "(a*b)/1000 > 5 baked+runtime");
+    }
+
+    /**
      * A {@code null} literal in a constant position of an otherwise depth-&ge;2 fusable tree must <b>refuse to fuse</b>
      * (the planner cannot embed a {@code null} as a typed bytecode constant, so it bails and defers to the unfused
      * fallback, where the null literal folds to a null block). Covered in each constant position — arithmetic,
@@ -992,10 +1090,11 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
     }
 
     /**
-     * Asserts {@code expr} fuses with the kill switch ON, does not with it OFF, and that the fused body (embedding each
-     * literal as a bytecode constant) matches the unfused chain over the given page. Returns BOTH the fused and unfused
-     * warning lists so a caller can assert an expected warning (overflow / div-zero) fired on the fused side too
-     * (parity), not only on the unfused reference.
+     * Asserts {@code expr} fuses with the kill switch ON, does not with it OFF, and that the fused body matches the
+     * unfused chain over the given page. After F1 only a Div/Mod divisor Literal is baked as a bytecode immediate;
+     * every other literal stays a trailing method parameter (so {@code a > 5} and {@code a > 6} still share a class).
+     * Returns BOTH the fused and unfused warning lists so a caller can assert an expected warning (overflow / div-zero)
+     * fired on the fused side too (parity), not only on the unfused reference.
      */
     private DifferentialWarnings runConstantDifferential(
         Expression expr,
