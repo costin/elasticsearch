@@ -41,6 +41,7 @@ import org.elasticsearch.xpack.esql.core.tree.Source;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -591,6 +592,25 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     }
 
     /**
+     * Benchmark/test-only: whether the stitched hidden class that owns the vector (or block) MethodHandle declares
+     * {@code methodName}. Inspects the class that {@link #LOOKUP} defined, so a bytecode-budget split's private
+     * {@code compute()} helper is visible.
+     */
+    boolean declaresMethod(String methodName) {
+        MethodHandle handle = vectorHandleRaw != null ? vectorHandleRaw : (vectorHandle != null ? vectorHandle : blockHandle);
+        if (handle == null) {
+            return false;
+        }
+        Class<?> fusedClass = LOOKUP.revealDirect(handle).getDeclaringClass();
+        for (Method method : fusedClass.getDeclaredMethods()) {
+            if (methodName.equals(method.getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Test-only: which fused path the last {@code eval} of {@code evaluator} used. Production dispatch is unchanged.
      * {@code evaluator} must have been produced by {@link #get(DriverContext)}.
      */
@@ -1071,6 +1091,14 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
         /** True when every vector is the exact {@code *ArrayVector} of its input's element (the ALL-RAW variant). */
         private boolean allExactArrayVectors(Vector[] vectors) {
+            // Benchmark/test-only esql.fusion.vector_reads=interface: treat exact *ArrayVector inputs as non-exact
+            // so eval takes ALL-INTERFACE (typed *Vector.getX) instead of ALL-RAW (VectorUnsafe). SIMD PLAIN_VECTOR
+            // has no interface sibling — forcing non-exact would fall through to BLOCK — so only force when an
+            // INTERFACE spreader exists. That keeps the hook on the scalar RAW-vs-INTERFACE choice and leaves SIMD
+            // / block-only paths alone.
+            if (FusionSettings.isVectorReadsInterface() && (vectorInterfaceSpreader != null || vectorRawInterfaceSpreader != null)) {
+                return false;
+            }
             for (int i = 0; i < vectors.length; i++) {
                 if (inputElements[i].arrayVectorClass.isInstance(vectors[i]) == false) {
                     return false;

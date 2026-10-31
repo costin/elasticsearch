@@ -127,8 +127,20 @@ public final class Stitcher {
      * method's {@code Code} length and refuses to fuse (throwing {@link StitchingException} so the caller falls back to
      * the unfused chain) if it would exceed this budget. In this scope depth-2..4 arithmetic/comparison trees stay far
      * under it; the guard is a safety net against a pathological tree, and keeps the emitted body inlinable by C2.
+     *
+     * <p>Overridable via the benchmark/test-only system property {@code esql.fusion.max_method_bytecodes} (default
+     * 325). Not a node setting. Read once from the property in production; {@link #maxFusedMethodBytecodesForTests}
+     * exists solely so a unit test can flip the split decision in-process.
      */
-    static final int MAX_FUSED_METHOD_BYTECODES = 325;
+    static volatile int MAX_FUSED_METHOD_BYTECODES = Integer.getInteger("esql.fusion.max_method_bytecodes", 325);
+
+    /**
+     * Test-only: sets the fused-method bytecode budget; restore in a finally. Production reads the system property
+     * once into {@link #MAX_FUSED_METHOD_BYTECODES}; this setter exists solely for the unit test.
+     */
+    static void maxFusedMethodBytecodesForTests(int value) {
+        MAX_FUSED_METHOD_BYTECODES = value;
+    }
 
     private final TemplateRegistry templates;
 

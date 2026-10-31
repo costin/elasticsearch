@@ -127,6 +127,16 @@ public final class FusionSettings {
     /** The effective depth-1 string-fusion opt-in (default off). Cold-path read. */
     private static volatile boolean stringDepth1Enabled = Boolean.parseBoolean(System.getProperty("esql.fusion.string_depth1", "false"));
 
+    /**
+     * Benchmark/test-only {@code esql.fusion.vector_reads} = {@code auto} (default) | {@code interface}.
+     * <b>Not</b> a node {@link Setting}. When {@code interface}, eval treats exact {@code *ArrayVector} inputs as
+     * non-exact so the ALL-INTERFACE variant is taken. The effective value is initialized once from the system
+     * property; there is no per-row cost. The volatile is read once per dense page on purpose so an already-stitched
+     * factory honors a flipped hook on its next eval — it must not be latched at stitch/construction time.
+     * {@link #setVectorReadsInterfaceForTests} exists solely so a unit test can flip the chosen path in-process.
+     */
+    private static volatile boolean vectorReadsInterface = "interface".equals(System.getProperty("esql.fusion.vector_reads", "auto"));
+
     /** The effective adaptive row threshold (0 = eager). Cold-path read; {@code volatile} is sufficient. */
     private static volatile long adaptiveMinRows = initialLongProperty("esql.fusion.adaptive.min_rows", 0L);
 
@@ -176,6 +186,19 @@ public final class FusionSettings {
     /** Test-only: flips the depth-1 string-fusion opt-in; restore in a finally. */
     static void setStringDepth1EnabledForTests(boolean value) {
         stringDepth1Enabled = value;
+    }
+
+    /**
+     * Whether eval should treat exact {@code *ArrayVector} inputs as non-exact and take the ALL-INTERFACE variant.
+     * Benchmark/test-only; default {@code false} ({@code auto}).
+     */
+    public static boolean isVectorReadsInterface() {
+        return vectorReadsInterface;
+    }
+
+    /** Test-only: flips {@code esql.fusion.vector_reads=interface}; restore in a finally. */
+    static void setVectorReadsInterfaceForTests(boolean value) {
+        vectorReadsInterface = value;
     }
 
     /** Whether fusion may be attempted on this node. */

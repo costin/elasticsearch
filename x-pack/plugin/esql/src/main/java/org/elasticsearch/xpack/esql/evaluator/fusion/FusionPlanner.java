@@ -103,6 +103,15 @@ public final class FusionPlanner {
     }
 
     /**
+     * Benchmark/test-only: whether a fused factory's stitched vector-path (or block-path) hidden class declares a
+     * method named {@code methodName} — used by {@code FusionFollowupBenchmark} to assert a bytecode-budget split
+     * produced {@code compute()}. Returns {@code false} when {@code factory} is not fused.
+     */
+    public static boolean fusedClassHasMethod(ExpressionEvaluator.Factory factory, String methodName) {
+        return factory instanceof FusedExpressionEvaluatorFactory fused && fused.declaresMethod(methodName);
+    }
+
+    /**
      * The stitch entry points the planner uses. Extracted behind an interface so tests (in this package) can inject a
      * failing implementation to exercise the criterion-#5 fallback + telemetry without needing to craft bytecode that
      * fails JVM verification.
