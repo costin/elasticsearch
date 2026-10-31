@@ -19,6 +19,7 @@ import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ChangeCase;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.Length;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToLower;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToUpper;
 import org.elasticsearch.xpack.esql.planner.Layout;
@@ -28,17 +29,17 @@ import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Locale;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 
 /**
- * Task 4 (multi-value mapping) end-to-end: {@code TO_LOWER}/{@code TO_UPPER} ({@link
- * org.elasticsearch.xpack.esql.expression.function.scalar.string.ChangeCase}) — {@code @ConvertEvaluator}s that MAP
- * over every value of a position — now fuse via the multi-value mapping block loop and must match the unfused
- * {@code ChangeCaseEvaluator} position-by-position, INCLUDING multi-valued positions (mapped to a multi-valued result,
- * not warn+null). This is the regression the earlier single-value fusion attempt got wrong (iter77); the mapping loop
- * fixes it. Depth-1 (a bare TO_LOWER) fuses via the mapping-path depth relaxation.
+ * D4 + D3: a bare {@code TO_LOWER}/{@code TO_UPPER} ({@link ChangeCase} {@code @ConvertEvaluator}) stays unfused.
+ * A converter fuses only as a nested mapping kernel inside a {@code depth >= 2} chain ({@code LENGTH(TO_LOWER(k))},
+ * {@code TO_LOWER(k)=="x"}), compiling via the ordinary block path rather than {@code compileMappingBlockLoop}.
+ * Values still match the unfused {@code ChangeCaseEvaluator} position-by-position, including multi-valued
+ * positions (mapped result, not warn+null).
  */
 public class ChangeCaseFusionDifferentialTests extends FusionDifferentialTestCase {
 
@@ -57,21 +58,23 @@ public class ChangeCaseFusionDifferentialTests extends FusionDifferentialTestCas
         }
     }
 
-    public void testToLowerFusesAndMatchesUnfused() {
+    /** A lone {@code TO_LOWER} does not fuse (D4). Values and warnings still match the unfused convert evaluator. */
+    public void testLoneToLowerDoesNotFuseButMatchesUnfused() {
         FieldAttribute s = field("s", DataType.KEYWORD);
         Layout layout = layout(s);
         Expression expr = new ToLower(Source.EMPTY, s, CFG);
         ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
         ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
-        assertFuses(fused, "toLower(s)");
+        assertDoesNotFuse(fused, "toLower(s)");
 
         Block in = keyword("Hello", "WORLD", "MiXeD", null, "", "Grüße δΔ", "already lower");
         runDifferentialWarnings(fused, unfused, ElementKind.BYTES_REF, new Block[] { in }, 7, "toLower(s)");
     }
 
     /**
-     * D2: TO_LOWER fuses through the generated {@link FusionAware} descriptor (not a hand-written
-     * {@code CHANGE_CASE_DESCRIPTOR}). The mapping flag and {@code fusionFixedArgs} come from the convert Factory.
+     * D2: TO_LOWER still fuses as a nested mapping kernel in a chain, through the generated {@link FusionAware}
+     * descriptor (not a hand-written {@code CHANGE_CASE_DESCRIPTOR}). The mapping flag and {@code fusionFixedArgs}
+     * come from the convert Factory. A lone TO_LOWER does not fuse (D4).
      */
     public void testToLowerFusesThroughGeneratedFusionAwareDescriptor() {
         for (Field field : FusionPlanner.class.getDeclaredFields()) {
@@ -83,24 +86,30 @@ public class ChangeCaseFusionDifferentialTests extends FusionDifferentialTestCas
         }
         FieldAttribute s = field("s", DataType.KEYWORD);
         Layout layout = layout(s);
-        Expression expr = new ToLower(Source.EMPTY, s, CFG);
-        FusedExpressionEvaluatorFactory fused = assertFuses(fusedFactory(expr, layout), "toLower generated FusionAware");
-        ExpressionEvaluator.Factory unfused = fused.unfusedFactory();
-        assertThat("ChangeCaseEvaluator.Factory must implement FusionAware", unfused, instanceOf(FusionAware.class));
-        FusionDescriptor descriptor = ((FusionAware) unfused).fusionDescriptor();
+        Expression toLower = new ToLower(Source.EMPTY, s, CFG);
+        Expression expr = new Length(Source.EMPTY, toLower);
+        FusedExpressionEvaluatorFactory fused = assertFuses(fusedFactory(expr, layout), "LENGTH(TO_LOWER) generated FusionAware");
+        assertThat(
+            "fused chain shape must carry the nested ChangeCase mapping kernel",
+            fused.shape(),
+            containsString("ChangeCase#process")
+        );
+        ExpressionEvaluator.Factory toLowerFactory = unfusedFactory(toLower, layout);
+        assertThat("ChangeCaseEvaluator.Factory must implement FusionAware", toLowerFactory, instanceOf(FusionAware.class));
+        FusionDescriptor descriptor = ((FusionAware) toLowerFactory).fusionDescriptor();
         assertThat(descriptor.kernelClass(), is(ChangeCase.class));
         assertThat(descriptor.kernelMethod(), is("process"));
         assertThat("generated convert descriptor is a mapping kernel", descriptor.mapping(), is(true));
-        List<Object> fixed = ((FusionAware) unfused).fusionFixedArgs();
+        List<Object> fixed = ((FusionAware) toLowerFactory).fusionFixedArgs();
         assertThat(fixed.size(), is(2));
         assertThat(fixed.get(0), instanceOf(Locale.class));
         assertThat(fixed.get(1), is(ChangeCase.Case.LOWER));
     }
 
     /**
-     * The critical case: a MULTI-VALUED keyword position. The unfused convert evaluator maps each value (multi-valued
-     * result, no warning); the fused mapping loop must do the same (NOT warn+null). Covers single, empty/null, and
-     * multi-value positions in one block.
+     * A MULTI-VALUED keyword position: a lone TO_UPPER does not fuse (D4). The unfused convert evaluator maps each
+     * value (multi-valued result, no warning); the ON-switch factory must match that, not warn+null. Covers single,
+     * empty/null, and multi-value positions in one block.
      */
     public void testToUpperMultiValueMapsMatchesUnfused() {
         FieldAttribute s = field("s", DataType.KEYWORD);
@@ -108,7 +117,7 @@ public class ChangeCaseFusionDifferentialTests extends FusionDifferentialTestCas
         Expression expr = new ToUpper(Source.EMPTY, s, CFG);
         ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
         ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
-        assertFuses(fused, "toUpper(s)");
+        assertDoesNotFuse(fused, "toUpper(s)");
 
         int positionCount = 4;
         Block in;

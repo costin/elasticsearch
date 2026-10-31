@@ -277,27 +277,24 @@ public final class FusionPlanner {
         // worth fusing when SIMD is opted in AND available in this runtime. Everything else still requires depth >= 2.
         String vectorComparison = simdComparison(exp, tree, inputElements, ctx.outputElement, signature.constantsInEmitOrder());
         boolean simdWorthwhile = vectorComparison.isEmpty() == false && FusionSettings.isSimdEnabled() && FusionSimd.available();
-        // A multi-value mapping convert kernel (TO_LOWER/TO_UPPER) is a single (depth-1) unary kernel, but fusing it via
-        // the mapping loop re-enables the whole TO_* family, so it is worth fusing at depth 1 (like the SIMD comparison).
         // A lone single-value BytesRef string function (LEFT/SPACE/CONCAT) fuses at depth 1 only under the opt-in
         // esql.fusion.string_depth1 switch (its win is marginal — string work dominates — so it is off by default).
+        // ctx.mapping is true for a lone converter root (TO_LOWER/TO_UPPER); excluding it here keeps that kernel
+        // from wrongly fusing via the string path. A converter fuses only as a nested mapping in a depth>=2 chain (D4).
         boolean stringDepth1 = ctx.outputElement == ElementKind.BYTES_REF && ctx.mapping == false && FusionSettings.isStringDepth1Enabled();
         boolean encodingAware = encodingAware(tree, inputElements, ctx.overflowChecked);
         // A lone BytesRef comparison (column == literal, column != literal, or literal == column) is depth-1, but
         // the encoding-aware dictionary gather evaluates once per distinct value — the same depth-1 exemption as
-        // SIMD / mapping / stringDepth1.
+        // SIMD / stringDepth1.
         boolean bytesRefComparisonDepth1 = encodingAware && ctx.outputElement == ElementKind.BOOLEAN;
         // D3 nested mapping is a one-column encoding-aware chain. Two BytesRef columns (e.g. k1 == TO_LOWER(k2))
         // share one spare and would overwrite the lhs; refuse so they stay unfused.
         if (containsNestedMapping(tree) && inputElements.length > 1) {
             return null;
         }
-        if (depth(tree) < 2
-            && simdWorthwhile == false
-            && ctx.mapping == false
-            && stringDepth1 == false
-            && bytesRefComparisonDepth1 == false) {
+        if (depth(tree) < 2 && simdWorthwhile == false && stringDepth1 == false && bytesRefComparisonDepth1 == false) {
             // A lone kernel is not worth fusing on the scalar paths — leave it to the generated evaluator.
+            // A lone mapping convert (ctx.mapping) is always depth-1, so this refuses it (D4).
             return null;
         }
         ExpressionEvaluator.Factory unfused = rawFactory.apply(exp);
@@ -540,7 +537,10 @@ public final class FusionPlanner {
         /** The root node's output kind: the numeric element for an arithmetic root, or BOOLEAN for a comparison/logical root. */
         private ElementKind outputElement;
         private boolean overflowChecked;
-        /** Set when the root is a multi-value mapping convert kernel (TO_LOWER/TO_UPPER) — routed to the mapping loop. */
+        /**
+         * Set when the root is a mapping convert kernel (TO_LOWER/TO_UPPER). Excludes that root from
+         * {@code stringDepth1} so a lone converter stays unfused (D4); nested mapping leaves this false.
+         */
         private boolean mapping;
 
         PlanContext(Layout layout, Function<Expression, ExpressionEvaluator.Factory> rawFactory) {
@@ -734,14 +734,14 @@ public final class FusionPlanner {
      * Builds the fused node for a mapping {@code @ConvertEvaluator} (e.g. {@code TO_LOWER}/{@code TO_UPPER}): a
      * single kernel over its BytesRef field child plus the Factory's {@code @Fixed} SINGLETON constants.
      *
-     * <p>At the root this is a multi-value mapping convert: {@link PlanContext#mapping} is set so the factory
-     * compiles via {@code compileMappingBlockLoop}. In a <b>non-root</b> position the kernel is admitted only as a
-     * child of a single-value parent that consumes {@code BytesRef} (e.g. {@code LENGTH}, {@code Equals}) — the
-     * parent compiles via the ordinary block path ({@code ctx.mapping} stays false) and the nested mapping body is
-     * spliced as a unary kernel. Multi-value pages of such a chain fall back to unfused at eval time (D3). A mapping
-     * under a LOGICAL root never reaches here ({@link #buildComparisonOperand} refuses non-Attribute/Literal
-     * children). A mapping under another mapping is refused by the direct-{@link FusionNode.Input} field restriction
-     * (one mapping level only).
+     * <p>At the root {@link PlanContext#mapping} is set so a lone converter is excluded from the string-depth-1
+     * opt-in and refused by the depth guard (D4: a converter fuses only as a nested mapping kernel). In a
+     * <b>non-root</b> position the kernel is admitted only as a child of a single-value parent that consumes
+     * {@code BytesRef} (e.g. {@code LENGTH}, {@code Equals}) — the parent compiles via the ordinary block path
+     * ({@code ctx.mapping} stays false) and the nested mapping body is spliced as a unary kernel. Multi-value pages
+     * of such a chain fall back to unfused at eval time (D3). A mapping under a LOGICAL root never reaches here
+     * ({@link #buildComparisonOperand} refuses non-Attribute/Literal children). A mapping under another mapping is
+     * refused by the direct-{@link FusionNode.Input} field restriction (one mapping level only).
      *
      * <p>The anti-delegation guard is {@code kernelClass.isAssignableFrom(exp.getClass())} rather than {@code ==}:
      * {@code @ConvertEvaluator} lives on the declaring class (e.g. {@code ChangeCase.process}) while the expression
@@ -788,8 +788,9 @@ public final class FusionPlanner {
         FusionNode.Kernel kernel = new FusionNode.Kernel(descriptor, operands);
         ctx.kernelSources.put(kernel, exp.source());
         if (root) {
-            // Root mapping compiles via compileMappingBlockLoop; a nested mapping does not flip this — the parent
-            // single-value kernel (LENGTH→int, Equals→boolean) compiles via the ordinary block path.
+            // Root mapping sets ctx.mapping so stringDepth1 excludes a lone converter; maybeFuse then refuses
+            // depth-1 mapping so a lone TO_LOWER stays unfused (D4). Nested mapping does not flip this — the
+            // parent single-value kernel (LENGTH→int, Equals→boolean) compiles via the ordinary block path.
             ctx.outputElement = ElementKind.BYTES_REF;
             ctx.mapping = true;
         }

@@ -119,8 +119,8 @@ public final class FusionSettings {
      * otherwise be "not worth fusing" as a single kernel. Default off because a bare string function's per-row cost is
      * dominated by the string work (byte copies / breaker append), not the evaluator dispatch fusion removes, so the
      * win is marginal and it adds a plan-time stitch; enable it to fuse the common bare-string-function case (e.g. for
-     * A/B measurement). Nested string functions fuse regardless. (Multi-value mapping convert kernels — TO_LOWER/
-     * TO_UPPER — fuse at depth 1 unconditionally; this switch is for the single-value string kernels.)
+     * A/B measurement). Nested string functions fuse regardless. A mapping convert (TO_LOWER/TO_UPPER) fuses only
+     * as a nested kernel in a depth ≥ 2 chain, not at depth 1; this switch is for the single-value string kernels.
      */
     public static final Setting<Boolean> FUSION_STRING_DEPTH1_SETTING = Setting.boolSetting(
         "esql.fusion.string_depth1",

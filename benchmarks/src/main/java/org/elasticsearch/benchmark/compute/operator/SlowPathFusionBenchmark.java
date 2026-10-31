@@ -75,8 +75,9 @@ import java.util.concurrent.TimeUnit;
 /**
  * Fused vs unfused evaluation over the inputs {@link FusionBenchmark} does not cover: nulls, multi-values, constant and
  * non-array vectors, OR / double logical trees, ordinal-encoded keywords and overflowing arithmetic. Each case is
- * checked in {@link #setup} for (a) fusion actually happening when enabled and (b) fused output equal to the unfused
- * output, so the benchmark cannot measure a fast-but-wrong body.
+ * checked in {@link #setup} for (a) fusion actually happening when enabled (except lone mapping cells, which stay
+ * unfused after D4) and (b) fused output equal to the unfused output, so the benchmark cannot measure a fast-but-wrong
+ * body.
  *
  * <p>{@code pollute=true} first drives every other case (fused and unfused) for a while so the shared unfused evaluator
  * classes ({@code AddLongsEvaluator}, block accessors, ...) see several receiver types before the measured shape is
@@ -265,12 +266,17 @@ public class SlowPathFusionBenchmark {
                 );
             }
         },
-        /** {@code TO_LOWER(s)} over an ordinal-encoded keyword vector with a 16-entry dictionary. */
+        /** {@code TO_LOWER(s)} over an ordinal-encoded keyword vector with a 16-entry dictionary. Lone mapping is unfused (D4). */
         TO_LOWER_ORDINAL {
             @Override
             Built build() {
                 FieldAttribute s = field("s", DataType.KEYWORD);
                 return new Built(new ToLower(Source.EMPTY, s, configuration()), layout(s));
+            }
+
+            @Override
+            boolean fusesToday() {
+                return false;
             }
 
             @Override
@@ -290,11 +296,16 @@ public class SlowPathFusionBenchmark {
                 return new Page(new OrdinalBytesRefVector(ordinals, dict).asBlock());
             }
         },
-        /** {@code TO_LOWER(s)} over a plain (non-ordinal) keyword vector with the same 16 distinct values. */
+        /** {@code TO_LOWER(s)} over a plain (non-ordinal) keyword vector with the same 16 distinct values. Lone mapping is unfused (D4). */
         TO_LOWER_PLAIN {
             @Override
             Built build() {
                 return TO_LOWER_ORDINAL.build();
+            }
+
+            @Override
+            boolean fusesToday() {
+                return false;
             }
 
             @Override
@@ -343,6 +354,11 @@ public class SlowPathFusionBenchmark {
         abstract Built build();
 
         abstract Page page(int size);
+
+        /** {@code true} where fusion is expected today. Lone mapping cells ({@code TO_LOWER_*}) stay unfused (D4). */
+        boolean fusesToday() {
+            return true;
+        }
     }
 
     record Built(Expression expr, Layout layout) {}
@@ -380,8 +396,12 @@ public class SlowPathFusionBenchmark {
         if (isFused(unfused)) {
             throw new AssertionError(shape + " fused with fusion=false: " + unfused);
         }
-        if (isFused(fused) == false) {
-            throw new AssertionError(shape + " did not fuse with fusion=true: " + fused.getClass().getName());
+        if (shape.fusesToday()) {
+            if (isFused(fused) == false) {
+                throw new AssertionError(shape + " did not fuse with fusion=true: " + fused.getClass().getName());
+            }
+        } else if (isFused(fused)) {
+            throw new AssertionError(shape + " fused with fusion=true but is a lone mapping (D4 unfused): " + fused);
         }
         this.page = shape.page(size);
         assertSameOutput(shape, fused.get(driverContext).eval(page), unfused.get(driverContext).eval(page));

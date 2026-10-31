@@ -226,12 +226,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      */
     private final List<FusionNode.Constant> constants;
     /**
-     * True only for the {@link FusionPlan#mapping()} construction path (TO_LOWER/TO_UPPER). Mapping trees compile
-     * via {@link Stitcher#compileMappingBlockLoop} (block-only, maps over multi-values). Encoding of ordinal/constant
-     * pages is handled separately by {@code encodingAware}.
-     */
-    private final boolean mapping;
-    /**
      * When true, {@link FusedExpressionEvaluator#eval} may evaluate ordinal/constant {@code BYTES_REF} pages once
      * over the dictionary (or a single constant position) and rebuild the output encoding. See
      * {@link FusionPlan#encodingAware()}.
@@ -254,7 +248,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         ExpressionEvaluator.Factory unfused,
         String shape,
         List<FusionNode.Constant> constants,
-        boolean mapping,
         boolean encodingAware,
         boolean nestedMapping
     ) {
@@ -271,7 +264,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             unfused,
             shape,
             constants,
-            mapping,
             encodingAware,
             nestedMapping
         );
@@ -288,7 +280,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         ExpressionEvaluator.Factory unfused,
         String shape,
         List<FusionNode.Constant> constants,
-        boolean mapping,
         boolean encodingAware,
         boolean nestedMapping
     ) {
@@ -305,7 +296,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             unfused,
             shape,
             constants,
-            mapping,
             encodingAware,
             nestedMapping
         );
@@ -324,7 +314,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         ExpressionEvaluator.Factory unfused,
         String shape,
         List<FusionNode.Constant> constants,
-        boolean mapping,
         boolean encodingAware,
         boolean nestedMapping
     ) {
@@ -340,7 +329,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         this.unfused = unfused;
         this.shape = shape;
         this.constants = constants;
-        this.mapping = mapping;
         this.encodingAware = encodingAware;
         this.nestedMapping = nestedMapping;
     }
@@ -419,7 +407,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     unfused,
                     shape,
                     constants,
-                    true,
                     plan.encodingAware(),
                     nestedMapping
                 );
@@ -454,7 +441,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                         unfused,
                         shape,
                         constants,
-                        false,
                         plan.encodingAware(),
                         nestedMapping
                     );
@@ -471,7 +457,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                         unfused,
                         shape,
                         constants,
-                        false,
                         plan.encodingAware(),
                         nestedMapping
                     );
@@ -498,7 +483,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     unfused,
                     shape,
                     constants,
-                    false,
                     plan.encodingAware(),
                     nestedMapping
                 );
@@ -586,7 +570,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     unfused,
                     shape,
                     constants,
-                    false,
                     plan.encodingAware(),
                     nestedMapping
                 );
@@ -605,7 +588,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 unfused,
                 shape,
                 constants,
-                false,
                 plan.encodingAware(),
                 nestedMapping
             );
@@ -675,7 +657,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             context,
             shape,
             resolveConstantValues(constants, context),
-            mapping,
             encodingAware,
             nestedMapping,
             FusionSettings.isVectorReadsInterface()
@@ -703,7 +684,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             context,
             shape,
             resolveConstantValues(constants, context),
-            mapping,
             encodingAware,
             nestedMapping,
             vectorReadsInterface
@@ -928,13 +908,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         // The embedded constants' values, appended (after the input vectors/blocks) to the fused method's invoke args.
         private final Object[] constantValues;
         /**
-         * True only for the mapping (TO_LOWER/TO_UPPER) construction path. Mapping trees compile via the mapping
-         * block loop; encoding of ordinal/constant pages is handled by {@code encodingAware}. Retained (unread at
-         * eval time after D1) so D4 can remove the depth-1 mapping exemption and this field together.
-         */
-        @SuppressWarnings("unused")
-        private final boolean mapping;
-        /**
          * When true, ordinal/constant {@code BYTES_REF} pages are evaluated once over the dictionary (or a single
          * constant position) so the fused output keeps that encoding. See {@link FusionPlan#encodingAware()}.
          */
@@ -1014,7 +987,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             DriverContext driverContext,
             String shape,
             Object[] constantValues,
-            boolean mapping,
             boolean encodingAware,
             boolean nestedMapping,
             boolean vectorReadsInterface
@@ -1029,7 +1001,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             this.driverContext = driverContext;
             this.shape = shape;
             this.constantValues = constantValues;
-            this.mapping = mapping;
             this.encodingAware = encodingAware;
             this.nestedMapping = nestedMapping;
             this.vectorReadsInterface = vectorReadsInterface;

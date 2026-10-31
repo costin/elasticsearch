@@ -41,78 +41,60 @@ import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 
 /**
- * D1: fused mapping (and other single-BYTES_REF, no-warn trees) is encoding-aware. Ordinal and constant pages are
- * evaluated by the fused handle over the dictionary / one position — not deferred to the unfused chain — and the
- * fused output encoding is never weaker than the unfused output for the same page.
+ * D1: fused trees with a single BYTES_REF column and no warn kernel are encoding-aware. Ordinal and constant pages
+ * are evaluated by the fused handle over the dictionary / one position. A lone TO_LOWER/TO_UPPER does not fuse
+ * (D4); encoding-preservation coverage lives on the chain tests ({@code LENGTH(TO_LOWER)}, {@code TO_LOWER==literal}).
  */
 public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
 
     private static final Configuration CFG = EsqlTestUtils.TEST_CFG;
 
     /**
-     * Fused {@code TO_LOWER} over an {@link OrdinalBytesRefVector} page must itself produce an ordinal-encoded
-     * output (not a row-by-row block, not an unfused fallback) and match the unfused values.
+     * A lone {@code TO_LOWER} does not fuse (D4). Values over an ordinal keyword page still match the unfused chain.
+     * Encoding-aware ordinal gather lives on {@link #testLengthToLowerOrdinalTakesEncodingAwarePath}.
      */
-    public void testToLowerOrdinalEncodingPreserved() {
+    public void testLoneToLowerOrdinalDoesNotFuse() {
+        FieldAttribute s = field("s", DataType.KEYWORD);
         String[] dictionary = { "Hello", "WORLD", "MiXeD", "already lower", "Grüße" };
         int[] ordinals = { 0, 1, 2, 0, 1, 3, 2, 4, 0, 1, 3, 4 };
         Block input = ordinalKeyword(dictionary, ordinals);
         BytesRefBlock inputBytes = (BytesRefBlock) input;
         assertThat("test setup: input must be ordinal-encoded", hasOrdinalEncoding(inputBytes), is(true));
-
-        evalToLower(input, ordinals.length, "toLower(ordinal keyword)", (fused, unfused, path) -> {
-            assertThat("ordinal TO_LOWER must take the encoding-aware fused path", path, is(LastEvalPath.ENCODING_AWARE));
-            assertThat(
-                "fused TO_LOWER over an ordinal keyword page must produce ordinal encoding",
-                hasOrdinalEncoding((BytesRefBlock) fused),
-                is(true)
-            );
-            assertEncodingNoWeaker(fused, unfused, "toLower(ordinal keyword)");
-        });
+        evalLoneMappingDoesNotFuse(new ToLower(Source.EMPTY, s, CFG), layout(s), input, ordinals.length, "toLower(ordinal keyword)");
     }
 
     /**
-     * Fused {@code TO_LOWER} over a constant {@code BytesRefVector} page must return a constant vector from the
-     * encoding-aware fused path (one position evaluated, expanded to the page's position count).
+     * A lone {@code TO_LOWER} does not fuse (D4). Values over a constant keyword page still match the unfused chain.
      */
-    public void testToLowerConstantEncodingPreserved() {
+    public void testLoneToLowerConstantDoesNotFuse() {
+        FieldAttribute s = field("s", DataType.KEYWORD);
         int positionCount = 8;
         Block input = blockFactory.newConstantBytesRefBlockWith(new BytesRef("HeLLo"), positionCount);
         assertThat("test setup: input must be a constant vector", input.asVector(), notNullValue());
         assertThat("test setup: input must be constant", input.asVector().isConstant(), is(true));
-
-        evalToLower(input, positionCount, "toLower(constant keyword)", (fused, unfused, path) -> {
-            assertThat("constant TO_LOWER must take the encoding-aware fused path", path, is(LastEvalPath.ENCODING_AWARE));
-            BytesRefVector fusedVector = ((BytesRefBlock) fused).asVector();
-            assertThat("fused TO_LOWER over a constant keyword page must return a vector", fusedVector, notNullValue());
-            assertThat("fused TO_LOWER over a constant keyword page must return a constant vector", fusedVector.isConstant(), is(true));
-            assertEncodingNoWeaker(fused, unfused, "toLower(constant keyword)");
-        });
+        evalLoneMappingDoesNotFuse(new ToLower(Source.EMPTY, s, CFG), layout(s), input, positionCount, "toLower(constant keyword)");
     }
 
     /**
-     * Fused {@code TO_LOWER} over a plain (non-ordinal, non-constant) {@code BytesRefVector} still matches unfused
-     * values on the normal mapping block path.
+     * A lone {@code TO_LOWER} does not fuse (D4). Values over a plain BytesRef vector still match the unfused chain.
      */
-    public void testToLowerPlainVectorMatchesUnfused() {
+    public void testLoneToLowerPlainVectorMatchesUnfused() {
+        FieldAttribute s = field("s", DataType.KEYWORD);
         String[] values = { "Hello", "WORLD", "MiXeD", "already lower", "Grüße δΔ", "", "café" };
         Block input = keyword(values);
         BytesRefBlock inputBytes = (BytesRefBlock) input;
         assertThat("test setup: plain input must not be ordinal-encoded", hasOrdinalEncoding(inputBytes), is(false));
         assertThat("test setup: plain input must be a vector", inputBytes.asVector(), notNullValue());
         assertThat("test setup: plain input must not be constant", inputBytes.asVector().isConstant(), is(false));
-
-        evalToLower(input, values.length, "toLower(plain keyword)", (fused, unfused, path) -> {
-            assertThat("plain TO_LOWER must stay on the mapping block path", path, is(LastEvalPath.BLOCK));
-            assertEncodingNoWeaker(fused, unfused, "toLower(plain keyword)");
-        });
+        evalLoneMappingDoesNotFuse(new ToLower(Source.EMPTY, s, CFG), layout(s), input, values.length, "toLower(plain keyword)");
     }
 
     /**
-     * Fused {@code TO_LOWER} over a multi-value / null-containing {@code BytesRefBlock} still matches unfused values,
-     * nulls, and multi-value structure. Encoding-aware does not fire (no dense vector).
+     * A lone {@code TO_LOWER} does not fuse (D4). Multi-value / null structure still matches the unfused convert
+     * evaluator (mapped values, not warn+null).
      */
-    public void testToLowerMultiValueAndNullsMatchUnfused() {
+    public void testLoneToLowerMultiValueAndNullsMatchUnfused() {
+        FieldAttribute s = field("s", DataType.KEYWORD);
         int positionCount = 5;
         Block input;
         try (BytesRefBlock.Builder b = blockFactory.newBytesRefBlockBuilder(positionCount)) {
@@ -132,35 +114,24 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
         BytesRefBlock inputBytes = (BytesRefBlock) input;
         assertThat("test setup: multi-value/null block must not be a vector", inputBytes.asVector(), nullValue());
         assertThat("test setup: multi-value/null block must not be ordinal-encoded", hasOrdinalEncoding(inputBytes), is(false));
-
-        evalToLower(input, positionCount, "toLower(mv/null keyword)", (fused, unfused, path) -> {
-            assertThat("multi-value/null TO_LOWER must stay on the mapping block path", path, is(LastEvalPath.BLOCK));
-            assertEncodingNoWeaker(fused, unfused, "toLower(mv/null keyword)");
-        });
+        evalLoneMappingDoesNotFuse(new ToLower(Source.EMPTY, s, CFG), layout(s), input, positionCount, "toLower(mv/null keyword)");
     }
 
-    /** {@code TO_UPPER} over an ordinal keyword page takes the encoding-aware path and keeps ordinal encoding. */
-    public void testToUpperOrdinalEncodingPreserved() {
+    /** A lone {@code TO_UPPER} does not fuse (D4). Values over an ordinal keyword page still match unfused. */
+    public void testLoneToUpperOrdinalDoesNotFuse() {
+        FieldAttribute s = field("s", DataType.KEYWORD);
         String[] dictionary = { "Hello", "WORLD", "MiXeD" };
         int[] ordinals = { 0, 1, 2, 0, 1, 2 };
         Block input = ordinalKeyword(dictionary, ordinals);
-        evalToUpper(input, ordinals.length, "toUpper(ordinal keyword)", (fused, unfused, path) -> {
-            assertThat(path, is(LastEvalPath.ENCODING_AWARE));
-            assertThat(hasOrdinalEncoding((BytesRefBlock) fused), is(true));
-            assertEncodingNoWeaker(fused, unfused, "toUpper(ordinal keyword)");
-        });
+        evalLoneMappingDoesNotFuse(new ToUpper(Source.EMPTY, s, CFG), layout(s), input, ordinals.length, "toUpper(ordinal keyword)");
     }
 
-    /** {@code TO_UPPER} over a constant keyword page takes the encoding-aware path and keeps constant encoding. */
-    public void testToUpperConstantEncodingPreserved() {
+    /** A lone {@code TO_UPPER} does not fuse (D4). Values over a constant keyword page still match unfused. */
+    public void testLoneToUpperConstantDoesNotFuse() {
+        FieldAttribute s = field("s", DataType.KEYWORD);
         int positionCount = 5;
         Block input = blockFactory.newConstantBytesRefBlockWith(new BytesRef("HeLLo"), positionCount);
-        evalToUpper(input, positionCount, "toUpper(constant keyword)", (fused, unfused, path) -> {
-            assertThat(path, is(LastEvalPath.ENCODING_AWARE));
-            assertThat(((BytesRefBlock) fused).asVector(), notNullValue());
-            assertThat(((BytesRefBlock) fused).asVector().isConstant(), is(true));
-            assertEncodingNoWeaker(fused, unfused, "toUpper(constant keyword)");
-        });
+        evalLoneMappingDoesNotFuse(new ToUpper(Source.EMPTY, s, CFG), layout(s), input, positionCount, "toUpper(constant keyword)");
     }
 
     /**
@@ -582,14 +553,15 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
         }
     }
 
-    private void evalToLower(Block input, int positionCount, String ctx, EncodingAssertions assertions) {
-        FieldAttribute s = field("s", DataType.KEYWORD);
-        evalExpr(new ToLower(Source.EMPTY, s, CFG), layout(s), input, positionCount, ElementKind.BYTES_REF, ctx, assertions);
-    }
-
-    private void evalToUpper(Block input, int positionCount, String ctx, EncodingAssertions assertions) {
-        FieldAttribute s = field("s", DataType.KEYWORD);
-        evalExpr(new ToUpper(Source.EMPTY, s, CFG), layout(s), input, positionCount, ElementKind.BYTES_REF, ctx, assertions);
+    /**
+     * A lone mapping convert does not fuse (D4). Values and warnings still match the unfused convert evaluator.
+     * Layout must use the same {@link FieldAttribute} instance as {@code expr}.
+     */
+    private void evalLoneMappingDoesNotFuse(Expression expr, Layout layout, Block input, int positionCount, String ctx) {
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        assertDoesNotFuse(fused, ctx);
+        runDifferentialWarnings(fused, unfused, ElementKind.BYTES_REF, new Block[] { input }, positionCount, ctx);
     }
 
     private void evalExpr(
@@ -627,23 +599,6 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
             if (page != null) {
                 page.releaseBlocks();
             }
-        }
-    }
-
-    private static void assertEncodingNoWeaker(Block fused, Block unfused, String ctx) {
-        if (FusionVerify.isOrdinalEncoded(unfused)) {
-            assertThat(
-                ctx + ": fused output encoding must not be weaker than unfused ordinal",
-                FusionVerify.isOrdinalEncoded(fused),
-                is(true)
-            );
-        }
-        if (FusionVerify.isConstantEncoded(unfused)) {
-            assertThat(
-                ctx + ": fused output encoding must not be weaker than unfused constant",
-                FusionVerify.isConstantEncoded(fused),
-                is(true)
-            );
         }
     }
 
