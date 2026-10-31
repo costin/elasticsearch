@@ -65,7 +65,7 @@ public final class FusionTelemetry {
 
     /**
      * Number of shapes that fused on the block path but degraded to block-only because the vector fast path could not
-     * be built (e.g. the plain-vector inlining budget refused a deep tree). Diagnostic side-channel only.
+     * be built (e.g. the plain-vector huge-method guard refused a deep tree). Diagnostic side-channel only.
      */
     private static final LongAdder VECTOR_DEGRADED = new LongAdder();
 
@@ -157,7 +157,7 @@ public final class FusionTelemetry {
 
     /**
      * Records one shape whose block path fused but whose vector fast path could not be built (most commonly the
-     * plain-vector inlining budget refusing a deep tree), so it degraded to block-only fusion instead of falling all
+     * plain-vector huge-method guard refusing a deep tree), so it degraded to block-only fusion instead of falling all
      * the way back to the unfused chain.
      */
     public static void recordVectorDegraded(String shape) {

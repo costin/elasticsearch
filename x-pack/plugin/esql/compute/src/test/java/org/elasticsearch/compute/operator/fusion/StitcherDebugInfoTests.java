@@ -174,38 +174,6 @@ public class StitcherDebugInfoTests extends ESTestCase {
     }
 
     /**
-     * Over-budget plain-vector split: the top-level {@code fused} loop does not splice kernels (no
-     * LineNumberTable there); the {@code compute} helper does, with indices {@code 0..n-1}.
-     */
-    public void testVectorSplitEmitsDebugInfoOnComputeHelper() throws Exception {
-        int adds = 60;
-        FusionNode tree = new FusionNode.Input(0);
-        for (int i = 0; i < adds; i++) {
-            tree = new FusionNode.Kernel(ADD, List.of(tree, new FusionNode.Input(1)));
-        }
-        byte[] bytecode = stitcher.vectorLoopBytecode(MethodHandles.lookup(), tree);
-        ClassNode classNode = readClass(bytecode);
-        assertSourceFile(classNode, "Fused$$VectorLoopSplit", List.of("add"));
-        StringBuilder expectedMap = new StringBuilder();
-        List<Integer> expectedLines = new ArrayList<>(adds);
-        for (int i = 0; i < adds; i++) {
-            if (i > 0) {
-                expectedMap.append(';');
-            }
-            expectedMap.append(i).append('=').append(ADD_ENTRY);
-            expectedLines.add(i);
-        }
-        assertKernelMap(classNode, expectedMap.toString());
-        assertLineNumbers(method(classNode, "compute"), expectedLines);
-        assertThat(
-            "split top-level fused loop does not splice kernels",
-            lineNumbers(method(classNode, Stitcher.FUSED_METHOD_NAME)).size(),
-            is(0)
-        );
-        assertCodeLengthUninflatedByLineNumbers(bytecode, Stitcher.FUSED_METHOD_NAME);
-    }
-
-    /**
      * Filter-eval with a logical predicate: comparison splices are in {@code cmpN} (global indices 0, 1);
      * the projection splice is in {@code projAppend} (index 2).
      */

@@ -74,8 +74,8 @@ import java.util.function.Consumer;
  * <p><b>JIT discipline (criterion #6).</b> The emitted {@code fused} method is primitive-only: host inputs are
  * moved into the kernel's argument slots with type-correct {@code xLOAD}/{@code xSTORE} and the kernel body is
  * spliced verbatim, so there is no autoboxing and no per-position {@code checkcast}. For a depth-1 binary kernel
- * the whole method is a handful of instructions — far below HotSpot's default {@code FreqInlineSize} (325
- * bytecodes).
+ * the whole method is a handful of instructions — far below HotSpot's default {@code DontCompileHugeMethods}
+ * (8000 bytecodes).
  *
  * <p><b>Trusted-generation contract (verification is test-time, not runtime).</b> The emitted per-position loop
  * carries only the <em>semantic</em> guards a correct result needs (null / multi-value short-circuiting, overflow
@@ -133,33 +133,31 @@ public final class Stitcher {
     public static final String FUSED_RAW_INTERFACE_METHOD_NAME = "fusedRawInterface";
 
     /**
-     * HotSpot's default {@code FreqInlineSize} (criterion #6). Public so {@code FusionFollowupBenchmark} can
-     * assert the {@code compute()} split against this default rather than hardcoding 325: {@code compute()} is
-     * present when the effective budget is {@code <=} this value and absent when the budget is raised (B3 unsplit).
+     * HotSpot's default {@code DontCompileHugeMethods} (criterion #6). A fused method above this many bytecodes
+     * is never JIT-compiled at all, which is strictly worse than the unfused chain of small per-expression
+     * methods. Public so tests and diagnostics can name the default rather than hardcoding 8000.
      */
-    public static final int DEFAULT_MAX_FUSED_METHOD_BYTECODES = 325;
+    public static final int DEFAULT_MAX_FUSED_METHOD_BYTECODES = 8000;
 
     /**
-     * HotSpot's default {@code FreqInlineSize} (criterion #6). Mutable budget — not a constant — so it is not
-     * SCREAMING_CASE: production reads {@code -Desql.fusion.max_method_bytecodes} (default
-     * {@link #DEFAULT_MAX_FUSED_METHOD_BYTECODES}) once at class init; tests flip it via
-     * {@link #maxFusedMethodBytecodesForTests}. A hot method above this many bytecodes is not inlined into its
-     * caller, defeating the single-hot-body goal.
+     * HotSpot's default {@code DontCompileHugeMethods} huge-method guard (criterion #6). Mutable — not a
+     * constant — so it is not SCREAMING_CASE: production reads {@code -Desql.fusion.max_method_bytecodes}
+     * (default {@link #DEFAULT_MAX_FUSED_METHOD_BYTECODES}) once at class init; tests flip it via
+     * {@link #maxFusedMethodBytecodesForTests}. A method above this many bytecodes is never JIT-compiled.
      *
-     * <p>This value governs <em>both</em> the plain/checked-vector {@code compute()} split (when the inline body
-     * exceeds the budget, emit a helper rather than refuse) <em>and</em> the {@code enforce=true} refusals
-     * (plain-vector split loop, logical block, filter-eval) that throw {@link StitchingException} so the caller
-     * falls back unfused. Values {@code <= 0} are rejected: a non-positive budget would refuse every stitch or split
-     * everything. Not a node setting.
+     * <p>This value governs only the {@code enforce=true} refusals: the plain-vector loop, the logical block
+     * loop, and the filter-eval block loop. Over-limit trees throw {@link StitchingException} so the caller
+     * falls back unfused. Other emit paths measure and DEBUG-log the size but never refuse. Values {@code <= 0}
+     * are rejected: a non-positive limit would refuse every enforced stitch. Not a node setting.
      */
     static volatile int maxFusedMethodBytecodes = resolveMaxFusedMethodBytecodes(
         Integer.getInteger("esql.fusion.max_method_bytecodes", DEFAULT_MAX_FUSED_METHOD_BYTECODES)
     );
 
     /**
-     * Current effective fused-method bytecode budget (the mutable field, possibly overridden by
-     * {@code -Desql.fusion.max_method_bytecodes} or the test setter). Public so {@code FusionFollowupBenchmark} can
-     * assert the split arm against the live budget instead of hardcoding 325.
+     * Current effective fused-method bytecode huge-method limit (the mutable field, possibly overridden by
+     * {@code -Desql.fusion.max_method_bytecodes} or the test setter). Public so tests and diagnostics can read
+     * the live limit instead of hardcoding 8000.
      */
     public static int maxFusedMethodBytecodes() {
         return maxFusedMethodBytecodes;
@@ -174,8 +172,8 @@ public final class Stitcher {
     }
 
     /**
-     * WHY reject {@code <= 0}: a non-positive budget would refuse every stitch ({@code enforce=true}) or split
-     * every vector body. Shared by the class-init property and the test setter.
+     * WHY reject {@code <= 0}: a non-positive limit would refuse every {@code enforce=true} stitch. Shared by
+     * the class-init property and the test setter.
      */
     private static int resolveMaxFusedMethodBytecodes(int value) {
         if (value <= 0) {
@@ -544,8 +542,9 @@ public final class Stitcher {
      *               {@code Constant*Vector}, {@code *BigArrayVector})
      * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME} (ALL-RAW) and
      *         {@link #FUSED_INTERFACE_METHOD_NAME} (ALL-INTERFACE)
-     * @throws StitchingException if the caller lacks the access to define the hidden class, or the emitted class
-     *                            fails JVM verification/linking — the caller should fall back to the unfused path
+     * @throws StitchingException if the caller lacks the access to define the hidden class, the emitted class fails JVM
+     *                            verification/linking, or the fused loop exceeds the huge-method limit — the caller
+     *                            should fall back to the unfused path
      */
     public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         return defineOrThrow(caller, emitVectorLoop(caller, tree), "vector-loop class");
@@ -579,20 +578,10 @@ public final class Stitcher {
         }
         ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$VectorLoop"), raw, debug);
         classNode.methods.add(iface);
-        // Measure the inline body WITHOUT enforcing: an oversized inline loop is not refused (which would degrade to
-        // block-only), it is split into a private static compute() helper (B1) so the fast path survives. The RAW
-        // (exact-*ArrayVector) method is the hot path and governs the inline/split decision: INVOKEINTERFACE reads
-        // are larger than xALOAD, so INTERFACE can exceed the budget while RAW still fits. When RAW fits, both
-        // methods stay inline in the one hidden class — the larger INTERFACE fallback may miss the JIT inline
-        // heuristic but is correctness-safe under enforce=false and is the less-hot CONST_COL/BIGARRAY path. When
-        // RAW itself overflows, both are split via the shared compute() helper so one cache entry still covers RAW
-        // and INTERFACE. A future refinement could emit a mixed class (inline RAW + split INTERFACE) so the
-        // interface method also stays inlinable; not done now to keep the emitter simple.
-        byte[] inline = serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "plain-vector loop", false);
-        if (methodCodeLength(inline, FUSED_METHOD_NAME) <= maxFusedMethodBytecodes) {
-            return inline;
-        }
-        return emitVectorLoopSplit(caller, tree, inputElements, outputElement, constants);
+        // The plain-vector fast path enforces the DontCompileHugeMethods huge-method guard on the inline body.
+        // An over-limit body is refused (→ unfused fallback) rather than split: 8000 is the size at which HotSpot
+        // will not JIT-compile the method at all, which is strictly worse than the unfused chain.
+        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "plain-vector loop", true);
     }
 
     /**
@@ -698,175 +687,6 @@ public final class Stitcher {
         );
         insns.add(new InsnNode(Opcodes.ARETURN));
         return host;
-    }
-
-    /**
-     * Over-budget counterpart to the plain-vector fast path (B1): when the inline per-position expression would exceed
-     * the {@link #maxFusedMethodBytecodes} inlining budget, the whole stitched expression is lifted into a
-     * {@code private static compute(v0, v1, …, c0, …)} helper (the same {@link StackKernelEmitter} output, but reading
-     * its inputs from parameters instead of {@code a_i[p]}). The top-level {@code fused} / {@code fusedInterface} loops
-     * then only read each input at {@code p}, call {@code compute}, and store {@code out[p]} — a tiny, inlinable body
-     * that keeps the dense fast path instead of degrading to the block path. Both RAW and INTERFACE variants share
-     * one {@code compute} helper and one hidden class.
-     */
-    private byte[] emitVectorLoopSplit(
-        MethodHandles.Lookup caller,
-        FusionNode tree,
-        Element[] inputElements,
-        Element outputElement,
-        List<FusionNode.Constant> constants
-    ) throws StitchingException {
-        String internalName = fusedClassName(caller, "Fused$$VectorLoopSplit");
-        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$VectorLoopSplit", tree);
-
-        // The compute helper: (v0, v1, …, c0, c1, …) -> result. Value params first (one per input, its own element),
-        // then one primitive per constant in canonical emit order. Shared by both read variants.
-        MethodNode compute = emitVectorComputeHelper(tree, inputElements, outputElement, constants, debug);
-        MethodNode raw = emitPlainVectorSplitMethod(inputElements, outputElement, constants, true, compute, internalName);
-        MethodNode iface = emitPlainVectorSplitMethod(inputElements, outputElement, constants, false, compute, internalName);
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(raw);
-            hostMethodInterceptor.accept(iface);
-        }
-        ClassNode classNode = newFusedClass(internalName, raw, debug);
-        classNode.methods.add(iface);
-        classNode.methods.add(compute);
-        // Enforce on the TOP-LEVEL loop only: it is now a handful of instructions (reads + one call + store), so this
-        // never trips for a real tree; the (unenforced) compute helper carries the large body.
-        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "plain-vector loop (split)", true);
-    }
-
-    /**
-     * Split top-level loop for one plain-vector read variant: {@code fused} (ALL-RAW) or {@code fusedInterface}
-     * (ALL-INTERFACE). Reads each input at {@code p}, calls the shared {@code compute} helper, stores {@code out[p]}.
-     */
-    private MethodNode emitPlainVectorSplitMethod(
-        Element[] inputElements,
-        Element outputElement,
-        List<FusionNode.Constant> constants,
-        boolean raw,
-        MethodNode compute,
-        String internalName
-    ) {
-        int arity = inputElements.length;
-        FrameLayout frame = new FrameLayout();
-        frame.slot();                                                       // [0] BlockFactory
-        frame.slot();                                                       // [1] int positionCount
-        int inputBase = frame.slots(arity);                                 // [2 .. 2+arity) input Vectors
-        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
-        int extractedBase = frame.slots(arity);
-        int outSlot = frame.slot();
-        int pSlot = frame.slot();
-
-        StringBuilder loopDesc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";I");
-        for (int i = 0; i < arity; i++) {
-            loopDesc.append("L").append(VECTOR).append(";");
-        }
-        appendConstantParamDescriptors(loopDesc, constants);
-        loopDesc.append(")").append(outputElement.vectorDescriptor());
-
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            raw ? FUSED_METHOD_NAME : FUSED_INTERFACE_METHOD_NAME,
-            loopDesc.toString(),
-            null,
-            null
-        );
-        InsnList insns = host.instructions;
-
-        for (int i = 0; i < arity; i++) {
-            emitExtractConsumedInput(insns, inputElements[i], inputBase + i, extractedBase + i, raw);
-        }
-        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
-        insns.add(new IntInsnNode(Opcodes.NEWARRAY, outputElement.newArrayType()));
-        insns.add(new VarInsnNode(Opcodes.ASTORE, outSlot));
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
-
-        LabelNode loopStart = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
-        insns.add(loopStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
-
-        // out[p] = compute(v0[p], v1[p], …, c0, c1, …)
-        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        for (int i = 0; i < arity; i++) {
-            emitReadExtractedAtP(insns, inputElements[i], extractedBase + i, pSlot, raw);
-        }
-        for (FusionNode.Constant constant : constants) {
-            if (constant.isBaked()) {
-                continue;
-            }
-            insns.add(new VarInsnNode(constantType(constant).getOpcode(Opcodes.ILOAD), constantSlots.get(constant)));
-        }
-        insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, "compute", compute.desc, false));
-        insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
-
-        insns.add(new IincInsnNode(pSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
-        insns.add(loopEnd);
-
-        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                BLOCK_FACTORY,
-                outputElement.newVectorMethod(),
-                outputElement.newVectorDescriptor(),
-                false
-            )
-        );
-        insns.add(new InsnNode(Opcodes.ARETURN));
-        return host;
-    }
-
-    /**
-     * Builds the {@code private static compute(v0, …, c0, …)} helper for {@link #emitVectorLoopSplit}: the stitched
-     * expression reading its inputs from value parameters (rather than {@code a_i[p]}), returning the root result.
-     */
-    private MethodNode emitVectorComputeHelper(
-        FusionNode tree,
-        Element[] inputElements,
-        Element outputElement,
-        List<FusionNode.Constant> constants,
-        FusedClassDebugInfo debug
-    ) {
-        int arity = inputElements.length;
-        FrameLayout frame = new FrameLayout();
-        int[] valueSlots = new int[arity];
-        for (int i = 0; i < arity; i++) {
-            valueSlots[i] = frame.slot(inputElements[i].type());
-        }
-        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
-        int kernelBase = frame.mark();
-
-        StringBuilder desc = new StringBuilder("(");
-        for (int i = 0; i < arity; i++) {
-            desc.append(inputElements[i].type().getDescriptor());
-        }
-        appendConstantParamDescriptors(desc, constants);
-        desc.append(")").append(outputElement.type().getDescriptor());
-
-        MethodNode compute = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "compute", desc.toString(), null, null);
-        InsnList insns = compute.instructions;
-        StackKernelEmitter emitter = new StackKernelEmitter(
-            insns,
-            constantSlots,
-            kernelBase,
-            // Split-vector leaf: the input value passed as a parameter (read at this leaf's own element).
-            input -> insns.add(new VarInsnNode(inputElements[input.index()].type().getOpcode(Opcodes.ILOAD), valueSlots[input.index()])),
-            kernel -> {},
-            debug
-        );
-        emitter.emit(tree, outputElement);
-        insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IRETURN)));
-        return compute;
     }
 
     /** The JVM {@link Type} of a constant's element: a primitive ({@code J}/{@code I}/{@code D}) or a reference type. */
@@ -1125,7 +945,7 @@ public final class Stitcher {
      * }
      * static LongBlock fusedRaw(BlockFactory bf, Warnings[] warnings, int n, Vector in0, Vector in1) {
      *     // dense ArrayVector path; warnings[] is unused (uniform binding). On the first overflow return null
-     *     // so the caller re-runs fused. An over-budget body is lifted into private static compute().
+     *     // so the caller re-runs fused.
      *     long[] a0 = VectorUnsafe.longs((LongArrayVector) in0);
      *     long[] a1 = VectorUnsafe.longs((LongArrayVector) in1);
      *     try {
@@ -1248,47 +1068,10 @@ public final class Stitcher {
         classNode.methods.add(hostIface);
         classNode.methods.add(raw);
         classNode.methods.add(rawIface);
-        byte[] inline = serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "checked-vector loop", false);
-        // fusedRaw (exact-*ArrayVector) is the hot path and governs the inline/split decision: INVOKEINTERFACE
-        // reads are larger than xALOAD, so fusedRawInterface can exceed the budget while fusedRaw still fits.
-        // When fusedRaw fits, all four methods stay inline in the one hidden class — the larger INTERFACE
-        // fallback may miss the JIT inline heuristic but is correctness-safe under enforce=false and is the
-        // less-hot CONST_COL/BIGARRAY path. When fusedRaw itself overflows, both raw methods are split via the
-        // shared compute() helper so one cache entry still covers RAW and INTERFACE. A future refinement could
-        // emit a mixed class (inline RAW + split INTERFACE) so the interface method also stays inlinable; not
-        // done now to keep the emitter simple.
-        if (methodCodeLength(inline, FUSED_RAW_METHOD_NAME) <= maxFusedMethodBytecodes) {
-            return inline;
-        }
-        // fusedRaw exceeded the inlining budget: lift the stitched expression into a private compute() helper
-        // (same split as emitVectorLoop) so the raw loops stay tiny. Both builder methods are unchanged.
-        MethodNode compute = emitVectorComputeHelper(tree, inputElements, outputElement, constants, debug);
-        MethodNode splitRaw = emitCheckedVectorRawSplit(
-            inputElements,
-            outputElement,
-            constants,
-            overflowTypes,
-            checkedDesc,
-            compute,
-            internalName,
-            true
-        );
-        MethodNode splitRawIface = emitCheckedVectorRawSplit(
-            inputElements,
-            outputElement,
-            constants,
-            overflowTypes,
-            checkedDesc,
-            compute,
-            internalName,
-            false
-        );
-        ClassNode splitClass = newFusedClass(internalName, host, debug);
-        splitClass.methods.add(hostIface);
-        splitClass.methods.add(splitRaw);
-        splitClass.methods.add(splitRawIface);
-        splitClass.methods.add(compute);
-        return serializeWithBudgetGuard(splitClass, frameComputingWriter(caller), "checked-vector loop (raw split)", false);
+        // Checked-vector stays enforce=false: size is measured and DEBUG-logged, never refused. Deep arithmetic
+        // over the huge-method limit is astronomically deep and must not regress the differential suite; this
+        // path is a MethodHandle correctness fallback rather than a JIT-inline hot body.
+        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "checked-vector loop", false);
     }
 
     /**
@@ -1589,105 +1372,8 @@ public final class Stitcher {
     }
 
     /**
-     * Over-budget counterpart to {@link #emitCheckedVectorRawMethod}: the stitched expression lives in a
-     * {@code private static compute(...)} helper (reused from {@link #emitVectorComputeHelper}) and the
-     * {@code fusedRaw}/{@code fusedRawInterface} loop only reads each input at {@code p}, calls {@code compute},
-     * and stores {@code out[p]}. The overflow try still wraps the whole loop so a {@code Math.*Exact} throw from
-     * {@code compute} abandons the page with {@code return null}. {@code raw} selects ALL-RAW vs ALL-INTERFACE.
-     */
-    private MethodNode emitCheckedVectorRawSplit(
-        Element[] inputElements,
-        Element outputElement,
-        List<FusionNode.Constant> constants,
-        Set<String> overflowTypes,
-        String descriptor,
-        MethodNode compute,
-        String internalName,
-        boolean raw
-    ) {
-        int arity = inputElements.length;
-        FrameLayout frame = new FrameLayout();
-        frame.slot();                                                       // [0] BlockFactory
-        frame.slot();                                                       // [1] Warnings[] (unused)
-        int pcSlot = frame.slot();                                          // [2] int positionCount
-        int inputBase = frame.slots(arity);
-        Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
-        int extractedBase = frame.slots(arity);
-        int outSlot = frame.slot();
-        int pSlot = frame.slot();
-
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            raw ? FUSED_RAW_METHOD_NAME : FUSED_RAW_INTERFACE_METHOD_NAME,
-            descriptor,
-            null,
-            null
-        );
-        InsnList insns = host.instructions;
-
-        for (int i = 0; i < arity; i++) {
-            emitExtractConsumedInput(insns, inputElements[i], inputBase + i, extractedBase + i, raw);
-        }
-
-        LabelNode tryStart = overflowTypes.isEmpty() ? null : new LabelNode();
-        LabelNode tryEnd = overflowTypes.isEmpty() ? null : new LabelNode();
-        LabelNode handler = overflowTypes.isEmpty() ? null : new LabelNode();
-        if (tryStart != null) {
-            insns.add(tryStart);
-        }
-
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(new IntInsnNode(Opcodes.NEWARRAY, outputElement.newArrayType()));
-        insns.add(new VarInsnNode(Opcodes.ASTORE, outSlot));
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
-
-        LabelNode loopStart = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
-        insns.add(loopStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
-
-        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        for (int i = 0; i < arity; i++) {
-            emitReadExtractedAtP(insns, inputElements[i], extractedBase + i, pSlot, raw);
-        }
-        for (FusionNode.Constant constant : constants) {
-            if (constant.isBaked()) {
-                continue;
-            }
-            insns.add(new VarInsnNode(constantType(constant).getOpcode(Opcodes.ILOAD), constantSlots.get(constant)));
-        }
-        insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, internalName, "compute", compute.desc, false));
-        insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
-
-        insns.add(new IincInsnNode(pSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
-        insns.add(loopEnd);
-        if (tryEnd != null) {
-            insns.add(tryEnd);
-        }
-
-        emitReturnNewArrayVectorAsBlock(insns, outSlot, pcSlot, outputElement);
-
-        if (handler != null) {
-            insns.add(handler);
-            insns.add(new InsnNode(Opcodes.POP));
-            insns.add(new InsnNode(Opcodes.ACONST_NULL));
-            insns.add(new InsnNode(Opcodes.ARETURN));
-            for (String exType : overflowTypes) {
-                host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, exType));
-            }
-        }
-        return host;
-    }
-
-    /**
      * {@code return blockFactory.new*ArrayVector(out, positionCount).asBlock();} — the dense-output epilogue shared by
-     * {@link #emitCheckedVectorRawMethod} and {@link #emitCheckedVectorRawSplit}. {@code new*ArrayVector} charges the
+     * {@link #emitCheckedVectorRawMethod}. {@code new*ArrayVector} charges the
      * breaker; the {@code out[]} written above is a transient uncharged array (same as {@link #emitVectorLoop}).
      */
     private static void emitReturnNewArrayVectorAsBlock(InsnList insns, int outSlot, int pcSlot, Element outputElement) {
@@ -2525,13 +2211,12 @@ public final class Stitcher {
      * {@code BooleanLogicExpressionEvaluator}, which turns a multi-valued operand into null without a warning. The only
      * multi-value warnings come from the sub-comparisons' own numeric inputs.
      *
-     * <p><b>Why {@code private static} helpers (criterion #6 budget guard).</b> Inlining the two per-operand
-     * null/multi-value guards (with their multi-value-warning construction) into the loop body pushes even a
-     * single-level {@code a>b AND c<d} over HotSpot's 325-bytecode {@code FreqInlineSize}. Splitting each comparison
-     * operand into a tiny {@code private static} helper keeps the top-level {@code fused} loop method small and
-     * inlinable for arbitrarily nested logical trees; each helper is itself well under the budget. The top-level method
-     * is still measured against {@link #maxFusedMethodBytecodes} and refuses to fuse (→ unfused fallback) if it ever
-     * exceeds it.
+     * <p><b>Why {@code private static} helpers (criterion #6 huge-method guard).</b> Inlining the two per-operand
+     * null/multi-value guards (with their multi-value-warning construction) into the loop body inflates the
+     * top-level {@code fused} method. Splitting each comparison operand into a tiny {@code private static} helper
+     * keeps the top-level loop small even for deeply nested {@code AND}/{@code OR} trees; each helper is itself well
+     * under the huge-method limit. The top-level method is still measured against {@link #maxFusedMethodBytecodes}
+     * and refuses to fuse (→ unfused fallback) if it ever exceeds it.
      *
      * <p><b>Block path for nulls / multi-values.</b> A 3VL result is nullable, so — like {@link #compileBlockLoop} —
      * this defines the hidden class into the caller's own module (only public exported {@code compute} API and the
@@ -2542,7 +2227,7 @@ public final class Stitcher {
      * @param tree   the logical tree to fuse; its root is a {@link FusionNode.Logical} or {@link FusionNode.Not}
      * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME}
      * @throws StitchingException if the caller lacks the access to define the hidden class, the emitted class fails JVM
-     *                            verification/linking, or the top-level loop exceeds the inlining budget — the caller
+     *                            verification/linking, or the top-level loop exceeds the huge-method limit — the caller
      *                            should fall back to the unfused path
      */
     public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
@@ -2745,9 +2430,9 @@ public final class Stitcher {
 
         ClassNode classNode = newFusedClass(internalName, host, debug);
         classNode.methods.addAll(helpers);
-        // Enforce the inlining budget on the top-level loop method (criterion #6). The helpers keep it small even for
-        // nested trees; if it somehow exceeds the budget we refuse to fuse (→ unfused fallback) rather than emit an
-        // un-inlinable hot body.
+        // Enforce the huge-method limit on the top-level loop method (criterion #6). The helpers keep it small even
+        // for nested trees; if it somehow exceeds the limit we refuse to fuse (→ unfused fallback) rather than emit
+        // a method HotSpot will not JIT-compile.
         return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "logical block loop", true);
     }
 
@@ -2952,7 +2637,7 @@ public final class Stitcher {
      * @param projectionTree the EVAL projection tree; an arithmetic {@link FusionNode.Kernel} at the root
      * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME}
      * @throws StitchingException if the caller lacks the access to define the hidden class, the emitted class fails JVM
-     *                            verification/linking, or the top-level loop exceeds the inlining budget — the caller
+     *                            verification/linking, or the top-level loop exceeds the huge-method limit — the caller
      *                            should fall back to the unfused {@code Filter → Eval} chain
      */
     public Class<?> compileFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
@@ -3200,7 +2885,7 @@ public final class Stitcher {
         ClassNode classNode = newFusedClass(internalName, host, debug);
         classNode.methods.addAll(methods);
         // The two per-position bodies are factored into the pred/projAppend (and cmpN) helpers, so the top-level fused
-        // loop stays small and inlinable; enforce the budget on it (→ unfused fallback if a pathological shape exceeds).
+        // loop stays small; enforce the huge-method limit on it (→ unfused fallback if a pathological shape exceeds).
         return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "filter-eval block loop", true);
     }
 
@@ -3989,30 +3674,19 @@ public final class Stitcher {
     }
 
     /**
-     * Serializes {@code classNode} through {@code writer} and applies the JIT inlining budget (criterion #6) to the
-     * emitted {@code fused} loop method's {@code Code} length, measured against {@link #maxFusedMethodBytecodes}
-     * (HotSpot's default {@code FreqInlineSize}).
+     * Serializes {@code classNode} through {@code writer} and applies the DontCompileHugeMethods huge-method
+     * guard (criterion #6) to the emitted {@code fused} loop method's {@code Code} length, measured against
+     * {@link #maxFusedMethodBytecodes} (HotSpot's default {@code -XX:DontCompileHugeMethods}, 8000). A method
+     * above this limit is never JIT-compiled at all, which is strictly worse than the unfused chain.
      *
-     * <p><b>Enforcement scope.</b> {@code enforce} is {@code true} for the tight <b>plain-vector fast path</b> — the
-     * dense, control-flow-light body criterion #6 targets as the single hot per-position body the JIT should inline and
-     * vectorize; an oversized plain-vector body is refused with a {@link StitchingException} so the caller falls back
-     * (the plan permits "split or refuse-to-fuse"; refusing keeps the guard simple). It is <b>also</b> {@code true} for
-     * the <b>logical block loop</b> ({@link #emitLogicalBlockLoop}): there the per-comparison null/multi-value guards
-     * and their multi-value-warning construction are factored into {@code private static} {@code cmpN} helpers, so the
-     * top-level {@code fused} loop that only calls them and combines their tri-states with the 3VL truth tables stays
-     * small and inlinable even for deeply nested {@code AND}/{@code OR} trees; if it ever exceeds the budget we refuse
-     * to fuse (→ unfused fallback) rather than emit an un-inlinable hot body (the {@code cmpN} helpers are themselves
-     * comfortably under the budget). It is {@code false} for the
-     * <b>checked-vector</b> and <b>block</b> paths, whose mandatory overflow try/catch (and, for the block path,
-     * per-position null/multi-value guards + builder try/finally) push even a pre-existing depth-4 <em>arithmetic</em>
-     * body over 325 bytecodes today. Those paths are correctness fallbacks invoked via {@code MethodHandle} (not a
-     * normal inlinable call site); refusing them would regress the existing differential suite (deep arithmetic trees
-     * would stop fusing) with no JIT benefit, so their sizes are measured and logged for visibility but not enforced.
-     * The plain-vector path splits an oversize body into a {@code private static compute()} helper (B1,
-     * {@link #emitVectorLoopSplit}) rather than refusing; this guard's {@code enforce=true} then applies only to the
-     * resulting tiny call-loop. Splitting the checked-vector / block combined bodies the same way remains a follow-up.
-     * An enforced oversize body is logged at DEBUG here; the {@link StitchingException} message carries the measured
-     * bytecode size, and the single plan-time WARN is emitted once per shape by
+     * <p><b>Enforcement scope.</b> {@code enforce} is {@code true} for the <b>plain-vector loop</b>, the
+     * <b>logical block loop</b>, and the <b>filter-eval block loop</b>: an over-limit body is refused with a
+     * {@link StitchingException} so the caller falls back to the unfused chain. It is {@code false} for the
+     * <b>checked-vector</b>, <b>block</b>, <b>SIMD</b>, <b>mapping</b>, and <b>logical-vector</b> paths — those
+     * sizes are measured and DEBUG-logged but never refused, because they are correctness fallbacks invoked via
+     * {@code MethodHandle} (not a normal inlinable call site). Deep arithmetic over 8000 must not regress the
+     * differential suite. An enforced oversize body is logged at DEBUG here; the {@link StitchingException}
+     * message carries the measured bytecode size, and the single plan-time WARN is emitted once per shape by
      * {@code FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure}.
      */
     private static byte[] serializeWithBudgetGuard(ClassNode classNode, ClassWriter writer, String pathName, boolean enforce)
@@ -4023,18 +3697,24 @@ public final class Stitcher {
         if (size > maxFusedMethodBytecodes) {
             if (enforce) {
                 logger.debug(
-                    "fused {} method is [{}] bytecodes, over the inlining budget of [{}]; refusing to fuse (falling back to unfused)",
+                    "fused {} method is [{}] bytecodes, over the huge-method limit of [{}]; refusing to fuse (falling back to unfused)",
                     pathName,
                     size,
                     maxFusedMethodBytecodes
                 );
                 throw new StitchingException(
-                    "fused " + pathName + " method [" + size + " bytecodes] exceeds the inlining budget [" + maxFusedMethodBytecodes + "]",
+                    "fused "
+                        + pathName
+                        + " method ["
+                        + size
+                        + " bytecodes] exceeds the huge-method limit ["
+                        + maxFusedMethodBytecodes
+                        + "]",
                     null
                 );
             }
             logger.debug(
-                "fused {} method is [{}] bytecodes, over the inlining budget of [{}] (fallback path — not enforced)",
+                "fused {} method is [{}] bytecodes, over the huge-method limit of [{}] (fallback path — not enforced)",
                 pathName,
                 size,
                 maxFusedMethodBytecodes
@@ -4047,8 +3727,8 @@ public final class Stitcher {
     // Test seams (package-private): the raw fused class bytes for each emit path, BEFORE defineHiddenClass verifies
     // them. They let same-package tests (StitcherBudgetTests) measure the emitted fused method's Code length against
     // maxFusedMethodBytecodes and run the bytes through CheckClassAdapter for a structural-validity check on top of
-    // the JVM's defineHiddenClass verifier. The enforced paths (plain-vector, logical block) still throw a
-    // StitchingException here if they exceed the budget — exactly as the compile* entry points would.
+    // the JVM's defineHiddenClass verifier. The enforced paths (plain-vector, logical block, filter-eval) still throw
+    // a StitchingException here if they exceed the huge-method limit — exactly as the compile* entry points would.
     // -----------------------------------------------------------------------------------------------------------------
 
     byte[] vectorLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
@@ -4081,8 +3761,9 @@ public final class Stitcher {
     }
 
     /**
-     * Reads the {@code Code} attribute length (the bytecode count C2 measures against {@code FreqInlineSize}) of the
-     * {@link #FUSED_METHOD_NAME} method in a just-emitted class. A minimal class-file walk over our own freshly written
+     * Reads the {@code Code} attribute length (the bytecode count C2 measures against
+     * {@code DontCompileHugeMethods}) of the {@link #FUSED_METHOD_NAME} method in a just-emitted class. A
+     * minimal class-file walk over our own freshly written
      * bytes (no external dependency, no class loading): parse the constant pool for the UTF-8 entries, then scan the
      * method table for {@code fused}'s {@code Code} attribute and return its {@code code_length}. Returns 0 if the
      * method or its {@code Code} attribute is absent (never expected for an emitted loop).

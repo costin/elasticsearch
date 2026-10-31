@@ -44,7 +44,6 @@ import org.elasticsearch.xpack.esql.core.tree.Source;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -554,7 +553,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 }
             } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError vectorFailure) {
                 // The block path already stitched, verified and linked; a vector-fast-path failure must NOT drop the
-                // whole fusion back to the unfused chain. The most common cause is the plain-vector inlining-budget
+                // whole fusion back to the unfused chain. The most common cause is the plain-vector huge-method
                 // guard refusing a deep tree (StitchingException) — the block path is budget-unenforced and still fuses
                 // it correctly. Degrade to BLOCK-ONLY (VectorStrategy.NONE, no vector handle) rather than losing all
                 // fusion: values/nulls/warnings are identical to the block path, we just forgo the vector fast path.
@@ -698,25 +697,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     /** Test hook (package-private): the shape identifier used for cache keys and verify-mode dump filenames. */
     String shape() {
         return shape;
-    }
-
-    /**
-     * Benchmark/test-only: whether the stitched hidden class that owns the vector (or block) MethodHandle declares
-     * {@code methodName}. Inspects the class that {@link #LOOKUP} defined, so a bytecode-budget split's private
-     * {@code compute()} helper is visible.
-     */
-    boolean declaresMethod(String methodName) {
-        MethodHandle handle = vectorHandleRaw != null ? vectorHandleRaw : (vectorHandle != null ? vectorHandle : blockHandle);
-        if (handle == null) {
-            return false;
-        }
-        Class<?> fusedClass = LOOKUP.revealDirect(handle).getDeclaringClass();
-        for (Method method : fusedClass.getDeclaredMethods()) {
-            if (methodName.equals(method.getName())) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**

@@ -16,7 +16,6 @@ import org.elasticsearch.compute.data.IntVector;
 import org.elasticsearch.compute.data.OrdinalBytesRefVector;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
-import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
 import org.elasticsearch.xpack.esql.core.expression.FoldContext;
@@ -24,14 +23,17 @@ import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.EvalMapper;
-import org.elasticsearch.xpack.esql.evaluator.fusion.FusionPlanner;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Length;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToLower;
+import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
+import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Sub;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.Equals;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.LessThan;
 import org.elasticsearch.xpack.esql.planner.Layout;
 import org.elasticsearch.xpack.esql.session.Configuration;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -56,9 +58,10 @@ import java.util.concurrent.TimeUnit;
  * {@code pollute} recipe iterates {@code values()}, so a new constant would change pollution of every existing cell.
  *
  * <p>Helpers ({@code driverContext}, {@code longs}, {@code dictEntry}, {@code assertSameOutput}, ...) are reused from
- * {@link SlowPathFusionBenchmark}. Nested {@code TO_LOWER} cases fuse via D3/F3; {@code split} fuses today and
- * {@link #setup} asserts {@code compute()} is present when the effective budget is
- * {@code <=} {@link Stitcher#DEFAULT_MAX_FUSED_METHOD_BYTECODES} and absent when the budget is raised (B3 unsplit).
+ * {@link SlowPathFusionBenchmark}. Nested {@code TO_LOWER} cases fuse via D3/F3. {@link Case#DEEP_ARITH} is a deep
+ * arithmetic chain that fuses INLINE under the 8000-bytecode {@code DontCompileHugeMethods} huge-method guard.
+ * {@link Case#DEEP_LOGICAL} is a deep balanced AND/OR nest of long comparisons that also fuses INLINE (comfortably
+ * under the same guard). Both are correctness-checked in {@link #setup} via {@code assertSameOutput}.
  */
 @Warmup(iterations = 3, time = 2)
 @Measurement(iterations = 5, time = 2)
@@ -80,23 +83,29 @@ public class FusionFollowupBenchmark {
     private static final int DICT = 100;
 
     /**
-     * How many Add/Mul/Sub steps the {@link Case#split} chain uses. Must push {@code fused}/{@code fusedRaw} over the
-     * default 325-bytecode inlining budget so the stitcher lifts the body into {@code compute()}.
+     * How many Add/Mul/Sub steps the {@link Case#DEEP_ARITH} chain uses. Depth 24 is a meaningful fused body that
+     * stays well under the 8000-bytecode huge-method guard, so the stitcher emits it INLINE.
      */
-    private static final int SPLIT_CHAIN_DEPTH = 24;
+    private static final int DEEP_ARITH_CHAIN_DEPTH = 24;
+
+    /**
+     * Nesting depth of the {@link Case#DEEP_LOGICAL} balanced AND/OR tree. Depth 6 is 64 comparison leaves — a
+     * meaningful fused body that stays comfortably under the 8000-bytecode huge-method guard so the cell fuses INLINE.
+     */
+    private static final int DEEP_LOGICAL_DEPTH = 6;
 
     public enum Case {
         /**
-         * A long arithmetic chain whose fused method exceeds the 325-bytecode budget and is lifted into
-         * {@code compute()}. Fuses today.
+         * A long arithmetic chain that fuses INLINE under the 8000-bytecode {@code DontCompileHugeMethods}
+         * huge-method guard (no longer split into {@code compute()}). Fuses today.
          */
-        split {
+        DEEP_ARITH {
             @Override
             Built build() {
                 FieldAttribute a = SlowPathFusionBenchmark.field("a", DataType.LONG);
                 Configuration cfg = SlowPathFusionBenchmark.configuration();
                 Expression e = a;
-                for (int k = 0; k < SPLIT_CHAIN_DEPTH; k++) {
+                for (int k = 0; k < DEEP_ARITH_CHAIN_DEPTH; k++) {
                     e = switch (k % 3) {
                         case 0 -> new Add(Source.EMPTY, e, a, cfg);
                         case 1 -> new Mul(Source.EMPTY, e, new Literal(Source.EMPTY, 1L, DataType.LONG));
@@ -110,6 +119,29 @@ public class FusionFollowupBenchmark {
             @Override
             Page page(int size) {
                 return new Page(SlowPathFusionBenchmark.longs(size, i -> 1 + (i % 3)));
+            }
+
+            @Override
+            boolean fusesToday() {
+                return true;
+            }
+        },
+        /**
+         * A deep balanced AND/OR nest of long comparisons over two LONG fields {@code a,b}
+         * ({@code ((a>1 AND b<2) AND (a>3 AND b<4)) ...}). Fuses today, comfortably under the 8000-bytecode
+         * huge-method guard. Correctness-only: {@link #setup} asserts fused==unfused via {@code assertSameOutput}.
+         */
+        DEEP_LOGICAL {
+            @Override
+            Built build() {
+                FieldAttribute a = SlowPathFusionBenchmark.field("a", DataType.LONG);
+                FieldAttribute b = SlowPathFusionBenchmark.field("b", DataType.LONG);
+                return new Built(deepLogical(a, b, DEEP_LOGICAL_DEPTH, new int[] { 0 }), SlowPathFusionBenchmark.layout(a, b));
+            }
+
+            @Override
+            Page page(int size) {
+                return new Page(SlowPathFusionBenchmark.longs(size, i -> 1 + (i % 50)), SlowPathFusionBenchmark.longs(size, i -> i % 49));
             }
 
             @Override
@@ -188,7 +220,7 @@ public class FusionFollowupBenchmark {
 
         abstract Page page(int size);
 
-        /** {@code true} where fusion is expected today ({@code split} and the D3/F3 nested-mapping cells). */
+        /** {@code true} where fusion is expected today ({@code DEEP_ARITH}, {@code DEEP_LOGICAL}, and the D3/F3 cells). */
         boolean fusesToday() {
             return false;
         }
@@ -253,24 +285,6 @@ public class FusionFollowupBenchmark {
             if (SlowPathFusionBenchmark.isFused(fused) == false) {
                 throw new AssertionError(shape + " did not fuse with fusion=true: " + fused.getClass().getName());
             }
-            // {@code split} is the only cell that exceeds the inlining budget and lifts into compute(). The D3/F3
-            // nested-mapping cells are small and must NOT have compute().
-            if (shape == Case.split) {
-                boolean expectSplit = Stitcher.maxFusedMethodBytecodes() <= Stitcher.DEFAULT_MAX_FUSED_METHOD_BYTECODES;
-                if (FusionPlanner.fusedClassHasMethod(fused, "compute") != expectSplit) {
-                    throw new AssertionError(
-                        shape
-                            + " fused; expected compute() "
-                            + (expectSplit ? "present" : "absent")
-                            + " at budget "
-                            + Stitcher.maxFusedMethodBytecodes()
-                            + " (default "
-                            + Stitcher.DEFAULT_MAX_FUSED_METHOD_BYTECODES
-                            + "): "
-                            + fused
-                    );
-                }
-            }
         }
         this.page = shape.page(size);
         SlowPathFusionBenchmark.assertSameOutput(
@@ -303,6 +317,24 @@ public class FusionFollowupBenchmark {
                 }
             }
         }
+    }
+
+    /**
+     * Balanced AND/OR nest of long comparisons over {@code a} and {@code b}. Depth 0 is a leaf
+     * {@code a > k} or {@code b < k}; even depths combine with {@code AND}, odd with {@code OR}.
+     */
+    private static Expression deepLogical(FieldAttribute a, FieldAttribute b, int depth, int[] leaf) {
+        if (depth <= 0) {
+            int k = leaf[0]++;
+            long value = k + 1L;
+            if ((k & 1) == 0) {
+                return new GreaterThan(Source.EMPTY, a, new Literal(Source.EMPTY, value, DataType.LONG));
+            }
+            return new LessThan(Source.EMPTY, b, new Literal(Source.EMPTY, value, DataType.LONG));
+        }
+        Expression left = deepLogical(a, b, depth - 1, leaf);
+        Expression right = deepLogical(a, b, depth - 1, leaf);
+        return (depth & 1) == 0 ? new And(Source.EMPTY, left, right) : new Or(Source.EMPTY, left, right);
     }
 
     static ExpressionEvaluator.Factory factory(Case c, boolean fusion) {

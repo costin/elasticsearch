@@ -173,13 +173,11 @@ public class StitcherVectorFusionTests extends ESTestCase {
     }
 
     /**
-     * B1 proof: a chain far too deep to inline within the 325-bytecode budget must still fuse on the plain-vector
-     * path — by SPLITTING the expression into a {@code private static compute()} helper the tiny top-level loop calls
-     * (rather than degrading to the block path). Build {@code (((in0 + in1) + in1) + …)} with 60 adds (its inline body
-     * would be ~900 bytecodes), compile the vector loop, and assert it computes {@code a + 60*b} position-by-position —
-     * proving the split class defines, verifies, links, and runs correctly.
+     * A 60-add chain ({@code (((in0 + in1) + in1) + …)}) fuses INLINE on the plain-vector path under the 8000-bytecode
+     * huge-method guard (well under the limit; previously this tree split into {@code compute()} at the 325
+     * FreqInlineSize budget). Asserts the fused method computes {@code a + 60*b} position-by-position.
      */
-    public void testDeepChainSplitsAndComputesCorrectly() throws Throwable {
+    public void testDeepChainFusesInlineAndComputesCorrectly() throws Throwable {
         FusionDescriptor add = new FusionDescriptor(KernelFixtures.class, "processLongsAdd", "(JJ)J", true, true);
         int adds = 60;
         FusionNode tree = new FusionNode.Input(0);
@@ -223,12 +221,11 @@ public class StitcherVectorFusionTests extends ESTestCase {
     }
 
     /**
-     * B1 split with embedded CONSTANTS: a deep chain {@code (((in0 + 1) + 1) + …)} with 60 constant-add levels forces
-     * the split, and each level's {@code 1} is a distinct {@link FusionNode.Constant} — so the split {@code compute}
-     * helper takes 60 trailing {@code long} constant params and the top-level loop must marshal all 60 into the call in
-     * canonical emit order. Asserting the result is {@code a + 60} proves the split's constant plumbing is correct.
+     * A 60-add chain {@code (((in0 + 1) + 1) + …)} with a distinct {@link FusionNode.Constant} at each level. The fused
+     * method takes 60 trailing {@code long} constant params and must marshal all 60 in canonical emit order. Asserting
+     * the result is {@code a + 60} proves constant plumbing is correct under INLINE fusion.
      */
-    public void testDeepChainWithConstantsSplitsAndComputesCorrectly() throws Throwable {
+    public void testDeepChainWithConstantsFusesInlineAndComputesCorrectly() throws Throwable {
         FusionDescriptor add = new FusionDescriptor(KernelFixtures.class, "processLongsAdd", "(JJ)J", true, true);
         int adds = 60;
         FusionNode tree = new FusionNode.Input(0);

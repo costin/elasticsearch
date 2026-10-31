@@ -31,7 +31,6 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.lessThan;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
 
 /**
@@ -39,15 +38,16 @@ import static org.hamcrest.Matchers.lessThanOrEqualTo;
  * 25). These are the deterministic guards behind criterion #6 ("large expressions still inline, or fall back"):
  *
  * <ul>
- *   <li><b>Budget.</b> On the two ENFORCED emit paths — the tight <b>plain-vector fast path</b> and the
- *       <b>logical block loop</b> — the emitted {@code fused} method's {@code Code} length
- *       ({@link Stitcher#fusedMethodCodeLength}) must stay {@code <=} {@link Stitcher#maxFusedMethodBytecodes}
- *       (HotSpot's default {@code FreqInlineSize}) for representative <em>and</em> deep trees, so the hot per-position
- *       body remains JIT-inlinable.</li>
- *   <li><b>Refuse-to-fuse.</b> A tree whose plain-vector body would exceed the budget must be <em>refused</em> with a
- *       {@link Stitcher.StitchingException} (→ the caller falls back to the unfused chain) rather than emitted as an
- *       un-inlinable hot method. Walking increasing chain depth proves both directions at once: every tree that emits
- *       is within budget, and a deep enough tree eventually refuses.</li>
+ *   <li><b>Budget.</b> On the three ENFORCED emit paths — the tight <b>plain-vector fast path</b>, the
+ *       <b>logical block loop</b>, and the <b>filter-eval block loop</b> — the emitted {@code fused} method's
+ *       {@code Code} length ({@link Stitcher#fusedMethodCodeLength}) must stay {@code <=}
+ *       {@link Stitcher#maxFusedMethodBytecodes} (HotSpot's default {@code DontCompileHugeMethods}, 8000) for
+ *       representative <em>and</em> deep trees. A method above that limit is never JIT-compiled at all, which is
+ *       strictly worse than the unfused chain.</li>
+ *   <li><b>Refuse-to-fuse.</b> A tree whose enforced-path body would exceed the huge-method guard must be
+ *       <em>refused</em> with a {@link Stitcher.StitchingException} (→ the caller falls back to the unfused chain)
+ *       rather than emitted as a method HotSpot will not compile. Walking increasing chain depth proves both
+ *       directions at once: every tree that emits is within budget, and a deep enough tree eventually refuses.</li>
  *   <li><b>Structural validity.</b> Every emitted class — on all four paths (plain-vector, checked-vector, block,
  *       logical), including a <b>mixed-type per-node-typed</b> tree ({@code add(castIntToLong(in0), in1)}) — passes
  *       {@link CheckClassAdapter} structural verification, an ASM check layered on top of the JVM's
@@ -151,7 +151,7 @@ public class StitcherBudgetTests extends ESTestCase {
     // Budget — plain-vector fast path (ENFORCED).
     // -----------------------------------------------------------------------------------------------------------------
 
-    /** A representative depth-2 tree {@code (a + b) * c} fits the inlining budget on the plain-vector fast path. */
+    /** A representative depth-2 tree {@code (a + b) * c} fits the huge-method guard on the plain-vector fast path. */
     public void testPlainVectorRepresentativeWithinBudget() throws Exception {
         FusionNode tree = new FusionNode.Kernel(
             MUL,
@@ -159,35 +159,47 @@ public class StitcherBudgetTests extends ESTestCase {
         );
         int size = Stitcher.fusedMethodCodeLength(stitcher.vectorLoopBytecode(MethodHandles.lookup(), tree));
         assertThat("emitted a fused method", size, greaterThan(0));
-        assertThat("representative plain-vector body must be inlinable", size, lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes));
+        assertThat(
+            "representative plain-vector body must stay within the huge-method limit",
+            size,
+            lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes)
+        );
     }
 
     /**
-     * On the plain-vector path an over-budget expression is no longer refused — it is SPLIT (B1): the stitched
-     * expression moves into a {@code private static compute()} helper and the top-level {@code fused} loop becomes a
-     * tiny call-loop (reads + one call + store). So walking increasing chain depth, the stitcher never throws and the
-     * top-level {@code fused} method stays within the inlining budget at every depth — inline while it fits, then a
-     * bounded call-loop once split. The deepest tree proves the split engaged: its top-level loop is far below the
-     * budget, whereas its inline body would have been thousands of bytecodes (and pre-B1 would have refused).
+     * On the plain-vector path an over-limit expression is refused (→ unfused fallback) rather than split: walking
+     * increasing left-{@code ADD} chain depth, every tree the stitcher <em>emits</em> stays within
+     * {@link Stitcher#maxFusedMethodBytecodes} (HotSpot's {@code DontCompileHugeMethods} default), and a deep enough
+     * chain is <em>refused</em> with a {@link Stitcher.StitchingException}. Cap 4000 is well above the empirical
+     * crossing for a left ADD chain; the loop breaks on the first refusal.
      */
-    public void testDeepPlainVectorSplitsStayingWithinBudget() throws Exception {
-        int deepestTopLevel = 0;
-        for (int depth = 2; depth <= 200; depth++) {
-            int topLevel = Stitcher.fusedMethodCodeLength(stitcher.vectorLoopBytecode(MethodHandles.lookup(), leftChain(ADD, depth)));
-            assertThat(
-                "depth=" + depth + " top-level fused loop must stay within the inlining budget (inline or split)",
-                topLevel,
-                lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes)
-            );
-            deepestTopLevel = topLevel;
+    public void testDeepPlainVectorStaysWithinBudgetElseRefuses() throws Exception {
+        boolean sawRefusal = false;
+        int maxFusedDepth = 0;
+        for (int depth = 2; depth <= 4000; depth++) {
+            FusionNode tree = leftChain(ADD, depth);
+            try {
+                int size = Stitcher.fusedMethodCodeLength(stitcher.vectorLoopBytecode(MethodHandles.lookup(), tree));
+                assertThat(
+                    "depth=" + depth + " plain-vector body must stay within the huge-method limit when it fuses",
+                    size,
+                    lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes)
+                );
+                maxFusedDepth = depth;
+            } catch (Stitcher.StitchingException refused) {
+                assertBudgetRefusal(refused, "plain-vector loop");
+                logger.info(
+                    "plain-vector left ADD chain fused through depth {} (limit {}), refused next: {}",
+                    maxFusedDepth,
+                    Stitcher.maxFusedMethodBytecodes,
+                    refused.getMessage()
+                );
+                sawRefusal = true;
+                break;
+            }
         }
-        // The split engaged for the deepest tree: its top-level loop is just reads + one compute() call + store, so it
-        // is far under the budget — an inline body of a 200-deep chain would be thousands of bytecodes.
-        assertThat(
-            "the deepest tree must have SPLIT into a tiny call-loop (not refused)",
-            deepestTopLevel,
-            lessThan(Stitcher.maxFusedMethodBytecodes / 2)
-        );
+        assertThat("a representative-deep plain-vector chain must still fuse within budget", maxFusedDepth, greaterThan(2));
+        assertTrue("a deep enough plain-vector chain must refuse to fuse (over-limit → unfused fallback)", sawRefusal);
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -203,40 +215,51 @@ public class StitcherBudgetTests extends ESTestCase {
         );
         int size = Stitcher.fusedMethodCodeLength(stitcher.logicalBlockLoopBytecode(MethodHandles.lookup(), tree));
         assertThat("emitted a fused logical method", size, greaterThan(0));
-        assertThat("representative logical body must be inlinable", size, lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes));
+        assertThat(
+            "representative logical body must stay within the huge-method limit",
+            size,
+            lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes)
+        );
     }
 
     /**
-     * A deep {@code AND}/{@code OR} nest keeps the top-level {@code fused} loop inlinable because each comparison's
-     * null/multi-value guard is factored into a {@code private static} {@code cmpN} helper — the top-level body only
-     * calls them and combines their tri-states with the 3VL truth tables. As with the plain-vector path, walking
-     * increasing nesting depth proves both halves of the guard: every logical tree the stitcher <em>emits</em> is
-     * within the inlining budget, and a deep enough nest (whose top-level tri-state combining alone exceeds the budget)
-     * is <em>refused</em> with a {@link Stitcher.StitchingException} rather than emitted as an un-inlinable body.
+     * A deep {@code AND}/{@code OR} nest keeps the top-level {@code fused} loop under the huge-method guard because
+     * each comparison's null/multi-value guard is factored into a {@code private static} {@code cmpN} helper — the
+     * top-level body only calls them and combines their tri-states with the 3VL truth tables. As with the
+     * plain-vector path, walking increasing nesting depth proves both halves of the guard: every logical tree the
+     * stitcher <em>emits</em> is within the huge-method limit, and a deep enough nest (whose top-level tri-state
+     * combining alone exceeds the limit) is <em>refused</em> with a {@link Stitcher.StitchingException} rather than
+     * emitted as a method HotSpot will not compile.
      */
     public void testDeepLogicalStaysWithinBudgetElseRefuses() throws Exception {
         boolean sawRefusal = false;
         int maxFusedDepth = 0;
-        for (int depth = 1; depth <= 12; depth++) {
+        for (int depth = 1; depth <= 16; depth++) {
             FusionNode tree = balancedAnd(depth);
             try {
                 int size = Stitcher.fusedMethodCodeLength(stitcher.logicalBlockLoopBytecode(MethodHandles.lookup(), tree));
                 assertThat(
-                    "depth=" + depth + " logical top-level body must be inlinable when it fuses",
+                    "depth=" + depth + " logical top-level body must stay within the huge-method limit when it fuses",
                     size,
                     lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes)
                 );
                 maxFusedDepth = depth;
             } catch (Stitcher.StitchingException refused) {
-                // As above: the refusal must be the inlining-budget guard specifically (message identifies it and the
-                // measured size exceeds the budget), proving the top-level 3VL combining alone crossed the limit.
+                // As above: the refusal must be the huge-method guard specifically (message identifies it and the
+                // measured size exceeds the limit), proving the top-level 3VL combining alone crossed DontCompileHugeMethods.
                 assertBudgetRefusal(refused, "logical block loop");
+                logger.info(
+                    "balanced AND nest fused through depth {} (limit {}), refused next: {}",
+                    maxFusedDepth,
+                    Stitcher.maxFusedMethodBytecodes,
+                    refused.getMessage()
+                );
                 sawRefusal = true;
                 break;
             }
         }
         assertThat("a representative-deep logical tree must still fuse within budget", maxFusedDepth, greaterThan(1));
-        assertTrue("a deep enough logical tree must refuse to fuse (over-budget → unfused fallback)", sawRefusal);
+        assertTrue("a deep enough logical tree must refuse to fuse (over-limit → unfused fallback)", sawRefusal);
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -347,7 +370,7 @@ public class StitcherBudgetTests extends ESTestCase {
     /**
      * The common {@code LENGTH(x) > k}-shaped mixed tree over ONE {@code BytesRef} leaf (a {@code BytesRef}-consuming
      * string kernel feeding a comparison over an {@code int} operand) emits a structurally valid block class whose
-     * fused method stays within the inlining budget — so the acceptance-target trees remain JIT-inlinable.
+     * fused method stays within the huge-method limit — so the acceptance-target trees remain JIT-compilable.
      */
     public void testBytesRefSingleLeafBlockLoopWithinBudget() throws Exception {
         FusionNode tree = new FusionNode.Kernel(
@@ -358,7 +381,11 @@ public class StitcherBudgetTests extends ESTestCase {
         assertStructurallyValid(bytecode);
         int size = Stitcher.fusedMethodCodeLength(bytecode);
         logger.info("BytesRef single-leaf block loop fused method size = {} bytecodes", size);
-        assertThat("single BytesRef-leaf block body must be inlinable", size, lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes));
+        assertThat(
+            "single BytesRef-leaf block body must stay within the huge-method limit",
+            size,
+            lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes)
+        );
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -367,7 +394,7 @@ public class StitcherBudgetTests extends ESTestCase {
 
     /**
      * A representative fused filter+eval — predicate {@code (in0 + in1) > in2}, projection {@code (in0 + in1) * in2} —
-     * keeps the top-level {@code fused} loop within the inlining budget: the predicate and projection per-position
+     * keeps the top-level {@code fused} loop within the huge-method limit: the predicate and projection per-position
      * bodies are factored into the {@code pred}/{@code projAppend} helpers, so the top-level loop only calls them and
      * records surviving positions.
      */
@@ -382,7 +409,11 @@ public class StitcherBudgetTests extends ESTestCase {
         );
         int size = Stitcher.fusedMethodCodeLength(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection));
         assertThat("emitted a fused filter-eval method", size, greaterThan(0));
-        assertThat("filter-eval top-level loop must be inlinable", size, lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes));
+        assertThat(
+            "filter-eval top-level loop must stay within the huge-method limit",
+            size,
+            lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes)
+        );
     }
 
     /** A logical-predicate fused filter+eval — {@code (in0 > in1) AND (in2 < in3)} guarding projection {@code in0 + in1}. */
@@ -395,7 +426,11 @@ public class StitcherBudgetTests extends ESTestCase {
         FusionNode projection = new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
         int size = Stitcher.fusedMethodCodeLength(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection));
         assertThat("emitted a fused filter-eval (logical predicate) method", size, greaterThan(0));
-        assertThat("filter-eval top-level loop must be inlinable", size, lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes));
+        assertThat(
+            "filter-eval top-level loop must stay within the huge-method limit",
+            size,
+            lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes)
+        );
     }
 
     /** Both filter-eval flavours — comparison predicate and logical predicate — emit structurally valid classes. */
@@ -435,7 +470,7 @@ public class StitcherBudgetTests extends ESTestCase {
 
     // -----------------------------------------------------------------------------------------------------------------
     // Emission quality (S5.4) — the emitted fused loop must "help the JIT": no boxing, no invokedynamic. Static-method
-    // invocation of the kernel bodies and the ARM inlining budget are already covered above and by the differential
+    // invocation of the kernel bodies and the huge-method guard are already covered above and by the differential
     // suite; this pins that the hot per-position body carries no autobox/unbox or indy call that would defeat inlining
     // or allocate per row. (Zero per-row heap allocation is the -prof gc concern of the JMH macro benchmark; here we
     // prove the bytecode has none of the boxing that would cause it.)
@@ -550,7 +585,7 @@ public class StitcherBudgetTests extends ESTestCase {
     /**
      * A balanced {@code AND} nest of depth {@code depth}: at depth 0 a single {@code gt(in0, in1)} comparison, else an
      * {@code AND} of two depth-{@code (depth-1)} subtrees. The nest has {@code 2^depth} comparison leaves, so the
-     * top-level tri-state combining grows with depth until it crosses the inlining budget.
+     * top-level tri-state combining grows with depth until it crosses the huge-method limit.
      */
     private static FusionNode balancedAnd(int depth) {
         if (depth <= 0) {
@@ -570,22 +605,22 @@ public class StitcherBudgetTests extends ESTestCase {
 
     /**
      * Asserts that a refuse-to-fuse {@link Stitcher.StitchingException} is SPECIFICALLY the &gt;{@code
-     * maxFusedMethodBytecodes} inlining-budget guard on {@code pathName}, not an unrelated stitch failure that would
-     * spuriously satisfy a "did not emit a class" check. It verifies (a) the message identifies the inlining budget on
-     * the named enforced path, and (b) the size the guard measured — parsed from the message's {@code [<n> bytecodes]}
-     * — actually exceeds the budget, i.e. the emitted method WOULD have been un-inlinable.
+     * maxFusedMethodBytecodes} huge-method guard on {@code pathName}, not an unrelated stitch failure that would
+     * spuriously satisfy a "did not emit a class" check. It verifies (a) the message identifies the huge-method limit
+     * on the named enforced path, and (b) the size the guard measured — parsed from the message's {@code [<n>
+     * bytecodes]} — actually exceeds the limit, i.e. the emitted method WOULD not be JIT-compiled.
      */
     private static void assertBudgetRefusal(Stitcher.StitchingException refused, String pathName) {
         String message = refused.getMessage();
         assertThat(
-            "refusal must be the inlining-budget guard, not some other stitch failure: " + message,
+            "refusal must be the huge-method guard, not some other stitch failure: " + message,
             message,
-            containsString("exceeds the inlining budget")
+            containsString("exceeds the huge-method limit")
         );
         assertThat("refusal must name the enforced path [" + pathName + "]: " + message, message, containsString(pathName));
         int reportedSize = parseReportedSize(message);
         assertThat(
-            "the size the budget guard measured must actually exceed the budget (the method WOULD be un-inlinable)",
+            "the size the huge-method guard measured must actually exceed the limit (the method WOULD not be JIT-compiled)",
             reportedSize,
             greaterThan(Stitcher.maxFusedMethodBytecodes)
         );

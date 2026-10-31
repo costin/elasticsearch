@@ -7,11 +7,16 @@
 
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.core.LogEvent;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.IntBlock;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.core.Releasables;
+import org.elasticsearch.test.MockLog;
+import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
@@ -55,6 +60,7 @@ import java.util.TreeSet;
 import java.util.function.Function;
 import java.util.stream.Stream;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.instanceOf;
@@ -446,16 +452,30 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
     }
 
     /**
-     * END-TO-END over-budget fallback (criterion #6), through the REAL plan-time path
+     * END-TO-END over-limit fallback (criterion #6), through the REAL plan-time path
      * ({@link FusionPlanner#maybeFuse} → {@link FusedExpressionEvaluatorFactory#tryCreate} → the {@link
-     * org.elasticsearch.compute.operator.fusion.Stitcher}): a large flat {@code AND} of column-column comparisons is a
-     * fusable logical shape (S3.1), but deep enough that the ENFORCED logical block-loop body exceeds the
-     * {@code maxFusedMethodBytecodes} inlining budget, so the stitch is refused and the planner returns the
-     * <b>unfused</b> factory unchanged (NOT a {@link FusedExpressionEvaluatorFactory}). A <em>small</em> version of the
-     * SAME shape fuses, proving it is the SIZE (the budget guard) that forces the fallback here — not a planner-scope
-     * rejection — and that the over-budget shape still evaluates correctly via the fallback chain.
+     * org.elasticsearch.compute.operator.fusion.Stitcher}): a large flat {@code AND} of negated column-column
+     * comparisons is a fusable logical shape (S3.1), but deep enough that the ENFORCED logical block-loop body
+     * exceeds the {@code maxFusedMethodBytecodes} huge-method limit, so the stitch is refused and the planner
+     * returns the <b>unfused</b> factory unchanged (NOT a {@link FusedExpressionEvaluatorFactory}). A <em>small</em>
+     * version of the SAME shape fuses, proving it is the SIZE (the huge-method guard) that forces the fallback here
+     * — not a planner-scope rejection — and that the over-limit shape still evaluates correctly via the fallback
+     * chain.
+     *
+     * <p>Why not a 250-comparison AND: the planner assigns a fresh fused-method parameter per leaf occurrence
+     * (no channel reuse), and {@code MethodType} rejects more than 255 parameters. A 250-comparison AND is 503
+     * params ({@code BlockFactory} + {@code Warnings[]} + {@code int} + 500 {@code *Block}s) and refuses with
+     * {@code bad parameter count 503} — never reaching the huge-method guard, KERNEL_MAP, or the 8000-bytecode
+     * measurement. 120 comparisons stay at 243 params; wrapping each in {@code NOT} inflates the top-level 3VL
+     * combining over 8000 (~52 bytes/AND + ~18 bytes/NOT). KERNEL_MAP is ≈88 chars/entry (FQCN + index/{@code =}/
+     * {@code ;}), cap 65535 — 120 ≈ 11 KB, well under; scaling to thousands would overflow KERNEL_MAP (and
+     * MethodType) before the huge-method guard is measured.
      */
-    public void testOverBudgetLogicalRefusesToFuseAndFallsBackEndToEnd() {
+    @TestLogging(
+        value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory:WARN",
+        reason = "assert the large AND is refused by the huge-method guard, not a KERNEL_MAP UTF-8 overflow"
+    )
+    public void testOverLimitLogicalRefusesToFuseAndFallsBackEndToEnd() {
         int columns = 4;
         FieldAttribute[] cols = new FieldAttribute[columns];
         for (int c = 0; c < columns; c++) {
@@ -463,33 +483,74 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
         }
         Layout layout = layout(cols);
 
-        // A small AND of the SAME shape (2 column comparisons) fuses — the shape is fusable in principle.
-        Expression small = andOfColumnComparisons(2, cols);
-        assertFuses(fusedFactory(small, layout), "small AND (2 comparisons) must fuse");
+        // A small AND of the SAME shape (2 negated column comparisons) fuses — the shape is fusable in principle.
+        Expression small = andOfNegatedColumnComparisons(2, cols);
+        assertFuses(fusedFactory(small, layout), "small AND (2 negated comparisons) must fuse");
 
-        // A large AND (many comparisons) makes the enforced logical block-loop body exceed the inlining budget, so the
-        // real plan-time path refuses to fuse and returns the UNFUSED factory (the criterion #6 fallback).
-        Expression large = andOfColumnComparisons(64, cols);
-        ExpressionEvaluator.Factory fusedLarge = fusedFactory(large, layout);
+        // 120 NOT-wrapped comparisons: MethodType-safe (243 params < 255) and over the 8000-bytecode huge-method
+        // limit. KERNEL_MAP ≈88 chars/entry, cap 65535 — 120 ≈ 11 KB, well under.
+        Expression large = andOfNegatedColumnComparisons(120, cols);
+        String[] refused = { null };
+        ExpressionEvaluator.Factory fusedLarge;
+        try (var mockLog = MockLog.capture(FusedExpressionEvaluatorFactory.class)) {
+            mockLog.addExpectation(
+                new MockLog.SeenEventExpectation(
+                    "huge-method guard refused the large AND (not a KERNEL_MAP UTF-8 overflow)",
+                    FusedExpressionEvaluatorFactory.class.getCanonicalName(),
+                    Level.WARN,
+                    "*unfused*"
+                ) {
+                    @Override
+                    public boolean innerMatch(LogEvent event) {
+                        Throwable thrown = event.getThrown();
+                        while (thrown != null) {
+                            if (thrown instanceof Stitcher.StitchingException
+                                && thrown.getMessage() != null
+                                && thrown.getMessage().contains("exceeds the huge-method limit")) {
+                                refused[0] = thrown.getMessage();
+                                return true;
+                            }
+                            thrown = thrown.getCause();
+                        }
+                        return false;
+                    }
+                }
+            );
+            fusedLarge = fusedFactory(large, layout);
+            mockLog.assertAllExpectationsMatched();
+        }
+        logger.info("120-comparison negated AND refused: {}", refused[0]);
+        assertThat(refused[0], containsString("exceeds the huge-method limit"));
+        int reportedSize = Integer.parseInt(refused[0].replaceAll(".*\\[(\\d+) bytecodes].*", "$1"));
+        assertThat(
+            "the size the huge-method guard measured must actually exceed the limit: " + refused[0],
+            reportedSize,
+            greaterThan(Stitcher.maxFusedMethodBytecodes())
+        );
         ExpressionEvaluator.Factory unfusedLarge = unfusedFactory(large, layout);
-        assertDoesNotFuse(fusedLarge, "over-budget large AND must fall back to the unfused chain (not a FusedExpressionEvaluatorFactory)");
-        assertDoesNotFuse(unfusedLarge, "over-budget large AND kill switch OFF");
+        assertDoesNotFuse(fusedLarge, "over-limit large AND must fall back to the unfused chain (not a FusedExpressionEvaluatorFactory)");
+        assertDoesNotFuse(unfusedLarge, "over-limit large AND kill switch OFF");
 
-        // And the over-budget shape still evaluates correctly through the fallback chain (produces a boolean block, no
+        // And the over-limit shape still evaluates correctly through the fallback chain (produces a boolean block, no
         // crash), matching the explicitly-unfused reference position-by-position.
         int positions = 64;
         Block[] inputs = new Block[columns];
         for (int c = 0; c < columns; c++) {
             inputs[c] = denseColumn(ElementKind.LONG, positions, c + 1);
         }
-        runDifferential(fusedLarge, unfusedLarge, ElementKind.BOOLEAN, inputs, positions, "over-budget AND fallback evaluates");
+        runDifferential(fusedLarge, unfusedLarge, ElementKind.BOOLEAN, inputs, positions, "over-limit AND fallback evaluates");
     }
 
-    /** A left-nested {@code AND} of {@code comparisons} column-column comparisons over {@code cols} (a fusable S3.1 logical shape). */
-    private static Expression andOfColumnComparisons(int comparisons, FieldAttribute[] cols) {
-        Expression tree = columnComparison(cols, 0);
+    /**
+     * A left-nested {@code AND} of {@code comparisons} negated column-column comparisons over {@code cols}
+     * ({@code NOT(c_i ? c_j) AND …}; a fusable S3.1 logical shape). Each {@code NOT} inflates top-level 3VL
+     * combining without adding fused-method parameters — a plain AND of this many comparisons would stay under
+     * the huge-method limit, and more comparisons would overflow {@code MethodType}'s 255-parameter cap.
+     */
+    private static Expression andOfNegatedColumnComparisons(int comparisons, FieldAttribute[] cols) {
+        Expression tree = new Not(Source.EMPTY, columnComparison(cols, 0));
         for (int i = 1; i < comparisons; i++) {
-            tree = new And(Source.EMPTY, tree, columnComparison(cols, i));
+            tree = new And(Source.EMPTY, tree, new Not(Source.EMPTY, columnComparison(cols, i)));
         }
         return tree;
     }

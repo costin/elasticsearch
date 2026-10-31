@@ -30,11 +30,11 @@ import static org.hamcrest.Matchers.nullValue;
  * A5: end-to-end proof that a vector-path-only stitch failure is negatively cached and degrades to block-only
  * fusion through the <b>production</b> factory and the <b>real</b> {@link FusedClassCache}.
  *
- * <p>WHY a package-private cache hook rather than a natural over-budget tree: the plain-vector and checked-vector
- * emitters now <em>split</em> an oversize body into {@code compute()} instead of refusing, and a deep logical tree
- * refuses the <em>block</em> path (full unfused fallback) rather than degrading. {@code FusionPlanner.compilerForTests}
- * cannot be used here because it bypasses the cache, so the negative-cache counters would not move. The hook injects
- * a {@link org.elasticsearch.compute.operator.fusion.Stitcher.StitchingException} into the cache's stitch lambda for
+ * <p>WHY a package-private cache hook rather than a natural over-limit tree: the checked-vector path is
+ * {@code enforce=false} (size is measured, never refused), and a deep logical tree refuses the <em>block</em> path
+ * (full unfused fallback) rather than degrading. {@code FusionPlanner.compilerForTests} cannot be used here because
+ * it bypasses the cache, so the negative-cache counters would not move. The hook injects a
+ * {@link org.elasticsearch.compute.operator.fusion.Stitcher.StitchingException} into the cache's stitch lambda for
  * one {@link Path} only; the block path still stitches for real.
  */
 public class FusionNegativeCacheEndToEndTests extends FusionDifferentialTestCase {
