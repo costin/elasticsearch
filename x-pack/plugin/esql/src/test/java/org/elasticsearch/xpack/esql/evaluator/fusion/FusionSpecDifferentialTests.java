@@ -447,7 +447,7 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
      * ({@link FusionPlanner#maybeFuse} → {@link FusedExpressionEvaluatorFactory#tryCreate} → the {@link
      * org.elasticsearch.compute.operator.fusion.Stitcher}): a large flat {@code AND} of column-column comparisons is a
      * fusable logical shape (S3.1), but deep enough that the ENFORCED logical block-loop body exceeds the
-     * {@code MAX_FUSED_METHOD_BYTECODES} inlining budget, so the stitch is refused and the planner returns the
+     * {@code maxFusedMethodBytecodes} inlining budget, so the stitch is refused and the planner returns the
      * <b>unfused</b> factory unchanged (NOT a {@link FusedExpressionEvaluatorFactory}). A <em>small</em> version of the
      * SAME shape fuses, proving it is the SIZE (the budget guard) that forces the fallback here — not a planner-scope
      * rejection — and that the over-budget shape still evaluates correctly via the fallback chain.

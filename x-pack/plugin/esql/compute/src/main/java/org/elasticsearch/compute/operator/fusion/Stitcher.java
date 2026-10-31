@@ -64,9 +64,10 @@ import java.util.function.Consumer;
  * <p><b>Failure surface (binding rule #5).</b> A bytecode defect only surfaces when the JVM verifies the class
  * at {@code defineHiddenClass} time, as a {@link LinkageError} (of which {@link VerifyError} is a subtype). This
  * method catches those (and the access failure) and rethrows a typed {@link StitchingException} after a DEBUG;
- * the single plan-time WARN is emitted once per shape by FusedClassCache's negative cache, so the plan-time
- * caller (iter 13's {@code EvalMapper}) can catch it and fall back to the unfused evaluator chain without the
- * query path ever seeing an {@code Error}.
+ * the single plan-time WARN is emitted once per shape by
+ * {@code FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure} (the cache only supplies
+ * {@code StitchingException.isFirstFailure()}), so the plan-time caller (iter 13's {@code EvalMapper}) can catch it
+ * and fall back to the unfused evaluator chain without the query path ever seeing an {@code Error}.
  *
  * <p><b>JIT discipline (criterion #6).</b> The emitted {@code fused} method is primitive-only: host inputs are
  * moved into the kernel's argument slots with type-correct {@code xLOAD}/{@code xSTORE} and the kernel body is
@@ -122,24 +123,38 @@ public final class Stitcher {
     public static final String FUSED_RAW_INTERFACE_METHOD_NAME = "fusedRawInterface";
 
     /**
-     * HotSpot's default {@code FreqInlineSize} (criterion #6): a hot method above this many bytecodes is not inlined
-     * into its caller, defeating the single-hot-body goal. The stitcher measures the emitted {@code fused} loop
-     * method's {@code Code} length and refuses to fuse (throwing {@link StitchingException} so the caller falls back to
-     * the unfused chain) if it would exceed this budget. In this scope depth-2..4 arithmetic/comparison trees stay far
-     * under it; the guard is a safety net against a pathological tree, and keeps the emitted body inlinable by C2.
+     * HotSpot's default {@code FreqInlineSize} (criterion #6). Mutable budget — not a constant — so it is not
+     * SCREAMING_CASE: production reads {@code -Desql.fusion.max_method_bytecodes} (default 325) once at class init;
+     * tests flip it via {@link #maxFusedMethodBytecodesForTests}. A hot method above this many bytecodes is not
+     * inlined into its caller, defeating the single-hot-body goal.
      *
-     * <p>Overridable via the benchmark/test-only system property {@code esql.fusion.max_method_bytecodes} (default
-     * 325). Not a node setting. Read once from the property in production; {@link #maxFusedMethodBytecodesForTests}
-     * exists solely so a unit test can flip the split decision in-process.
+     * <p>This value governs <em>both</em> the plain/checked-vector {@code compute()} split (when the inline body
+     * exceeds the budget, emit a helper rather than refuse) <em>and</em> the {@code enforce=true} refusals
+     * (plain-vector split loop, logical block, filter-eval) that throw {@link StitchingException} so the caller
+     * falls back unfused. Values {@code <= 0} are rejected: a non-positive budget would refuse every stitch or split
+     * everything. Not a node setting.
      */
-    static volatile int MAX_FUSED_METHOD_BYTECODES = Integer.getInteger("esql.fusion.max_method_bytecodes", 325);
+    static volatile int maxFusedMethodBytecodes = resolveMaxFusedMethodBytecodes(
+        Integer.getInteger("esql.fusion.max_method_bytecodes", 325)
+    );
 
     /**
-     * Test-only: sets the fused-method bytecode budget; restore in a finally. Production reads the system property
-     * once into {@link #MAX_FUSED_METHOD_BYTECODES}; this setter exists solely for the unit test.
+     * Test-only: sets the fused-method bytecode budget; restore in a finally. Rejects {@code <= 0}. Production reads
+     * the system property once into {@link #maxFusedMethodBytecodes}; this setter exists solely for the unit test.
      */
     static void maxFusedMethodBytecodesForTests(int value) {
-        MAX_FUSED_METHOD_BYTECODES = value;
+        maxFusedMethodBytecodes = resolveMaxFusedMethodBytecodes(value);
+    }
+
+    /**
+     * WHY reject {@code <= 0}: a non-positive budget would refuse every stitch ({@code enforce=true}) or split
+     * every vector body. Shared by the class-init property and the test setter.
+     */
+    private static int resolveMaxFusedMethodBytecodes(int value) {
+        if (value <= 0) {
+            throw new IllegalArgumentException("esql.fusion.max_method_bytecodes must be > 0, got [" + value + "]");
+        }
+        return value;
     }
 
     private final TemplateRegistry templates;
@@ -162,7 +177,8 @@ public final class Stitcher {
      * failure modes of {@link MethodHandles.Lookup#defineHiddenClass} — a {@link LinkageError} (a {@link VerifyError}
      * from the JVM's own verifier is a subtype) and an {@link IllegalAccessException} — to a typed
      * {@link StitchingException} after a DEBUG. The single plan-time WARN is emitted once per shape by
-     * {@code FusedClassCache}'s negative cache (removing the duplicate WARN that used to fire here on every attempt),
+     * {@code FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure} (the cache only supplies
+     * {@code StitchingException.isFirstFailure()}; this used to WARN here on every attempt),
      * so the plan-time caller falls back to the unfused chain without the query path ever seeing an {@code Error}.
      * Every {@code compile*} entry point funnels through here, so the define-and-map-failure contract (binding rule
      * #5's failure surface) lives once rather than being copied per path.
@@ -505,7 +521,7 @@ public final class Stitcher {
         // and INTERFACE. A future refinement could emit a mixed class (inline RAW + split INTERFACE) so the
         // interface method also stays inlinable; not done now to keep the emitter simple.
         byte[] inline = serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "plain-vector loop", false);
-        if (methodCodeLength(inline, FUSED_METHOD_NAME) <= MAX_FUSED_METHOD_BYTECODES) {
+        if (methodCodeLength(inline, FUSED_METHOD_NAME) <= maxFusedMethodBytecodes) {
             return inline;
         }
         return emitVectorLoopSplit(caller, tree, inputElements, outputElement, constants);
@@ -616,7 +632,7 @@ public final class Stitcher {
 
     /**
      * Over-budget counterpart to the plain-vector fast path (B1): when the inline per-position expression would exceed
-     * the {@link #MAX_FUSED_METHOD_BYTECODES} inlining budget, the whole stitched expression is lifted into a
+     * the {@link #maxFusedMethodBytecodes} inlining budget, the whole stitched expression is lifted into a
      * {@code private static compute(v0, v1, …, c0, …)} helper (the same {@link StackKernelEmitter} output, but reading
      * its inputs from parameters instead of {@code a_i[p]}). The top-level {@code fused} / {@code fusedInterface} loops
      * then only read each input at {@code p}, call {@code compute}, and store {@code out[p]} — a tiny, inlinable body
@@ -1159,7 +1175,7 @@ public final class Stitcher {
         // shared compute() helper so one cache entry still covers RAW and INTERFACE. A future refinement could
         // emit a mixed class (inline RAW + split INTERFACE) so the interface method also stays inlinable; not
         // done now to keep the emitter simple.
-        if (methodCodeLength(inline, FUSED_RAW_METHOD_NAME) <= MAX_FUSED_METHOD_BYTECODES) {
+        if (methodCodeLength(inline, FUSED_RAW_METHOD_NAME) <= maxFusedMethodBytecodes) {
             return inline;
         }
         // fusedRaw exceeded the inlining budget: lift the stitched expression into a private compute() helper
@@ -2410,7 +2426,7 @@ public final class Stitcher {
      * single-level {@code a>b AND c<d} over HotSpot's 325-bytecode {@code FreqInlineSize}. Splitting each comparison
      * operand into a tiny {@code private static} helper keeps the top-level {@code fused} loop method small and
      * inlinable for arbitrarily nested logical trees; each helper is itself well under the budget. The top-level method
-     * is still measured against {@link #MAX_FUSED_METHOD_BYTECODES} and refuses to fuse (→ unfused fallback) if it ever
+     * is still measured against {@link #maxFusedMethodBytecodes} and refuses to fuse (→ unfused fallback) if it ever
      * exceeds it.
      *
      * <p><b>Block path for nulls / multi-values.</b> A 3VL result is nullable, so — like {@link #compileBlockLoop} —
@@ -3783,7 +3799,7 @@ public final class Stitcher {
 
     /**
      * Serializes {@code classNode} through {@code writer} and applies the JIT inlining budget (criterion #6) to the
-     * emitted {@code fused} loop method's {@code Code} length, measured against {@link #MAX_FUSED_METHOD_BYTECODES}
+     * emitted {@code fused} loop method's {@code Code} length, measured against {@link #maxFusedMethodBytecodes}
      * (HotSpot's default {@code FreqInlineSize}).
      *
      * <p><b>Enforcement scope.</b> {@code enforce} is {@code true} for the tight <b>plain-vector fast path</b> — the
@@ -3805,29 +3821,24 @@ public final class Stitcher {
      * {@link #emitVectorLoopSplit}) rather than refusing; this guard's {@code enforce=true} then applies only to the
      * resulting tiny call-loop. Splitting the checked-vector / block combined bodies the same way remains a follow-up.
      * An enforced oversize body is logged at DEBUG here; the {@link StitchingException} message carries the measured
-     * bytecode size, and the single plan-time WARN is emitted once per shape by {@code FusedClassCache}'s negative cache.
+     * bytecode size, and the single plan-time WARN is emitted once per shape by
+     * {@code FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure}.
      */
     private static byte[] serializeWithBudgetGuard(ClassNode classNode, ClassWriter writer, String pathName, boolean enforce)
         throws StitchingException {
         classNode.accept(writer);
         byte[] bytecode = writer.toByteArray();
         int size = fusedMethodCodeLength(bytecode);
-        if (size > MAX_FUSED_METHOD_BYTECODES) {
+        if (size > maxFusedMethodBytecodes) {
             if (enforce) {
                 logger.debug(
                     "fused {} method is [{}] bytecodes, over the inlining budget of [{}]; refusing to fuse (falling back to unfused)",
                     pathName,
                     size,
-                    MAX_FUSED_METHOD_BYTECODES
+                    maxFusedMethodBytecodes
                 );
                 throw new StitchingException(
-                    "fused "
-                        + pathName
-                        + " method ["
-                        + size
-                        + " bytecodes] exceeds the inlining budget ["
-                        + MAX_FUSED_METHOD_BYTECODES
-                        + "]",
+                    "fused " + pathName + " method [" + size + " bytecodes] exceeds the inlining budget [" + maxFusedMethodBytecodes + "]",
                     null
                 );
             }
@@ -3835,7 +3846,7 @@ public final class Stitcher {
                 "fused {} method is [{}] bytecodes, over the inlining budget of [{}] (fallback path — not enforced)",
                 pathName,
                 size,
-                MAX_FUSED_METHOD_BYTECODES
+                maxFusedMethodBytecodes
             );
         }
         return bytecode;
@@ -3844,7 +3855,7 @@ public final class Stitcher {
     // -----------------------------------------------------------------------------------------------------------------
     // Test seams (package-private): the raw fused class bytes for each emit path, BEFORE defineHiddenClass verifies
     // them. They let same-package tests (StitcherBudgetTests) measure the emitted fused method's Code length against
-    // MAX_FUSED_METHOD_BYTECODES and run the bytes through CheckClassAdapter for a structural-validity check on top of
+    // maxFusedMethodBytecodes and run the bytes through CheckClassAdapter for a structural-validity check on top of
     // the JVM's defineHiddenClass verifier. The enforced paths (plain-vector, logical block) still throw a
     // StitchingException here if they exceed the budget — exactly as the compile* entry points would.
     // -----------------------------------------------------------------------------------------------------------------

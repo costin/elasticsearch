@@ -98,7 +98,8 @@ public class FusionFollowupBenchmark {
                     e = switch (k % 3) {
                         case 0 -> new Add(Source.EMPTY, e, a, cfg);
                         case 1 -> new Mul(Source.EMPTY, e, new Literal(Source.EMPTY, 1L, DataType.LONG));
-                        default -> new Sub(Source.EMPTY, e, new Literal(Source.EMPTY, 0L, DataType.LONG), cfg);
+                        case 2 -> new Sub(Source.EMPTY, e, new Literal(Source.EMPTY, 0L, DataType.LONG), cfg);
+                        default -> throw new AssertionError("unreachable k % 3: " + (k % 3));
                     };
                 }
                 return new Built(e, SlowPathFusionBenchmark.layout(a));

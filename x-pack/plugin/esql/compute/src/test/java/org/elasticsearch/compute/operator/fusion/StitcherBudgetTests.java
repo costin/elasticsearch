@@ -41,7 +41,7 @@ import static org.hamcrest.Matchers.lessThanOrEqualTo;
  * <ul>
  *   <li><b>Budget.</b> On the two ENFORCED emit paths — the tight <b>plain-vector fast path</b> and the
  *       <b>logical block loop</b> — the emitted {@code fused} method's {@code Code} length
- *       ({@link Stitcher#fusedMethodCodeLength}) must stay {@code <=} {@link Stitcher#MAX_FUSED_METHOD_BYTECODES}
+ *       ({@link Stitcher#fusedMethodCodeLength}) must stay {@code <=} {@link Stitcher#maxFusedMethodBytecodes}
  *       (HotSpot's default {@code FreqInlineSize}) for representative <em>and</em> deep trees, so the hot per-position
  *       body remains JIT-inlinable.</li>
  *   <li><b>Refuse-to-fuse.</b> A tree whose plain-vector body would exceed the budget must be <em>refused</em> with a
@@ -159,7 +159,7 @@ public class StitcherBudgetTests extends ESTestCase {
         );
         int size = Stitcher.fusedMethodCodeLength(stitcher.vectorLoopBytecode(MethodHandles.lookup(), tree));
         assertThat("emitted a fused method", size, greaterThan(0));
-        assertThat("representative plain-vector body must be inlinable", size, lessThanOrEqualTo(Stitcher.MAX_FUSED_METHOD_BYTECODES));
+        assertThat("representative plain-vector body must be inlinable", size, lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes));
     }
 
     /**
@@ -177,7 +177,7 @@ public class StitcherBudgetTests extends ESTestCase {
             assertThat(
                 "depth=" + depth + " top-level fused loop must stay within the inlining budget (inline or split)",
                 topLevel,
-                lessThanOrEqualTo(Stitcher.MAX_FUSED_METHOD_BYTECODES)
+                lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes)
             );
             deepestTopLevel = topLevel;
         }
@@ -186,7 +186,7 @@ public class StitcherBudgetTests extends ESTestCase {
         assertThat(
             "the deepest tree must have SPLIT into a tiny call-loop (not refused)",
             deepestTopLevel,
-            lessThan(Stitcher.MAX_FUSED_METHOD_BYTECODES / 2)
+            lessThan(Stitcher.maxFusedMethodBytecodes / 2)
         );
     }
 
@@ -203,7 +203,7 @@ public class StitcherBudgetTests extends ESTestCase {
         );
         int size = Stitcher.fusedMethodCodeLength(stitcher.logicalBlockLoopBytecode(MethodHandles.lookup(), tree));
         assertThat("emitted a fused logical method", size, greaterThan(0));
-        assertThat("representative logical body must be inlinable", size, lessThanOrEqualTo(Stitcher.MAX_FUSED_METHOD_BYTECODES));
+        assertThat("representative logical body must be inlinable", size, lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes));
     }
 
     /**
@@ -224,7 +224,7 @@ public class StitcherBudgetTests extends ESTestCase {
                 assertThat(
                     "depth=" + depth + " logical top-level body must be inlinable when it fuses",
                     size,
-                    lessThanOrEqualTo(Stitcher.MAX_FUSED_METHOD_BYTECODES)
+                    lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes)
                 );
                 maxFusedDepth = depth;
             } catch (Stitcher.StitchingException refused) {
@@ -315,7 +315,7 @@ public class StitcherBudgetTests extends ESTestCase {
      *
      * <p><b>Budget.</b> The block loop is deliberately the UN-enforced general/fallback path
      * ({@code serializeWithBudgetGuard(..., enforce=false)}), so — unlike the tight vector and logical paths — it is
-     * not refused when over {@link Stitcher#MAX_FUSED_METHOD_BYTECODES}. The size is asserted positive (a method was
+     * not refused when over {@link Stitcher#maxFusedMethodBytecodes}. The size is asserted positive (a method was
      * emitted) and logged so a regression in the seam's per-leaf emit cost is visible; the single-leaf shape below
      * additionally proves the common {@code LENGTH(x) > k} tree stays inlinable.
      */
@@ -358,7 +358,7 @@ public class StitcherBudgetTests extends ESTestCase {
         assertStructurallyValid(bytecode);
         int size = Stitcher.fusedMethodCodeLength(bytecode);
         logger.info("BytesRef single-leaf block loop fused method size = {} bytecodes", size);
-        assertThat("single BytesRef-leaf block body must be inlinable", size, lessThanOrEqualTo(Stitcher.MAX_FUSED_METHOD_BYTECODES));
+        assertThat("single BytesRef-leaf block body must be inlinable", size, lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes));
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -382,7 +382,7 @@ public class StitcherBudgetTests extends ESTestCase {
         );
         int size = Stitcher.fusedMethodCodeLength(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection));
         assertThat("emitted a fused filter-eval method", size, greaterThan(0));
-        assertThat("filter-eval top-level loop must be inlinable", size, lessThanOrEqualTo(Stitcher.MAX_FUSED_METHOD_BYTECODES));
+        assertThat("filter-eval top-level loop must be inlinable", size, lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes));
     }
 
     /** A logical-predicate fused filter+eval — {@code (in0 > in1) AND (in2 < in3)} guarding projection {@code in0 + in1}. */
@@ -395,7 +395,7 @@ public class StitcherBudgetTests extends ESTestCase {
         FusionNode projection = new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
         int size = Stitcher.fusedMethodCodeLength(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection));
         assertThat("emitted a fused filter-eval (logical predicate) method", size, greaterThan(0));
-        assertThat("filter-eval top-level loop must be inlinable", size, lessThanOrEqualTo(Stitcher.MAX_FUSED_METHOD_BYTECODES));
+        assertThat("filter-eval top-level loop must be inlinable", size, lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes));
     }
 
     /** Both filter-eval flavours — comparison predicate and logical predicate — emit structurally valid classes. */
@@ -570,7 +570,7 @@ public class StitcherBudgetTests extends ESTestCase {
 
     /**
      * Asserts that a refuse-to-fuse {@link Stitcher.StitchingException} is SPECIFICALLY the &gt;{@code
-     * MAX_FUSED_METHOD_BYTECODES} inlining-budget guard on {@code pathName}, not an unrelated stitch failure that would
+     * maxFusedMethodBytecodes} inlining-budget guard on {@code pathName}, not an unrelated stitch failure that would
      * spuriously satisfy a "did not emit a class" check. It verifies (a) the message identifies the inlining budget on
      * the named enforced path, and (b) the size the guard measured — parsed from the message's {@code [<n> bytecodes]}
      * — actually exceeds the budget, i.e. the emitted method WOULD have been un-inlinable.
@@ -587,7 +587,7 @@ public class StitcherBudgetTests extends ESTestCase {
         assertThat(
             "the size the budget guard measured must actually exceed the budget (the method WOULD be un-inlinable)",
             reportedSize,
-            greaterThan(Stitcher.MAX_FUSED_METHOD_BYTECODES)
+            greaterThan(Stitcher.maxFusedMethodBytecodes)
         );
     }
 

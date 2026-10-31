@@ -17,8 +17,10 @@ import java.lang.invoke.MethodHandles;
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.hasItem;
+import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 
 /**
@@ -37,7 +39,7 @@ public class StitcherMaxMethodBytecodesTests extends ESTestCase {
     public void testMaxMethodBytecodesHookFlipsSplitDecision() throws Exception {
         Stitcher stitcher = new Stitcher(new TemplateRegistry());
         FusionNode tree = addChain(8);
-        int previous = Stitcher.MAX_FUSED_METHOD_BYTECODES;
+        int previous = Stitcher.maxFusedMethodBytecodes;
         try {
             Stitcher.maxFusedMethodBytecodesForTests(8000);
             byte[] large = stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), tree);
@@ -48,6 +50,19 @@ public class StitcherMaxMethodBytecodesTests extends ESTestCase {
             Stitcher.maxFusedMethodBytecodesForTests(50);
             byte[] split = stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), tree);
             assertThat("tiny budget (50) must lift fusedRaw into compute()", methodNames(split), hasItem("compute"));
+        } finally {
+            Stitcher.maxFusedMethodBytecodesForTests(previous);
+        }
+    }
+
+    public void testMaxFusedMethodBytecodesRejectsNonPositive() {
+        int previous = Stitcher.maxFusedMethodBytecodes;
+        try {
+            IllegalArgumentException zero = expectThrows(IllegalArgumentException.class, () -> Stitcher.maxFusedMethodBytecodesForTests(0));
+            assertThat(zero.getMessage(), containsString("0"));
+            IllegalArgumentException neg = expectThrows(IllegalArgumentException.class, () -> Stitcher.maxFusedMethodBytecodesForTests(-1));
+            assertThat(neg.getMessage(), containsString("-1"));
+            assertThat("a rejected set must leave the budget unchanged", Stitcher.maxFusedMethodBytecodes, is(previous));
         } finally {
             Stitcher.maxFusedMethodBytecodesForTests(previous);
         }

@@ -348,7 +348,7 @@ public class FusedClassCacheTests extends ESTestCase {
         assertThat("the first failure is signalled to the factory", first.isFirstFailure(), is(true));
         for (int i = 0; i < 2; i++) {
             Stitcher.StitchingException repeat = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
-            assertThat(repeat.getMessage(), is("boom"));
+            assertThat(repeat.getMessage(), is("java.lang.VerifyError: boom"));
             assertThat("reconstructed marker exceptions drop the cause", repeat.getCause(), nullValue());
             assertThat("repeats must not re-signal first failure", repeat.isFirstFailure(), is(false));
         }
@@ -364,7 +364,7 @@ public class FusedClassCacheTests extends ESTestCase {
      * once. The first thrown exception has {@code isFirstFailure()==true}; repeats have {@code false}. The cache
      * itself does not WARN — the factory is the single WARN site.
      */
-    public void testRuntimeExceptionIsNegativeCachedAndWarnsOnce() {
+    public void testRuntimeExceptionIsNegativeCachedFirstFailureThenRepeat() {
         FusedClassCache cache = new FusedClassCache();
         AtomicInteger invocations = new AtomicInteger();
         FusedClassCache.ClassStitcher stitcher = () -> {
@@ -397,6 +397,7 @@ public class FusedClassCacheTests extends ESTestCase {
             );
             for (int i = 0; i < 2; i++) {
                 Stitcher.StitchingException repeat = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
+                assertThat(repeat.getMessage(), is("java.lang.IllegalArgumentException: injected emit failure"));
                 assertThat("reconstructed marker exceptions drop the cause", repeat.getCause(), nullValue());
                 assertThat("repeats must not re-signal first failure", repeat.isFirstFailure(), is(false));
             }
@@ -446,6 +447,7 @@ public class FusedClassCacheTests extends ESTestCase {
             );
             for (int i = 0; i < 2; i++) {
                 Stitcher.StitchingException repeat = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
+                assertThat(repeat.getMessage(), is("java.lang.LinkageError: injected linkage failure"));
                 assertThat("reconstructed marker exceptions drop the cause", repeat.getCause(), nullValue());
                 assertThat("repeats must not re-signal first failure", repeat.isFirstFailure(), is(false));
             }
@@ -495,6 +497,7 @@ public class FusedClassCacheTests extends ESTestCase {
             );
             for (int i = 0; i < 2; i++) {
                 Stitcher.StitchingException repeat = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
+                assertThat(repeat.getMessage(), is("java.lang.NoSuchMethodException: injected findStatic failure"));
                 assertThat("reconstructed marker exceptions drop the cause", repeat.getCause(), nullValue());
                 assertThat("repeats must not re-signal first failure", repeat.isFirstFailure(), is(false));
             }
@@ -506,8 +509,9 @@ public class FusedClassCacheTests extends ESTestCase {
     }
 
     /**
-     * A1(b): a {@link VirtualMachineError} (e.g. {@link OutOfMemoryError}) is transient — it must not poison the
-     * shape. A second attempt stitches again and can succeed. Restores the deleted "transient failure retries" case.
+     * A1(b): {@link OutOfMemoryError} / {@link InternalError} are transient — they must not poison the shape. A second
+     * attempt stitches again and can succeed. {@link StackOverflowError} is a {@link VirtualMachineError} too but is
+     * wrapped (see {@link #testStackOverflowErrorIsNegativeCachedFirstFailureThenRepeat}).
      */
     public void testOutOfMemoryErrorIsNotCachedAndRetries() throws Exception {
         FusedClassCache cache = new FusedClassCache();
@@ -529,7 +533,37 @@ public class FusedClassCacheTests extends ESTestCase {
         assertThat(cache.size(), is(1));
     }
 
-    public void testFailedStitchLogsWarnOnceThenDebug() {
+    /**
+     * A {@link StackOverflowError} from emit recursion is deterministic for that shape: wrap it, negatively cache it,
+     * {@code isFirstFailure()==true} then {@code false}. Remaining {@link VirtualMachineError}s stay transient.
+     */
+    public void testStackOverflowErrorIsNegativeCachedFirstFailureThenRepeat() {
+        FusedClassCache cache = new FusedClassCache();
+        AtomicInteger invocations = new AtomicInteger();
+        FusedClassCache.ClassStitcher stitcher = () -> {
+            invocations.incrementAndGet();
+            throw new StackOverflowError("injected emit recursion");
+        };
+        Stitcher.StitchingException first = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
+        assertThat("SOE is preserved as the cause", first.getCause(), instanceOf(StackOverflowError.class));
+        assertThat("the first failure is signalled to the factory", first.isFirstFailure(), is(true));
+        for (int i = 0; i < 2; i++) {
+            Stitcher.StitchingException repeat = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
+            assertThat(repeat.getMessage(), is("java.lang.StackOverflowError: injected emit recursion"));
+            assertThat("reconstructed marker exceptions drop the cause", repeat.getCause(), nullValue());
+            assertThat("repeats must not re-signal first failure", repeat.isFirstFailure(), is(false));
+        }
+        assertThat("a StackOverflowError stitch failure must be attempted exactly once", invocations.get(), is(1));
+        assertThat(cache.failures(), is(1L));
+        assertThat(cache.negativeHits(), is(2L));
+    }
+
+    /**
+     * The cache does not log: a failing stitch is a first-failure <em>signal</em> ({@code failures()}/{@code
+     * negativeHits()}), not a WARN. {@code isFirstFailure} for a {@link Stitcher.StitchingException} is already
+     * asserted by {@link #testFailedStitchIsNegativeCachedAndAttemptedOnce}.
+     */
+    public void testFailedStitchSignalsFirstFailureThenRepeat() {
         FusedClassCache cache = new FusedClassCache();
         FusedClassCache.ClassStitcher stitcher = () -> { throw new Stitcher.StitchingException("boom", new VerifyError("injected")); };
         try (var mockLog = MockLog.capture(FusedClassCache.class)) {
@@ -541,11 +575,9 @@ public class FusedClassCacheTests extends ESTestCase {
                     "*fusion stitch*"
                 )
             );
-            Stitcher.StitchingException first = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
-            assertThat("the first failure is signalled to the factory", first.isFirstFailure(), is(true));
+            expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
             for (int i = 0; i < 2; i++) {
-                Stitcher.StitchingException repeat = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
-                assertThat("repeats must not re-signal first failure", repeat.isFirstFailure(), is(false));
+                expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
             }
             mockLog.assertAllExpectationsMatched();
         }
@@ -600,10 +632,19 @@ public class FusedClassCacheTests extends ESTestCase {
                     return expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
                 }));
             }
+            int firstFailures = 0;
             for (Future<Stitcher.StitchingException> future : futures) {
                 Stitcher.StitchingException thrown = future.get(30, TimeUnit.SECONDS);
-                assertThat(thrown.getMessage(), is("boom"));
+                if (thrown.isFirstFailure()) {
+                    assertThat(thrown.getMessage(), is("boom"));
+                    assertThat("the original StitchingException keeps its cause", thrown.getCause(), instanceOf(VerifyError.class));
+                    firstFailures++;
+                } else {
+                    assertThat(thrown.getMessage(), is("java.lang.VerifyError: boom"));
+                    assertThat("reconstructed marker exceptions drop the cause", thrown.getCause(), nullValue());
+                }
             }
+            assertThat("exactly one first-failure signal among the stampede", firstFailures, is(1));
         } finally {
             pool.shutdownNow();
             assertTrue("failing stampede pool must terminate", pool.awaitTermination(30, TimeUnit.SECONDS));

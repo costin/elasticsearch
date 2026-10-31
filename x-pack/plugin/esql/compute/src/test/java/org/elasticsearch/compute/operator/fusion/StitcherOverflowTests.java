@@ -489,7 +489,7 @@ public class StitcherOverflowTests extends ESTestCase {
      * private {@code compute()} helper and the loop calls {@code compute()} inside the overflow try. Both the
      * {@code fusedRaw} shell and the lifted {@code compute()} body are scanned for {@code INVOKEINTERFACE}/
      * {@code INVOKEVIRTUAL} on {@code Block}/{@code *Block} and any compute-data {@code *Builder}. Forced with a
-     * left-leaning {@code addExact} chain that exceeds {@link Stitcher#MAX_FUSED_METHOD_BYTECODES} — production emit is
+     * left-leaning {@code addExact} chain that exceeds {@link Stitcher#maxFusedMethodBytecodes} — production emit is
      * not altered. The representative depth-2 tree is asserted to stay inline so a passing {@code compute()} check is
      * evidence the split was actually taken.
      */
@@ -539,12 +539,12 @@ public class StitcherOverflowTests extends ESTestCase {
         assertThat(
             "split fusedRaw shell itself must stay within the inlining budget (does not refuse the unbudgeted builder)",
             rawSize,
-            lessThanOrEqualTo(Stitcher.MAX_FUSED_METHOD_BYTECODES)
+            lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes)
         );
         assertThat(
             "split fusedRaw must be the tiny call-loop, not the inlined expression",
             rawSize,
-            lessThan(Stitcher.MAX_FUSED_METHOD_BYTECODES / 2)
+            lessThan(Stitcher.maxFusedMethodBytecodes / 2)
         );
     }
 
@@ -697,7 +697,7 @@ public class StitcherOverflowTests extends ESTestCase {
     /**
      * Left-leaning chain of {@code depth} {@code addExact} kernels reusing two inputs:
      * {@code (((in0 + in1) + in1) + in1)...}. Each additional kernel is one {@code Math.addExact} in the spliced body,
-     * so walking depth is a reliable way to push {@code fusedRaw} over {@link Stitcher#MAX_FUSED_METHOD_BYTECODES}.
+     * so walking depth is a reliable way to push {@code fusedRaw} over {@link Stitcher#maxFusedMethodBytecodes}.
      */
     private static FusionNode addChain(int depth) {
         FusionDescriptor add = new FusionDescriptor(LongKernels.class, "add", "(JJ)J", true, true);
