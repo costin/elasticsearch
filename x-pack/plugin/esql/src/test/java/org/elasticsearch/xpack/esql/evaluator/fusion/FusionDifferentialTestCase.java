@@ -107,6 +107,9 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
         blockFactory = BlockFactory.builder(bigArrays).build();
         driverContext = new DriverContext(bigArrays, blockFactory, null);
         FusionTelemetry.resetForTests();
+        // Clear the shape-keyed class cache so a negative-cache marker (or a hidden class) from an earlier test
+        // in the same JVM cannot change this test's stitch/first-failure behaviour.
+        FusionPlanner.classCache().resetForTests();
         FusionPlanner.compilerForTests = null;
         FusionSettings.setEnabledForTests(true);
     }
@@ -114,6 +117,7 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
     @After
     public void tearDownFusion() {
         FusionPlanner.compilerForTests = null;
+        FusionPlanner.classCache().resetForTests();
         FusionSettings.setEnabledForTests(true);
         FusionSettings.setAdaptiveMinRowsForTests(0);
         FusionSettings.setSampleFractionForTests(1.0);
