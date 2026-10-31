@@ -29,6 +29,7 @@ import org.elasticsearch.compute.data.Vector;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.Warnings;
+import org.elasticsearch.compute.operator.fusion.FusionDump;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.FusionSimd;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
@@ -87,6 +88,14 @@ import java.util.List;
  * a vector-path-only failure that still fuses via the block path stays at DEBUG. Repeats of a negatively-cached
  * shape are DEBUG. As a defensive net, a {@link LinkageError} escaping the fused method at evaluation time is
  * likewise caught by {@link FusedExpressionEvaluator} and re-served from the unfused chain.
+ *
+ * <h2>Verify mode (test/CI)</h2>
+ * When {@link FusionSettings#isVerifyEnabled()} (default {@code Assertions.ENABLED}, i.e. on under {@code -ea}),
+ * {@link FusedExpressionEvaluator#eval} also runs the unfused chain on the same page (via
+ * {@link DriverContext#ignoringWarnings()}, so comparison eval does not union warnings into the real collector)
+ * and fails on any value or encoding difference — see {@link FusionVerify} for the typed-equality / NaN /
+ * warning-isolation contracts. The {@code if (isVerifyEnabled())} branch is a {@code static final} read the JIT
+ * folds away in production.
  */
 final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Factory {
 
@@ -346,6 +355,11 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         // Tracks which compile path is in flight so the outer catch can name it. Starts as BLOCK (the common
         // arithmetic entry); mapping / logical-block overwrite it before those compiles run.
         FusedClassCache.Path compilingPath = FusedClassCache.Path.BLOCK;
+        List<byte[]> captured = null;
+        if (FusionSettings.isVerifyEnabled()) {
+            captured = new ArrayList<>();
+            FusionDump.beginThreadCapture(captured);
+        }
         try {
             if (plan.mapping()) {
                 // Multi-value mapping convert kernel (TO_LOWER/TO_UPPER): block-only (it maps over multi-values, so no
@@ -537,6 +551,11 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             logPlanTimeStitchFailure(logger, shape, compilingPath, true, e);
             FusionTelemetry.recordFailure(shape);
             return null;
+        } finally {
+            if (captured != null) {
+                FusionDump.endThreadCapture();
+                FusionVerify.recordClassBytes(shape, captured);
+            }
         }
     }
 
@@ -589,6 +608,11 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     /** Test hook (package-private): which vector fast path this shape uses (or {@code NONE} for block-only trees). */
     VectorStrategy vectorStrategy() {
         return vectorStrategy;
+    }
+
+    /** Test hook (package-private): the shape identifier used for cache keys and verify-mode dump filenames. */
+    String shape() {
+        return shape;
     }
 
     /**
@@ -838,6 +862,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         private Warnings[] warnings;
         // Lazily built only if a defensive LinkageError forces a per-page fallback; closed with this evaluator.
         private ExpressionEvaluator unfusedFallback;
+        // Verify-mode only: unfused chain bound to DriverContext.ignoringWarnings() so A/B eval does not union
+        // unfused warnings into the driver's collector. Closed with this evaluator. Null when verify is off.
+        private ExpressionEvaluator verifyUnfused;
         // Latched true after the first eval-time LinkageError so every later page routes straight to the unfused
         // fallback instead of re-attempting (and re-failing) the fused handle per page.
         private boolean fusionDisabled;
@@ -935,6 +962,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             }
             int positionCount = page.getPositionCount();
             BlockFactory blockFactory = driverContext.blockFactory();
+            Block fused;
             try {
                 if (injectEvalLinkageErrorForTests) {
                     // Test seam: simulate a stitch that verified at plan time but fails to link at first eval.
@@ -943,25 +971,29 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 // Trailing constant arguments follow the input vectors/blocks in the fused method's signature; unbox is
                 // handled by invokeWithArguments against the primitive parameter types of the resolved MethodType.
                 int constCount = constantValues.length;
+                fused = null;
                 if (vectorHandle != null) {
                     Vector[] dense = denseVectors(inputs);
                     if (dense != null) {
-                        Block vectorResult = evalDenseVectorPage(dense, blockFactory, positionCount, arity, constCount);
-                        if (vectorResult != null) {
-                            return vectorResult;
-                        }
+                        fused = evalDenseVectorPage(dense, blockFactory, positionCount, arity, constCount);
                     }
+                    if (fused == null) {
+                        lastEvalPath = LastEvalPath.BLOCK;
+                    }
+                } else {
                     lastEvalPath = LastEvalPath.BLOCK;
                 }
-                // Block path: null/multi-value tolerant, overflow-aware. Also the logical (3VL) fallback and the
-                // SIMD-without-interface fallback for non-array dense pages.
-                Object[] args = blockScratch;
-                args[0] = blockFactory;
-                args[1] = warnings();
-                args[2] = positionCount;
-                System.arraycopy(inputs, 0, args, 3, arity);
-                System.arraycopy(constantValues, 0, args, 3 + arity, constCount);
-                return (Block) blockSpreader.invoke(args);
+                if (fused == null) {
+                    // Block path: null/multi-value tolerant, overflow-aware. Also the logical (3VL) fallback and the
+                    // SIMD-without-interface fallback for non-array dense pages.
+                    Object[] args = blockScratch;
+                    args[0] = blockFactory;
+                    args[1] = warnings();
+                    args[2] = positionCount;
+                    System.arraycopy(inputs, 0, args, 3, arity);
+                    System.arraycopy(constantValues, 0, args, 3 + arity, constCount);
+                    fused = (Block) blockSpreader.invoke(args);
+                }
             } catch (LinkageError e) {
                 // Defensive (criterion #5): a stitch that verified at plan time should never fail to link at eval, but
                 // if it somehow does we must still complete the query. Latch fusion off so subsequent pages skip the
@@ -976,6 +1008,17 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 // Fusable arithmetic kernels declare no checked exceptions; this is unreachable in practice.
                 throw new RuntimeException(t);
             }
+            // Verify-mode A/B: a single static-final read that the JIT folds away in production (no -ea). Input page
+            // blocks are not consumed by eval, so the unfused chain can read them again. The comparison block is
+            // closed inside FusionVerify; this method returns the fused result. Unfused eval uses ignoringWarnings()
+            // so short-circuit-dropped warnings do not union into the driver's collector.
+            if (FusionSettings.isVerifyEnabled()) {
+                if (FusionVerify.skipForTests) {
+                    return fused;
+                }
+                return FusionVerify.verifyPage(verifyUnfused(), page, fused, shape, vectorStrategy, lastEvalPath);
+            }
+            return fused;
         }
 
         /**
@@ -1131,6 +1174,17 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             return unfusedFallback;
         }
 
+        /**
+         * Unfused chain for verify-mode A/B. Bound to {@link DriverContext#ignoringWarnings()} so comparison
+         * eval does not register into the real warning collector (see {@link FusionVerify}).
+         */
+        private ExpressionEvaluator verifyUnfused() {
+            if (verifyUnfused == null) {
+                this.verifyUnfused = unfusedFactory.get(driverContext.ignoringWarnings());
+            }
+            return verifyUnfused;
+        }
+
         @Override
         public long baseRamBytesUsed() {
             return BASE_RAM_BYTES_USED;
@@ -1144,6 +1198,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             closed = true;
             if (unfusedFallback != null) {
                 unfusedFallback.close();
+            }
+            if (verifyUnfused != null) {
+                verifyUnfused.close();
             }
             // Release any per-driver SCRATCH @Fixed buffer this evaluator owns that is Releasable. Today's LEFT scratch
             // (BytesRef / UTF8CodePoint) is not Releasable so it is skipped, but SPACE's BreakingBytesRefBuilder is a

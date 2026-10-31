@@ -12,6 +12,7 @@ import org.elasticsearch.logging.Logger;
 import org.objectweb.asm.ClassReader;
 
 import java.util.Base64;
+import java.util.List;
 import java.util.function.BiConsumer;
 
 /**
@@ -28,10 +29,14 @@ import java.util.function.BiConsumer;
  *   <li><b>Programmatic sink.</b> A profiler, test, or REST debug endpoint can {@link #setSink install} a
  *       {@code (internalName, classBytes)} consumer to capture the bytes in-process — e.g. to attach the generated
  *       source of a hot fused kernel to a query profile, or to assert on the emitted class in a test.</li>
+ *   <li><b>Thread-local capture.</b> {@link #beginThreadCapture} / {@link #endThreadCapture} collect a private copy
+ *       of every class this thread defines, used by verify-mode mismatch dumps without racing the process-wide
+ *       sink.</li>
  * </ul>
  *
- * <p>Both channels run only on the cold plan-time stitch path (once per fused class), never per row, so they add
- * nothing to the hot loop. When neither channel is active {@link #emit} is a single static-boolean + volatile read.
+ * <p>All channels run only on the cold plan-time stitch path (once per fused class), never per row, so they add
+ * nothing to the hot loop. When no channel is active {@link #emit} is a single static-boolean + volatile +
+ * thread-local read.
  */
 public final class FusionDump {
 
@@ -46,6 +51,9 @@ public final class FusionDump {
 
     /** Programmatic capture, invoked with {@code (internalName, classBytes)} for each generated class; {@code null} = none. */
     private static volatile BiConsumer<String, byte[]> sink;
+
+    /** Per-thread capture list (verify-mode dumps); {@code null} = none. */
+    private static final ThreadLocal<List<byte[]>> THREAD_CAPTURE = new ThreadLocal<>();
 
     private FusionDump() {}
 
@@ -64,13 +72,27 @@ public final class FusionDump {
     }
 
     /**
-     * Offers a freshly generated fused class to the active debug channels. A no-op (one static-boolean read + one
-     * volatile read) unless the log dump is enabled or a sink is installed. Never throws: a misbehaving sink is logged
-     * and swallowed so debug tooling can never break a stitch.
+     * Starts collecting a private copy of every fused class this thread defines into {@code into}, until
+     * {@link #endThreadCapture()}. Does not disturb the process-wide {@link #setSink sink}.
+     */
+    public static void beginThreadCapture(List<byte[]> into) {
+        THREAD_CAPTURE.set(into);
+    }
+
+    /** Stops the current thread's {@link #beginThreadCapture capture}. */
+    public static void endThreadCapture() {
+        THREAD_CAPTURE.remove();
+    }
+
+    /**
+     * Offers a freshly generated fused class to the active debug channels. Inactive fast path is one static-boolean
+     * read + one volatile sink read + one thread-local capture read (cold stitch path only, never per row). Never
+     * throws: a misbehaving sink or capture list is logged and swallowed so debug tooling can never break a stitch.
      */
     static void emit(byte[] bytecode) {
         BiConsumer<String, byte[]> currentSink = sink;
-        if (DUMP_TO_LOG == false && currentSink == null) {
+        List<byte[]> capture = THREAD_CAPTURE.get();
+        if (DUMP_TO_LOG == false && currentSink == null && capture == null) {
             return;
         }
         String name;
@@ -87,7 +109,15 @@ public final class FusionDump {
                 Base64.getEncoder().encodeToString(bytecode)
             );
         }
-        if (currentSink != null) {
+        if (capture != null) {
+            // Thread-local capture is exclusive of the process-wide sink so verify-mode dumps cannot race a
+            // profiler/test sink (beginThreadCapture does not replace the sink; emit simply does not invoke it).
+            try {
+                capture.add(bytecode.clone());
+            } catch (RuntimeException e) {
+                logger.warn("fusion dump capture threw for [{}]; ignoring (debug tooling must not break a stitch)", name, e);
+            }
+        } else if (currentSink != null) {
             try {
                 currentSink.accept(name, bytecode.clone());
             } catch (RuntimeException e) {

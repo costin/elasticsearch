@@ -32,6 +32,7 @@ public class FusionDumpTests extends ESTestCase {
     @After
     public void clearSink() {
         FusionDump.clearSink();
+        FusionDump.endThreadCapture();
     }
 
     private static FusionNode greaterThanTree() {
@@ -71,5 +72,41 @@ public class FusionDumpTests extends ESTestCase {
     public void testNoSinkStitchesNormally() throws Exception {
         // Default state (no sink, dump flag off): emit() is a no-op and compilation is unaffected.
         assertNotNull(new Stitcher(new TemplateRegistry()).compileVectorLoop(MethodHandles.lookup(), greaterThanTree()));
+    }
+
+    public void testThreadCaptureCollectsPrivateCopyWithoutTouchingSink() throws Exception {
+        AtomicInteger sinkInvocations = new AtomicInteger();
+        FusionDump.setSink((name, bytes) -> {
+            sinkInvocations.incrementAndGet();
+            fail("thread-local capture must not invoke the process-wide sink");
+        });
+        List<byte[]> captured = new ArrayList<>();
+        FusionDump.beginThreadCapture(captured);
+        try {
+            Class<?> fused = new Stitcher(new TemplateRegistry()).compileVectorLoop(MethodHandles.lookup(), greaterThanTree());
+            assertNotNull(fused);
+            assertThat(captured, hasSize(1));
+            assertThat(captured.get(0).length, greaterThan(0));
+            assertThat(new ClassReader(captured.get(0)).getClassName(), containsString("Fused"));
+            assertThat("thread-local capture must not invoke the process-wide sink", sinkInvocations.get(), equalTo(0));
+        } finally {
+            FusionDump.endThreadCapture();
+            FusionDump.clearSink();
+        }
+    }
+
+    public void testThrowingCaptureDoesNotBreakStitch() throws Exception {
+        List<byte[]> throwing = new ArrayList<>() {
+            @Override
+            public boolean add(byte[] bytes) {
+                throw new RuntimeException("capture must not break a stitch");
+            }
+        };
+        FusionDump.beginThreadCapture(throwing);
+        try {
+            assertNotNull(new Stitcher(new TemplateRegistry()).compileVectorLoop(MethodHandles.lookup(), greaterThanTree()));
+        } finally {
+            FusionDump.endThreadCapture();
+        }
     }
 }

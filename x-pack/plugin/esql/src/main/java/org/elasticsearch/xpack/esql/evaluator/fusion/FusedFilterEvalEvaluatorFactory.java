@@ -16,6 +16,7 @@ import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.FilterEvalEvaluator;
 import org.elasticsearch.compute.operator.Warnings;
+import org.elasticsearch.compute.operator.fusion.FusionDump;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.logging.LogManager;
@@ -27,6 +28,7 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -49,6 +51,13 @@ import java.util.List;
  * so a stitch failure is always a full unfused fallback: WARN once per shape (first-failure signal from the cache),
  * DEBUG on repeats. As a defensive net, a {@link LinkageError} escaping the fused handle at evaluation time is
  * likewise caught and re-served from the unfused pair (latched off for the rest of the evaluator's life).
+ *
+ * <h2>Verify mode (test/CI)</h2>
+ * When {@link FusionSettings#isVerifyEnabled()}, {@code evalProjection} also runs the unfused Filter→Eval pair on
+ * the same page (saving/restoring the fused {@code positions} array the operator consumes) and fails on any
+ * difference in the compact projection <b>or</b> the survivor indices — see {@link FusionVerify}. The unfused pair
+ * is bound to {@link DriverContext#ignoringWarnings()} so comparison eval does not union warnings into the real
+ * collector. The branch is a {@code static final} read folded away in production.
  */
 public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluator.Factory {
 
@@ -130,6 +139,11 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
         Object[] predConstValues = constantValues(predicateConstants);
         Object[] projConstValues = constantValues(projectionConstants);
         MethodHandle handle = null;
+        List<byte[]> captured = null;
+        if (FusionSettings.isVerifyEnabled()) {
+            captured = new ArrayList<>();
+            FusionDump.beginThreadCapture(captured);
+        }
         try {
             Class<?> fusedClass = compiler.compileFilterEvalBlockLoop(LOOKUP, predicateTree, projectionTree);
             MethodType type = fusedType(
@@ -145,6 +159,11 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
             FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure(logger, shape, FusedClassCache.Path.FILTER_EVAL_BLOCK, true, e);
             FusionTelemetry.recordFailure(shape);
             handle = null;
+        } finally {
+            if (captured != null) {
+                FusionDump.endThreadCapture();
+                FusionVerify.recordClassBytes(shape, captured);
+            }
         }
         return new FusedFilterEvalEvaluatorFactory(
             warningSources,
@@ -279,6 +298,10 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
         // eval-time LinkageError; closed with this evaluator.
         private ExpressionEvaluator unfusedPredicate;
         private ExpressionEvaluator unfusedProjection;
+        // Verify-mode only: unfused pair bound to DriverContext.ignoringWarnings() so A/B eval does not union
+        // unfused warnings into the driver's collector. Closed with this evaluator.
+        private ExpressionEvaluator verifyUnfusedPredicate;
+        private ExpressionEvaluator verifyUnfusedProjection;
         private boolean fusionDisabled;
 
         FusedFilterEvalEvaluator(
@@ -347,7 +370,28 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
                 System.arraycopy(predicateConstants, 0, args, i, predConst);
                 i += predConst;
                 System.arraycopy(projectionConstants, 0, args, i, projConst);
-                return (Block) fusedSpreader.invoke(args);
+                Block fused = (Block) fusedSpreader.invoke(args);
+                // Verify-mode A/B: a single static-final read that the JIT folds away in production. The fused
+                // handle fills positions[0..count); the unfused pair overwrites that array, so save/restore the
+                // fused survivors before returning (the operator filters the input page with them).
+                if (FusionSettings.isVerifyEnabled()) {
+                    if (FusionVerify.skipForTests == false) {
+                        int fusedCount = fused.getPositionCount();
+                        int[] saved = Arrays.copyOf(positions, positions.length);
+                        Block reference;
+                        try {
+                            // IGNORE context: unfused Filter→Eval must not union warnings into the real collector.
+                            reference = unfusedProjection(page, positions, verifyUnfusedPredicate(), verifyUnfusedProjection());
+                        } catch (Throwable t) {
+                            org.elasticsearch.core.Releasables.closeExpectNoException(fused);
+                            throw t;
+                        }
+                        // Survivor indices + projection block; restore + close-on-throw live in FusionVerify so a
+                        // fusedCount > positions.length cannot leak either block (AIOOB on a raw arraycopy).
+                        fused = FusionVerify.compareFilterEvalAndReturn(fused, reference, saved, fusedCount, positions, shape);
+                    }
+                }
+                return fused;
             } catch (LinkageError e) {
                 fusionDisabled = true;
                 logger.warn(() -> "fused filter-eval failed to link for shape [" + shape + "]; falling back to unfused", e);
@@ -367,9 +411,17 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
          * unfused {@code Eval} would and emits no warnings for dropped rows), returning the compact projection block.
          */
         private Block unfusedProjection(Page page, int[] positions) {
+            return unfusedProjection(page, positions, unfusedPredicate(), unfusedProjection());
+        }
+
+        /**
+         * Filter→Eval fallback using the supplied evaluators. The real fallback binds the driver's
+         * {@link DriverContext} (warnings collected); verify-mode A/B binds {@link DriverContext#ignoringWarnings()}.
+         */
+        private Block unfusedProjection(Page page, int[] positions, ExpressionEvaluator predicate, ExpressionEvaluator projection) {
             int positionCount = page.getPositionCount();
             int count = 0;
-            try (BooleanBlock test = (BooleanBlock) unfusedPredicate().eval(page)) {
+            try (BooleanBlock test = (BooleanBlock) predicate.eval(page)) {
                 for (int p = 0; p < positionCount; p++) {
                     if (test.isNull(p) || test.getValueCount(p) != 1) {
                         continue;
@@ -381,7 +433,7 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
             }
             Page filtered = (count == positionCount) ? page.shallowCopy() : page.filter(false, positions, 0, count);
             try {
-                return unfusedProjection().eval(filtered);
+                return projection.eval(filtered);
             } finally {
                 filtered.releaseBlocks();
             }
@@ -412,6 +464,20 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
             return unfusedProjection;
         }
 
+        private ExpressionEvaluator verifyUnfusedPredicate() {
+            if (verifyUnfusedPredicate == null) {
+                this.verifyUnfusedPredicate = unfusedPredicateFactory.get(driverContext.ignoringWarnings());
+            }
+            return verifyUnfusedPredicate;
+        }
+
+        private ExpressionEvaluator verifyUnfusedProjection() {
+            if (verifyUnfusedProjection == null) {
+                this.verifyUnfusedProjection = unfusedProjectionFactory.get(driverContext.ignoringWarnings());
+            }
+            return verifyUnfusedProjection;
+        }
+
         @Override
         public long baseRamBytesUsed() {
             return BASE_RAM_BYTES_USED;
@@ -419,7 +485,12 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
 
         @Override
         public void close() {
-            org.elasticsearch.core.Releasables.closeExpectNoException(unfusedPredicate, unfusedProjection);
+            org.elasticsearch.core.Releasables.closeExpectNoException(
+                unfusedPredicate,
+                unfusedProjection,
+                verifyUnfusedPredicate,
+                verifyUnfusedProjection
+            );
         }
 
         @Override
