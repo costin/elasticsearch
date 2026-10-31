@@ -446,7 +446,8 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
         return switch (profile) {
             case CLEAN_UNARY -> Structure.DENSE_VECTOR; // keep dense so the plain-vector fast path is taken
             case CLEAN, OVERFLOW, DIVZERO ->
-                // Occasionally use a ConstantVector: a dense, no-null, non-ArrayVector input that forces the block path.
+                // Occasionally use a ConstantVector: a dense, no-null, non-ArrayVector input that takes the
+                // all-interface vector path (typed *Vector.getX) rather than VectorUnsafe.
                 randomInt(3) == 0 ? Structure.CONSTANT : Structure.DENSE_VECTOR;
             case NULLS -> forcedAbnormal ? Structure.NULLABLE_BLOCK : randomFrom(Structure.DENSE_VECTOR, Structure.NULLABLE_BLOCK);
             case MULTIVALUE -> forcedAbnormal ? Structure.MULTIVALUE_BLOCK : randomFrom(Structure.DENSE_VECTOR, Structure.MULTIVALUE_BLOCK);

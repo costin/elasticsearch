@@ -92,7 +92,15 @@ final class FusedClassCache {
     /** Which {@link Stitcher} emit shape a cached class is; part of the cache key since one shape yields up to three. */
     enum Path {
         BLOCK,
+        /**
+         * {@link Stitcher#compileVectorLoop}: one hidden class carries both the ALL-RAW and ALL-INTERFACE methods,
+         * so a single cache entry covers both per-page read variants.
+         */
         PLAIN_VECTOR,
+        /**
+         * {@link Stitcher#compileVectorLoopChecked}: one hidden class carries ALL-RAW and ALL-INTERFACE variants of
+         * both the builder {@code fused} method and the overflow-abandoning {@code fusedRaw} method.
+         */
         CHECKED_VECTOR,
         /** {@link Stitcher#compileLogicalBlockLoop}: a 3VL {@code AND}/{@code OR} tree; nullable boolean, block-only. */
         LOGICAL_BLOCK,
