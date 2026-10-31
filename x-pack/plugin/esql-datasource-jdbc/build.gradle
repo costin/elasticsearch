@@ -163,7 +163,6 @@ tasks.named("thirdPartyAudit").configure {
     // Optional metrics trackers (Dropwizard metrics-core / metrics-healthchecks) — provided+optional in HikariCP's pom.
     'com.codahale.metrics.Histogram',
     'com.codahale.metrics.Meter',
-    'com.codahale.metrics.Metric',
     'com.codahale.metrics.MetricRegistry',
     'com.codahale.metrics.Snapshot',
     'com.codahale.metrics.Timer',
