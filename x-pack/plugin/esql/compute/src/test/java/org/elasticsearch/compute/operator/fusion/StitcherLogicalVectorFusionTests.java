@@ -26,9 +26,12 @@ import static org.hamcrest.Matchers.is;
 
 /**
  * Structural proof for the dense logical vector path ({@link Stitcher#compileLogicalVectorLoop}): the emitted
- * class must evaluate an {@code AND}/{@code OR} tree over dense vectors without touching {@code Block} or
- * {@code BooleanBlock.Builder} (those are the 3VL block path's shared call sites). The all-interface variant
- * is allowed to {@code INVOKEINTERFACE} the concrete {@code *Vector} types.
+ * class must evaluate an {@code AND}/{@code OR} tree over dense vectors without touching {@code Block}, any typed
+ * {@code *Block}, or any compute-data {@code *Builder} (those are the 3VL block path's shared call sites). The
+ * all-interface variant is allowed to {@code INVOKEINTERFACE} the concrete {@code *Vector} types, including the
+ * allowed output wrapping {@code BooleanVector.asBlock()}. Owners are matched with {@link ForbiddenHotPathOwners}
+ * so a typed {@code BooleanBlock.getBoolean} or {@code BooleanVectorBuilder.appendBoolean} cannot slip past an
+ * exact-name filter.
  */
 public class StitcherLogicalVectorFusionTests extends ESTestCase {
 
@@ -45,8 +48,6 @@ public class StitcherLogicalVectorFusionTests extends ESTestCase {
     private static final FusionDescriptor GT = new FusionDescriptor(ComparisonKernels.class, "gt", "(JJ)Z", false, true);
     private static final FusionDescriptor LT = new FusionDescriptor(ComparisonKernels.class, "lt", "(JJ)Z", false, true);
 
-    private static final String BLOCK = "org/elasticsearch/compute/data/Block";
-    private static final String BUILDER = "org/elasticsearch/compute/data/BooleanBlock$Builder";
     private static final String VECTOR_UNSAFE = "org/elasticsearch/compute/data/VectorUnsafe";
 
     private Stitcher stitcher;
@@ -58,10 +59,11 @@ public class StitcherLogicalVectorFusionTests extends ESTestCase {
     }
 
     /**
-     * The emitted logical VECTOR methods contain no {@code INVOKEINTERFACE} on {@code Block} and no reference to
-     * {@code BooleanBlock$Builder}. {@code fusedInterface} must call typed {@code *Vector.getX} getters (not merely
-     * {@code asBlock}); {@code fused} must {@code INVOKESTATIC VectorUnsafe} and must not call those getters, so the
-     * two variants are structurally distinct.
+     * The emitted logical VECTOR methods contain no {@code INVOKEINTERFACE}/{@code INVOKEVIRTUAL} on {@code Block}
+     * or any typed {@code *Block}, and no reference to any compute-data {@code *Builder}. {@code fusedInterface} must
+     * call typed {@code *Vector.getX} getters (not merely {@code asBlock}); {@code fused} must
+     * {@code INVOKESTATIC VectorUnsafe} and must not call those getters, so the two variants are structurally
+     * distinct. {@code BooleanVector.asBlock()} and {@code BlockFactory.newBooleanArrayVector} stay allowed.
      */
     public void testLogicalVectorLoopHasNoBlockInterfaceOrBuilder() throws Exception {
         FusionNode tree = andGtLt();
@@ -84,10 +86,11 @@ public class StitcherLogicalVectorFusionTests extends ESTestCase {
                 return new MethodVisitor(Opcodes.ASM9) {
                     @Override
                     public void visitMethodInsn(int opcode, String owner, String mName, String mDesc, boolean isInterface) {
-                        if (opcode == Opcodes.INVOKEINTERFACE && BLOCK.equals(owner)) {
-                            violations.add(name + ": INVOKEINTERFACE " + owner + "." + mName + mDesc);
+                        if ((opcode == Opcodes.INVOKEINTERFACE || opcode == Opcodes.INVOKEVIRTUAL)
+                            && ForbiddenHotPathOwners.isBlockOwner(owner)) {
+                            violations.add(name + ": " + invokeOpcodeName(opcode) + " " + owner + "." + mName + mDesc);
                         }
-                        if (owner.contains("BooleanBlock$Builder") || BUILDER.equals(owner)) {
+                        if (ForbiddenHotPathOwners.isBuilderOwner(owner)) {
                             violations.add(name + ": Builder call " + owner + "." + mName);
                         }
                         boolean typedGetter = opcode == Opcodes.INVOKEINTERFACE
@@ -107,7 +110,7 @@ public class StitcherLogicalVectorFusionTests extends ESTestCase {
 
                     @Override
                     public void visitTypeInsn(int opcode, String type) {
-                        if (type.contains("BooleanBlock$Builder")) {
+                        if (ForbiddenHotPathOwners.isBuilderOwner(type)) {
                             violations.add(name + ": Builder type " + type);
                         }
                     }
@@ -117,11 +120,7 @@ public class StitcherLogicalVectorFusionTests extends ESTestCase {
 
         assertThat("emitted both fused and fusedInterface", methods, hasItem(Stitcher.FUSED_METHOD_NAME));
         assertThat("emitted both fused and fusedInterface", methods, hasItem(Stitcher.FUSED_INTERFACE_METHOD_NAME));
-        assertThat(
-            "logical VECTOR methods must not INVOKEINTERFACE Block or reference BooleanBlock$Builder: " + violations,
-            violations,
-            is(empty())
-        );
+        assertThat("logical VECTOR methods must not invoke compute/data *Block or *Builder: " + violations, violations, is(empty()));
         assertThat(
             "fusedInterface must INVOKEINTERFACE getLong/getInt/getDouble on a *Vector (asBlock does not count)",
             interfaceGetters[0],
@@ -137,6 +136,11 @@ public class StitcherLogicalVectorFusionTests extends ESTestCase {
     public void testCompileLogicalVectorLoopDefines() throws Exception {
         Class<?> fused = stitcher.compileLogicalVectorLoop(MethodHandles.lookup(), andGtLt());
         assertThat(fused.getPackageName(), is(getClass().getPackageName()));
+    }
+
+    /** Only called after the visitor has already gated on {@code INVOKEINTERFACE} or {@code INVOKEVIRTUAL}. */
+    private static String invokeOpcodeName(int opcode) {
+        return opcode == Opcodes.INVOKEINTERFACE ? "INVOKEINTERFACE" : "INVOKEVIRTUAL";
     }
 
     private static FusionNode andGtLt() {

@@ -452,15 +452,17 @@ public class StitcherOverflowTests extends ESTestCase {
     }
 
     /**
-     * Task 3 (c): {@code fusedRaw} must not touch any {@code *Block$Builder}. {@code INVOKEVIRTUAL BlockFactory.
-     * new*ArrayVector} is the allowed write; the builder-based {@code fused} sibling keeps its builder invokes.
+     * Task 3 (c): {@code fusedRaw} must not read through {@code Block}/{@code *Block} or write per-row through any
+     * compute-data {@code *Builder}. {@code INVOKEVIRTUAL BlockFactory.new*ArrayVector} is the allowed write;
+     * {@code *Vector.asBlock()} is the allowed output wrapping. The builder-based {@code fused} sibling keeps its
+     * builder invokes.
      */
     public void testCheckedVectorRawMethodHasNoBlockBuilderInvokes() throws Exception {
         FusionNode tree = addThenMulTree();
         byte[] bytecode = stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), tree);
 
         List<String> methods = new ArrayList<>();
-        List<String> rawBuilderInvokes = new ArrayList<>();
+        List<String> rawHotPathViolations = new ArrayList<>();
         new ClassReader(bytecode).accept(new ClassVisitor(Opcodes.ASM9) {
             @Override
             public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
@@ -472,17 +474,14 @@ public class StitcherOverflowTests extends ESTestCase {
                         if (isRaw == false) {
                             return;
                         }
-                        boolean builderOwner = owner.contains("Block$Builder");
-                        if (builderOwner && (opcode == Opcodes.INVOKEINTERFACE || opcode == Opcodes.INVOKEVIRTUAL)) {
-                            rawBuilderInvokes.add(name + ": " + opcodeName(opcode) + " " + owner + "." + mName + mDesc);
-                        }
+                        recordForbiddenHotPathInvoke(rawHotPathViolations, name, opcode, owner, mName, mDesc);
                     }
                 };
             }
         }, 0);
 
         assertThat("checked-vector class must emit fusedRaw", methods, hasItem(Stitcher.FUSED_RAW_METHOD_NAME));
-        assertThat("fusedRaw must not invoke *Block$Builder: " + rawBuilderInvokes, rawBuilderInvokes, is(empty()));
+        assertThat("fusedRaw must not invoke compute/data *Block or *Builder: " + rawHotPathViolations, rawHotPathViolations, is(empty()));
     }
 
     /**
@@ -505,7 +504,7 @@ public class StitcherOverflowTests extends ESTestCase {
         assertThat("over-budget fusedRaw must lift into compute()", methods, hasItem("compute"));
         assertThat(methods, hasItem(Stitcher.FUSED_RAW_METHOD_NAME));
 
-        List<String> rawBuilderInvokes = new ArrayList<>();
+        List<String> rawHotPathViolations = new ArrayList<>();
         boolean[] fusedRawCallsCompute = { false };
         new ClassReader(split.bytecode).accept(new ClassVisitor(Opcodes.ASM9) {
             @Override
@@ -520,17 +519,18 @@ public class StitcherOverflowTests extends ESTestCase {
                         if ("compute".equals(mName) && opcode == Opcodes.INVOKESTATIC) {
                             fusedRawCallsCompute[0] = true;
                         }
-                        boolean builderOwner = owner.contains("Block$Builder");
-                        if (builderOwner && (opcode == Opcodes.INVOKEINTERFACE || opcode == Opcodes.INVOKEVIRTUAL)) {
-                            rawBuilderInvokes.add(name + ": " + opcodeName(opcode) + " " + owner + "." + mName + mDesc);
-                        }
+                        recordForbiddenHotPathInvoke(rawHotPathViolations, name, opcode, owner, mName, mDesc);
                     }
                 };
             }
         }, 0);
 
         assertThat("split fusedRaw loop must INVOKESTATIC compute()", fusedRawCallsCompute[0], is(true));
-        assertThat("split fusedRaw must not invoke *Block$Builder: " + rawBuilderInvokes, rawBuilderInvokes, is(empty()));
+        assertThat(
+            "split fusedRaw must not invoke compute/data *Block or *Builder: " + rawHotPathViolations,
+            rawHotPathViolations,
+            is(empty())
+        );
 
         int rawSize = Stitcher.methodCodeLength(split.bytecode, Stitcher.FUSED_RAW_METHOD_NAME);
         assertThat("split fusedRaw emitted a Code attribute", rawSize, greaterThan(0));
@@ -634,6 +634,27 @@ public class StitcherOverflowTests extends ESTestCase {
             Releasables.closeExpectNoException(va, vb, rawResult, builderResult);
         }
         assertWarnings(FIRST_EXCEPTION_HEADER, OVERFLOW_WARNING);
+    }
+
+    /**
+     * Ban is scoped to {@code INVOKEINTERFACE}/{@code INVOKEVIRTUAL} on fusedRaw so the allowed
+     * {@code BlockFactory.new*ArrayVector} ({@code INVOKEVIRTUAL} on {@code BlockFactory}, not a {@code *Block})
+     * and {@code *Vector.asBlock()} (owner is a {@code *Vector}) stay permitted.
+     */
+    private static void recordForbiddenHotPathInvoke(
+        List<String> violations,
+        String methodName,
+        int opcode,
+        String owner,
+        String mName,
+        String mDesc
+    ) {
+        if (opcode != Opcodes.INVOKEINTERFACE && opcode != Opcodes.INVOKEVIRTUAL) {
+            return;
+        }
+        if (ForbiddenHotPathOwners.isBuilderOwner(owner) || ForbiddenHotPathOwners.isBlockOwner(owner)) {
+            violations.add(methodName + ": " + opcodeName(opcode) + " " + owner + "." + mName + mDesc);
+        }
     }
 
     private static String opcodeName(int opcode) {

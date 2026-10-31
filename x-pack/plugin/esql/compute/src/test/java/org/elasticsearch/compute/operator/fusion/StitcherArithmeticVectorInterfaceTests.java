@@ -27,9 +27,11 @@ import static org.hamcrest.Matchers.is;
 /**
  * Structural proof for the arithmetic INTERFACE-VECTOR siblings of {@link Stitcher#compileVectorLoop} and
  * {@link Stitcher#compileVectorLoopChecked}: the all-interface methods must read via typed {@code *Vector.getX}
- * (not {@code VectorUnsafe}) and must not {@code INVOKEINTERFACE} {@code Block}. Builder-forbidding is scoped to the
- * raw-output methods ({@code fused}/{@code fusedInterface} on PLAIN, {@code fusedRaw}/{@code fusedRawInterface} on
- * CHECKED); the checked builder {@code fusedInterface} legitimately uses {@code *Block$Builder} for overflow output.
+ * (not {@code VectorUnsafe}) and must not invoke {@code Block} or any typed {@code *Block}. Builder-forbidding is
+ * scoped to the raw-output methods ({@code fused}/{@code fusedInterface} on PLAIN, {@code fusedRaw}/{@code
+ * fusedRawInterface} on CHECKED); the checked builder {@code fusedInterface} legitimately uses {@code *Block$Builder}
+ * for overflow output. Owners are matched with {@link ForbiddenHotPathOwners} so a typed {@code LongBlock.getLong}
+ * or {@code BooleanVectorBuilder.appendBoolean} cannot slip past an exact-name filter.
  */
 public class StitcherArithmeticVectorInterfaceTests extends ESTestCase {
 
@@ -56,7 +58,6 @@ public class StitcherArithmeticVectorInterfaceTests extends ESTestCase {
     private static final FusionDescriptor ADD_EXACT = new FusionDescriptor(LongKernels.class, "addExact", "(JJ)J", true, true);
     private static final FusionDescriptor MUL_EXACT = new FusionDescriptor(LongKernels.class, "mulExact", "(JJ)J", true, true);
 
-    private static final String BLOCK = "org/elasticsearch/compute/data/Block";
     private static final String VECTOR_UNSAFE = "org/elasticsearch/compute/data/VectorUnsafe";
 
     private Stitcher stitcher;
@@ -69,8 +70,10 @@ public class StitcherArithmeticVectorInterfaceTests extends ESTestCase {
 
     /**
      * PLAIN_VECTOR emits both {@code fused} (ALL-RAW) and {@code fusedInterface}. The interface method has typed
-     * {@code *Vector.getX} getters, no {@code INVOKEINTERFACE} on {@code Block}, no {@code *Block$Builder}, and no
-     * {@code VectorUnsafe} reads. The raw method uses {@code VectorUnsafe} and must not call those getters.
+     * {@code *Vector.getX} getters, no {@code INVOKEINTERFACE}/{@code INVOKEVIRTUAL} on {@code Block} or any typed
+     * {@code *Block}, no compute-data {@code *Builder}, and no {@code VectorUnsafe} reads. The raw method uses
+     * {@code VectorUnsafe} and must not call those getters. {@code *Vector.asBlock()} and
+     * {@code BlockFactory.new*ArrayVector} stay allowed (owners are not {@code *Block}/{@code *Builder}).
      */
     public void testPlainVectorInterfaceHasTypedGettersAndNoBlockOrBuilder() throws Exception {
         byte[] bytecode = stitcher.vectorLoopBytecode(MethodHandles.lookup(), addThenMul(ADD, MUL));
@@ -92,10 +95,11 @@ public class StitcherArithmeticVectorInterfaceTests extends ESTestCase {
                     @Override
                     public void visitMethodInsn(int opcode, String owner, String mName, String mDesc, boolean isInterface) {
                         if (isInterfaceMethod) {
-                            if (opcode == Opcodes.INVOKEINTERFACE && BLOCK.equals(owner)) {
-                                interfaceViolations.add(name + ": INVOKEINTERFACE " + owner + "." + mName + mDesc);
+                            if ((opcode == Opcodes.INVOKEINTERFACE || opcode == Opcodes.INVOKEVIRTUAL)
+                                && ForbiddenHotPathOwners.isBlockOwner(owner)) {
+                                interfaceViolations.add(name + ": " + invokeOpcodeName(opcode) + " " + owner + "." + mName + mDesc);
                             }
-                            if (owner.contains("Block$Builder")) {
+                            if (ForbiddenHotPathOwners.isBuilderOwner(owner)) {
                                 interfaceViolations.add(name + ": Builder call " + owner + "." + mName);
                             }
                             if (typedGetter(opcode, owner, mName)) {
@@ -115,7 +119,7 @@ public class StitcherArithmeticVectorInterfaceTests extends ESTestCase {
 
                     @Override
                     public void visitTypeInsn(int opcode, String type) {
-                        if (isInterfaceMethod && type.contains("Block$Builder")) {
+                        if (isInterfaceMethod && ForbiddenHotPathOwners.isBuilderOwner(type)) {
                             interfaceViolations.add(name + ": Builder type " + type);
                         }
                     }
@@ -126,7 +130,7 @@ public class StitcherArithmeticVectorInterfaceTests extends ESTestCase {
         assertThat("emitted both fused and fusedInterface", methods, hasItem(Stitcher.FUSED_METHOD_NAME));
         assertThat("emitted both fused and fusedInterface", methods, hasItem(Stitcher.FUSED_INTERFACE_METHOD_NAME));
         assertThat(
-            "plain fusedInterface must not INVOKEINTERFACE Block or reference *Block$Builder: " + interfaceViolations,
+            "plain fusedInterface must not invoke compute/data *Block or *Builder: " + interfaceViolations,
             interfaceViolations,
             is(empty())
         );
@@ -139,8 +143,8 @@ public class StitcherArithmeticVectorInterfaceTests extends ESTestCase {
     /**
      * CHECKED_VECTOR emits {@code fused}/{@code fusedInterface} (builder) and {@code fusedRaw}/{@code fusedRawInterface}
      * (dense array output). Every interface method has typed {@code *Vector.getX} and no {@code VectorUnsafe} reads.
-     * {@code fusedRawInterface} must not touch {@code *Block$Builder} or {@code INVOKEINTERFACE} {@code Block}; the
-     * builder {@code fusedInterface} may. {@code fusedRaw} uses {@code VectorUnsafe} and must not call typed getters.
+     * {@code fusedRawInterface} must not touch any compute-data {@code *Builder} or invoke {@code Block}/{@code *Block};
+     * the builder {@code fusedInterface} may. {@code fusedRaw} uses {@code VectorUnsafe} and must not call typed getters.
      */
     public void testCheckedVectorInterfaceHasTypedGettersAndFusedRawInterfaceHasNoBuilder() throws Exception {
         byte[] bytecode = stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), addThenMul(ADD_EXACT, MUL_EXACT));
@@ -164,10 +168,11 @@ public class StitcherArithmeticVectorInterfaceTests extends ESTestCase {
                     @Override
                     public void visitMethodInsn(int opcode, String owner, String mName, String mDesc, boolean isInterface) {
                         if (isRawInterface) {
-                            if (opcode == Opcodes.INVOKEINTERFACE && BLOCK.equals(owner)) {
-                                rawInterfaceViolations.add(name + ": INVOKEINTERFACE " + owner + "." + mName + mDesc);
+                            if ((opcode == Opcodes.INVOKEINTERFACE || opcode == Opcodes.INVOKEVIRTUAL)
+                                && ForbiddenHotPathOwners.isBlockOwner(owner)) {
+                                rawInterfaceViolations.add(name + ": " + invokeOpcodeName(opcode) + " " + owner + "." + mName + mDesc);
                             }
-                            if (owner.contains("Block$Builder")) {
+                            if (ForbiddenHotPathOwners.isBuilderOwner(owner)) {
                                 rawInterfaceViolations.add(name + ": Builder call " + owner + "." + mName);
                             }
                             if (opcode == Opcodes.INVOKESTATIC && VECTOR_UNSAFE.equals(owner)) {
@@ -192,7 +197,7 @@ public class StitcherArithmeticVectorInterfaceTests extends ESTestCase {
 
                     @Override
                     public void visitTypeInsn(int opcode, String type) {
-                        if (isRawInterface && type.contains("Block$Builder")) {
+                        if (isRawInterface && ForbiddenHotPathOwners.isBuilderOwner(type)) {
                             rawInterfaceViolations.add(name + ": Builder type " + type);
                         }
                     }
@@ -205,7 +210,7 @@ public class StitcherArithmeticVectorInterfaceTests extends ESTestCase {
         assertThat("checked-vector class must emit fusedRaw", methods, hasItem(Stitcher.FUSED_RAW_METHOD_NAME));
         assertThat("checked-vector class must emit fusedRawInterface", methods, hasItem(Stitcher.FUSED_RAW_INTERFACE_METHOD_NAME));
         assertThat(
-            "fusedRawInterface must not INVOKEINTERFACE Block or reference *Block$Builder: " + rawInterfaceViolations,
+            "fusedRawInterface must not invoke compute/data *Block or *Builder: " + rawInterfaceViolations,
             rawInterfaceViolations,
             is(empty())
         );
@@ -244,6 +249,11 @@ public class StitcherArithmeticVectorInterfaceTests extends ESTestCase {
             && owner.contains("compute/data")
             && owner.endsWith("Vector")
             && (mName.equals("getLong") || mName.equals("getInt") || mName.equals("getDouble"));
+    }
+
+    /** Only called after the visitor has already gated on {@code INVOKEINTERFACE} or {@code INVOKEVIRTUAL}. */
+    private static String invokeOpcodeName(int opcode) {
+        return opcode == Opcodes.INVOKEINTERFACE ? "INVOKEINTERFACE" : "INVOKEVIRTUAL";
     }
 
     private static FusionNode addThenMul(FusionDescriptor add, FusionDescriptor mul) {
