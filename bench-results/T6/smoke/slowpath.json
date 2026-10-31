@@ -1,0 +1,3252 @@
+[
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "false",
+            "shape" : "DENSE_ADD_MUL_SUB_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 2.0826233176774878,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 2.0826233176774878,
+                "50.0" : 2.0826233176774878,
+                "90.0" : 2.0826233176774878,
+                "95.0" : 2.0826233176774878,
+                "99.0" : 2.0826233176774878,
+                "99.9" : 2.0826233176774878,
+                "99.99" : 2.0826233176774878,
+                "99.999" : 2.0826233176774878,
+                "99.9999" : 2.0826233176774878,
+                "100.0" : 2.0826233176774878
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    2.0826233176774878
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "false",
+            "shape" : "DENSE_CHAIN8_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 5.346521042488717,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 5.346521042488717,
+                "50.0" : 5.346521042488717,
+                "90.0" : 5.346521042488717,
+                "95.0" : 5.346521042488717,
+                "99.0" : 5.346521042488717,
+                "99.9" : 5.346521042488717,
+                "99.99" : 5.346521042488717,
+                "99.999" : 5.346521042488717,
+                "99.9999" : 5.346521042488717,
+                "100.0" : 5.346521042488717
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    5.346521042488717
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "false",
+            "shape" : "NULLS_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 6.291841937649634,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 6.291841937649634,
+                "50.0" : 6.291841937649634,
+                "90.0" : 6.291841937649634,
+                "95.0" : 6.291841937649634,
+                "99.0" : 6.291841937649634,
+                "99.9" : 6.291841937649634,
+                "99.99" : 6.291841937649634,
+                "99.999" : 6.291841937649634,
+                "99.9999" : 6.291841937649634,
+                "100.0" : 6.291841937649634
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    6.291841937649634
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "false",
+            "shape" : "NULLS_ADD_MUL_DOUBLE",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 7.50450585438655,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 7.50450585438655,
+                "50.0" : 7.50450585438655,
+                "90.0" : 7.50450585438655,
+                "95.0" : 7.50450585438655,
+                "99.0" : 7.50450585438655,
+                "99.9" : 7.50450585438655,
+                "99.99" : 7.50450585438655,
+                "99.999" : 7.50450585438655,
+                "99.9999" : 7.50450585438655,
+                "100.0" : 7.50450585438655
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    7.50450585438655
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "false",
+            "shape" : "MV_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 10.196502785933646,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 10.196502785933646,
+                "50.0" : 10.196502785933646,
+                "90.0" : 10.196502785933646,
+                "95.0" : 10.196502785933646,
+                "99.0" : 10.196502785933646,
+                "99.9" : 10.196502785933646,
+                "99.99" : 10.196502785933646,
+                "99.999" : 10.196502785933646,
+                "99.9999" : 10.196502785933646,
+                "100.0" : 10.196502785933646
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    10.196502785933646
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "false",
+            "shape" : "CONST_COL_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 1.8790879249572754,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 1.8790879249572754,
+                "50.0" : 1.8790879249572754,
+                "90.0" : 1.8790879249572754,
+                "95.0" : 1.8790879249572754,
+                "99.0" : 1.8790879249572754,
+                "99.9" : 1.8790879249572754,
+                "99.99" : 1.8790879249572754,
+                "99.999" : 1.8790879249572754,
+                "99.9999" : 1.8790879249572754,
+                "100.0" : 1.8790879249572754
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    1.8790879249572754
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "false",
+            "shape" : "BIGARRAY_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 2.9059683048363887,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 2.9059683048363887,
+                "50.0" : 2.9059683048363887,
+                "90.0" : 2.9059683048363887,
+                "95.0" : 2.9059683048363887,
+                "99.0" : 2.9059683048363887,
+                "99.9" : 2.9059683048363887,
+                "99.99" : 2.9059683048363887,
+                "99.999" : 2.9059683048363887,
+                "99.9999" : 2.9059683048363887,
+                "100.0" : 2.9059683048363887
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    2.9059683048363887
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "false",
+            "shape" : "LIT_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 1.8792242068870395,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 1.8792242068870395,
+                "50.0" : 1.8792242068870395,
+                "90.0" : 1.8792242068870395,
+                "95.0" : 1.8792242068870395,
+                "99.0" : 1.8792242068870395,
+                "99.9" : 1.8792242068870395,
+                "99.99" : 1.8792242068870395,
+                "99.999" : 1.8792242068870395,
+                "99.9999" : 1.8792242068870395,
+                "100.0" : 1.8792242068870395
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    1.8792242068870395
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "false",
+            "shape" : "OR_CMP_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 1.108777840013449,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 1.108777840013449,
+                "50.0" : 1.108777840013449,
+                "90.0" : 1.108777840013449,
+                "95.0" : 1.108777840013449,
+                "99.0" : 1.108777840013449,
+                "99.9" : 1.108777840013449,
+                "99.99" : 1.108777840013449,
+                "99.999" : 1.108777840013449,
+                "99.9999" : 1.108777840013449,
+                "100.0" : 1.108777840013449
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    1.108777840013449
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "false",
+            "shape" : "AND_CMP_DOUBLE",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 0.9004024183246452,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 0.9004024183246452,
+                "50.0" : 0.9004024183246452,
+                "90.0" : 0.9004024183246452,
+                "95.0" : 0.9004024183246452,
+                "99.0" : 0.9004024183246452,
+                "99.9" : 0.9004024183246452,
+                "99.99" : 0.9004024183246452,
+                "99.999" : 0.9004024183246452,
+                "99.9999" : 0.9004024183246452,
+                "100.0" : 0.9004024183246452
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    0.9004024183246452
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "false",
+            "shape" : "TO_LOWER_ORDINAL",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 0.23431478894909563,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 0.23431478894909563,
+                "50.0" : 0.23431478894909563,
+                "90.0" : 0.23431478894909563,
+                "95.0" : 0.23431478894909563,
+                "99.0" : 0.23431478894909563,
+                "99.9" : 0.23431478894909563,
+                "99.99" : 0.23431478894909563,
+                "99.999" : 0.23431478894909563,
+                "99.9999" : 0.23431478894909563,
+                "100.0" : 0.23431478894909563
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    0.23431478894909563
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "false",
+            "shape" : "TO_LOWER_PLAIN",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 111.66671228408813,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 111.66671228408813,
+                "50.0" : 111.66671228408813,
+                "90.0" : 111.66671228408813,
+                "95.0" : 111.66671228408813,
+                "99.0" : 111.66671228408813,
+                "99.9" : 111.66671228408813,
+                "99.99" : 111.66671228408813,
+                "99.999" : 111.66671228408813,
+                "99.9999" : 111.66671228408813,
+                "100.0" : 111.66671228408813
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    111.66671228408813
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "false",
+            "shape" : "OVERFLOW10_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 185.1732301712036,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 185.1732301712036,
+                "50.0" : 185.1732301712036,
+                "90.0" : 185.1732301712036,
+                "95.0" : 185.1732301712036,
+                "99.0" : 185.1732301712036,
+                "99.9" : 185.1732301712036,
+                "99.99" : 185.1732301712036,
+                "99.999" : 185.1732301712036,
+                "99.9999" : 185.1732301712036,
+                "100.0" : 185.1732301712036
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    185.1732301712036
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "false",
+            "shape" : "OVERFLOW01_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 37.96716197331747,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 37.96716197331747,
+                "50.0" : 37.96716197331747,
+                "90.0" : 37.96716197331747,
+                "95.0" : 37.96716197331747,
+                "99.0" : 37.96716197331747,
+                "99.9" : 37.96716197331747,
+                "99.99" : 37.96716197331747,
+                "99.999" : 37.96716197331747,
+                "99.9999" : 37.96716197331747,
+                "100.0" : 37.96716197331747
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    37.96716197331747
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "true",
+            "shape" : "DENSE_ADD_MUL_SUB_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 3.7338550824385424,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 3.7338550824385424,
+                "50.0" : 3.7338550824385424,
+                "90.0" : 3.7338550824385424,
+                "95.0" : 3.7338550824385424,
+                "99.0" : 3.7338550824385424,
+                "99.9" : 3.7338550824385424,
+                "99.99" : 3.7338550824385424,
+                "99.999" : 3.7338550824385424,
+                "99.9999" : 3.7338550824385424,
+                "100.0" : 3.7338550824385424
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    3.7338550824385424
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "true",
+            "shape" : "DENSE_CHAIN8_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 6.637728033394649,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 6.637728033394649,
+                "50.0" : 6.637728033394649,
+                "90.0" : 6.637728033394649,
+                "95.0" : 6.637728033394649,
+                "99.0" : 6.637728033394649,
+                "99.9" : 6.637728033394649,
+                "99.99" : 6.637728033394649,
+                "99.999" : 6.637728033394649,
+                "99.9999" : 6.637728033394649,
+                "100.0" : 6.637728033394649
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    6.637728033394649
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "true",
+            "shape" : "NULLS_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 11.708863202263327,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 11.708863202263327,
+                "50.0" : 11.708863202263327,
+                "90.0" : 11.708863202263327,
+                "95.0" : 11.708863202263327,
+                "99.0" : 11.708863202263327,
+                "99.9" : 11.708863202263327,
+                "99.99" : 11.708863202263327,
+                "99.999" : 11.708863202263327,
+                "99.9999" : 11.708863202263327,
+                "100.0" : 11.708863202263327
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    11.708863202263327
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "true",
+            "shape" : "NULLS_ADD_MUL_DOUBLE",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 10.222186791269403,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 10.222186791269403,
+                "50.0" : 10.222186791269403,
+                "90.0" : 10.222186791269403,
+                "95.0" : 10.222186791269403,
+                "99.0" : 10.222186791269403,
+                "99.9" : 10.222186791269403,
+                "99.99" : 10.222186791269403,
+                "99.999" : 10.222186791269403,
+                "99.9999" : 10.222186791269403,
+                "100.0" : 10.222186791269403
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    10.222186791269403
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "true",
+            "shape" : "MV_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 10.811736795637342,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 10.811736795637342,
+                "50.0" : 10.811736795637342,
+                "90.0" : 10.811736795637342,
+                "95.0" : 10.811736795637342,
+                "99.0" : 10.811736795637342,
+                "99.9" : 10.811736795637342,
+                "99.99" : 10.811736795637342,
+                "99.999" : 10.811736795637342,
+                "99.9999" : 10.811736795637342,
+                "100.0" : 10.811736795637342
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    10.811736795637342
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "true",
+            "shape" : "CONST_COL_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 3.6664249672079987,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 3.6664249672079987,
+                "50.0" : 3.6664249672079987,
+                "90.0" : 3.6664249672079987,
+                "95.0" : 3.6664249672079987,
+                "99.0" : 3.6664249672079987,
+                "99.9" : 3.6664249672079987,
+                "99.99" : 3.6664249672079987,
+                "99.999" : 3.6664249672079987,
+                "99.9999" : 3.6664249672079987,
+                "100.0" : 3.6664249672079987
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    3.6664249672079987
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "true",
+            "shape" : "BIGARRAY_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 4.930824450957469,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 4.930824450957469,
+                "50.0" : 4.930824450957469,
+                "90.0" : 4.930824450957469,
+                "95.0" : 4.930824450957469,
+                "99.0" : 4.930824450957469,
+                "99.9" : 4.930824450957469,
+                "99.99" : 4.930824450957469,
+                "99.999" : 4.930824450957469,
+                "99.9999" : 4.930824450957469,
+                "100.0" : 4.930824450957469
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    4.930824450957469
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "true",
+            "shape" : "LIT_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 3.2579109870781333,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 3.2579109870781333,
+                "50.0" : 3.2579109870781333,
+                "90.0" : 3.2579109870781333,
+                "95.0" : 3.2579109870781333,
+                "99.0" : 3.2579109870781333,
+                "99.9" : 3.2579109870781333,
+                "99.99" : 3.2579109870781333,
+                "99.999" : 3.2579109870781333,
+                "99.9999" : 3.2579109870781333,
+                "100.0" : 3.2579109870781333
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    3.2579109870781333
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "true",
+            "shape" : "OR_CMP_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 1.096148523603167,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 1.096148523603167,
+                "50.0" : 1.096148523603167,
+                "90.0" : 1.096148523603167,
+                "95.0" : 1.096148523603167,
+                "99.0" : 1.096148523603167,
+                "99.9" : 1.096148523603167,
+                "99.99" : 1.096148523603167,
+                "99.999" : 1.096148523603167,
+                "99.9999" : 1.096148523603167,
+                "100.0" : 1.096148523603167
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    1.096148523603167
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "true",
+            "shape" : "AND_CMP_DOUBLE",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 1.3378505441877577,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 1.3378505441877577,
+                "50.0" : 1.3378505441877577,
+                "90.0" : 1.3378505441877577,
+                "95.0" : 1.3378505441877577,
+                "99.0" : 1.3378505441877577,
+                "99.9" : 1.3378505441877577,
+                "99.99" : 1.3378505441877577,
+                "99.999" : 1.3378505441877577,
+                "99.9999" : 1.3378505441877577,
+                "100.0" : 1.3378505441877577
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    1.3378505441877577
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "true",
+            "shape" : "TO_LOWER_ORDINAL",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 0.41249105848115064,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 0.41249105848115064,
+                "50.0" : 0.41249105848115064,
+                "90.0" : 0.41249105848115064,
+                "95.0" : 0.41249105848115064,
+                "99.0" : 0.41249105848115064,
+                "99.9" : 0.41249105848115064,
+                "99.99" : 0.41249105848115064,
+                "99.999" : 0.41249105848115064,
+                "99.9999" : 0.41249105848115064,
+                "100.0" : 0.41249105848115064
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    0.41249105848115064
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "true",
+            "shape" : "TO_LOWER_PLAIN",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 172.51358890533447,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 172.51358890533447,
+                "50.0" : 172.51358890533447,
+                "90.0" : 172.51358890533447,
+                "95.0" : 172.51358890533447,
+                "99.0" : 172.51358890533447,
+                "99.9" : 172.51358890533447,
+                "99.99" : 172.51358890533447,
+                "99.999" : 172.51358890533447,
+                "99.9999" : 172.51358890533447,
+                "100.0" : 172.51358890533447
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    172.51358890533447
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "true",
+            "shape" : "OVERFLOW10_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 190.42593097686768,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 190.42593097686768,
+                "50.0" : 190.42593097686768,
+                "90.0" : 190.42593097686768,
+                "95.0" : 190.42593097686768,
+                "99.0" : 190.42593097686768,
+                "99.9" : 190.42593097686768,
+                "99.99" : 190.42593097686768,
+                "99.999" : 190.42593097686768,
+                "99.9999" : 190.42593097686768,
+                "100.0" : 190.42593097686768
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    190.42593097686768
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "true",
+            "pollute" : "true",
+            "shape" : "OVERFLOW01_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 41.62035598754883,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 41.62035598754883,
+                "50.0" : 41.62035598754883,
+                "90.0" : 41.62035598754883,
+                "95.0" : 41.62035598754883,
+                "99.0" : 41.62035598754883,
+                "99.9" : 41.62035598754883,
+                "99.99" : 41.62035598754883,
+                "99.999" : 41.62035598754883,
+                "99.9999" : 41.62035598754883,
+                "100.0" : 41.62035598754883
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    41.62035598754883
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "false",
+            "shape" : "DENSE_ADD_MUL_SUB_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 8.834318767894398,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 8.834318767894398,
+                "50.0" : 8.834318767894398,
+                "90.0" : 8.834318767894398,
+                "95.0" : 8.834318767894398,
+                "99.0" : 8.834318767894398,
+                "99.9" : 8.834318767894398,
+                "99.99" : 8.834318767894398,
+                "99.999" : 8.834318767894398,
+                "99.9999" : 8.834318767894398,
+                "100.0" : 8.834318767894398
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    8.834318767894398
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "false",
+            "shape" : "DENSE_CHAIN8_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 20.200092124938966,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 20.200092124938966,
+                "50.0" : 20.200092124938966,
+                "90.0" : 20.200092124938966,
+                "95.0" : 20.200092124938966,
+                "99.0" : 20.200092124938966,
+                "99.9" : 20.200092124938966,
+                "99.99" : 20.200092124938966,
+                "99.999" : 20.200092124938966,
+                "99.9999" : 20.200092124938966,
+                "100.0" : 20.200092124938966
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    20.200092124938966
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "false",
+            "shape" : "NULLS_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 10.368246229071366,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 10.368246229071366,
+                "50.0" : 10.368246229071366,
+                "90.0" : 10.368246229071366,
+                "95.0" : 10.368246229071366,
+                "99.0" : 10.368246229071366,
+                "99.9" : 10.368246229071366,
+                "99.99" : 10.368246229071366,
+                "99.999" : 10.368246229071366,
+                "99.9999" : 10.368246229071366,
+                "100.0" : 10.368246229071366
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    10.368246229071366
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "false",
+            "shape" : "NULLS_ADD_MUL_DOUBLE",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 11.380318922155043,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 11.380318922155043,
+                "50.0" : 11.380318922155043,
+                "90.0" : 11.380318922155043,
+                "95.0" : 11.380318922155043,
+                "99.0" : 11.380318922155043,
+                "99.9" : 11.380318922155043,
+                "99.99" : 11.380318922155043,
+                "99.999" : 11.380318922155043,
+                "99.9999" : 11.380318922155043,
+                "100.0" : 11.380318922155043
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    11.380318922155043
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "false",
+            "shape" : "MV_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 24.054043889045715,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 24.054043889045715,
+                "50.0" : 24.054043889045715,
+                "90.0" : 24.054043889045715,
+                "95.0" : 24.054043889045715,
+                "99.0" : 24.054043889045715,
+                "99.9" : 24.054043889045715,
+                "99.99" : 24.054043889045715,
+                "99.999" : 24.054043889045715,
+                "99.9999" : 24.054043889045715,
+                "100.0" : 24.054043889045715
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    24.054043889045715
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "false",
+            "shape" : "CONST_COL_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 6.224243933154691,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 6.224243933154691,
+                "50.0" : 6.224243933154691,
+                "90.0" : 6.224243933154691,
+                "95.0" : 6.224243933154691,
+                "99.0" : 6.224243933154691,
+                "99.9" : 6.224243933154691,
+                "99.99" : 6.224243933154691,
+                "99.999" : 6.224243933154691,
+                "99.9999" : 6.224243933154691,
+                "100.0" : 6.224243933154691
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    6.224243933154691
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "false",
+            "shape" : "BIGARRAY_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 5.874588330586751,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 5.874588330586751,
+                "50.0" : 5.874588330586751,
+                "90.0" : 5.874588330586751,
+                "95.0" : 5.874588330586751,
+                "99.0" : 5.874588330586751,
+                "99.9" : 5.874588330586751,
+                "99.99" : 5.874588330586751,
+                "99.999" : 5.874588330586751,
+                "99.9999" : 5.874588330586751,
+                "100.0" : 5.874588330586751
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    5.874588330586751
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "false",
+            "shape" : "LIT_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 6.032491892576218,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 6.032491892576218,
+                "50.0" : 6.032491892576218,
+                "90.0" : 6.032491892576218,
+                "95.0" : 6.032491892576218,
+                "99.0" : 6.032491892576218,
+                "99.9" : 6.032491892576218,
+                "99.99" : 6.032491892576218,
+                "99.999" : 6.032491892576218,
+                "99.9999" : 6.032491892576218,
+                "100.0" : 6.032491892576218
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    6.032491892576218
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "false",
+            "shape" : "OR_CMP_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 3.2493687807503395,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 3.2493687807503395,
+                "50.0" : 3.2493687807503395,
+                "90.0" : 3.2493687807503395,
+                "95.0" : 3.2493687807503395,
+                "99.0" : 3.2493687807503395,
+                "99.9" : 3.2493687807503395,
+                "99.99" : 3.2493687807503395,
+                "99.999" : 3.2493687807503395,
+                "99.9999" : 3.2493687807503395,
+                "100.0" : 3.2493687807503395
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    3.2493687807503395
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "false",
+            "shape" : "AND_CMP_DOUBLE",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 3.4175404821123396,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 3.4175404821123396,
+                "50.0" : 3.4175404821123396,
+                "90.0" : 3.4175404821123396,
+                "95.0" : 3.4175404821123396,
+                "99.0" : 3.4175404821123396,
+                "99.9" : 3.4175404821123396,
+                "99.99" : 3.4175404821123396,
+                "99.999" : 3.4175404821123396,
+                "99.9999" : 3.4175404821123396,
+                "100.0" : 3.4175404821123396
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    3.4175404821123396
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "false",
+            "shape" : "TO_LOWER_ORDINAL",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 0.2246605566409832,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 0.2246605566409832,
+                "50.0" : 0.2246605566409832,
+                "90.0" : 0.2246605566409832,
+                "95.0" : 0.2246605566409832,
+                "99.0" : 0.2246605566409832,
+                "99.9" : 0.2246605566409832,
+                "99.99" : 0.2246605566409832,
+                "99.999" : 0.2246605566409832,
+                "99.9999" : 0.2246605566409832,
+                "100.0" : 0.2246605566409832
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    0.2246605566409832
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "false",
+            "shape" : "TO_LOWER_PLAIN",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 100.63464164733887,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 100.63464164733887,
+                "50.0" : 100.63464164733887,
+                "90.0" : 100.63464164733887,
+                "95.0" : 100.63464164733887,
+                "99.0" : 100.63464164733887,
+                "99.9" : 100.63464164733887,
+                "99.99" : 100.63464164733887,
+                "99.999" : 100.63464164733887,
+                "99.9999" : 100.63464164733887,
+                "100.0" : 100.63464164733887
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    100.63464164733887
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "false",
+            "shape" : "OVERFLOW10_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 657.7696990966797,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 657.7696990966797,
+                "50.0" : 657.7696990966797,
+                "90.0" : 657.7696990966797,
+                "95.0" : 657.7696990966797,
+                "99.0" : 657.7696990966797,
+                "99.9" : 657.7696990966797,
+                "99.99" : 657.7696990966797,
+                "99.999" : 657.7696990966797,
+                "99.9999" : 657.7696990966797,
+                "100.0" : 657.7696990966797
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    657.7696990966797
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "false",
+            "shape" : "OVERFLOW01_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 45.03315887451172,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 45.03315887451172,
+                "50.0" : 45.03315887451172,
+                "90.0" : 45.03315887451172,
+                "95.0" : 45.03315887451172,
+                "99.0" : 45.03315887451172,
+                "99.9" : 45.03315887451172,
+                "99.99" : 45.03315887451172,
+                "99.999" : 45.03315887451172,
+                "99.9999" : 45.03315887451172,
+                "100.0" : 45.03315887451172
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    45.03315887451172
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "true",
+            "shape" : "DENSE_ADD_MUL_SUB_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 16.188647429148357,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 16.188647429148357,
+                "50.0" : 16.188647429148357,
+                "90.0" : 16.188647429148357,
+                "95.0" : 16.188647429148357,
+                "99.0" : 16.188647429148357,
+                "99.9" : 16.188647429148357,
+                "99.99" : 16.188647429148357,
+                "99.999" : 16.188647429148357,
+                "99.9999" : 16.188647429148357,
+                "100.0" : 16.188647429148357
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    16.188647429148357
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "true",
+            "shape" : "DENSE_CHAIN8_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 43.03287887573242,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 43.03287887573242,
+                "50.0" : 43.03287887573242,
+                "90.0" : 43.03287887573242,
+                "95.0" : 43.03287887573242,
+                "99.0" : 43.03287887573242,
+                "99.9" : 43.03287887573242,
+                "99.99" : 43.03287887573242,
+                "99.999" : 43.03287887573242,
+                "99.9999" : 43.03287887573242,
+                "100.0" : 43.03287887573242
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    43.03287887573242
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "true",
+            "shape" : "NULLS_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 16.66160448392232,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 16.66160448392232,
+                "50.0" : 16.66160448392232,
+                "90.0" : 16.66160448392232,
+                "95.0" : 16.66160448392232,
+                "99.0" : 16.66160448392232,
+                "99.9" : 16.66160448392232,
+                "99.99" : 16.66160448392232,
+                "99.999" : 16.66160448392232,
+                "99.9999" : 16.66160448392232,
+                "100.0" : 16.66160448392232
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    16.66160448392232
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "true",
+            "shape" : "NULLS_ADD_MUL_DOUBLE",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 16.303662061691284,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 16.303662061691284,
+                "50.0" : 16.303662061691284,
+                "90.0" : 16.303662061691284,
+                "95.0" : 16.303662061691284,
+                "99.0" : 16.303662061691284,
+                "99.9" : 16.303662061691284,
+                "99.99" : 16.303662061691284,
+                "99.999" : 16.303662061691284,
+                "99.9999" : 16.303662061691284,
+                "100.0" : 16.303662061691284
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    16.303662061691284
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "true",
+            "shape" : "MV_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 19.59978504180908,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 19.59978504180908,
+                "50.0" : 19.59978504180908,
+                "90.0" : 19.59978504180908,
+                "95.0" : 19.59978504180908,
+                "99.0" : 19.59978504180908,
+                "99.9" : 19.59978504180908,
+                "99.99" : 19.59978504180908,
+                "99.999" : 19.59978504180908,
+                "99.9999" : 19.59978504180908,
+                "100.0" : 19.59978504180908
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    19.59978504180908
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "true",
+            "shape" : "CONST_COL_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 11.48158013193231,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 11.48158013193231,
+                "50.0" : 11.48158013193231,
+                "90.0" : 11.48158013193231,
+                "95.0" : 11.48158013193231,
+                "99.0" : 11.48158013193231,
+                "99.9" : 11.48158013193231,
+                "99.99" : 11.48158013193231,
+                "99.999" : 11.48158013193231,
+                "99.9999" : 11.48158013193231,
+                "100.0" : 11.48158013193231
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    11.48158013193231
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "true",
+            "shape" : "BIGARRAY_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 12.330742537975311,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 12.330742537975311,
+                "50.0" : 12.330742537975311,
+                "90.0" : 12.330742537975311,
+                "95.0" : 12.330742537975311,
+                "99.0" : 12.330742537975311,
+                "99.9" : 12.330742537975311,
+                "99.99" : 12.330742537975311,
+                "99.999" : 12.330742537975311,
+                "99.9999" : 12.330742537975311,
+                "100.0" : 12.330742537975311
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    12.330742537975311
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "true",
+            "shape" : "LIT_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 10.79349618487888,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 10.79349618487888,
+                "50.0" : 10.79349618487888,
+                "90.0" : 10.79349618487888,
+                "95.0" : 10.79349618487888,
+                "99.0" : 10.79349618487888,
+                "99.9" : 10.79349618487888,
+                "99.99" : 10.79349618487888,
+                "99.999" : 10.79349618487888,
+                "99.9999" : 10.79349618487888,
+                "100.0" : 10.79349618487888
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    10.79349618487888
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "true",
+            "shape" : "OR_CMP_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 3.396443567777935,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 3.396443567777935,
+                "50.0" : 3.396443567777935,
+                "90.0" : 3.396443567777935,
+                "95.0" : 3.396443567777935,
+                "99.0" : 3.396443567777935,
+                "99.9" : 3.396443567777935,
+                "99.99" : 3.396443567777935,
+                "99.999" : 3.396443567777935,
+                "99.9999" : 3.396443567777935,
+                "100.0" : 3.396443567777935
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    3.396443567777935
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "true",
+            "shape" : "AND_CMP_DOUBLE",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 4.59820016225179,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 4.59820016225179,
+                "50.0" : 4.59820016225179,
+                "90.0" : 4.59820016225179,
+                "95.0" : 4.59820016225179,
+                "99.0" : 4.59820016225179,
+                "99.9" : 4.59820016225179,
+                "99.99" : 4.59820016225179,
+                "99.999" : 4.59820016225179,
+                "99.9999" : 4.59820016225179,
+                "100.0" : 4.59820016225179
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    4.59820016225179
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "true",
+            "shape" : "TO_LOWER_ORDINAL",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 0.4011166165563352,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 0.4011166165563352,
+                "50.0" : 0.4011166165563352,
+                "90.0" : 0.4011166165563352,
+                "95.0" : 0.4011166165563352,
+                "99.0" : 0.4011166165563352,
+                "99.9" : 0.4011166165563352,
+                "99.99" : 0.4011166165563352,
+                "99.999" : 0.4011166165563352,
+                "99.9999" : 0.4011166165563352,
+                "100.0" : 0.4011166165563352
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    0.4011166165563352
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "true",
+            "shape" : "TO_LOWER_PLAIN",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 162.04007196426392,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 162.04007196426392,
+                "50.0" : 162.04007196426392,
+                "90.0" : 162.04007196426392,
+                "95.0" : 162.04007196426392,
+                "99.0" : 162.04007196426392,
+                "99.9" : 162.04007196426392,
+                "99.99" : 162.04007196426392,
+                "99.999" : 162.04007196426392,
+                "99.9999" : 162.04007196426392,
+                "100.0" : 162.04007196426392
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    162.04007196426392
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "true",
+            "shape" : "OVERFLOW10_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 710.680965423584,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 710.680965423584,
+                "50.0" : 710.680965423584,
+                "90.0" : 710.680965423584,
+                "95.0" : 710.680965423584,
+                "99.0" : 710.680965423584,
+                "99.9" : 710.680965423584,
+                "99.99" : 710.680965423584,
+                "99.999" : 710.680965423584,
+                "99.9999" : 710.680965423584,
+                "100.0" : 710.680965423584
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    710.680965423584
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/usr/lib/jvm/java-21-openjdk-amd64/bin/java",
+        "jvmArgs" : [
+            "-Xms4g",
+            "-Xmx4g",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64"
+        ],
+        "jdkVersion" : "21.0.12.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "21.0.12.1+1-1-24.04.4-Ubuntu",
+        "warmupIterations" : 0,
+        "warmupTime" : "2 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "200 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "fusion" : "false",
+            "pollute" : "true",
+            "shape" : "OVERFLOW01_ADD_MUL_LONG",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 73.92585372924805,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 73.92585372924805,
+                "50.0" : 73.92585372924805,
+                "90.0" : 73.92585372924805,
+                "95.0" : 73.92585372924805,
+                "99.0" : 73.92585372924805,
+                "99.9" : 73.92585372924805,
+                "99.99" : 73.92585372924805,
+                "99.999" : 73.92585372924805,
+                "99.9999" : 73.92585372924805,
+                "100.0" : 73.92585372924805
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    73.92585372924805
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    }
+]
+
+

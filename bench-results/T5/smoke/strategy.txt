@@ -1,0 +1,1305 @@
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_MUL_LONG, strategy = UNFUSED)
+
+# Run progress: 0.00% complete, ETA 00:00:11
+# Fork: 1 of 1
+Iteration   1: 5.376 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  5.376 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_MUL_LONG, strategy = SPLICED)
+
+# Run progress: 1.79% complete, ETA 00:00:48
+# Fork: 1 of 1
+Iteration   1: 2.010 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  2.010 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_MUL_LONG, strategy = HANDWRITTEN)
+
+# Run progress: 3.57% complete, ETA 00:00:47
+# Fork: 1 of 1
+Iteration   1: 3.144 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  3.144 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_MUL_LONG, strategy = HANDWRITTEN_RAW)
+
+# Run progress: 5.36% complete, ETA 00:00:46
+# Fork: 1 of 1
+Iteration   1: 3.103 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  3.103 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_MUL_SUB_LONG, strategy = UNFUSED)
+
+# Run progress: 7.14% complete, ETA 00:00:45
+# Fork: 1 of 1
+Iteration   1: 9.164 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  9.164 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_MUL_SUB_LONG, strategy = SPLICED)
+
+# Run progress: 8.93% complete, ETA 00:00:43
+# Fork: 1 of 1
+Iteration   1: 2.119 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  2.119 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_MUL_SUB_LONG, strategy = HANDWRITTEN)
+
+# Run progress: 10.71% complete, ETA 00:00:43
+# Fork: 1 of 1
+Iteration   1: 3.331 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  3.331 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_MUL_SUB_LONG, strategy = HANDWRITTEN_RAW)
+
+# Run progress: 12.50% complete, ETA 00:00:42
+# Fork: 1 of 1
+Iteration   1: 2.507 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  2.507 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = CHAIN8_LONG, strategy = UNFUSED)
+
+# Run progress: 14.29% complete, ETA 00:00:41
+# Fork: 1 of 1
+Iteration   1: 21.690 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  21.690 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = CHAIN8_LONG, strategy = SPLICED)
+
+# Run progress: 16.07% complete, ETA 00:00:40
+# Fork: 1 of 1
+Iteration   1: 5.372 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  5.372 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = CHAIN8_LONG, strategy = HANDWRITTEN)
+
+# Run progress: 17.86% complete, ETA 00:00:39
+# Fork: 1 of 1
+Iteration   1: 5.324 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  5.324 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = CHAIN8_LONG, strategy = HANDWRITTEN_RAW)
+
+# Run progress: 19.64% complete, ETA 00:00:39
+# Fork: 1 of 1
+Iteration   1: 5.342 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  5.342 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = LIT_ADD_MUL_LONG, strategy = UNFUSED)
+
+# Run progress: 21.43% complete, ETA 00:00:38
+# Fork: 1 of 1
+Iteration   1: 6.038 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  6.038 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = LIT_ADD_MUL_LONG, strategy = SPLICED)
+
+# Run progress: 23.21% complete, ETA 00:00:37
+# Fork: 1 of 1
+Iteration   1: 1.878 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  1.878 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = LIT_ADD_MUL_LONG, strategy = HANDWRITTEN)
+
+# Run progress: 25.00% complete, ETA 00:00:36
+# Fork: 1 of 1
+Iteration   1: 2.666 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  2.666 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = LIT_ADD_MUL_LONG, strategy = HANDWRITTEN_RAW)
+
+# Run progress: 26.79% complete, ETA 00:00:35
+# Fork: 1 of 1
+Iteration   1: 2.666 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  2.666 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_MUL_DOUBLE, strategy = UNFUSED)
+
+# Run progress: 28.57% complete, ETA 00:00:34
+# Fork: 1 of 1
+Iteration   1: 5.040 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  5.040 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_MUL_DOUBLE, strategy = SPLICED)
+
+# Run progress: 30.36% complete, ETA 00:00:33
+# Fork: 1 of 1
+Iteration   1: 2.397 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  2.397 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_MUL_DOUBLE, strategy = HANDWRITTEN)
+
+# Run progress: 32.14% complete, ETA 00:00:32
+# Fork: 1 of 1
+Iteration   1: 3.273 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  3.273 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_MUL_DOUBLE, strategy = HANDWRITTEN_RAW)
+
+# Run progress: 33.93% complete, ETA 00:00:32
+# Fork: 1 of 1
+Iteration   1: 3.250 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  3.250 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_GT_LONG, strategy = UNFUSED)
+
+# Run progress: 35.71% complete, ETA 00:00:31
+# Fork: 1 of 1
+Iteration   1: 3.249 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  3.249 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_GT_LONG, strategy = SPLICED)
+
+# Run progress: 37.50% complete, ETA 00:00:30
+# Fork: 1 of 1
+Iteration   1: 0.789 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  0.789 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_GT_LONG, strategy = HANDWRITTEN)
+
+# Run progress: 39.29% complete, ETA 00:00:29
+# Fork: 1 of 1
+Iteration   1: 0.958 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  0.958 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = ADD_GT_LONG, strategy = HANDWRITTEN_RAW)
+
+# Run progress: 41.07% complete, ETA 00:00:28
+# Fork: 1 of 1
+Iteration   1: 0.921 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  0.921 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = AND_CMP_LONG, strategy = UNFUSED)
+
+# Run progress: 42.86% complete, ETA 00:00:27
+# Fork: 1 of 1
+Iteration   1: 3.480 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  3.480 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = AND_CMP_LONG, strategy = SPLICED)
+
+# Run progress: 44.64% complete, ETA 00:00:26
+# Fork: 1 of 1
+Iteration   1: 0.844 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  0.844 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = AND_CMP_LONG, strategy = HANDWRITTEN)
+
+# Run progress: 46.43% complete, ETA 00:00:25
+# Fork: 1 of 1
+Iteration   1: 0.751 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  0.751 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = NONE, shape = AND_CMP_LONG, strategy = HANDWRITTEN_RAW)
+
+# Run progress: 48.21% complete, ETA 00:00:25
+# Fork: 1 of 1
+Iteration   1: 0.875 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  0.875 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_MUL_LONG, strategy = UNFUSED)
+
+# Run progress: 50.00% complete, ETA 00:00:24
+# Fork: 1 of 1
+Iteration   1: 8.020 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  8.020 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_MUL_LONG, strategy = SPLICED)
+
+# Run progress: 51.79% complete, ETA 00:00:24
+# Fork: 1 of 1
+Iteration   1: 3.667 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  3.667 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_MUL_LONG, strategy = HANDWRITTEN)
+
+# Run progress: 53.57% complete, ETA 00:00:24
+# Fork: 1 of 1
+Iteration   1: 7.679 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  7.679 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_MUL_LONG, strategy = HANDWRITTEN_RAW)
+
+# Run progress: 55.36% complete, ETA 00:00:24
+# Fork: 1 of 1
+Iteration   1: 4.375 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  4.375 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_MUL_SUB_LONG, strategy = UNFUSED)
+
+# Run progress: 57.14% complete, ETA 00:00:24
+# Fork: 1 of 1
+Iteration   1: 8.948 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  8.948 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_MUL_SUB_LONG, strategy = SPLICED)
+
+# Run progress: 58.93% complete, ETA 00:00:24
+# Fork: 1 of 1
+Iteration   1: 3.733 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  3.733 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_MUL_SUB_LONG, strategy = HANDWRITTEN)
+
+# Run progress: 60.71% complete, ETA 00:00:23
+# Fork: 1 of 1
+Iteration   1: 7.436 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  7.436 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_MUL_SUB_LONG, strategy = HANDWRITTEN_RAW)
+
+# Run progress: 62.50% complete, ETA 00:00:23
+# Fork: 1 of 1
+Iteration   1: 4.003 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  4.003 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = CHAIN8_LONG, strategy = UNFUSED)
+
+# Run progress: 64.29% complete, ETA 00:00:22
+# Fork: 1 of 1
+Iteration   1: 35.815 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  35.815 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = CHAIN8_LONG, strategy = SPLICED)
+
+# Run progress: 66.07% complete, ETA 00:00:21
+# Fork: 1 of 1
+Iteration   1: 6.547 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  6.547 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = CHAIN8_LONG, strategy = HANDWRITTEN)
+
+# Run progress: 67.86% complete, ETA 00:00:21
+# Fork: 1 of 1
+Iteration   1: 8.601 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  8.601 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = CHAIN8_LONG, strategy = HANDWRITTEN_RAW)
+
+# Run progress: 69.64% complete, ETA 00:00:20
+# Fork: 1 of 1
+Iteration   1: 6.836 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  6.836 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = LIT_ADD_MUL_LONG, strategy = UNFUSED)
+
+# Run progress: 71.43% complete, ETA 00:00:19
+# Fork: 1 of 1
+Iteration   1: 9.701 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  9.701 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = LIT_ADD_MUL_LONG, strategy = SPLICED)
+
+# Run progress: 73.21% complete, ETA 00:00:18
+# Fork: 1 of 1
+Iteration   1: 3.346 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  3.346 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = LIT_ADD_MUL_LONG, strategy = HANDWRITTEN)
+
+# Run progress: 75.00% complete, ETA 00:00:17
+# Fork: 1 of 1
+Iteration   1: 4.984 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  4.984 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = LIT_ADD_MUL_LONG, strategy = HANDWRITTEN_RAW)
+
+# Run progress: 76.79% complete, ETA 00:00:16
+# Fork: 1 of 1
+Iteration   1: 3.889 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  3.889 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_MUL_DOUBLE, strategy = UNFUSED)
+
+# Run progress: 78.57% complete, ETA 00:00:15
+# Fork: 1 of 1
+Iteration   1: 10.637 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  10.637 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_MUL_DOUBLE, strategy = SPLICED)
+
+# Run progress: 80.36% complete, ETA 00:00:14
+# Fork: 1 of 1
+Iteration   1: 4.072 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  4.072 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_MUL_DOUBLE, strategy = HANDWRITTEN)
+
+# Run progress: 82.14% complete, ETA 00:00:13
+# Fork: 1 of 1
+Iteration   1: 7.307 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  7.307 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_MUL_DOUBLE, strategy = HANDWRITTEN_RAW)
+
+# Run progress: 83.93% complete, ETA 00:00:12
+# Fork: 1 of 1
+Iteration   1: 4.435 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  4.435 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_GT_LONG, strategy = UNFUSED)
+
+# Run progress: 85.71% complete, ETA 00:00:10
+# Fork: 1 of 1
+Iteration   1: 4.508 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  4.508 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_GT_LONG, strategy = SPLICED)
+
+# Run progress: 87.50% complete, ETA 00:00:09
+# Fork: 1 of 1
+Iteration   1: 0.958 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  0.958 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_GT_LONG, strategy = HANDWRITTEN)
+
+# Run progress: 89.29% complete, ETA 00:00:08
+# Fork: 1 of 1
+Iteration   1: 1.010 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  1.010 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = ADD_GT_LONG, strategy = HANDWRITTEN_RAW)
+
+# Run progress: 91.07% complete, ETA 00:00:07
+# Fork: 1 of 1
+Iteration   1: 0.901 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  0.901 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = AND_CMP_LONG, strategy = UNFUSED)
+
+# Run progress: 92.86% complete, ETA 00:00:05
+# Fork: 1 of 1
+Iteration   1: 2.332 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  2.332 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = AND_CMP_LONG, strategy = SPLICED)
+
+# Run progress: 94.64% complete, ETA 00:00:04
+# Fork: 1 of 1
+Iteration   1: 1.002 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  1.002 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = AND_CMP_LONG, strategy = HANDWRITTEN)
+
+# Run progress: 96.43% complete, ETA 00:00:02
+# Fork: 1 of 1
+Iteration   1: 0.865 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  0.865 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 21.0.12.1, OpenJDK 64-Bit Server VM, 21.0.12.1+1-1-24.04.4-Ubuntu
+# VM invoker: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+# VM options: -Xms4g -Xmx4g --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 200 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run
+# Parameters: (pollute = TYPES, shape = AND_CMP_LONG, strategy = HANDWRITTEN_RAW)
+
+# Run progress: 98.21% complete, ETA 00:00:01
+# Fork: 1 of 1
+Iteration   1: 0.815 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run":
+  0.815 ns/op
+
+
+# Run complete. Total time: 00:01:22
+
+REMEMBER: The numbers below are just data. To gain reusable insights, you need to follow up on
+why the numbers are the way they are. Use profilers (see -prof, -lprof), design factorial
+experiments, perform baseline and negative tests that provide experimental control, make sure
+the benchmarking environment is safe on JVM/OS/HW level, ask for reviews from the domain experts.
+Do not assume the numbers tell you what you want them to tell.
+
+NOTE: Current JVM experimentally supports Compiler Blackholes, and they are in use. Please exercise
+extra caution when trusting the results, look into the generated code to check the benchmark still
+works, and factor in a small probability of new VM bugs. Additionally, while comparisons between
+different JVMs are already problematic, the performance difference caused by different Blackhole
+modes can be very significant. Please make sure you use the consistent Blackhole mode for comparisons.
+
+Benchmark                    (pollute)           (shape)       (strategy)  Mode  Cnt   Score   Error  Units
+FusionStrategyBenchmark.run       NONE      ADD_MUL_LONG          UNFUSED  avgt        5.376          ns/op
+FusionStrategyBenchmark.run       NONE      ADD_MUL_LONG          SPLICED  avgt        2.010          ns/op
+FusionStrategyBenchmark.run       NONE      ADD_MUL_LONG      HANDWRITTEN  avgt        3.144          ns/op
+FusionStrategyBenchmark.run       NONE      ADD_MUL_LONG  HANDWRITTEN_RAW  avgt        3.103          ns/op
+FusionStrategyBenchmark.run       NONE  ADD_MUL_SUB_LONG          UNFUSED  avgt        9.164          ns/op
+FusionStrategyBenchmark.run       NONE  ADD_MUL_SUB_LONG          SPLICED  avgt        2.119          ns/op
+FusionStrategyBenchmark.run       NONE  ADD_MUL_SUB_LONG      HANDWRITTEN  avgt        3.331          ns/op
+FusionStrategyBenchmark.run       NONE  ADD_MUL_SUB_LONG  HANDWRITTEN_RAW  avgt        2.507          ns/op
+FusionStrategyBenchmark.run       NONE       CHAIN8_LONG          UNFUSED  avgt       21.690          ns/op
+FusionStrategyBenchmark.run       NONE       CHAIN8_LONG          SPLICED  avgt        5.372          ns/op
+FusionStrategyBenchmark.run       NONE       CHAIN8_LONG      HANDWRITTEN  avgt        5.324          ns/op
+FusionStrategyBenchmark.run       NONE       CHAIN8_LONG  HANDWRITTEN_RAW  avgt        5.342          ns/op
+FusionStrategyBenchmark.run       NONE  LIT_ADD_MUL_LONG          UNFUSED  avgt        6.038          ns/op
+FusionStrategyBenchmark.run       NONE  LIT_ADD_MUL_LONG          SPLICED  avgt        1.878          ns/op
+FusionStrategyBenchmark.run       NONE  LIT_ADD_MUL_LONG      HANDWRITTEN  avgt        2.666          ns/op
+FusionStrategyBenchmark.run       NONE  LIT_ADD_MUL_LONG  HANDWRITTEN_RAW  avgt        2.666          ns/op
+FusionStrategyBenchmark.run       NONE    ADD_MUL_DOUBLE          UNFUSED  avgt        5.040          ns/op
+FusionStrategyBenchmark.run       NONE    ADD_MUL_DOUBLE          SPLICED  avgt        2.397          ns/op
+FusionStrategyBenchmark.run       NONE    ADD_MUL_DOUBLE      HANDWRITTEN  avgt        3.273          ns/op
+FusionStrategyBenchmark.run       NONE    ADD_MUL_DOUBLE  HANDWRITTEN_RAW  avgt        3.250          ns/op
+FusionStrategyBenchmark.run       NONE       ADD_GT_LONG          UNFUSED  avgt        3.249          ns/op
+FusionStrategyBenchmark.run       NONE       ADD_GT_LONG          SPLICED  avgt        0.789          ns/op
+FusionStrategyBenchmark.run       NONE       ADD_GT_LONG      HANDWRITTEN  avgt        0.958          ns/op
+FusionStrategyBenchmark.run       NONE       ADD_GT_LONG  HANDWRITTEN_RAW  avgt        0.921          ns/op
+FusionStrategyBenchmark.run       NONE      AND_CMP_LONG          UNFUSED  avgt        3.480          ns/op
+FusionStrategyBenchmark.run       NONE      AND_CMP_LONG          SPLICED  avgt        0.844          ns/op
+FusionStrategyBenchmark.run       NONE      AND_CMP_LONG      HANDWRITTEN  avgt        0.751          ns/op
+FusionStrategyBenchmark.run       NONE      AND_CMP_LONG  HANDWRITTEN_RAW  avgt        0.875          ns/op
+FusionStrategyBenchmark.run      TYPES      ADD_MUL_LONG          UNFUSED  avgt        8.020          ns/op
+FusionStrategyBenchmark.run      TYPES      ADD_MUL_LONG          SPLICED  avgt        3.667          ns/op
+FusionStrategyBenchmark.run      TYPES      ADD_MUL_LONG      HANDWRITTEN  avgt        7.679          ns/op
+FusionStrategyBenchmark.run      TYPES      ADD_MUL_LONG  HANDWRITTEN_RAW  avgt        4.375          ns/op
+FusionStrategyBenchmark.run      TYPES  ADD_MUL_SUB_LONG          UNFUSED  avgt        8.948          ns/op
+FusionStrategyBenchmark.run      TYPES  ADD_MUL_SUB_LONG          SPLICED  avgt        3.733          ns/op
+FusionStrategyBenchmark.run      TYPES  ADD_MUL_SUB_LONG      HANDWRITTEN  avgt        7.436          ns/op
+FusionStrategyBenchmark.run      TYPES  ADD_MUL_SUB_LONG  HANDWRITTEN_RAW  avgt        4.003          ns/op
+FusionStrategyBenchmark.run      TYPES       CHAIN8_LONG          UNFUSED  avgt       35.815          ns/op
+FusionStrategyBenchmark.run      TYPES       CHAIN8_LONG          SPLICED  avgt        6.547          ns/op
+FusionStrategyBenchmark.run      TYPES       CHAIN8_LONG      HANDWRITTEN  avgt        8.601          ns/op
+FusionStrategyBenchmark.run      TYPES       CHAIN8_LONG  HANDWRITTEN_RAW  avgt        6.836          ns/op
+FusionStrategyBenchmark.run      TYPES  LIT_ADD_MUL_LONG          UNFUSED  avgt        9.701          ns/op
+FusionStrategyBenchmark.run      TYPES  LIT_ADD_MUL_LONG          SPLICED  avgt        3.346          ns/op
+FusionStrategyBenchmark.run      TYPES  LIT_ADD_MUL_LONG      HANDWRITTEN  avgt        4.984          ns/op
+FusionStrategyBenchmark.run      TYPES  LIT_ADD_MUL_LONG  HANDWRITTEN_RAW  avgt        3.889          ns/op
+FusionStrategyBenchmark.run      TYPES    ADD_MUL_DOUBLE          UNFUSED  avgt       10.637          ns/op
+FusionStrategyBenchmark.run      TYPES    ADD_MUL_DOUBLE          SPLICED  avgt        4.072          ns/op
+FusionStrategyBenchmark.run      TYPES    ADD_MUL_DOUBLE      HANDWRITTEN  avgt        7.307          ns/op
+FusionStrategyBenchmark.run      TYPES    ADD_MUL_DOUBLE  HANDWRITTEN_RAW  avgt        4.435          ns/op
+FusionStrategyBenchmark.run      TYPES       ADD_GT_LONG          UNFUSED  avgt        4.508          ns/op
+FusionStrategyBenchmark.run      TYPES       ADD_GT_LONG          SPLICED  avgt        0.958          ns/op
+FusionStrategyBenchmark.run      TYPES       ADD_GT_LONG      HANDWRITTEN  avgt        1.010          ns/op
+FusionStrategyBenchmark.run      TYPES       ADD_GT_LONG  HANDWRITTEN_RAW  avgt        0.901          ns/op
+FusionStrategyBenchmark.run      TYPES      AND_CMP_LONG          UNFUSED  avgt        2.332          ns/op
+FusionStrategyBenchmark.run      TYPES      AND_CMP_LONG          SPLICED  avgt        1.002          ns/op
+FusionStrategyBenchmark.run      TYPES      AND_CMP_LONG      HANDWRITTEN  avgt        0.865          ns/op
+FusionStrategyBenchmark.run      TYPES      AND_CMP_LONG  HANDWRITTEN_RAW  avgt        0.815          ns/op
+
+Benchmark result is saved to bench-results/T5/smoke/strategy.json
