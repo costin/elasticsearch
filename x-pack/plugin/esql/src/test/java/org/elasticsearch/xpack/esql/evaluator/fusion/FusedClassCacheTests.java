@@ -209,6 +209,41 @@ public class FusedClassCacheTests extends ESTestCase {
     }
 
     /**
+     * F2b: {@code NOT(a>b)} is a distinct shape from {@code a>b}, {@code NOT(...)} appears in the signature, and
+     * {@code NOT(a>b AND c<d)} is stable across two equivalent trees.
+     */
+    public void testNotShapeDiffersFromBareComparisonAndIsStable() {
+        FusionDescriptor gt = new FusionDescriptor(Math.class, "gt", "(JJ)Z", false, true);
+        FusionDescriptor lt = new FusionDescriptor(Math.class, "lt", "(JJ)Z", false, true);
+        FusionNode cmp = new FusionNode.Kernel(gt, List.of(input(0), input(1)));
+        FusionNode notCmp = new FusionNode.Not(cmp);
+        String cmpShape = FusionPlanner.shapeOf(cmp);
+        String notShape = FusionPlanner.shapeOf(notCmp);
+        assertThat("NOT(...) must appear in the shape", notShape, containsString("NOT("));
+        assertThat("NOT(a>b) must not share a shape with a>b", notShape, not(is(cmpShape)));
+        FusionNode doubleNot = new FusionNode.Not(new FusionNode.Not(cmp));
+        assertThat("NOT(NOT(a>b)) must not share a shape with a>b", FusionPlanner.shapeOf(doubleNot), not(is(cmpShape)));
+        assertThat(FusionPlanner.shapeOf(doubleNot), containsString("NOT(NOT("));
+
+        FusionNode and = new FusionNode.Logical(
+            FusionNode.BoolOp.AND,
+            new FusionNode.Kernel(gt, List.of(input(0), input(1))),
+            new FusionNode.Kernel(lt, List.of(input(2), input(3)))
+        );
+        FusionNode notAnd = new FusionNode.Not(and);
+        FusionNode notAndAgain = new FusionNode.Not(
+            new FusionNode.Logical(
+                FusionNode.BoolOp.AND,
+                new FusionNode.Kernel(gt, List.of(input(0), input(1))),
+                new FusionNode.Kernel(lt, List.of(input(2), input(3)))
+            )
+        );
+        assertThat("NOT(a>b AND c<d) must be a stable shape", FusionPlanner.shapeOf(notAnd), is(FusionPlanner.shapeOf(notAndAgain)));
+        assertThat(FusionPlanner.shapeOf(notAnd), containsString("NOT("));
+        assertThat(FusionPlanner.shapeOf(notAnd), containsString("LOGICAL:AND"));
+    }
+
+    /**
      * F1: a baked Div/Mod divisor IS part of the cache key (it is an immediate in the bytecode), so {@code x/1000}
      * and {@code x/500} stitch to distinct shapes/classes, while {@code x/1000} twice reuses one class. Comparison
      * constants stay value-independent — {@link #testDifferentConstantValuesShareOneShapeAndClass} stays green.

@@ -42,6 +42,7 @@ import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Round;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToLower;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
+import org.elasticsearch.xpack.esql.expression.predicate.logical.Not;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Div;
@@ -282,6 +283,21 @@ public class SlowPathFusionBenchmark {
                     new LessThanOrEqual(Source.EMPTY, c, d)
                 );
                 return new Built(expr, layout(a, b, c, d));
+            }
+
+            @Override
+            Page page(int size) {
+                return new Page(longs(size, i -> i % 50), longs(size, i -> i % 49), longs(size, i -> i % 40), longs(size, i -> i % 41));
+            }
+        },
+        /** {@code NOT(a > b AND c < d)}, long, dense. F2b: Kleene 3VL Not of a fusable AND of comparisons. */
+        NOT_AND_CMP_LONG {
+            @Override
+            Built build() {
+                FieldAttribute a = field("a", DataType.LONG), b = field("b", DataType.LONG);
+                FieldAttribute c = field("c", DataType.LONG), d = field("d", DataType.LONG);
+                Expression and = new And(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new LessThan(Source.EMPTY, c, d));
+                return new Built(new Not(Source.EMPTY, and), layout(a, b, c, d));
             }
 
             @Override

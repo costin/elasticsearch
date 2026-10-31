@@ -1149,7 +1149,7 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             private Class<?> cached(MethodHandles.Lookup caller, FusionNode tree, Path path, MethodType type, String... methods)
                 throws Stitcher.StitchingException {
                 // Long-arithmetic-only: non-Logical trees are keyed as LONG, unlike production rootElement().
-                ElementKind element = tree instanceof FusionNode.Logical ? ElementKind.BOOLEAN : ElementKind.LONG;
+                ElementKind element = FusionNode.isBooleanLogic(tree) ? ElementKind.BOOLEAN : ElementKind.LONG;
                 Shape shape = new Shape(FusionPlanner.shapeOf(tree), element, path);
                 return cache.get(
                     shape,

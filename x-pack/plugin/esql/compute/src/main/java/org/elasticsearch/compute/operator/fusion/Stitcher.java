@@ -1800,9 +1800,10 @@ public final class Stitcher {
      * what runs just before a kernel body ({@link KernelPreBody}). Sharing this walk keeps the two paths from drifting.
      *
      * <p>The dense-logical vector path ({@link #emitLogicalVectorLoop}) reuses this walk for comparison kernels
-     * and adds a 2VL {@link FusionNode.Logical} branch (plain boolean short-circuit, no tri-state). It is NOT used
-     * by the nullable/multi-valued {@link BlockDfsEmitter} or the 3VL {@link LogicalDfsEmitter}: those interleave
-     * present/live/warning control flow with the walk (they are real semantic forks), though they reuse the same
+     * and adds a 2VL {@link FusionNode.Logical} branch (plain boolean short-circuit, no tri-state) plus a
+     * {@link FusionNode.Not} flip ({@code ICONST_1}/{@code IXOR}). It is NOT used by the nullable/multi-valued
+     * {@link BlockDfsEmitter} or the 3VL {@link LogicalDfsEmitter}: those interleave present/live/warning control
+     * flow with the walk (they are real semantic forks), though they reuse the same
      * {@link #extractKernelBody}/{@link #checkKernelArity}/{@link #loadConstantParam} primitives.
      */
     private final class StackKernelEmitter {
@@ -1850,6 +1851,13 @@ public final class Stitcher {
                 // Dense 2VL: no nulls, so AND/OR are plain boolean short-circuit. Comparisons are spliced inline
                 // (C1 will not inline a >35-byte helper); the 3VL null machinery lives only on the block path.
                 emitLogical2vl(logical);
+                return;
+            }
+            if (node instanceof FusionNode.Not not) {
+                // Dense 2VL Not: child boolean on the stack, then ICONST_1 + IXOR. No null lane.
+                emit(not.child(), Element.of(Type.BOOLEAN_TYPE));
+                insns.add(new InsnNode(Opcodes.ICONST_1));
+                insns.add(new InsnNode(Opcodes.IXOR));
                 return;
             }
             FusionNode.Kernel kernel = (FusionNode.Kernel) node;
@@ -2467,9 +2475,10 @@ public final class Stitcher {
 
     /**
      * Fuses a <b>logical</b> tree — a three-valued-logic (3VL) {@code AND}/{@code OR} tree ({@link FusionNode.Logical})
-     * whose operands are boolean-producing comparison {@link FusionNode.Kernel}s (from S3.0) or nested
-     * {@link FusionNode.Logical}s — into a single nullable-boolean block loop, materialised as a hidden class
-     * (iter 20, S3.1). The emitted {@link #FUSED_METHOD_NAME} has the shape
+     * or a Kleene 3VL {@link FusionNode.Not} — whose operands/child are boolean-producing comparison
+     * {@link FusionNode.Kernel}s (from S3.0), nested {@link FusionNode.Logical}s, or nested {@link FusionNode.Not}s —
+     * into a single nullable-boolean block loop, materialised as a hidden class (iter 20, S3.1). The emitted
+     * {@link #FUSED_METHOD_NAME} has the shape
      * <pre>{@code
      * static BooleanBlock fused(BlockFactory bf, Warnings warnings, int positionCount,
      *                           LongBlock b0, LongBlock b1, LongBlock b2, LongBlock b3) {
@@ -2530,7 +2539,7 @@ public final class Stitcher {
      * {@link #compileLogicalVectorLoop}.
      *
      * @param caller the caller's lookup (from the module that owns the comparison kernels); the fused class is defined here
-     * @param tree   the logical tree to fuse; its root is a {@link FusionNode.Logical}
+     * @param tree   the logical tree to fuse; its root is a {@link FusionNode.Logical} or {@link FusionNode.Not}
      * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME}
      * @throws StitchingException if the caller lacks the access to define the hidden class, the emitted class fails JVM
      *                            verification/linking, or the top-level loop exceeds the inlining budget — the caller
@@ -2541,9 +2550,9 @@ public final class Stitcher {
     }
 
     /**
-     * Fuses a 3VL {@code AND}/{@code OR} tree into a <b>dense 2VL vector loop</b>: when every input is a vector
-     * (no nulls, no multi-values) the result is a plain boolean, so this path writes {@code boolean[]} and wraps it
-     * with {@code newBooleanArrayVector(out, n).asBlock()}. The 3VL block path ({@link #compileLogicalBlockLoop})
+     * Fuses a 3VL {@code AND}/{@code OR}/{@code NOT} tree into a <b>dense 2VL vector loop</b>: when every input is a
+     * vector (no nulls, no multi-values) the result is a plain boolean, so this path writes {@code boolean[]} and wraps
+     * it with {@code newBooleanArrayVector(out, n).asBlock()}. The 3VL block path ({@link #compileLogicalBlockLoop})
      * stays for pages that carry nulls or multi-values.
      *
      * <p>INTERFACE-only after B2: the hidden class exposes {@link #FUSED_INTERFACE_METHOD_NAME} and not
@@ -2554,7 +2563,7 @@ public final class Stitcher {
      * vectors have no multi-values.
      *
      * @param caller the caller's lookup (from the module that owns the comparison kernels); the fused class is defined here
-     * @param tree   the logical tree to fuse; its root is a {@link FusionNode.Logical}
+     * @param tree   the logical tree to fuse; its root is a {@link FusionNode.Logical} or {@link FusionNode.Not}
      * @return the defined hidden {@link Class} exposing {@link #FUSED_INTERFACE_METHOD_NAME} only
      * @throws StitchingException if the caller lacks the access to define the hidden class or the emitted class fails
      *                            JVM verification/linking — the caller should keep the 3VL block path
@@ -2569,6 +2578,9 @@ public final class Stitcher {
      * short-circuit 3VL truth tables.
      */
     private byte[] emitLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        if (FusionNode.isBooleanLogic(tree) == false) {
+            throw new IllegalArgumentException("fused logical block loop requires a Logical or Not root, not " + tree);
+        }
         // One walk derives arity, warning-source indices and constants-in-emit-order for this emit path.
         FusionSignature signature = FusionSignature.of(tree);
         int arity = signature.arity();
@@ -2744,8 +2756,8 @@ public final class Stitcher {
      * (B2). The RAW sibling is not emitted.
      */
     private byte[] emitLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        if ((tree instanceof FusionNode.Logical) == false) {
-            throw new IllegalArgumentException("fused logical vector loop requires a Logical root, not " + tree);
+        if (FusionNode.isBooleanLogic(tree) == false) {
+            throw new IllegalArgumentException("fused logical vector loop requires a Logical or Not root, not " + tree);
         }
         FusionSignature signature = FusionSignature.of(tree);
         int arity = signature.arity();
@@ -2916,10 +2928,11 @@ public final class Stitcher {
      * {@code Filter}, which evaluates the predicate over the whole page.
      *
      * <p><b>Reuse of the existing emit machinery.</b> The predicate is evaluated by the same block/logical DFS the
-     * standalone predicate paths use — {@link LogicalDfsEmitter} (for a 3VL {@code AND}/{@code OR} tree, with one
-     * {@code cmpN} helper per comparison) or {@link BlockDfsEmitter} (for a comparison {@link FusionNode.Kernel}, incl.
-     * comparison-over-arithmetic). The projection is evaluated by the arithmetic {@link BlockDfsEmitter} kernel DFS that
-     * {@link #emitBlockLoop} uses. To keep the top-level {@code fused} loop small and inlinable (criterion #6 budget
+     * standalone predicate paths use — {@link LogicalDfsEmitter} (for a 3VL {@code AND}/{@code OR}/{@code NOT} tree,
+     * with one {@code cmpN} helper per comparison) or {@link BlockDfsEmitter} (for a comparison
+     * {@link FusionNode.Kernel}, including comparison-over-arithmetic). The projection is evaluated by the arithmetic
+     * {@link BlockDfsEmitter} kernel DFS that {@link #emitBlockLoop} uses. To keep the top-level {@code fused} loop
+     * small and inlinable (criterion #6 budget
      * guard, ENFORCED here) the two per-position bodies are factored into {@code private static} helpers ({@code pred}
      * returning the tri-state, {@code projAppend} evaluating + appending the projection value-or-null), so the top-level
      * loop only calls them and records survivors. The helpers are themselves below the budget for the representative
@@ -2934,8 +2947,8 @@ public final class Stitcher {
      * vector fast path.
      *
      * @param caller         the caller's lookup (from the module that owns the kernels); the fused class is defined here
-     * @param predicateTree  the WHERE predicate tree; a boolean-returning comparison {@link FusionNode.Kernel} or a 3VL
-     *                       {@link FusionNode.Logical}
+     * @param predicateTree  the WHERE predicate tree; a boolean-returning comparison {@link FusionNode.Kernel}, a 3VL
+     *                       {@link FusionNode.Logical}, or a {@link FusionNode.Not} (FilterEval fuses Not predicates)
      * @param projectionTree the EVAL projection tree; an arithmetic {@link FusionNode.Kernel} at the root
      * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME}
      * @throws StitchingException if the caller lacks the access to define the hidden class, the emitted class fails JVM
@@ -2962,10 +2975,10 @@ public final class Stitcher {
         if ((projectionTree instanceof FusionNode.Kernel) == false) {
             throw new IllegalArgumentException("fused filter-eval requires a kernel projection root, not " + projectionTree);
         }
-        boolean predicateIsLogical = predicateTree instanceof FusionNode.Logical;
+        boolean predicateIsLogical = FusionNode.isBooleanLogic(predicateTree);
         if (predicateIsLogical == false) {
             if ((predicateTree instanceof FusionNode.Kernel) == false) {
-                throw new IllegalArgumentException("fused filter-eval requires a kernel/logical predicate root, not " + predicateTree);
+                throw new IllegalArgumentException("fused filter-eval requires a kernel/logical/Not predicate root, not " + predicateTree);
             }
             if (rootReturnType(predicateTree).getSort() != Type.BOOLEAN) {
                 throw new IllegalArgumentException("fused filter-eval predicate root must return boolean");
@@ -3194,10 +3207,11 @@ public final class Stitcher {
     /**
      * Builds the {@code private static int pred(Warnings[] w, int p, <input *Blocks>, <constants>)} helper that
      * evaluates the WHERE predicate for one position and returns its tri-state: {@code 0} false, {@code 1} true,
-     * {@code 2} null. A {@link FusionNode.Logical} predicate reuses {@link LogicalDfsEmitter} (calling the {@code cmpN}
-     * comparison helpers); a comparison {@link FusionNode.Kernel} (incl. comparison-over-arithmetic) reuses
-     * {@link BlockDfsEmitter}, returning its boolean value when present and {@code 2} otherwise. Predicate warnings are
-     * attributed to each kernel's own source (indices {@code [0, predWarnCount)} of the shared {@code Warnings[]}).
+     * {@code 2} null. A {@link FusionNode.Logical} or {@link FusionNode.Not} predicate reuses {@link LogicalDfsEmitter}
+     * (calling the {@code cmpN} comparison helpers); a comparison {@link FusionNode.Kernel} (incl.
+     * comparison-over-arithmetic) reuses {@link BlockDfsEmitter}, returning its boolean value when present and {@code 2}
+     * otherwise. Predicate warnings are attributed to each kernel's own source (indices {@code [0, predWarnCount)} of
+     * the shared {@code Warnings[]}).
      */
     private MethodNode buildPredicateHelper(
         FusionNode predicateTree,
@@ -3232,7 +3246,7 @@ public final class Stitcher {
         int spareBytesRefSlot = frame.slot();
         int workBase = frame.mark();
 
-        if (predicateTree instanceof FusionNode.Logical) {
+        if (FusionNode.isBooleanLogic(predicateTree)) {
             LogicalDfsEmitter emitter = new LogicalDfsEmitter(
                 insns,
                 predLogicalElement,
@@ -3413,6 +3427,10 @@ public final class Stitcher {
             assignComparisonHelpers(logical.right(), inputElement, names, helpers, debug);
             return;
         }
+        if (node instanceof FusionNode.Not not) {
+            assignComparisonHelpers(not.child(), inputElement, names, helpers, debug);
+            return;
+        }
         FusionNode.Kernel comparison = (FusionNode.Kernel) node;
         String name = "cmp" + helpers.size();
         names.put(comparison, name);
@@ -3525,12 +3543,15 @@ public final class Stitcher {
 
     /**
      * The numeric input element of a logical tree: the argument kind of the first comparison operand reached by
-     * descending left spines. Every comparison in a fusable logical tree is homogeneous in the same primitive, so any
-     * one determines the element.
+     * descending left spines and {@link FusionNode.Not} children. Every comparison in a fusable logical tree is
+     * homogeneous in the same primitive, so any one determines the element.
      */
     private static Type logicalInputType(FusionNode tree) {
         if (tree instanceof FusionNode.Kernel kernel) {
             return Type.getMethodType(kernel.descriptor().kernelType()).getArgumentTypes()[0];
+        }
+        if (tree instanceof FusionNode.Not not) {
+            return logicalInputType(not.child());
         }
         return logicalInputType(((FusionNode.Logical) tree).left());
     }
@@ -3538,8 +3559,8 @@ public final class Stitcher {
     /**
      * Post-order emitter for the fused logical block loop. Leaves each node's tri-state ({@code 0} false / {@code 1}
      * true / {@code 2} null) in an assigned local slot; comparison operands call their {@code private static} helper,
-     * and {@link FusionNode.Logical} nodes combine two child tri-states with the short-circuit 3VL truth tables of
-     * {@code BinaryLogicOperation}.
+     * {@link FusionNode.Logical} nodes combine two child tri-states with the short-circuit 3VL truth tables of
+     * {@code BinaryLogicOperation}, and {@link FusionNode.Not} flips {@code 0↔1} keeping {@code 2}.
      */
     private final class LogicalDfsEmitter {
         private final InsnList insns;
@@ -3588,9 +3609,35 @@ public final class Stitcher {
         void emit(FusionNode node, int tSlot) {
             if (node instanceof FusionNode.Logical logical) {
                 emitLogical(logical, tSlot);
+            } else if (node instanceof FusionNode.Not not) {
+                emitNot(not, tSlot);
             } else {
                 emitComparisonCall((FusionNode.Kernel) node, tSlot);
             }
+        }
+
+        /**
+         * Kleene 3VL negation: flip 0↔1, keep 2. The child tri-state is evaluated first (and its comparison
+         * warnings fire); Not itself is not a warning source.
+         */
+        private void emitNot(FusionNode.Not not, int tOut) {
+            int tChild = alloc(1);
+            emit(not.child(), tChild);
+            LabelNode setNull = new LabelNode();
+            LabelNode done = new LabelNode();
+            // if (child == 2) -> 2; else -> child XOR 1
+            insns.add(new VarInsnNode(Opcodes.ILOAD, tChild));
+            insns.add(new InsnNode(Opcodes.ICONST_2));
+            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, setNull));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, tChild));
+            insns.add(new InsnNode(Opcodes.ICONST_1));
+            insns.add(new InsnNode(Opcodes.IXOR));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
+            insns.add(new JumpInsnNode(Opcodes.GOTO, done));
+            insns.add(setNull);
+            insns.add(new InsnNode(Opcodes.ICONST_2));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, tOut));
+            insns.add(done);
         }
 
         private void emitComparisonCall(FusionNode.Kernel comparison, int tSlot) {
@@ -3763,7 +3810,8 @@ public final class Stitcher {
     /**
      * The {@link FusionNode.Constant} leaves of {@code tree} in the SINGLE canonical order every emit path visits them:
      * a stable pre-order DFS (a {@link FusionNode.Kernel}'s children left-to-right; a {@link FusionNode.Logical}'s left
-     * subtree before its right). This is the one source of truth for the trailing constant-<b>parameter</b> order that
+     * subtree before its right; a {@link FusionNode.Not}'s child). This is the one source of truth for the trailing
+     * constant-<b>parameter</b> order that
      * the three parties which must agree byte-for-byte all consult: (a) the {@link Stitcher} assigns each constant a
      * parameter slot in this order and loads it at each use site, (b) {@code FusionPlanner} collects the constant values
      * in this order, and (c) {@code FusedExpressionEvaluatorFactory} both appends the parameter types to the resolved
@@ -3865,8 +3913,9 @@ public final class Stitcher {
     /**
      * Assigns every {@link FusionNode.Kernel} in {@code tree} a distinct <b>warning-source slot</b> (an index into the
      * runtime {@code Warnings[]}), via a stable pre-order walk (a node before its children; a {@link FusionNode.Logical}'s
-     * left subtree before its right). {@link FusionNode.Input} leaves and {@link FusionNode.Logical} nodes are not
-     * warning sources and get no slot. Each kernel's slot is where <em>its</em> overflow warning and <em>its</em> direct
+     * left subtree before its right; a {@link FusionNode.Not}'s child). {@link FusionNode.Input} leaves,
+     * {@link FusionNode.Logical} nodes, and {@link FusionNode.Not} nodes are not warning sources and get no slot. Each
+     * kernel's slot is where <em>its</em> overflow warning and <em>its</em> direct
      * leaf operands' multi-value warnings are registered — mirroring the unfused chain, where every generated
      * {@code *Evaluator} carries its own node source.
      *
@@ -3928,12 +3977,15 @@ public final class Stitcher {
         insns.add(new VarInsnNode(Opcodes.ASTORE, slot));
     }
 
-    /** The tree's output element type — the return type of the root kernel. May be boolean for a comparison root. */
+    /** The tree's output element type — the return type of the root kernel, or boolean for a Logical/Not root. */
     private Type rootReturnType(FusionNode tree) {
         if (tree instanceof FusionNode.Kernel kernel) {
             return Type.getMethodType(kernel.descriptor().kernelType()).getReturnType();
         }
-        throw new IllegalArgumentException("a fused vector loop requires a kernel at the tree root, not a bare input");
+        if (FusionNode.isBooleanLogic(tree)) {
+            return Type.BOOLEAN_TYPE;
+        }
+        throw new IllegalArgumentException("a fused vector loop requires a kernel, Logical, or Not at the tree root, not a bare input");
     }
 
     /**

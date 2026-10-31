@@ -16,11 +16,13 @@ import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
+import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.LastEvalPath;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.VectorStrategy;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
+import org.elasticsearch.xpack.esql.expression.predicate.logical.Not;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThanOrEqual;
@@ -59,6 +61,9 @@ import static org.hamcrest.Matchers.is;
  *   <li>GTE/LTE under AND/OR (F2a) — {@link #testGteLteUnderAndOrMatchesUnfused} on the dense 2VL vector path and the
  *       3VL block path (nulls / multi-values), plus {@link #testGteLteEqualOperandsDistinguishFromGtLt} so a silent
  *       GT↔GTE or LT↔LTE swap in fused emission cannot hide.</li>
+ *   <li>F2b {@code Not} — Kleene 3VL negation of a fusable boolean subtree. Built by hand
+ *       ({@code BooleanSimplification} does not rewrite {@code NOT(a>5)} to {@code a<=5}). {@code NOT(bool_col)}
+ *       refuses.</li>
  * </ul>
  */
 public class LogicalFusionDifferentialTests extends FusionDifferentialTestCase {
@@ -466,6 +471,206 @@ public class LogicalFusionDifferentialTests extends FusionDifferentialTestCase {
             case INT -> DataType.INTEGER;
             case DOUBLE -> DataType.DOUBLE;
             case BOOLEAN, BYTES_REF -> throw new AssertionError("GTE/LTE logical coverage is numeric: " + kind);
+        };
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // F2b: Kleene 3VL NOT of a fusable boolean subtree (comparison / AND / OR / nested Not)
+    // ---------------------------------------------------------------------------------------------------------------
+
+    /**
+     * {@code NOT(a > 5)} and {@code NOT(a >= 5)} fuse for int/long/double and match the unfused {@code NotEvaluator}
+     * chain on a dense 2VL page and on 3VL null/multi-value pages.
+     */
+    public void testNotOfComparisonMatchesUnfused() {
+        for (ElementKind kind : new ElementKind[] { ElementKind.LONG, ElementKind.INT, ElementKind.DOUBLE }) {
+            DataType type = dataTypeOf(kind);
+            FieldAttribute a = field("a", type);
+            Layout layout = layout(a);
+            Literal five = literalOf(kind, 5);
+            assertNotTree(new Not(Source.EMPTY, new GreaterThan(Source.EMPTY, a, five)), layout, kind, 1, "NOT(a>5) " + kind);
+            assertNotTree(new Not(Source.EMPTY, new GreaterThanOrEqual(Source.EMPTY, a, five)), layout, kind, 1, "NOT(a>=5) " + kind);
+        }
+    }
+
+    /**
+     * {@code NOT(a > b AND c < d)} and {@code NOT(a > b OR c < d)} fuse and match unfused on dense + 3VL pages.
+     */
+    public void testNotOfAndOrMatchesUnfused() {
+        for (ElementKind kind : new ElementKind[] { ElementKind.LONG, ElementKind.INT, ElementKind.DOUBLE }) {
+            DataType type = dataTypeOf(kind);
+            FieldAttribute a = field("a", type);
+            FieldAttribute b = field("b", type);
+            FieldAttribute c = field("c", type);
+            FieldAttribute d = field("d", type);
+            Layout layout = layout(a, b, c, d);
+            Expression and = new And(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new LessThan(Source.EMPTY, c, d));
+            Expression or = new Or(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new LessThan(Source.EMPTY, c, d));
+            assertNotTree(new Not(Source.EMPTY, and), layout, kind, 4, "NOT(a>b AND c<d) " + kind);
+            assertNotTree(new Not(Source.EMPTY, or), layout, kind, 4, "NOT(a>b OR c<d) " + kind);
+        }
+    }
+
+    /**
+     * {@code a > 5 AND NOT(b < 10)} — a Not as a logical operand — fuses and matches unfused.
+     */
+    public void testAndWithNotOperandMatchesUnfused() {
+        for (ElementKind kind : new ElementKind[] { ElementKind.LONG, ElementKind.INT, ElementKind.DOUBLE }) {
+            DataType type = dataTypeOf(kind);
+            FieldAttribute a = field("a", type);
+            FieldAttribute b = field("b", type);
+            Layout layout = layout(a, b);
+            Literal five = literalOf(kind, 5);
+            Literal ten = literalOf(kind, 10);
+            Expression expr = new And(
+                Source.EMPTY,
+                new GreaterThan(Source.EMPTY, a, five),
+                new Not(Source.EMPTY, new LessThan(Source.EMPTY, b, ten))
+            );
+            assertNotTree(expr, layout, kind, 2, "a>5 AND NOT(b<10) " + kind);
+        }
+    }
+
+    /** Nested {@code NOT(NOT(a > 5))} fuses (double flip) and matches unfused. */
+    public void testDoubleNotMatchesUnfused() {
+        FieldAttribute a = field("a", DataType.LONG);
+        Layout layout = layout(a);
+        Expression inner = new GreaterThan(Source.EMPTY, a, literalOf(ElementKind.LONG, 5));
+        assertNotTree(new Not(Source.EMPTY, new Not(Source.EMPTY, inner)), layout, ElementKind.LONG, 1, "NOT(NOT(a>5))");
+    }
+
+    /**
+     * Kleene 3VL: {@code NOT(null) = null}. Crafted {@code a > b} tri-states {true, false, null} under {@code NOT}
+     * match both a hand-coded oracle and the unfused chain.
+     */
+    public void testNotOfNullStaysNull() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        Layout layout = layout(a, b);
+        Expression expr = new Not(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b));
+        ExpressionEvaluator.Factory fusedFactory = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfusedFactory = unfusedFactory(expr, layout);
+        assertFuses(fusedFactory, "NOT(a>b) 3VL");
+
+        // pos0: 1>0 true -> NOT false; pos1: 0>1 false -> NOT true; pos2: null>0 null -> NOT null.
+        Long[] av = { 1L, 0L, null };
+        Long[] bv = { 0L, 1L, 0L };
+        Boolean[] expected = { Boolean.FALSE, Boolean.TRUE, null };
+        int positions = av.length;
+        Block[] inputs = { longColumn(av), longColumn(bv) };
+        ExpressionEvaluator fused = fusedFactory.get(driverContext);
+        ExpressionEvaluator reference = unfusedFactory.get(driverContext);
+        Page page = null;
+        Block fusedResult = null;
+        Block referenceResult = null;
+        try {
+            page = new Page(positions, inputs);
+            fusedResult = fused.eval(page);
+            referenceResult = reference.eval(page);
+            BooleanBlock fb = (BooleanBlock) fusedResult;
+            BooleanBlock rb = (BooleanBlock) referenceResult;
+            for (int q = 0; q < positions; q++) {
+                String ctx = "NOT(a>b) @" + q + " expected=" + expected[q];
+                if (expected[q] == null) {
+                    assertThat(ctx + " fused null", fb.isNull(q), is(true));
+                } else {
+                    assertThat(ctx + " fused non-null", fb.isNull(q), is(false));
+                    assertThat(ctx + " fused value", fb.getBoolean(fb.getFirstValueIndex(q)), equalTo(expected[q]));
+                }
+                assertThat(ctx + " null parity", fb.isNull(q), is(rb.isNull(q)));
+                if (rb.isNull(q) == false) {
+                    assertThat(
+                        ctx + " value parity",
+                        fb.getBoolean(fb.getFirstValueIndex(q)),
+                        equalTo(rb.getBoolean(rb.getFirstValueIndex(q)))
+                    );
+                }
+            }
+        } finally {
+            Releasables.closeExpectNoException(fusedResult, referenceResult, fused, reference);
+            if (page != null) {
+                page.releaseBlocks();
+            }
+        }
+    }
+
+    /**
+     * A multi-value input under {@code NOT(a > b)} warns on the comparison, not on the {@code Not}. Distinct non-empty
+     * sources make a Not-vs-child misattribution fail: fused headers must contain the child's source text and must not
+     * contain the Not's.
+     */
+    public void testNotMultiValueWarningAttributedToChildComparison() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        Layout layout = layout(a, b);
+        GreaterThan cmp = new GreaterThan(new Source(1, 3, "a>b"), a, b);
+        Expression expr = new Not(new Source(7, 14, "ROOT_NOT"), cmp);
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        assertFuses(fused, "NOT(a>b) mv");
+        Block[] inputs = { multiValueLong(new long[] { 1L, 2L }), longColumn(new Long[] { 0L }) };
+        DifferentialWarnings warnings = runDifferentialWarnings(fused, unfused, ElementKind.BOOLEAN, inputs, 1, "NOT(a>b) mv");
+        assertThat("unfused comparison under NOT must warn", warnings.reference(), hasItem(containsString(MULTI_VALUE_MSG)));
+        assertThat(
+            "fused must emit the child's multi-value warning (Not is not a warning source)",
+            containsWarning(warnings.fused(), MULTI_VALUE_MSG),
+            is(true)
+        );
+        assertThat("fused warning must carry the comparison's source", warnings.fused(), hasItem(containsString("[a>b]")));
+        assertThat("fused warning must not be attributed to the Not node", containsWarning(warnings.fused(), "[ROOT_NOT]"), is(false));
+    }
+
+    /** A bare boolean column is not a fusable Not child (S3.1); {@code NOT(bool_col)} stays unfused. */
+    public void testNotOfBareBooleanColumnDoesNotFuse() {
+        FieldAttribute flag = field("flag", DataType.BOOLEAN);
+        Expression expr = new Not(Source.EMPTY, flag);
+        assertDoesNotFuse(fusedFactory(expr, layout(flag)), "NOT(bool_col) must refuse");
+        assertDoesNotFuse(unfusedFactory(expr, layout(flag)), "NOT(bool_col) kill switch OFF");
+    }
+
+    private void assertNotTree(Expression expr, Layout layout, ElementKind kind, int columns, String ctx) {
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        FusedExpressionEvaluatorFactory fusedFactory = assertFuses(fused, ctx);
+        assertThat(ctx + " must compile LOGICAL_VECTOR", fusedFactory.vectorStrategy(), is(VectorStrategy.LOGICAL_VECTOR));
+        assertDoesNotFuse(unfused, ctx + " kill switch OFF");
+        for (int n : new int[] { 0, 1, 8, 64 }) {
+            Block[] dense = new Block[columns];
+            for (int c = 0; c < columns; c++) {
+                dense[c] = denseColumn(kind, n, c);
+            }
+            runDifferential(fused, unfused, ElementKind.BOOLEAN, dense, n, ctx + " dense n=" + n);
+        }
+        for (int n : new int[] { 8, 64 }) {
+            int[] referenced = new int[columns];
+            for (int c = 0; c < columns; c++) {
+                referenced[c] = c;
+            }
+            runDifferential(
+                fused,
+                unfused,
+                ElementKind.BOOLEAN,
+                buildPage(kind, columns, n, Profile.NULLS, false, referenced),
+                n,
+                ctx + " nulls n=" + n
+            );
+            runDifferential(
+                fused,
+                unfused,
+                ElementKind.BOOLEAN,
+                buildPage(kind, columns, n, Profile.MULTIVALUE, false, referenced),
+                n,
+                ctx + " mv n=" + n
+            );
+        }
+    }
+
+    private static Literal literalOf(ElementKind kind, long raw) {
+        return switch (kind) {
+            case LONG -> new Literal(Source.EMPTY, raw, DataType.LONG);
+            case INT -> new Literal(Source.EMPTY, (int) raw, DataType.INTEGER);
+            case DOUBLE -> new Literal(Source.EMPTY, (double) raw, DataType.DOUBLE);
+            case BOOLEAN, BYTES_REF -> throw new AssertionError("numeric literal: " + kind);
         };
     }
 

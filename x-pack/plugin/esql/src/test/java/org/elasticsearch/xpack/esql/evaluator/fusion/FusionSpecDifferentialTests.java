@@ -29,6 +29,7 @@ import org.elasticsearch.xpack.esql.expression.function.scalar.math.Sin;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Sqrt;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.BinaryLogic;
+import org.elasticsearch.xpack.esql.expression.predicate.logical.Not;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Div;
@@ -627,6 +628,62 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
             blockFactory.newLongArrayVector(av, positions).asBlock(),
             blockFactory.newLongArrayVector(bv, positions).asBlock() };
         runDifferential(fused, unfused, ElementKind.BOOLEAN, inputs, positions, "a>5 AND b<10 deterministic");
+    }
+
+    /**
+     * F2b: {@code NOT(a > 5)} and {@code NOT(a > 5 AND b < 10)} built by hand (the optimizer does not rewrite Not)
+     * fuse for long and match unfused on dense + 3VL pages.
+     */
+    public void testNotLogicalDeterministic() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        Layout two = layout(a, b);
+        Layout one = layout(a);
+        Expression notGt = new Not(Source.EMPTY, new GreaterThan(Source.EMPTY, a, constant(ElementKind.LONG, 5)));
+        Expression notAnd = new Not(
+            Source.EMPTY,
+            new And(
+                Source.EMPTY,
+                new GreaterThan(Source.EMPTY, a, constant(ElementKind.LONG, 5)),
+                new LessThan(Source.EMPTY, b, constant(ElementKind.LONG, 10))
+            )
+        );
+        assertNotLogical(notGt, one, 1, "NOT(a>5)");
+        assertNotLogical(notAnd, two, 2, "NOT(a>5 AND b<10)");
+    }
+
+    private void assertNotLogical(Expression expr, Layout layout, int columns, String ctx) {
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        FusedExpressionEvaluatorFactory fusedFactory = assertFuses(fused, ctx);
+        assertThat(fusedFactory.vectorStrategy(), is(VectorStrategy.LOGICAL_VECTOR));
+        assertDoesNotFuse(unfused, ctx + " kill switch OFF");
+        int n = 64;
+        Block[] dense = new Block[columns];
+        for (int c = 0; c < columns; c++) {
+            dense[c] = denseColumn(ElementKind.LONG, n, c);
+        }
+        runDifferential(fused, unfused, ElementKind.BOOLEAN, dense, n, ctx + " dense");
+        int[] referenced = new int[columns];
+        for (int c = 0; c < columns; c++) {
+            referenced[c] = c;
+        }
+        runDifferential(
+            fused,
+            unfused,
+            ElementKind.BOOLEAN,
+            buildPage(ElementKind.LONG, columns, n, Profile.NULLS, false, referenced),
+            n,
+            ctx + " nulls"
+        );
+        runDifferential(
+            fused,
+            unfused,
+            ElementKind.BOOLEAN,
+            buildPage(ElementKind.LONG, columns, n, Profile.MULTIVALUE, false, referenced),
+            n,
+            ctx + " mv"
+        );
     }
 
     /**

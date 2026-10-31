@@ -385,6 +385,9 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
         if (node instanceof FusionNode.Logical logical) {
             return new FusionNode.Logical(logical.op(), bumpAddLongs(logical.left()), bumpAddLongs(logical.right()));
         }
+        if (node instanceof FusionNode.Not not) {
+            return new FusionNode.Not(bumpAddLongs(not.child()));
+        }
         return node;
     }
 

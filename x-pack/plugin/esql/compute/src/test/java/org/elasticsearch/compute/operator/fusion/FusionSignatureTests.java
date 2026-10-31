@@ -12,6 +12,7 @@ import org.elasticsearch.test.ESTestCase;
 import java.util.List;
 
 import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
@@ -77,6 +78,47 @@ public class FusionSignatureTests extends ESTestCase {
         assertThat(sig.warningSourceIndices().get(left), equalTo(0));
         assertThat(sig.warningSourceIndices().get(right), equalTo(1));
         assertThat(sig.warningSourceIndices().containsKey(root), is(false));
+    }
+
+    /**
+     * F2b: a {@code Not} is not a warning source; the walk recurses into its child so comparison slots stay dense
+     * and constants under {@code NOT(a > 5)} still appear in emit order.
+     */
+    public void testNotRecursesIntoChildForWarningSlotsAndConstants() {
+        FusionNode.Constant five = new FusionNode.Constant(5L, 'J');
+        FusionNode.Kernel cmp = new FusionNode.Kernel(plainKernel("(JJ)Z"), List.of(new FusionNode.Input(0), five));
+        FusionNode.Not root = new FusionNode.Not(cmp);
+
+        FusionSignature sig = FusionSignature.of(root);
+        assertThat(sig.arity(), equalTo(1));
+        assertArrayEquals(new int[] { 0 }, sig.consumedInputs());
+        assertThat(sig.constantsInEmitOrder(), contains(five));
+        assertThat(sig.warningSourceCount(), equalTo(1));
+        assertThat(sig.warningSourceIndices().get(cmp), equalTo(0));
+        assertThat(sig.warningSourceIndices().containsKey(root), is(false));
+    }
+
+    /**
+     * F2b: {@link FusionNode.Not} accepts a boolean-producing Kernel ({@code )Z}), a Logical, or a nested Not,
+     * and rejects an arithmetic Kernel (which would mis-emit through {@code emitComparisonCall}).
+     */
+    public void testNotCtorRejectsNonBooleanKernel() {
+        FusionNode.Kernel cmp = new FusionNode.Kernel(plainKernel("(JJ)Z"), List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
+        FusionNode.Kernel cmp2 = new FusionNode.Kernel(plainKernel("(JJ)Z"), List.of(new FusionNode.Input(2), new FusionNode.Input(3)));
+        FusionNode.Not ofCmp = new FusionNode.Not(cmp);
+        assertThat(ofCmp.child(), is(cmp));
+        FusionNode.Not nested = new FusionNode.Not(ofCmp);
+        assertThat(nested.child(), is(ofCmp));
+        FusionNode.Logical and = new FusionNode.Logical(FusionNode.BoolOp.AND, cmp, cmp2);
+        assertThat(new FusionNode.Not(and).child(), is(and));
+
+        FusionNode.Kernel arith = new FusionNode.Kernel(plainKernel("(JJ)J"), List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
+        IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> new FusionNode.Not(arith));
+        assertThat(e.getMessage(), containsString("kernelType ending in )Z"));
+        assertThat(e.getMessage(), containsString("(JJ)J"));
+
+        IllegalArgumentException input = expectThrows(IllegalArgumentException.class, () -> new FusionNode.Not(new FusionNode.Input(0)));
+        assertThat(input.getMessage(), containsString("Input"));
     }
 
     public void testPublicStaticsDelegateToSignature() {

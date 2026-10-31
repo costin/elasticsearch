@@ -11,6 +11,7 @@ import org.elasticsearch.test.ESTestCase;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.util.CheckClassAdapter;
@@ -124,6 +125,75 @@ public class StitcherLogicalVectorFusionTests extends ESTestCase {
     public void testCompileLogicalVectorLoopDefines() throws Exception {
         Class<?> fused = stitcher.compileLogicalVectorLoop(MethodHandles.lookup(), andGtLt());
         assertThat(fused.getPackageName(), is(getClass().getPackageName()));
+    }
+
+    /**
+     * F2b: a {@code Not} root over a comparison emits {@code IXOR} on the dense 2VL path and passes
+     * {@link CheckClassAdapter}. The 3VL block path likewise verifies and defines.
+     */
+    public void testNotEmitsFlipOnVectorAndBlockPaths() throws Exception {
+        FusionNode tree = new FusionNode.Not(new FusionNode.Kernel(GT, List.of(new FusionNode.Input(0), new FusionNode.Input(1))));
+        byte[] vectorBytes = stitcher.logicalVectorLoopBytecode(MethodHandles.lookup(), tree);
+        assertStructurallyValid(vectorBytes);
+        assertThat("dense 2VL Not must emit IXOR", containsOpcode(vectorBytes, Opcodes.IXOR), is(true));
+        Class<?> vectorClass = stitcher.compileLogicalVectorLoop(MethodHandles.lookup(), tree);
+        assertThat(vectorClass.getPackageName(), is(getClass().getPackageName()));
+
+        byte[] blockBytes = stitcher.logicalBlockLoopBytecode(MethodHandles.lookup(), tree);
+        assertStructurallyValid(blockBytes);
+        assertThat("3VL block Not must emit IXOR (flip 0↔1, keep 2)", containsOpcode(blockBytes, Opcodes.IXOR), is(true));
+        assertThat(
+            "3VL block Not must keep null (IF_ICMPEQ child==2 + ICONST_2); unguarded x^1 would turn null=2 into 3",
+            containsJumpAndInsn(blockBytes, Opcodes.IF_ICMPEQ, Opcodes.ICONST_2),
+            is(true)
+        );
+        Class<?> blockClass = stitcher.compileLogicalBlockLoop(MethodHandles.lookup(), tree);
+        assertThat(blockClass.getPackageName(), is(getClass().getPackageName()));
+    }
+
+    private static boolean containsOpcode(byte[] classBytes, int opcode) {
+        final boolean[] found = { false };
+        new ClassReader(classBytes).accept(new ClassVisitor(Opcodes.ASM9) {
+            @Override
+            public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                return new MethodVisitor(Opcodes.ASM9) {
+                    @Override
+                    public void visitInsn(int op) {
+                        if (op == opcode) {
+                            found[0] = true;
+                        }
+                    }
+                };
+            }
+        }, 0);
+        return found[0];
+    }
+
+    /** True when the class contains both {@code jumpOpcode} (a jump) and {@code insnOpcode} (a zero-operand insn). */
+    private static boolean containsJumpAndInsn(byte[] classBytes, int jumpOpcode, int insnOpcode) {
+        final boolean[] jump = { false };
+        final boolean[] insn = { false };
+        new ClassReader(classBytes).accept(new ClassVisitor(Opcodes.ASM9) {
+            @Override
+            public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                return new MethodVisitor(Opcodes.ASM9) {
+                    @Override
+                    public void visitJumpInsn(int op, Label label) {
+                        if (op == jumpOpcode) {
+                            jump[0] = true;
+                        }
+                    }
+
+                    @Override
+                    public void visitInsn(int op) {
+                        if (op == insnOpcode) {
+                            insn[0] = true;
+                        }
+                    }
+                };
+            }
+        }, 0);
+        return jump[0] && insn[0];
     }
 
     /** Only called after the visitor has already gated on {@code INVOKEINTERFACE} or {@code INVOKEVIRTUAL}. */

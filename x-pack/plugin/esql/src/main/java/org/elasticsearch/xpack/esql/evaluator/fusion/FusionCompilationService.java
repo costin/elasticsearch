@@ -216,12 +216,13 @@ final class FusionCompilationService {
 
     /**
      * The OUTPUT element kind of a (depth &ge; 2) fused tree, read from its root kernel's return type (an arithmetic
-     * root yields its homogeneous numeric element; a comparison or 3VL logical root yields {@link ElementKind#BOOLEAN}).
+     * root yields its homogeneous numeric element; a comparison, 3VL logical, or Not root yields
+     * {@link ElementKind#BOOLEAN}).
      * Part of the {@link FusedClassCache} key (the numeric input element is already implied by the kernel descriptors
      * encoded in {@code FusionPlanner.shapeOf}).
      */
     private static ElementKind rootElement(FusionNode tree) {
-        if (tree instanceof FusionNode.Logical) {
+        if (FusionNode.isBooleanLogic(tree)) {
             return ElementKind.BOOLEAN;
         }
         FusionNode.Kernel root = (FusionNode.Kernel) tree;

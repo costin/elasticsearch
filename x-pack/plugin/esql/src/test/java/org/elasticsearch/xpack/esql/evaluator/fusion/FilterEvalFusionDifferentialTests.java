@@ -24,6 +24,7 @@ import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
+import org.elasticsearch.xpack.esql.expression.predicate.logical.Not;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Div;
@@ -67,14 +68,15 @@ public class FilterEvalFusionDifferentialTests extends FusionDifferentialTestCas
     // Predicate (WHERE) and projection (EVAL) shape palettes
     // ---------------------------------------------------------------------------------------------------------------
 
-    /** WHERE-predicate shapes: bare/arithmetic comparisons and 3VL logical trees, all boolean-producing and fusable. */
+    /** WHERE-predicate shapes: bare/arithmetic comparisons and 3VL logical/{@code NOT} trees, all boolean-producing and fusable. */
     private enum Pred {
         BARE_GT,      // a > b (comparison kernel, depth 1)
         ARITH_GT,     // (a + b) > c (comparison over arithmetic)
         NESTED_CMP,   // (a + b) > (c - d)
         CONST_GT,     // (a + b) > 7 (predicate constant)
         AND,          // (a > b) AND (c > d) (logical)
-        OR;           // (a > b) OR (c > d) (logical)
+        OR,           // (a > b) OR (c > d) (logical)
+        NOT_GT;       // NOT(a > b) — 3VL Not of a comparison (F2b; exercises NOT-null drop on NULLS/MV)
 
         Expression build(FieldAttribute a, FieldAttribute b, FieldAttribute c, FieldAttribute d, DataType type) {
             return switch (this) {
@@ -88,6 +90,7 @@ public class FilterEvalFusionDifferentialTests extends FusionDifferentialTestCas
                 case CONST_GT -> new GreaterThan(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), literal(7, type));
                 case AND -> new And(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new GreaterThan(Source.EMPTY, c, d));
                 case OR -> new Or(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new GreaterThan(Source.EMPTY, c, d));
+                case NOT_GT -> new Not(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b));
             };
         }
     }
@@ -272,6 +275,39 @@ public class FilterEvalFusionDifferentialTests extends FusionDifferentialTestCas
             "WHERE b > 5 EVAL a/1000 baked+runtime"
         );
         assertThat("b > 5 over 0..15 must keep 10 rows (6..15)", result.survivors, is(10));
+    }
+
+    /**
+     * F2b: a {@code NOT} WHERE predicate ({@code WHERE NOT(b > 5) EVAL a * 2}) fuses through FilterEval (the predicate
+     * path reuses the logical 3VL emitter) and matches the unfused {@code Filter → Eval} chain.
+     */
+    public void testNotPredicateMatchesUnfused() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        Layout layout = layout(a, b);
+        Expression predicate = new Not(Source.EMPTY, new GreaterThan(Source.EMPTY, b, literal(5, DataType.LONG)));
+        Expression projection = new Mul(Source.EMPTY, a, literal(2, DataType.LONG));
+
+        FilterEvalEvaluator.Factory fusedFactory = fuse(predicate, projection, layout);
+        assertFilterEvalFuses(fusedFactory, "WHERE NOT(b>5) EVAL a*2");
+
+        int positionCount = 16;
+        long[] av = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+        long[] bv = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 }; // NOT(b>5) survives 0..5
+        Block[] columns = {
+            blockFactory.newLongArrayVector(av, positionCount).asBlock(),
+            blockFactory.newLongArrayVector(bv, positionCount).asBlock() };
+        RunResult result = runBothChains(
+            fusedFactory,
+            predicate,
+            projection,
+            layout,
+            ElementKind.LONG,
+            columns,
+            positionCount,
+            "WHERE NOT(b>5) EVAL a*2"
+        );
+        assertThat("NOT(b>5) over 0..15 must keep 6 rows (0..5)", result.survivors, is(6));
     }
 
     /** Control for {@link #testDroppedRowsEmitNoProjectionWarning}: {@code a * b} over the same values overflows/warns. */

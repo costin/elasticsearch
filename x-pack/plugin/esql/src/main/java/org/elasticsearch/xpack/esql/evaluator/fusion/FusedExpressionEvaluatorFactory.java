@@ -71,9 +71,9 @@ import java.util.List;
  *       (or {@code fusedRawInterface}) first (dense {@code *ArrayVector} output); a {@code null} Block means the page
  *       overflowed and the matching builder-based {@code fused}/{@code fusedInterface} method re-runs that page.</li>
  *   <li><b>Dense logical vector path</b> ({@link Stitcher#compileLogicalVectorLoop}) — compiled for a 3VL
- *       {@code AND}/{@code OR} tree alongside its block path. INTERFACE-only after B2: a page whose every input
- *       {@code asVector()} is non-null takes {@code fusedInterface}; otherwise the 3VL block path. The logical
- *       RAW loop is not compiled.</li>
+ *       {@code AND}/{@code OR}/{@code NOT} tree alongside its block path. INTERFACE-only after B2: a page whose
+ *       every input {@code asVector()} is non-null takes {@code fusedInterface}; otherwise the 3VL block path. The
+ *       logical RAW loop is not compiled.</li>
  * </ul>
  * All paths define their hidden class in <b>this</b> (esql-proper) caller module. The vector paths reach a dense
  * {@code *ArrayVector}'s package-private backing array through the public exported
@@ -132,8 +132,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         CHECKED_VECTOR,
         /**
          * {@link Stitcher#compileLogicalVectorLoop}: dense (any vector kind, no nulls / multi-values) 2VL evaluation
-         * of an {@code AND}/{@code OR} tree, INTERFACE-only after B2 ({@code fusedInterface}; no RAW sibling). Pages
-         * with nulls or multi-values still take the 3VL block path.
+         * of an {@code AND}/{@code OR}/{@code NOT} tree, INTERFACE-only after B2 ({@code fusedInterface}; no RAW
+         * sibling). Pages with nulls or multi-values still take the 3VL block path.
          */
         LOGICAL_VECTOR,
         /**
@@ -411,8 +411,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     nestedMapping
                 );
             }
-            if (tree instanceof FusionNode.Logical) {
-                // A 3VL AND/OR tree always compiles the nullable block path (nulls / multi-values). The dense 2VL
+            if (FusionNode.isBooleanLogic(tree)) {
+                // A 3VL AND/OR/NOT tree always compiles the nullable block path (nulls / multi-values). The dense 2VL
                 // vector loop is compiled alongside it; a stitch failure there degrades to block-only rather than
                 // dropping fusion entirely (same policy as the arithmetic vector-path degrade).
                 compilingPath = FusedClassCache.Path.LOGICAL_BLOCK;

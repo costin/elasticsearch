@@ -38,9 +38,14 @@ import java.util.function.Function;
  *       semantics (iter 20, S3.1). Unlike {@link Kernel} it carries <b>no</b> {@link FusionDescriptor}
  *       or template: the {@link Stitcher} <em>emits</em> the short-circuit 3VL truth tables directly
  *       (matching {@code BinaryLogicOperation}). Its operands are boolean-producing comparison
- *       {@link Kernel}s (from S3.0) or nested {@link Logical}s; the output is a nullable boolean, so a
- *       {@code Logical}-rooted tree is stitched through the 3VL block path, plus a dense 2VL vector path
- *       when every input is a vector (no nulls / multi-values).</li>
+ *       {@link Kernel}s (from S3.0), nested {@link Logical}s, or {@link Not}; the output is a nullable
+ *       boolean, so a {@code Logical}-rooted tree is stitched through the 3VL block path, plus a dense
+ *       2VL vector path when every input is a vector (no nulls / multi-values).</li>
+ *   <li>{@link Not} — Kleene 3VL negation of one boolean-producing child (a comparison {@link Kernel},
+ *       a {@link Logical}, or a nested {@link Not}). Like {@link Logical} it carries <b>no</b>
+ *       {@link FusionDescriptor}: the {@link Stitcher} emits the flip directly ({@code 0↔1}, keep
+ *       {@code 2} on the 3VL block path; {@code ICONST_1}/{@code IXOR} on the dense 2VL vector path).
+ *       A bare boolean column is not a fusable child (S3.1), so {@code NOT(bool_col)} refuses.</li>
  * </ul>
  *
  * <p>The stitcher walks this tree in post-order: it evaluates each child before the kernel that
@@ -219,8 +224,8 @@ public sealed interface FusionNode {
 
     /**
      * A three-valued-logic (3VL) boolean {@code AND}/{@code OR} over two boolean-producing operands (comparison
-     * {@link Kernel}s or nested {@link Logical}s). It has no {@link FusionDescriptor}: the {@link Stitcher} emits the
-     * short-circuit truth tables of {@code BinaryLogicOperation} directly ({@code false AND * = false},
+     * {@link Kernel}s, nested {@link Logical}s, or {@link Not}). It has no {@link FusionDescriptor}: the {@link Stitcher}
+     * emits the short-circuit truth tables of {@code BinaryLogicOperation} directly ({@code false AND * = false},
      * {@code true OR * = true}, {@code null} otherwise). The output is a nullable boolean.
      *
      * @param op    the connective ({@code AND} or {@code OR})
@@ -236,5 +241,39 @@ public sealed interface FusionNode {
                 throw new IllegalArgumentException("logical operands must not be null");
             }
         }
+    }
+
+    /**
+     * Kleene 3VL negation of one boolean-producing child. It has no {@link FusionDescriptor}: the
+     * {@link Stitcher} emits {@code NOT true = false}, {@code NOT false = true}, {@code NOT null = null}
+     * directly. The child is a comparison {@link Kernel}, a {@link Logical}, or a nested {@link Not};
+     * a bare boolean {@link Input} is not fusable (S3.1). {@code Not} itself is not a warning source —
+     * multi-value / overflow warnings stay attributed to the child comparison kernels.
+     *
+     * @param child the boolean-producing subtree to negate
+     */
+    record Not(FusionNode child) implements FusionNode {
+        public Not {
+            if (child == null) {
+                throw new IllegalArgumentException("not child must not be null");
+            }
+            if (child instanceof Kernel kernel) {
+                String kernelType = kernel.descriptor().kernelType();
+                if (kernelType == null || kernelType.endsWith(")Z") == false) {
+                    throw new IllegalArgumentException(
+                        "not child kernel must return boolean (kernelType ending in )Z) but was [" + kernelType + "]"
+                    );
+                }
+            } else if ((child instanceof Logical || child instanceof Not) == false) {
+                throw new IllegalArgumentException(
+                    "not child must be a boolean-producing Kernel, Logical, or Not, not " + child.getClass().getSimpleName()
+                );
+            }
+        }
+    }
+
+    /** True for a 3VL boolean tree ({@link Logical} or {@link Not}), as opposed to a comparison {@link Kernel}. */
+    static boolean isBooleanLogic(FusionNode node) {
+        return node instanceof Logical || node instanceof Not;
     }
 }

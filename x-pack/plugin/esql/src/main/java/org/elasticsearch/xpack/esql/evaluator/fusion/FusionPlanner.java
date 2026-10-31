@@ -34,6 +34,7 @@ import org.elasticsearch.xpack.esql.expression.function.scalar.string.Space;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Trim;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.BinaryLogic;
+import org.elasticsearch.xpack.esql.expression.predicate.logical.Not;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Div;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mod;
@@ -72,11 +73,14 @@ import java.util.function.Function;
  *       {@link Layout} (read at its OWN column element; a mismatch with the consuming kernel is cast-bridged), or a
  *       {@link Literal} passed to the fused method as a trailing primitive argument at the consuming kernel's element
  *       (it reads no channel and does not widen the tree's input-vector arity);</li>
- *   <li>optionally a boolean {@code AND}/{@code OR} 3VL {@link FusionNode.Logical} root whose operands are
- *       column/constant comparisons over one homogeneous numeric element (mixed-type comparisons under a logical root
- *       fall back to the unfused chain);</li>
- *   <li>the kernel depth is &ge; 2 (a kernel whose child is itself a kernel — a cast counts). A lone kernel gains nothing
- *       from fusion, so we leave it to the generated evaluator.</li>
+ *   <li>optionally a boolean {@code AND}/{@code OR} 3VL {@link FusionNode.Logical} root or a Kleene 3VL
+ *       {@link FusionNode.Not} root whose operands/child are column/constant comparisons over one homogeneous numeric
+ *       element (or nested {@code AND}/{@code OR}/{@code NOT}); mixed-type comparisons under a logical root fall back
+ *       to the unfused chain. A bare boolean column is not a fusable {@code NOT} child, so {@code NOT(bool_col)}
+ *       refuses;</li>
+ *   <li>the tree depth is &ge; 2 (a kernel, logical, or {@code Not} whose child is itself a kernel/logical/Not — a
+ *       cast counts). A lone kernel gains nothing from fusion, so we leave it to the generated evaluator.
+ *       {@code NOT(a>5)} is depth 2 and fuses; a bare comparison is depth 1 and does not (except SIMD).</li>
  * </ul>
  * At runtime the {@link Stitcher} emits a dense vector fast path (over each input's backing {@code *ArrayVector}) when
  * every input is a no-null single-valued vector, else a null/multi-value-aware block loop; both are per-node typed
@@ -343,7 +347,8 @@ public final class FusionPlanner {
      *
      * <p>Both sides must be fusable via the same {@link #build} eligibility used by {@link #maybeFuse} (including the
      * delegating-function guard {@code descriptor.kernelClass() == exp.getClass()}), and additionally: the predicate
-     * must produce a boolean (a comparison {@link FusionNode.Kernel} or a 3VL {@link FusionNode.Logical}), and the
+     * must produce a boolean (a comparison {@link FusionNode.Kernel}, a 3VL {@link FusionNode.Logical}, or a
+     * {@link FusionNode.Not} — FilterEval fuses a Not predicate because it reuses the logical 3VL emitter), and the
      * projection must be an arithmetic kernel root (a numeric output). A stitch failure inside
      * {@link FusedFilterEvalEvaluatorFactory#create} is handled there (it returns a fallback factory that reproduces
      * {@code Filter → Eval} from the two unfused evaluators), so this method still returns a usable factory in that case.
@@ -362,7 +367,7 @@ public final class FusionPlanner {
         if (FusionSettings.isEnabled() == false) {
             return null;
         }
-        // Build the predicate tree: must be a boolean-producing comparison/logical subtree.
+        // Build the predicate tree: must be a boolean-producing comparison/logical/Not subtree.
         PlanContext predCtx = new PlanContext(layout, rawFactory);
         FusionNode predicateTree = build(predicate, predCtx, null, null, true);
         if (predicateTree == null || predCtx.outputElement != ElementKind.BOOLEAN || predCtx.inputElements.isEmpty()) {
@@ -530,13 +535,13 @@ public final class FusionPlanner {
          */
         private final List<ElementKind> inputElements = new ArrayList<>();
         /**
-         * Homogeneous element of a <b>logical</b> ({@code AND}/{@code OR}) tree's comparison operands. The logical
-         * emit path keys its comparison helpers off one element, so within a fused logical tree every comparison must
-         * be over the same primitive (mixed-type comparisons under a logical root fall back to the unfused chain).
+         * Homogeneous element of a <b>logical</b> ({@code AND}/{@code OR}/{@code NOT}) tree's comparison operands. The
+         * logical emit path keys its comparison helpers off one element, so within a fused logical tree every comparison
+         * must be over the same primitive (mixed-type comparisons under a logical root fall back to the unfused chain).
          * Unused (stays {@code null}) for the arithmetic/comparison {@link #build} path, which is per-node typed.
          */
         private ElementKind logicalElement;
-        /** The root node's output kind: the numeric element for an arithmetic root, or BOOLEAN for a comparison/logical root. */
+        /** The root node's output kind: numeric for an arithmetic root, BOOLEAN for a comparison/logical/Not root. */
         private ElementKind outputElement;
         private boolean overflowChecked;
         /**
@@ -590,6 +595,18 @@ public final class FusionPlanner {
                 ctx.outputElement = ElementKind.BOOLEAN;
             }
             return logical;
+        }
+        if (exp instanceof Not) {
+            // Kleene 3VL NOT of a fusable boolean subtree (comparison / AND / OR / nested Not). Emitted by the
+            // Stitcher (no descriptor). A bare boolean column is not a fusable child, so NOT(bool_col) returns null.
+            if (expected != null && expected != ElementKind.BOOLEAN) {
+                return null;
+            }
+            FusionNode not = buildNot(exp, ctx);
+            if (not != null) {
+                ctx.outputElement = ElementKind.BOOLEAN;
+            }
+            return not;
         }
         if (exp instanceof Attribute attr) {
             Layout.ChannelAndType channelAndType = ctx.layout.get(attr.id());
@@ -1136,10 +1153,10 @@ public final class FusionPlanner {
 
     /**
      * Builds a {@link FusionNode.Logical} for an {@code AND}/{@code OR} expression, or {@code null} if either operand is
-     * not a fusable comparison/logical subtree. Both operands must be either a nested {@code AND}/{@code OR} or a
-     * boolean-producing comparison over homogeneous-primitive <b>column</b> and/or <b>literal-constant</b> inputs (S3.1
-     * scope: no bare boolean-column operands, no arithmetic-under-comparison; literal constants ARE allowed as
-     * comparison children — e.g. {@code a > 5 AND b < 10}).
+     * not a fusable comparison/logical/{@code NOT} subtree. Both operands must be either a nested {@code AND}/{@code OR},
+     * a {@code NOT}, or a boolean-producing comparison over homogeneous-primitive <b>column</b> and/or
+     * <b>literal-constant</b> inputs (S3.1 scope: no bare boolean-column operands, no arithmetic-under-comparison;
+     * literal constants ARE allowed as comparison children — e.g. {@code a > 5 AND b < 10}).
      */
     private static FusionNode buildLogical(Expression exp, PlanContext ctx) {
         BinaryLogic bl = (BinaryLogic) exp;
@@ -1155,12 +1172,27 @@ public final class FusionPlanner {
         return new FusionNode.Logical(op, left, right);
     }
 
-    /** A logical operand is either a nested {@code AND}/{@code OR} or a column-column comparison. */
+    /** A logical operand is either a nested {@code AND}/{@code OR}, a {@code NOT}, or a column-column comparison. */
     private static FusionNode buildLogicalOperand(Expression exp, PlanContext ctx) {
         if (exp instanceof And || exp instanceof Or) {
             return buildLogical(exp, ctx);
         }
+        if (exp instanceof Not) {
+            return buildNot(exp, ctx);
+        }
         return buildComparisonOperand(exp, ctx);
+    }
+
+    /**
+     * Builds a {@link FusionNode.Not} whose child is a fusable boolean subtree (comparison, AND/OR, or nested Not),
+     * or {@code null} if the child is not fusable (in particular a bare boolean column).
+     */
+    private static FusionNode buildNot(Expression exp, PlanContext ctx) {
+        FusionNode child = buildLogicalOperand(((Not) exp).field(), ctx);
+        if (child == null) {
+            return null;
+        }
+        return new FusionNode.Not(child);
     }
 
     /**
@@ -1444,6 +1476,9 @@ public final class FusionPlanner {
         if (node instanceof FusionNode.Logical logical) {
             return containsNestedMapping(logical.left()) || containsNestedMapping(logical.right());
         }
+        if (node instanceof FusionNode.Not not) {
+            return containsNestedMapping(not.child());
+        }
         return false;
     }
 
@@ -1476,6 +1511,9 @@ public final class FusionPlanner {
         if (node instanceof FusionNode.Logical logical) {
             return countInputLeaves(logical.left()) + countInputLeaves(logical.right());
         }
+        if (node instanceof FusionNode.Not not) {
+            return countInputLeaves(not.child());
+        }
         throw new AssertionError("unexpected fusion node " + node);
     }
 
@@ -1495,13 +1533,19 @@ public final class FusionPlanner {
         if (node instanceof FusionNode.Logical logical) {
             return hasWarningKernel(logical.left()) || hasWarningKernel(logical.right());
         }
+        if (node instanceof FusionNode.Not not) {
+            return hasWarningKernel(not.child());
+        }
         return false;
     }
 
-    /** Kernel depth: 0 for a bare input, 1 for a kernel/logical of inputs, ≥2 once a node has a kernel/logical child. */
+    /** Kernel depth: 0 for a bare input, 1 for a kernel/logical/Not of inputs, ≥2 once a node has a kernel/logical/Not child. */
     private static int depth(FusionNode node) {
         if (node instanceof FusionNode.Logical logical) {
             return 1 + Math.max(depth(logical.left()), depth(logical.right()));
+        }
+        if (node instanceof FusionNode.Not not) {
+            return 1 + depth(not.child());
         }
         if (node instanceof FusionNode.Kernel kernel) {
             int max = 0;
@@ -1541,6 +1585,12 @@ public final class FusionPlanner {
             appendShape(logical.left(), sb);
             sb.append(',');
             appendShape(logical.right(), sb);
+            sb.append(')');
+            return;
+        }
+        if (node instanceof FusionNode.Not not) {
+            sb.append("NOT(");
+            appendShape(not.child(), sb);
             sb.append(')');
             return;
         }

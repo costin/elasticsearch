@@ -139,7 +139,7 @@ final class FusedClassCache {
          * both the builder {@code fused} method and the overflow-abandoning {@code fusedRaw} method.
          */
         CHECKED_VECTOR,
-        /** {@link Stitcher#compileLogicalBlockLoop}: a 3VL {@code AND}/{@code OR} tree; nullable boolean, block-only. */
+        /** {@link Stitcher#compileLogicalBlockLoop}: a 3VL {@code AND}/{@code OR}/{@code NOT} tree; nullable boolean, block-only. */
         LOGICAL_BLOCK,
         /**
          * {@link Stitcher#compileLogicalVectorLoop}: the dense 2VL vector sibling of {@link #LOGICAL_BLOCK}.

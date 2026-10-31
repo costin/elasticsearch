@@ -88,8 +88,8 @@ final class FusedClassDebugInfo {
     }
 
     /**
-     * Post-order walk of {@link FusionNode.Kernel} nodes only ({@link FusionNode.Logical} is not a kernel
-     * and is not numbered). Matches splice order in {@code StackKernelEmitter} / {@code BlockDfsEmitter}.
+     * Post-order walk of {@link FusionNode.Kernel} nodes only ({@link FusionNode.Logical} and {@link FusionNode.Not}
+     * are not kernels and are not numbered). Matches splice order in {@code StackKernelEmitter} / {@code BlockDfsEmitter}.
      */
     private static void collectKernels(FusionNode node, List<FusionNode.Kernel> out) {
         if (node instanceof FusionNode.Input || node instanceof FusionNode.Constant) {
@@ -98,6 +98,10 @@ final class FusedClassDebugInfo {
         if (node instanceof FusionNode.Logical logical) {
             collectKernels(logical.left(), out);
             collectKernels(logical.right(), out);
+            return;
+        }
+        if (node instanceof FusionNode.Not not) {
+            collectKernels(not.child(), out);
             return;
         }
         FusionNode.Kernel kernel = (FusionNode.Kernel) node;
@@ -109,7 +113,8 @@ final class FusedClassDebugInfo {
 
     /**
      * Filename-safe, deterministic shape token: kernel simple-name{@code #}method, {@code AND}/{@code OR}
-     * for logical nodes, {@code #} for column inputs, {@code C<element>} for constants. Diagnostic only.
+     * for logical nodes, {@code NOT(...)} for Not, {@code #} for column inputs, {@code C<element>} for constants.
+     * Diagnostic only.
      */
     private static void appendShape(FusionNode node, StringBuilder sb) {
         if (node instanceof FusionNode.Logical logical) {
@@ -117,6 +122,12 @@ final class FusedClassDebugInfo {
             appendShape(logical.left(), sb);
             sb.append(',');
             appendShape(logical.right(), sb);
+            sb.append(')');
+            return;
+        }
+        if (node instanceof FusionNode.Not not) {
+            sb.append("NOT(");
+            appendShape(not.child(), sb);
             sb.append(')');
             return;
         }

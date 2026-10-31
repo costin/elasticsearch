@@ -27,7 +27,8 @@ import java.util.TreeSet;
  * the parties and you get a silent miscompute or an opaque {@code VerifyError}.
  *
  * <p><b>One walk, not many (efficiency).</b> Every fact here is derived in a <em>single</em> pre-order DFS of the tree
- * (a {@link FusionNode.Kernel}'s children left-to-right; a {@link FusionNode.Logical}'s left subtree before its right).
+ * (a {@link FusionNode.Kernel}'s children left-to-right; a {@link FusionNode.Logical}'s left subtree before its right;
+ * a {@link FusionNode.Not}'s child).
  * The {@link Stitcher} previously ran up to five separate walks per emit ({@code arity}, {@code consumedInputs},
  * {@code constantsInEmitOrder}, {@code warningsSourceIndices}, {@code overflowExceptionInternalNames}); an emit path now
  * derives one {@code FusionSignature} and reads them all from it. The walk is the same pre-order all emitters already
@@ -113,7 +114,8 @@ public final class FusionSignature {
      * One pre-order DFS computing every fact at once. The visit order is exactly the one both the old
      * {@code constantsInEmitOrder} and {@code assignWarningsSourceIndices} walks used (a kernel is assigned its
      * warning-source slot before its children are visited; a constant is appended when reached; a logical node visits
-     * left then right), so the derived orderings are byte-for-byte identical to the previous separate walks.
+     * left then right; a Not recurses into its child), so the derived orderings are byte-for-byte identical to the
+     * previous separate walks.
      */
     private static void walk(
         FusionNode node,
@@ -162,6 +164,11 @@ public final class FusionSignature {
             // kernels (never bare Inputs), so no per-input type flows through here.
             walk(logical.left(), null, constants, warningSources, overflow, consumed, inputTypeByIndex, maxInputIndex);
             walk(logical.right(), null, constants, warningSources, overflow, consumed, inputTypeByIndex, maxInputIndex);
+        } else if (node instanceof FusionNode.Not not) {
+            // A Not is not a warning source and has no constant of its own; recurse into the boolean child.
+            walk(not.child(), null, constants, warningSources, overflow, consumed, inputTypeByIndex, maxInputIndex);
+        } else {
+            throw new AssertionError("unexpected fusion node " + node);
         }
     }
 
