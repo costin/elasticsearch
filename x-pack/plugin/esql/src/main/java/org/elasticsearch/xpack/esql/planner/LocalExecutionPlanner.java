@@ -2321,18 +2321,9 @@ public class LocalExecutionPlanner {
         if (operatorFactoryRegistry == null) {
             throw new IllegalStateException("OperatorFactoryRegistry is required for external sources");
         }
-        // The plan carries the source type, but registered dataset settings are only valid with the file source factory.
-        if (externalSource.datasetName() != null && operatorFactoryRegistry.isFileSourceFactory(externalSource.sourceType()) == false) {
-            throw new IllegalArgumentException(
-                "external dataset ["
-                    + externalSource.datasetName()
-                    + "] cannot be read through non-file source type ["
-                    + externalSource.sourceType()
-                    + "]"
-            );
-        }
 
         StoragePath path = StoragePath.of(externalSource.sourcePath());
+        ensureRegisteredDatasetFactory(externalSource, operatorFactoryRegistry, path);
         List<String> projectedColumns = new ArrayList<>();
         for (Attribute attr : externalSource.output()) {
             projectedColumns.add(attr.name());
@@ -2420,6 +2411,44 @@ public class LocalExecutionPlanner {
         annotateDatasetLabel(externalSource, factory);
         context.driverParallelism(new DriverParallelism(DriverParallelism.Type.DATA_PARALLELISM, instanceCount));
         return PhysicalOperation.fromSource(factory, layout.build());
+    }
+
+    /**
+     * Registered datasets may be file-backed ({@code FileSourceFactory}) or connector-backed
+     * ({@code ConnectorFactory}, e.g. JDBC). {@code DatasetConfigResolver} restores path and config from
+     * cluster state but not {@code sourceType}, so a crafted plan can rewrite the type while keeping the
+     * rebound credentials. Refuse that: a connector type must match the rebound path scheme, and a file
+     * factory must not be asked to read a connector-scheme path. Catalogs, legacy plugin factories, and
+     * other non-file/non-connector types stay refused.
+     */
+    private static void ensureRegisteredDatasetFactory(
+        ExternalSourceExec externalSource,
+        OperatorFactoryRegistry operatorFactoryRegistry,
+        StoragePath path
+    ) {
+        if (externalSource.datasetName() == null) {
+            return;
+        }
+        String sourceType = externalSource.sourceType();
+        boolean fileFactory = operatorFactoryRegistry.isFileSourceFactory(sourceType);
+        boolean connectorFactory = operatorFactoryRegistry.isConnectorSourceFactory(sourceType);
+        boolean allowed;
+        if (connectorFactory) {
+            allowed = sourceType.equals(path.scheme());
+        } else if (fileFactory) {
+            allowed = operatorFactoryRegistry.isConnectorSourceFactory(path.scheme()) == false;
+        } else {
+            allowed = false;
+        }
+        if (allowed == false) {
+            throw new IllegalArgumentException(
+                "external dataset ["
+                    + externalSource.datasetName()
+                    + "] cannot be read through non-file source type ["
+                    + sourceType
+                    + "]"
+            );
+        }
     }
 
     private static void annotateDatasetLabel(ExternalSourceExec externalSource, SourceOperator.SourceOperatorFactory factory) {

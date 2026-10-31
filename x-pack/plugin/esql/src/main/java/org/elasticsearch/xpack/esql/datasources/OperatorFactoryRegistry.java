@@ -119,10 +119,19 @@ public class OperatorFactoryRegistry {
     }
 
     /**
-     * Whether a source type resolves to the built-in file factory used for registered datasets.
+     * Whether a source type resolves to the built-in file factory used for file-backed registered datasets.
      */
     public boolean isFileSourceFactory(String sourceType) {
         return sourceType != null && sourceFactories.get(sourceType) instanceof FileSourceFactory;
+    }
+
+    /**
+     * Whether a source type resolves to a {@link ConnectorFactory} (JDBC, Flight, …). Registered connector
+     * datasets dispatch through this path; a file dataset's settings must not, which
+     * {@code LocalExecutionPlanner} enforces by matching the connector type to the rebound path scheme.
+     */
+    public boolean isConnectorSourceFactory(String sourceType) {
+        return sourceType != null && sourceFactories.get(sourceType) instanceof ConnectorFactory;
     }
 
     public Map<String, ExternalSourceFactory> sourceFactories() {

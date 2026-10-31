@@ -104,6 +104,9 @@ import org.elasticsearch.xpack.esql.datasources.spi.ConfigKeyValidator;
 import org.elasticsearch.xpack.esql.datasources.spi.Connector;
 import org.elasticsearch.xpack.esql.datasources.spi.ConnectorFactory;
 import org.elasticsearch.xpack.esql.datasources.spi.ExternalSplit;
+import org.elasticsearch.xpack.esql.datasources.spi.QueryRequest;
+import org.elasticsearch.xpack.esql.datasources.spi.ResultCursor;
+import org.elasticsearch.xpack.esql.datasources.spi.Split;
 import org.elasticsearch.xpack.esql.datasources.spi.FileList;
 import org.elasticsearch.xpack.esql.datasources.spi.SourceMetadata;
 import org.elasticsearch.xpack.esql.datasources.spi.SourceOperatorContext;
@@ -578,6 +581,79 @@ public class LocalExecutionPlannerTests extends MapperServiceTestCase {
         OperatorFactoryRegistry operatorFactoryRegistry = new OperatorFactoryRegistry(Map.of("flight", connector), Map.of(), Runnable::run);
         assertRegisteredDatasetRefusedForNonFileSourceType(operatorFactoryRegistry, "flight");
         assertNull(opened.get());
+    }
+
+    /**
+     * A registered connector dataset (JDBC) must plan when {@code sourceType} matches the rebound path
+     * scheme. File-dataset settings still cannot ride a connector type (see
+     * {@link #testRegisteredDatasetRefusedThroughConnectorSourceType}).
+     */
+    public void testRegisteredConnectorDatasetAllowedWhenSourceTypeMatchesPathScheme() throws IOException {
+        AtomicReference<Map<String, Object>> opened = new AtomicReference<>();
+        ConnectorFactory connector = new ConnectorFactory() {
+            @Override
+            public String type() {
+                return "jdbc:h2:tcp";
+            }
+
+            @Override
+            public boolean canHandle(String location) {
+                return location != null && location.startsWith("jdbc:h2:tcp://");
+            }
+
+            @Override
+            public SourceMetadata resolveMetadata(String location, Map<String, Object> config) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public void validateConfig(String location, Map<String, Object> config) {
+                ConfigKeyValidator.check(config, List.of());
+            }
+
+            @Override
+            public Connector open(Map<String, Object> config) {
+                opened.set(config);
+                return new Connector() {
+                    @Override
+                    public ResultCursor execute(QueryRequest request, Split split) {
+                        throw new UnsupportedOperationException();
+                    }
+
+                    @Override
+                    public void close() {}
+                };
+            }
+        };
+        OperatorFactoryRegistry operatorFactoryRegistry = new OperatorFactoryRegistry(
+            Map.of("jdbc:h2:tcp", connector),
+            Map.of(),
+            Runnable::run
+        );
+        List<Attribute> attrs = List.of(
+            new FieldAttribute(Source.EMPTY, "a", new EsField("a", DataType.INTEGER, Map.of(), true, EsField.TimeSeriesFieldType.NONE))
+        );
+        ExternalSourceExec exec = new ExternalSourceExec(
+            Source.EMPTY,
+            "jdbc:h2:tcp://localhost:9092/mem:employees",
+            "jdbc:h2:tcp",
+            attrs,
+            Map.of("table", "EMPLOYEES"),
+            Map.of(),
+            null,
+            10
+        ).withDatasetName("employees");
+
+        planner(operatorFactoryRegistry, true, null, randomBoolean()).plan(
+            "test",
+            FoldContext.small(),
+            PlannerSettings.DEFAULTS,
+            exec,
+            EmptyIndexedByShardId.instance(),
+            randomBoolean()
+        );
+        assertNotNull("matching connector dataset must reach ConnectorFactory.open", opened.get());
+        assertEquals("EMPLOYEES", opened.get().get("table"));
     }
 
     public void testRegisteredDatasetRefusedThroughTableCatalogSourceType() throws IOException {
