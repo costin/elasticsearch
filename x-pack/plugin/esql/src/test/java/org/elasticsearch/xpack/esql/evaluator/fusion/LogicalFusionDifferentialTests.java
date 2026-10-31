@@ -23,7 +23,9 @@ import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFac
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThanOrEqual;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.LessThan;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.LessThanOrEqual;
 import org.elasticsearch.xpack.esql.planner.Layout;
 
 import java.util.List;
@@ -54,6 +56,9 @@ import static org.hamcrest.Matchers.is;
      *       {@code ConstantLongVector}, and {@code LongBigArrayVector} inputs, AND and OR, long/int/double, matching the
      *       unfused chain value-by-value. Null/multi-value pages stay on the 3VL block path above.
      *       {@link #testDenseLogicalVectorPicksInterfaceVsBlock()} pins INTERFACE vs BLOCK (INTERFACE-only after B2).</li>
+ *   <li>GTE/LTE under AND/OR (F2a) — {@link #testGteLteUnderAndOrMatchesUnfused} on the dense 2VL vector path and the
+ *       3VL block path (nulls / multi-values), plus {@link #testGteLteEqualOperandsDistinguishFromGtLt} so a silent
+ *       GT↔GTE or LT↔LTE swap in fused emission cannot hide.</li>
  * </ul>
  */
 public class LogicalFusionDifferentialTests extends FusionDifferentialTestCase {
@@ -302,6 +307,166 @@ public class LogicalFusionDifferentialTests extends FusionDifferentialTestCase {
                 page.releaseBlocks();
             }
         }
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // F2a: GTE/LTE under AND/OR (already fusable; deterministic coverage the GT/LT-only tests do not pin)
+    // ---------------------------------------------------------------------------------------------------------------
+
+    /**
+     * {@code (a >= b) AND/OR (c <= d)} fuses for int/long/double. Values, nulls and warnings match the unfused chain
+     * on a dense 2VL vector page and on 3VL block pages (nulls and multi-values). The compiled strategy is
+     * {@link VectorStrategy#LOGICAL_VECTOR}.
+     */
+    public void testGteLteUnderAndOrMatchesUnfused() {
+        for (ElementKind kind : new ElementKind[] { ElementKind.LONG, ElementKind.INT, ElementKind.DOUBLE }) {
+            DataType type = dataTypeOf(kind);
+            for (Connective connective : Connective.values()) {
+                FieldAttribute a = field("a", type);
+                FieldAttribute b = field("b", type);
+                FieldAttribute c = field("c", type);
+                FieldAttribute d = field("d", type);
+                Layout layout = layout(a, b, c, d);
+                Expression left = new GreaterThanOrEqual(Source.EMPTY, a, b);
+                Expression right = new LessThanOrEqual(Source.EMPTY, c, d);
+                Expression expr = connective == Connective.AND ? new And(Source.EMPTY, left, right) : new Or(Source.EMPTY, left, right);
+                String ctx = connective + " " + kind + " a>=b " + connective + " c<=d";
+                ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+                ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+                FusedExpressionEvaluatorFactory fusedFactory = assertFuses(fused, ctx);
+                assertThat(
+                    "GTE/LTE under a logical must compile VectorStrategy.LOGICAL_VECTOR",
+                    fusedFactory.vectorStrategy(),
+                    is(VectorStrategy.LOGICAL_VECTOR)
+                );
+                assertDoesNotFuse(unfused, ctx + " kill switch OFF");
+
+                for (int n : new int[] { 0, 1, 8, 64 }) {
+                    Block[] dense = { denseColumn(kind, n, 0), denseColumn(kind, n, 1), denseColumn(kind, n, 2), denseColumn(kind, n, 3) };
+                    runDifferential(fused, unfused, ElementKind.BOOLEAN, dense, n, ctx + " dense n=" + n);
+                }
+                for (int n : new int[] { 8, 64 }) {
+                    Block[] nulls = buildPage(kind, 4, n, Profile.NULLS, false, new int[] { 0, 1, 2, 3 });
+                    runDifferential(fused, unfused, ElementKind.BOOLEAN, nulls, n, ctx + " nulls n=" + n);
+                    Block[] mvs = buildPage(kind, 4, n, Profile.MULTIVALUE, false, new int[] { 0, 1, 2, 3 });
+                    runDifferential(fused, unfused, ElementKind.BOOLEAN, mvs, n, ctx + " mv n=" + n);
+                }
+            }
+        }
+
+        // Pin INTERFACE vs BLOCK on one LONG AND tree so an always-block regression is caught even when values match.
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        FieldAttribute d = field("d", DataType.LONG);
+        Expression expr = new And(Source.EMPTY, new GreaterThanOrEqual(Source.EMPTY, a, b), new LessThanOrEqual(Source.EMPTY, c, d));
+        ExpressionEvaluator eval = assertFuses(fusedFactory(expr, layout(a, b, c, d)), "GTE/LTE AND path pin").get(driverContext);
+        try {
+            int n = 8;
+            assertLastEvalPath(
+                eval,
+                LastEvalPath.INTERFACE,
+                new Block[] {
+                    longArrayVectorColumn(n, 0),
+                    longArrayVectorColumn(n, 1),
+                    longArrayVectorColumn(n, 2),
+                    longArrayVectorColumn(n, 3) },
+                "dense GTE/LTE AND must take the 2VL INTERFACE path"
+            );
+            assertLastEvalPath(
+                eval,
+                LastEvalPath.BLOCK,
+                new Block[] {
+                    longColumn(new Long[] { 1L, null, 3L, 4L }),
+                    longColumn(new Long[] { 0L, 1L, 2L, 3L }),
+                    longColumn(new Long[] { 0L, 1L, 2L, 3L }),
+                    longColumn(new Long[] { 1L, 2L, 3L, 4L }) },
+                "null-carrying GTE/LTE AND must take the 3VL BLOCK path"
+            );
+        } finally {
+            Releasables.closeExpectNoException(eval);
+        }
+    }
+
+    /**
+     * Equal operands distinguish {@code >=} from {@code >} and {@code <=} from {@code <}. {@code (a >= a) AND (b <= b)}
+     * is true at every dense position; {@code (a > a) AND (b < b)} is false. A silent GT↔GTE or LT↔LTE swap in fused
+     * emission would make the inclusive tree agree with the exclusive one (or disagree with unfused).
+     */
+    public void testGteLteEqualOperandsDistinguishFromGtLt() {
+        for (ElementKind kind : new ElementKind[] { ElementKind.LONG, ElementKind.INT, ElementKind.DOUBLE }) {
+            DataType type = dataTypeOf(kind);
+            FieldAttribute a = field("a", type);
+            FieldAttribute b = field("b", type);
+            Layout layout = layout(a, b);
+            Expression inclusive = new And(
+                Source.EMPTY,
+                new GreaterThanOrEqual(Source.EMPTY, a, a),
+                new LessThanOrEqual(Source.EMPTY, b, b)
+            );
+            Expression exclusive = new And(Source.EMPTY, new GreaterThan(Source.EMPTY, a, a), new LessThan(Source.EMPTY, b, b));
+            assertEqualOperandTree(inclusive, exclusive, layout, kind, "a>=a AND b<=b vs a>a AND b<b " + kind);
+        }
+    }
+
+    private void assertEqualOperandTree(Expression inclusive, Expression exclusive, Layout layout, ElementKind kind, String ctx) {
+        ExpressionEvaluator.Factory fusedInc = fusedFactory(inclusive, layout);
+        ExpressionEvaluator.Factory unfusedInc = unfusedFactory(inclusive, layout);
+        ExpressionEvaluator.Factory fusedExc = fusedFactory(exclusive, layout);
+        ExpressionEvaluator.Factory unfusedExc = unfusedFactory(exclusive, layout);
+        assertFuses(fusedInc, ctx + " inclusive");
+        assertFuses(fusedExc, ctx + " exclusive");
+        assertDoesNotFuse(unfusedInc, ctx + " inclusive kill switch OFF");
+        int n = 8;
+        runDifferential(
+            fusedInc,
+            unfusedInc,
+            ElementKind.BOOLEAN,
+            new Block[] { denseColumn(kind, n, 1), denseColumn(kind, n, 2) },
+            n,
+            ctx + " inclusive dense"
+        );
+        runDifferential(
+            fusedExc,
+            unfusedExc,
+            ElementKind.BOOLEAN,
+            new Block[] { denseColumn(kind, n, 1), denseColumn(kind, n, 2) },
+            n,
+            ctx + " exclusive dense"
+        );
+        assertFusedBooleans(fusedInc, new Block[] { denseColumn(kind, n, 1), denseColumn(kind, n, 2) }, n, true, ctx + " inclusive");
+        assertFusedBooleans(fusedExc, new Block[] { denseColumn(kind, n, 1), denseColumn(kind, n, 2) }, n, false, ctx + " exclusive");
+        // 3VL: a null on either column viral-nulls that comparison; fused still matches unfused.
+        Block[] nulls = buildPage(kind, 2, n, Profile.NULLS, false, new int[] { 0, 1 });
+        runDifferential(fusedInc, unfusedInc, ElementKind.BOOLEAN, nulls, n, ctx + " inclusive nulls");
+        Block[] mvs = buildPage(kind, 2, n, Profile.MULTIVALUE, false, new int[] { 0, 1 });
+        runDifferential(fusedInc, unfusedInc, ElementKind.BOOLEAN, mvs, n, ctx + " inclusive mv");
+    }
+
+    private void assertFusedBooleans(ExpressionEvaluator.Factory fused, Block[] inputs, int n, boolean expected, String ctx) {
+        ExpressionEvaluator eval = fused.get(driverContext);
+        Page page = new Page(n, inputs);
+        Block out = null;
+        try {
+            out = eval.eval(page);
+            BooleanBlock bb = (BooleanBlock) out;
+            for (int p = 0; p < n; p++) {
+                assertThat(ctx + " null@" + p, bb.isNull(p), is(false));
+                assertThat(ctx + " value@" + p, bb.getBoolean(bb.getFirstValueIndex(p)), is(expected));
+            }
+        } finally {
+            Releasables.closeExpectNoException(out, eval);
+            page.releaseBlocks();
+        }
+    }
+
+    private static DataType dataTypeOf(ElementKind kind) {
+        return switch (kind) {
+            case LONG -> DataType.LONG;
+            case INT -> DataType.INTEGER;
+            case DOUBLE -> DataType.DOUBLE;
+            case BOOLEAN, BYTES_REF -> throw new AssertionError("GTE/LTE logical coverage is numeric: " + kind);
+        };
     }
 
     // ---------------------------------------------------------------------------------------------------------------

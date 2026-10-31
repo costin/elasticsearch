@@ -630,6 +630,99 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
     }
 
     /**
+     * F2a: GTE/LTE under a constant-logical tree. {@code a >= 5 AND b <= 10} (and the OR variant) fuse for
+     * int/long/double, compile {@link VectorStrategy#LOGICAL_VECTOR}, and match unfused on a crafted dense page
+     * (including the equal-threshold position that distinguishes {@code >=}/{@code <=} from {@code >}/{@code <}) plus
+     * 3VL null/multi-value pages.
+     */
+    public void testConstantLogicalGteLteDeterministic() {
+        for (ElementKind element : new ElementKind[] { ElementKind.LONG, ElementKind.INT, ElementKind.DOUBLE }) {
+            FieldAttribute a = field("a", dataType(element));
+            FieldAttribute b = field("b", dataType(element));
+            Layout layout = layout(a, b);
+            Expression and = new And(
+                Source.EMPTY,
+                new GreaterThanOrEqual(Source.EMPTY, a, constant(element, 5)),
+                new LessThanOrEqual(Source.EMPTY, b, constant(element, 10))
+            );
+            Expression or = new Or(
+                Source.EMPTY,
+                new GreaterThanOrEqual(Source.EMPTY, a, constant(element, 5)),
+                new LessThanOrEqual(Source.EMPTY, b, constant(element, 10))
+            );
+            assertConstantLogicalGteLte(and, layout, element, "a>=5 AND b<=10");
+            assertConstantLogicalGteLte(or, layout, element, "a>=5 OR b<=10");
+        }
+    }
+
+    private void assertConstantLogicalGteLte(Expression expr, Layout layout, ElementKind element, String ctx) {
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        FusedExpressionEvaluatorFactory fusedFactory = assertFuses(fused, ctx + " " + element);
+        assertThat(
+            "a 3VL logical of GTE/LTE compiles the dense LOGICAL_VECTOR path",
+            fusedFactory.vectorStrategy(),
+            is(VectorStrategy.LOGICAL_VECTOR)
+        );
+        assertDoesNotFuse(unfused, ctx + " " + element + " kill switch OFF");
+
+        // pos0: 3>=5 F; pos1: 6>=5 T && 12<=10 F; pos2: 10>=5 T && 9<=10 T; pos3: 5>=5 T && 10<=10 T.
+        // pos3 is TRUE for >=/<= and FALSE for >/< (see testConstantLogicalDeterministic) — a silent GTE→GT
+        // emission would make fused false against unfused true.
+        long[] av = { 3, 6, 10, 5 };
+        long[] bv = { 8, 12, 9, 10 };
+        int positions = av.length;
+        runDifferential(
+            fused,
+            unfused,
+            ElementKind.BOOLEAN,
+            new Block[] { numericVector(element, av), numericVector(element, bv) },
+            positions,
+            ctx + " " + element + " dense"
+        );
+        int n = 64;
+        runDifferential(
+            fused,
+            unfused,
+            ElementKind.BOOLEAN,
+            buildPage(element, 2, n, Profile.NULLS, false, new int[] { 0, 1 }),
+            n,
+            ctx + " " + element + " nulls"
+        );
+        runDifferential(
+            fused,
+            unfused,
+            ElementKind.BOOLEAN,
+            buildPage(element, 2, n, Profile.MULTIVALUE, false, new int[] { 0, 1 }),
+            n,
+            ctx + " " + element + " mv"
+        );
+    }
+
+    /** A dense numeric vector of {@code element} filled from {@code values} (narrowed for int, widened for double). */
+    private Block numericVector(ElementKind element, long[] values) {
+        int n = values.length;
+        return switch (element) {
+            case LONG -> blockFactory.newLongArrayVector(values, n).asBlock();
+            case INT -> {
+                int[] v = new int[n];
+                for (int i = 0; i < n; i++) {
+                    v[i] = (int) values[i];
+                }
+                yield blockFactory.newIntArrayVector(v, n).asBlock();
+            }
+            case DOUBLE -> {
+                double[] v = new double[n];
+                for (int i = 0; i < n; i++) {
+                    v[i] = values[i];
+                }
+                yield blockFactory.newDoubleArrayVector(v, n).asBlock();
+            }
+            case BOOLEAN, BYTES_REF -> throw new AssertionError("numeric GTE/LTE coverage: " + element);
+        };
+    }
+
+    /**
      * The depth gate is consistent for constant leaves: a bare {@code a > K} or {@code a + K} is kernel-depth 1 and so
      * does NOT fuse (a lone kernel gains nothing), while {@code (a + b) > K} is depth 2 and DOES. Constants do not count
      * towards depth (they are embedded, not read), so a constant can only ever be the child that keeps a tree at the

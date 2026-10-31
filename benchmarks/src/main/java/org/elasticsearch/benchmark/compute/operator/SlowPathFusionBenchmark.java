@@ -48,7 +48,9 @@ import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Div
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Sub;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThanOrEqual;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.LessThan;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.LessThanOrEqual;
 import org.elasticsearch.xpack.esql.planner.Layout;
 import org.elasticsearch.xpack.esql.plugin.QueryPragmas;
 import org.elasticsearch.xpack.esql.session.Configuration;
@@ -266,6 +268,25 @@ public class SlowPathFusionBenchmark {
                     doubles(size, i -> i % 40),
                     doubles(size, i -> i % 41)
                 );
+            }
+        },
+        /** {@code a >= b AND c <= d}, long, dense. GTE/LTE already fuse; this cell measures the inclusive pair. */
+        AND_CMP_GTE_LTE_LONG {
+            @Override
+            Built build() {
+                FieldAttribute a = field("a", DataType.LONG), b = field("b", DataType.LONG);
+                FieldAttribute c = field("c", DataType.LONG), d = field("d", DataType.LONG);
+                Expression expr = new And(
+                    Source.EMPTY,
+                    new GreaterThanOrEqual(Source.EMPTY, a, b),
+                    new LessThanOrEqual(Source.EMPTY, c, d)
+                );
+                return new Built(expr, layout(a, b, c, d));
+            }
+
+            @Override
+            Page page(int size) {
+                return new Page(longs(size, i -> i % 50), longs(size, i -> i % 49), longs(size, i -> i % 40), longs(size, i -> i % 41));
             }
         },
         /** {@code TO_LOWER(s)} over an ordinal-encoded keyword vector with a 16-entry dictionary. Lone mapping is unfused (D4). */
