@@ -163,7 +163,7 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
         } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError e) {
             // Filter-eval is block-only: a stitch failure loses fusion entirely, so WARN once per shape.
             FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure(logger, shape, FusedClassCache.Path.FILTER_EVAL_BLOCK, true, e);
-            FusionTelemetry.recordFailure(shape);
+            FusionTelemetry.recordFailure(shape, FusedClassCache.Path.FILTER_EVAL_BLOCK);
             handle = null;
         } finally {
             if (captured != null) {
@@ -329,6 +329,8 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
         private ExpressionEvaluator verifyUnfusedPredicate;
         private ExpressionEvaluator verifyUnfusedProjection;
         private boolean fusionDisabled;
+        // Coverage: LinkageError / fusionDisabled fallback is recorded once per instance, not per page.
+        private boolean runtimeFallbackRecorded;
 
         FusedFilterEvalEvaluator(
             Source[] warningSources,
@@ -368,7 +370,12 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
 
         @Override
         public Block evalProjection(Page page, int[] positions) {
-            if (fusedHandle == null || fusionDisabled) {
+            if (fusedHandle == null) {
+                // Plan-time stitch failure: already counted as a stitch-failure, not a runtime fallback.
+                return unfusedProjection(page, positions);
+            }
+            if (fusionDisabled) {
+                recordRuntimeFallbackOnce();
                 return unfusedProjection(page, positions);
             }
             int positionCount = page.getPositionCount();
@@ -422,6 +429,7 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
                 fusionDisabled = true;
                 logger.warn(() -> "fused filter-eval failed to link for shape [" + shape + "]; falling back to unfused", e);
                 FusionTelemetry.recordFailure(shape);
+                recordRuntimeFallbackOnce();
                 return unfusedProjection(page, positions);
             } catch (RuntimeException | Error e) {
                 throw e;
@@ -438,6 +446,15 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
          */
         private Block unfusedProjection(Page page, int[] positions) {
             return unfusedProjection(page, positions, unfusedPredicate(), unfusedProjection());
+        }
+
+        /** Coverage: one runtime-fallback increment per evaluator instance, not per page. */
+        private void recordRuntimeFallbackOnce() {
+            if (runtimeFallbackRecorded) {
+                return;
+            }
+            runtimeFallbackRecorded = true;
+            FusionTelemetry.recordRuntimeFallback();
         }
 
         /**

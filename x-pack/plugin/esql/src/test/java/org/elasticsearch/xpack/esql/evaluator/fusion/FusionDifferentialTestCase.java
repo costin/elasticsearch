@@ -127,6 +127,7 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
         FusionSettings.setEnabledForTests(true);
         FusionSettings.setAdaptiveMinRowsForTests(0);
         FusionSettings.setSampleFractionForTests(1.0);
+        FusionSettings.setCoverageReportEnabledForTests(false);
         assertThat(breaker.getUsed(), is(0L));
     }
 

@@ -129,6 +129,17 @@ public final class FusionSettings {
     );
 
     /**
+     * {@code esql.fusion.coverage_report}: node-scoped, non-dynamic; default {@code false}. Opt-in fusion coverage
+     * probe: when on, {@link FusionTelemetry} counts fuse/refuse/fallback attempts and {@code EsqlPlugin#close} logs
+     * {@link FusionTelemetry#coverageReport()}. Off is a no-op (every coverage {@code record*} early-returns).
+     */
+    public static final Setting<Boolean> FUSION_COVERAGE_REPORT_SETTING = Setting.boolSetting(
+        "esql.fusion.coverage_report",
+        false,
+        Setting.Property.NodeScope
+    );
+
+    /**
      * The effective switch. Written once at node start (or by a test hook) and read on the cold plan-time path, so a
      * plain {@code volatile} is sufficient — there is no per-row cost and no need for stronger ordering.
      */
@@ -156,6 +167,12 @@ public final class FusionSettings {
     private static volatile double sampleFraction = initialDoubleProperty("esql.fusion.sample", 1.0);
 
     /**
+     * The effective coverage-report opt-in (default off). Cold-path read; also latches
+     * {@link FusionTelemetry#coverageEnabled} so the counters stay zero-cost when this is false.
+     */
+    private static volatile boolean coverageReportEnabled = initialCoverageReportDefault();
+
+    /**
      * Test/CI-only {@code esql.fusion.verify}. <b>Not</b> a node {@link Setting} — do not register it in
      * {@code EsqlPlugin}. Read once into a {@code static final} so the fused-eval {@code if (isVerifyEnabled())}
      * branch is a single constant the JIT folds away in production (no {@code -ea}) and in JMH (no {@code -ea}).
@@ -181,6 +198,14 @@ public final class FusionSettings {
         return property == null ? fallback : Double.parseDouble(property);
     }
 
+    private static boolean initialCoverageReportDefault() {
+        // Honor -Desql.fusion.coverage_report before any plugin wiring so CsvIT / unit tests that never build a node
+        // still flip the probe. Default false: production pays nothing.
+        boolean value = Boolean.parseBoolean(System.getProperty("esql.fusion.coverage_report", "false"));
+        FusionTelemetry.coverageEnabled = value;
+        return value;
+    }
+
     /** Latches all fusion dials from the node {@link Settings}. Called once by {@code EsqlPlugin#createComponents}. */
     public static void initFromNodeSettings(Settings settings) {
         enabled = FUSION_ENABLED_SETTING.get(settings);
@@ -188,6 +213,8 @@ public final class FusionSettings {
         sampleFraction = FUSION_SAMPLE_SETTING.get(settings);
         simdEnabled = FUSION_SIMD_SETTING.get(settings);
         stringDepth1Enabled = FUSION_STRING_DEPTH1_SETTING.get(settings);
+        coverageReportEnabled = FUSION_COVERAGE_REPORT_SETTING.get(settings);
+        FusionTelemetry.coverageEnabled = coverageReportEnabled;
     }
 
     /** Whether opt-in SIMD (Vector-API) generation may be attempted (subject to a runtime availability check). */
@@ -295,6 +322,17 @@ public final class FusionSettings {
     /** Test-only: sets the A/B sampling fraction; restore in a finally. */
     static void setSampleFractionForTests(double value) {
         sampleFraction = value;
+    }
+
+    /** Whether the opt-in fusion coverage probe is on. Default {@code false} (zero cost). */
+    public static boolean isCoverageReportEnabled() {
+        return coverageReportEnabled;
+    }
+
+    /** Test-only: flips the coverage probe and the {@link FusionTelemetry#coverageEnabled} latch together; restore in a finally. */
+    static void setCoverageReportEnabledForTests(boolean value) {
+        coverageReportEnabled = value;
+        FusionTelemetry.coverageEnabled = value;
     }
 
     /**

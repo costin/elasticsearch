@@ -601,7 +601,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             // same way — fusion is an optimization and must never break the query.
             // WARN once per shape (firstFailure from the cache) because fusion is lost entirely; repeats DEBUG.
             logPlanTimeStitchFailure(logger, shape, compilingPath, true, e);
-            FusionTelemetry.recordFailure(shape);
+            FusionTelemetry.recordFailure(shape, compilingPath);
             return null;
         } finally {
             if (captured != null) {
@@ -976,6 +976,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         // Latched true after the first eval-time LinkageError so every later page routes straight to the unfused
         // fallback instead of re-attempting (and re-failing) the fused handle per page.
         private boolean fusionDisabled;
+        // Coverage: a runtime unfused fallback (nested-mapping MV, LinkageError latch) is recorded once per instance,
+        // not once per page. Always written on the fallback path; recordRuntimeFallback itself is a no-op when off.
+        private boolean runtimeFallbackRecorded;
         // Guards close() so a Releasable per-driver scratch buffer is released exactly once (a double close would
         // double-decrement its circuit-breaker reservation).
         private boolean closed;
@@ -1057,6 +1060,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             if (fusionDisabled) {
                 // A prior page already hit an eval-time LinkageError; stay on the unfused chain for the rest of this
                 // evaluator's life rather than re-failing the fused handle per page.
+                recordRuntimeFallbackOnce();
                 return unfusedFallback().eval(page);
             }
             int arity = inputChannels.length;
@@ -1079,6 +1083,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 }
                 if (nonVector) {
                     lastEvalPath = LastEvalPath.UNFUSED_FALLBACK;
+                    recordRuntimeFallbackOnce();
                     return unfusedFallback().eval(page);
                 }
             }
@@ -1128,6 +1133,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 fusionDisabled = true;
                 logger.warn(() -> "fused evaluation failed to link for shape [" + shape + "]; falling back to unfused", e);
                 FusionTelemetry.recordFailure(shape);
+                recordRuntimeFallbackOnce();
                 return unfusedFallback().eval(page);
             } catch (RuntimeException | Error e) {
                 throw e;
@@ -1465,6 +1471,15 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 this.unfusedFallback = unfusedFactory.get(driverContext);
             }
             return unfusedFallback;
+        }
+
+        /** Coverage: one runtime-fallback increment per evaluator instance, regardless of how many pages take this path. */
+        private void recordRuntimeFallbackOnce() {
+            if (runtimeFallbackRecorded) {
+                return;
+            }
+            runtimeFallbackRecorded = true;
+            FusionTelemetry.recordRuntimeFallback();
         }
 
         /**

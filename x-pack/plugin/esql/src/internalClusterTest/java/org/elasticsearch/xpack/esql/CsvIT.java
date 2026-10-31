@@ -304,6 +304,11 @@ public class CsvIT extends ESTestCase {
                     if (stringDepth1 != null) {
                         builder.put("esql.fusion.string_depth1", stringDepth1);
                     }
+                    // -Desql.fusion.coverage_report=true turns on the opt-in fusion coverage probe for the corpus run.
+                    String coverageReport = System.getProperty("esql.fusion.coverage_report");
+                    if (coverageReport != null) {
+                        builder.put("esql.fusion.coverage_report", coverageReport);
+                    }
                     return builder.build();
                 }
 

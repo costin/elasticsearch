@@ -123,6 +123,7 @@ import org.elasticsearch.xpack.esql.enrich.EnrichLookupOperator;
 import org.elasticsearch.xpack.esql.enrich.LookupFromIndexOperator;
 import org.elasticsearch.xpack.esql.enrich.StreamingLookupFromIndexOperator;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusionTelemetry;
 import org.elasticsearch.xpack.esql.execution.PlanExecutor;
 import org.elasticsearch.xpack.esql.expression.ExpressionWritables;
 import org.elasticsearch.xpack.esql.expression.function.EsqlFunctionRegistry;
@@ -279,6 +280,14 @@ public class EsqlPlugin extends Plugin implements ActionPlugin, ExtensiblePlugin
 
     @Override
     public void close() throws IOException {
+        try {
+            if (FusionSettings.isCoverageReportEnabled()) {
+                logger.info("{}", FusionTelemetry.coverageReport());
+            }
+        } catch (Exception e) {
+            // Coverage is diagnostic-only; never fail node shutdown because the report could not be built.
+            logger.debug("fusion coverage report failed to emit", e);
+        }
         IOUtils.close(dataSourceModule);
     }
 
@@ -295,8 +304,8 @@ public class EsqlPlugin extends Plugin implements ActionPlugin, ExtensiblePlugin
         }
         Settings settings = services.clusterService().getSettings();
         // Latch the node-level expression-fusion dials (esql.fusion.enabled kill switch, adaptive.min_rows threshold,
-        // and the A/B sample fraction) once at node start; they are not dynamic cluster settings, so this single read
-        // fixes the node's fusion behavior for its lifetime.
+        // A/B sample fraction, and the opt-in coverage_report probe) once at node start; they are not dynamic cluster
+        // settings, so this single read fixes the node's fusion behavior for its lifetime.
         FusionSettings.initFromNodeSettings(settings);
         BigArrays bigArrays = services.indicesService().getBigArrays().withCircuitBreaking();
         var blockFactoryProvider = blockFactoryProvider(
@@ -520,7 +529,8 @@ public class EsqlPlugin extends Plugin implements ActionPlugin, ExtensiblePlugin
                 FusionSettings.FUSION_ADAPTIVE_MIN_ROWS_SETTING,
                 FusionSettings.FUSION_SAMPLE_SETTING,
                 FusionSettings.FUSION_SIMD_SETTING,
-                FusionSettings.FUSION_STRING_DEPTH1_SETTING
+                FusionSettings.FUSION_STRING_DEPTH1_SETTING,
+                FusionSettings.FUSION_COVERAGE_REPORT_SETTING
             )
         );
         settings.addAll(PlannerSettings.settings());
