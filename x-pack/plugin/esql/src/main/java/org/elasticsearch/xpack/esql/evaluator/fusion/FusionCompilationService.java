@@ -14,6 +14,7 @@ import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFac
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusionPlanner.FusedClassCompiler;
 
 import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 
 /**
  * Owns the runtime <b>compilation and caching</b> of stitched hidden classes, separated from {@link FusionPlanner} so
@@ -23,7 +24,10 @@ import java.lang.invoke.MethodHandles;
  *
  * <p>{@link #compiler()} is the production {@link FusedClassCompiler}: each entry point looks the expression
  * {@linkplain FusedClassCache.Shape shape} up in the cache first and only invokes the {@code Stitcher} on a miss (or a
- * cleared reference), so repeated identical query shapes reuse one hidden class. The caller {@link MethodHandles.Lookup}
+ * cleared reference), so repeated identical query shapes reuse one hidden class. MethodType overloads also resolve the
+ * factory's expected {@code fused*} methods <em>inside</em> that cached unit via
+ * {@link FusedClassCache#stitchAndResolve}, so a {@code findStatic} miss is negatively cached (WARN once) rather than
+ * storing the class as a success. The caller {@link MethodHandles.Lookup}
  * is deliberately excluded from the cache key: production always uses the single {@link FusedExpressionEvaluatorFactory}
  * module lookup, so keying by shape alone is safe. Test-injected compilers ({@code FusionPlanner.compilerForTests})
  * bypass this service entirely, keeping the raw stitch/fallback seams uncached and order-independent across tests.
@@ -36,32 +40,97 @@ final class FusionCompilationService {
     private final FusedClassCompiler compiler = new FusedClassCompiler() {
         @Override
         public Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-            return cache.get(shapeKey(tree, FusedClassCache.Path.BLOCK), () -> stitcher.compileBlockLoop(caller, tree));
+            return compileBlockLoop(caller, tree, null);
+        }
+
+        @Override
+        public Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+            throws Stitcher.StitchingException {
+            return cached(shapeKey(tree, FusedClassCache.Path.BLOCK), () -> stitcher.compileBlockLoop(caller, tree), caller, type, methods);
         }
 
         @Override
         public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-            return cache.get(shapeKey(tree, FusedClassCache.Path.PLAIN_VECTOR), () -> stitcher.compileVectorLoop(caller, tree));
+            return compileVectorLoop(caller, tree, null);
+        }
+
+        @Override
+        public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+            throws Stitcher.StitchingException {
+            return cached(
+                shapeKey(tree, FusedClassCache.Path.PLAIN_VECTOR),
+                () -> stitcher.compileVectorLoop(caller, tree),
+                caller,
+                type,
+                methods
+            );
         }
 
         @Override
         public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-            return cache.get(shapeKey(tree, FusedClassCache.Path.CHECKED_VECTOR), () -> stitcher.compileVectorLoopChecked(caller, tree));
+            return compileVectorLoopChecked(caller, tree, null);
+        }
+
+        @Override
+        public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+            throws Stitcher.StitchingException {
+            return cached(
+                shapeKey(tree, FusedClassCache.Path.CHECKED_VECTOR),
+                () -> stitcher.compileVectorLoopChecked(caller, tree),
+                caller,
+                type,
+                methods
+            );
         }
 
         @Override
         public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-            return cache.get(shapeKey(tree, FusedClassCache.Path.LOGICAL_BLOCK), () -> stitcher.compileLogicalBlockLoop(caller, tree));
+            return compileLogicalBlockLoop(caller, tree, null);
+        }
+
+        @Override
+        public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+            throws Stitcher.StitchingException {
+            return cached(
+                shapeKey(tree, FusedClassCache.Path.LOGICAL_BLOCK),
+                () -> stitcher.compileLogicalBlockLoop(caller, tree),
+                caller,
+                type,
+                methods
+            );
         }
 
         @Override
         public Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-            return cache.get(shapeKey(tree, FusedClassCache.Path.LOGICAL_VECTOR), () -> stitcher.compileLogicalVectorLoop(caller, tree));
+            return compileLogicalVectorLoop(caller, tree, null);
+        }
+
+        @Override
+        public Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+            throws Stitcher.StitchingException {
+            return cached(
+                shapeKey(tree, FusedClassCache.Path.LOGICAL_VECTOR),
+                () -> stitcher.compileLogicalVectorLoop(caller, tree),
+                caller,
+                type,
+                methods
+            );
         }
 
         @Override
         public Class<?> compileFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
             throws Stitcher.StitchingException {
+            return compileFilterEvalBlockLoop(caller, predicateTree, projectionTree, null);
+        }
+
+        @Override
+        public Class<?> compileFilterEvalBlockLoop(
+            MethodHandles.Lookup caller,
+            FusionNode predicateTree,
+            FusionNode projectionTree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
             // The fused class is fully determined by BOTH sub-shapes, so the cache key encodes both (and, for
             // specificity, keys on the projection output element).
             FusedClassCache.Shape shape = new FusedClassCache.Shape(
@@ -69,25 +138,66 @@ final class FusionCompilationService {
                 rootElement(projectionTree),
                 FusedClassCache.Path.FILTER_EVAL_BLOCK
             );
-            return cache.get(shape, () -> stitcher.compileFilterEvalBlockLoop(caller, predicateTree, projectionTree));
+            return cached(shape, () -> stitcher.compileFilterEvalBlockLoop(caller, predicateTree, projectionTree), caller, type, methods);
         }
 
         @Override
         public Class<?> compileVectorLoopSimd(MethodHandles.Lookup caller, FusionNode tree, String comparison)
             throws Stitcher.StitchingException {
+            return compileVectorLoopSimd(caller, tree, comparison, null);
+        }
+
+        @Override
+        public Class<?> compileVectorLoopSimd(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            String comparison,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
             // The comparison operator is part of the tree's shape (distinct comparison kernels -> distinct shapeOf),
             // so the shape key already distinguishes a>b from a<b; keyed on the SIMD_VECTOR path.
-            return cache.get(
+            return cached(
                 shapeKey(tree, FusedClassCache.Path.SIMD_VECTOR),
-                () -> stitcher.compileVectorLoopSimd(caller, tree, comparison)
+                () -> stitcher.compileVectorLoopSimd(caller, tree, comparison),
+                caller,
+                type,
+                methods
             );
         }
 
         @Override
         public Class<?> compileMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-            return cache.get(shapeKey(tree, FusedClassCache.Path.MAPPING_BLOCK), () -> stitcher.compileMappingBlockLoop(caller, tree));
+            return compileMappingBlockLoop(caller, tree, null);
+        }
+
+        @Override
+        public Class<?> compileMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+            throws Stitcher.StitchingException {
+            return cached(
+                shapeKey(tree, FusedClassCache.Path.MAPPING_BLOCK),
+                () -> stitcher.compileMappingBlockLoop(caller, tree),
+                caller,
+                type,
+                methods
+            );
         }
     };
+
+    /**
+     * Cache lookup whose stitcher lambda stitches <em>and</em> resolves {@code methods} against {@code type}.
+     * WHY: a {@code findStatic} miss must run inside {@link FusedClassCache#get} so the class is not stored as a
+     * success; {@code type == null} skips resolution for the 2-arg compile entry points.
+     */
+    private Class<?> cached(
+        FusedClassCache.Shape shape,
+        FusedClassCache.ClassStitcher stitch,
+        MethodHandles.Lookup caller,
+        MethodType type,
+        String... methods
+    ) throws Stitcher.StitchingException {
+        return cache.get(shape, () -> FusedClassCache.stitchAndResolve(stitch, caller, type, methods));
+    }
 
     /** The production caching compiler consulted by {@link FusionPlanner} when no test override is installed. */
     FusedClassCompiler compiler() {

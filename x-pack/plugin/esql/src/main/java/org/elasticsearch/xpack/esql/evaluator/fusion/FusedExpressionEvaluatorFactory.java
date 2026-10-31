@@ -365,12 +365,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 // Multi-value mapping convert kernel (TO_LOWER/TO_UPPER): block-only (it maps over multi-values, so no
                 // vector fast path). Its method signature is the ordinary block shape, so binding is identical.
                 compilingPath = FusedClassCache.Path.MAPPING_BLOCK;
-                Class<?> mappingClass = compiler.compileMappingBlockLoop(LOOKUP, tree);
-                MethodHandle mappingHandle = LOOKUP.findStatic(
-                    mappingClass,
-                    Stitcher.FUSED_METHOD_NAME,
-                    blockType(inputElements, outputElement, arity, constantParamTypes)
-                );
+                MethodType mappingType = blockType(inputElements, outputElement, arity, constantParamTypes);
+                Class<?> mappingClass = compiler.compileMappingBlockLoop(LOOKUP, tree, mappingType, Stitcher.FUSED_METHOD_NAME);
+                MethodHandle mappingHandle = LOOKUP.findStatic(mappingClass, Stitcher.FUSED_METHOD_NAME, mappingType);
                 return new FusedExpressionEvaluatorFactory(
                     warningSources,
                     inputChannels,
@@ -389,15 +386,18 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 // vector loop is compiled alongside it; a stitch failure there degrades to block-only rather than
                 // dropping fusion entirely (same policy as the arithmetic vector-path degrade).
                 compilingPath = FusedClassCache.Path.LOGICAL_BLOCK;
-                Class<?> logicalClass = compiler.compileLogicalBlockLoop(LOOKUP, tree);
-                MethodHandle logicalHandle = LOOKUP.findStatic(
-                    logicalClass,
-                    Stitcher.FUSED_METHOD_NAME,
-                    blockType(inputElements, outputElement, arity, constantParamTypes)
-                );
+                MethodType logicalType = blockType(inputElements, outputElement, arity, constantParamTypes);
+                Class<?> logicalClass = compiler.compileLogicalBlockLoop(LOOKUP, tree, logicalType, Stitcher.FUSED_METHOD_NAME);
+                MethodHandle logicalHandle = LOOKUP.findStatic(logicalClass, Stitcher.FUSED_METHOD_NAME, logicalType);
                 try {
-                    Class<?> vectorClass = compiler.compileLogicalVectorLoop(LOOKUP, tree);
                     MethodType vectorType = logicalVectorType(arity, constantParamTypes);
+                    Class<?> vectorClass = compiler.compileLogicalVectorLoop(
+                        LOOKUP,
+                        tree,
+                        vectorType,
+                        Stitcher.FUSED_METHOD_NAME,
+                        Stitcher.FUSED_INTERFACE_METHOD_NAME
+                    );
                     MethodHandle rawHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, vectorType);
                     MethodHandle interfaceHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_INTERFACE_METHOD_NAME, vectorType);
                     return new FusedExpressionEvaluatorFactory(
@@ -431,12 +431,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 }
             }
 
-            Class<?> blockClass = compiler.compileBlockLoop(LOOKUP, tree);
-            MethodHandle blockHandle = LOOKUP.findStatic(
-                blockClass,
-                Stitcher.FUSED_METHOD_NAME,
-                blockType(inputElements, outputElement, arity, constantParamTypes)
-            );
+            MethodType blockMethodType = blockType(inputElements, outputElement, arity, constantParamTypes);
+            Class<?> blockClass = compiler.compileBlockLoop(LOOKUP, tree, blockMethodType, Stitcher.FUSED_METHOD_NAME);
+            MethodHandle blockHandle = LOOKUP.findStatic(blockClass, Stitcher.FUSED_METHOD_NAME, blockMethodType);
 
             if (hasBytesRefInput(inputElements) || outputElement == ElementKind.BYTES_REF) {
                 // A BytesRef (keyword/text) column may be ordinal-encoded rather than a plain ArrayVector, and a
@@ -479,10 +476,22 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                         // unchanged (VectorStrategy.PLAIN_VECTOR). SIMD stays ALL-RAW (exact *ArrayVector) only —
                         // Constant/*BigArrayVector pages fall through to the block path.
                         FusionSimd.enableReadsFrom(LOOKUP.lookupClass().getModule());
-                        vectorClass = compiler.compileVectorLoopSimd(LOOKUP, tree, plan.vectorComparison());
+                        vectorClass = compiler.compileVectorLoopSimd(
+                            LOOKUP,
+                            tree,
+                            plan.vectorComparison(),
+                            plainType,
+                            Stitcher.FUSED_METHOD_NAME
+                        );
                         vectorHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, plainType);
                     } else {
-                        vectorClass = compiler.compileVectorLoop(LOOKUP, tree);
+                        vectorClass = compiler.compileVectorLoop(
+                            LOOKUP,
+                            tree,
+                            plainType,
+                            Stitcher.FUSED_METHOD_NAME,
+                            Stitcher.FUSED_INTERFACE_METHOD_NAME
+                        );
                         vectorHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, plainType);
                         vectorHandleInterface = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_INTERFACE_METHOD_NAME, plainType);
                     }
@@ -494,8 +503,16 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     // teleport — so it links non-java.base kernel callees just like the block path. The old
                     // double+overflow hard gate (VectorStrategy.NONE) is gone. One class carries fused/fusedInterface
                     // (builder) and fusedRaw/fusedRawInterface (dense ArrayVector, abandon on overflow).
-                    Class<?> vectorClass = compiler.compileVectorLoopChecked(LOOKUP, tree);
                     MethodType checkedType = checkedVectorType(outputElement, arity, constantParamTypes);
+                    Class<?> vectorClass = compiler.compileVectorLoopChecked(
+                        LOOKUP,
+                        tree,
+                        checkedType,
+                        Stitcher.FUSED_METHOD_NAME,
+                        Stitcher.FUSED_INTERFACE_METHOD_NAME,
+                        Stitcher.FUSED_RAW_METHOD_NAME,
+                        Stitcher.FUSED_RAW_INTERFACE_METHOD_NAME
+                    );
                     vectorHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, checkedType);
                     vectorHandleInterface = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_INTERFACE_METHOD_NAME, checkedType);
                     vectorHandleRaw = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_RAW_METHOD_NAME, checkedType);
@@ -563,8 +580,10 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * The single plan-time stitch-failure log site. WHY this lives in the factory, not the cache: only the factory
      * knows whether fusion was lost entirely ({@code unfusedFallback}) or the shape still fused via the block path.
      * The cache supplies {@link Stitcher.StitchingException#isFirstFailure()} so a full-unfused fallback WARNs
-     * exactly once per shape; vector/SIMD/logical-vector degrades, and every repeat, stay at DEBUG. Non-cached
-     * failures (a {@code findStatic} miss, a test compiler that bypasses the cache) are treated as first failures.
+     * exactly once per shape; vector/SIMD/logical-vector degrades, and every repeat, stay at DEBUG. Production
+     * {@code findStatic} runs inside the cached unit ({@link FusedClassCache#stitchAndResolve}), so a resolution miss
+     * is a {@link Stitcher.StitchingException} carrying the cache's first-failure flag. Remaining first-failure
+     * defaults are test compilers that bypass the cache, or a 2-arg compile that did not resolve.
      */
     static void logPlanTimeStitchFailure(Logger log, String shape, FusedClassCache.Path path, boolean unfusedFallback, Throwable failure) {
         boolean firstFailure = true;

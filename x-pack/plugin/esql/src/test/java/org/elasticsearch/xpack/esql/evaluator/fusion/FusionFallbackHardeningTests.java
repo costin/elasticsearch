@@ -51,6 +51,7 @@ import org.junit.After;
 import org.junit.Before;
 
 import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
@@ -536,6 +537,107 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         assertThat("planning the shape 3× must stitch once", invocations.get(), is(1));
         assertThat(cache.failures(), is(1L));
         assertThat(cache.negativeHits(), is(2L));
+    }
+
+    /**
+     * G5: a cache-backed compiler returns a <em>real</em> stitched class that is missing the method the factory
+     * {@code findStatic}s (a vector class served on the block path). The factory's own resolution throws
+     * {@link NoSuchMethodException}. That miss must be negatively cached like any other stitch failure: plan 1 WARNs
+     * once, plans 2 and 3 DEBUG, {@code cache.failures()==1}. The existing cache-level ROE test cannot catch this
+     * because it never exercises the factory's post-{@code cache.get} {@code findStatic}.
+     */
+    @TestLogging(
+        value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG,"
+            + "org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory:DEBUG",
+        reason = "assert a factory findStatic miss WARNs once then DEBUG on negative-cache hits"
+    )
+    public void testFactoryFindStaticMissWarnsOnceThenDebug() {
+        FusionSettings.setAdaptiveMinRowsForTests(0);
+        try {
+            FieldAttribute a = field("a", DataType.LONG);
+            FieldAttribute b = field("b", DataType.LONG);
+            FieldAttribute c = field("c", DataType.LONG);
+            Layout layout = layout(a, b, c);
+            Expression expr = addMul(a, b, c);
+
+            FusedClassCache cache = FusionPlanner.classCache();
+            cache.resetForTests();
+            AtomicInteger invocations = new AtomicInteger();
+            Stitcher real = new Stitcher(new TemplateRegistry());
+            FusionPlanner.compilerForTests = cacheBackedCompiler(cache, (caller, tree, path) -> {
+                invocations.incrementAndGet();
+                // Real stitched bytecode, wrong method: the vector class has fused(BlockFactory, int, Vector…)
+                // but the factory findStatics the block signature (BlockFactory, Warnings[], int, LongBlock…).
+                if (path == Path.BLOCK) {
+                    return real.compileVectorLoop(caller, tree);
+                }
+                throw new Stitcher.StitchingException("G5 test should fail on BLOCK findStatic before other paths", null);
+            });
+
+            try (var first = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
+                first.addExpectation(
+                    new MockLog.SeenEventExpectation(
+                        "first-failure WARN at factory",
+                        FusedExpressionEvaluatorFactory.class.getCanonicalName(),
+                        Level.WARN,
+                        "*unfused*"
+                    )
+                );
+                first.addExpectation(
+                    new MockLog.UnseenEventExpectation(
+                        "cache must not WARN",
+                        FusedClassCache.class.getCanonicalName(),
+                        Level.WARN,
+                        "*fusion stitch*"
+                    )
+                );
+                ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+                assertThat(candidate, not(instanceOf(AdaptiveFusionEvaluatorFactory.class)));
+                assertThat(
+                    "a findStatic miss must fall back to the unfused factory",
+                    candidate,
+                    not(instanceOf(FusedExpressionEvaluatorFactory.class))
+                );
+                first.assertAllExpectationsMatched();
+            }
+            try (var repeats = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
+                repeats.addExpectation(
+                    new MockLog.UnseenEventExpectation(
+                        "repeat must not WARN at factory",
+                        FusedExpressionEvaluatorFactory.class.getCanonicalName(),
+                        Level.WARN,
+                        "*fusion stitch*"
+                    )
+                );
+                repeats.addExpectation(
+                    new MockLog.UnseenEventExpectation(
+                        "repeat must not WARN at cache",
+                        FusedClassCache.class.getCanonicalName(),
+                        Level.WARN,
+                        "*fusion stitch*"
+                    )
+                );
+                repeats.addExpectation(
+                    new MockLog.SeenEventExpectation(
+                        "repeat DEBUG at factory",
+                        FusedExpressionEvaluatorFactory.class.getCanonicalName(),
+                        Level.DEBUG,
+                        "*previously failed for shape*"
+                    )
+                );
+                for (int i = 0; i < 2; i++) {
+                    ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+                    assertThat(candidate, not(instanceOf(AdaptiveFusionEvaluatorFactory.class)));
+                    assertThat(candidate, not(instanceOf(FusedExpressionEvaluatorFactory.class)));
+                }
+                repeats.assertAllExpectationsMatched();
+            }
+            assertThat("planning the shape 3× must stitch once", invocations.get(), is(1));
+            assertThat(cache.failures(), is(1L));
+            assertThat(cache.negativeHits(), is(2L));
+        } finally {
+            FusionSettings.setAdaptiveMinRowsForTests(0);
+        }
     }
 
     /**
@@ -1029,16 +1131,30 @@ public class FusionFallbackHardeningTests extends ESTestCase {
 
     /**
      * A compiler that still goes through {@code cache} (unlike {@link FusionPlanner#compilerForTests}'s usual bypass)
-     * so A1 can assert negative-cache + log-once against the real {@link FusedClassCache} while injecting a stitch
-     * failure. Production {@link FusionCompilationService} is the same shape: cache.get then stitch.
+     * so A1/G5 can assert negative-cache + log-once against the real {@link FusedClassCache} while injecting a stitch
+     * or {@code findStatic} failure. Production {@link FusionCompilationService} is the same shape: cache.get then
+     * stitch-and-resolve, so a missing method is negatively cached rather than stored as a success.
      */
     private static FusionPlanner.FusedClassCompiler cacheBackedCompiler(FusedClassCache cache, PathStitch stitch) {
         return new FusionPlanner.FusedClassCompiler() {
             private Class<?> cached(MethodHandles.Lookup caller, FusionNode tree, Path path) throws Stitcher.StitchingException {
+                return cached(caller, tree, path, null);
+            }
+
+            /**
+             * WHY resolve inside {@code cache.get}: the factory's MethodType overloads pass the expected
+             * {@code fused*} MethodTypes here so a {@code findStatic} miss is a negatively-cached
+             * {@link Stitcher.StitchingException}, matching production {@link FusionCompilationService}.
+             */
+            private Class<?> cached(MethodHandles.Lookup caller, FusionNode tree, Path path, MethodType type, String... methods)
+                throws Stitcher.StitchingException {
                 // Long-arithmetic-only: non-Logical trees are keyed as LONG, unlike production rootElement().
                 ElementKind element = tree instanceof FusionNode.Logical ? ElementKind.BOOLEAN : ElementKind.LONG;
                 Shape shape = new Shape(FusionPlanner.shapeOf(tree), element, path);
-                return cache.get(shape, () -> stitch.stitch(caller, tree, path));
+                return cache.get(
+                    shape,
+                    () -> FusedClassCache.stitchAndResolve(() -> stitch.stitch(caller, tree, path), caller, type, methods)
+                );
             }
 
             @Override
@@ -1047,8 +1163,20 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             }
 
             @Override
+            public Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+                throws Stitcher.StitchingException {
+                return cached(caller, tree, Path.BLOCK, type, methods);
+            }
+
+            @Override
             public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
                 return cached(caller, tree, Path.PLAIN_VECTOR);
+            }
+
+            @Override
+            public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+                throws Stitcher.StitchingException {
+                return cached(caller, tree, Path.PLAIN_VECTOR, type, methods);
             }
 
             @Override
@@ -1057,8 +1185,20 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             }
 
             @Override
+            public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+                throws Stitcher.StitchingException {
+                return cached(caller, tree, Path.CHECKED_VECTOR, type, methods);
+            }
+
+            @Override
             public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
                 return cached(caller, tree, Path.LOGICAL_BLOCK);
+            }
+
+            @Override
+            public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+                throws Stitcher.StitchingException {
+                return cached(caller, tree, Path.LOGICAL_BLOCK, type, methods);
             }
 
             @Override
@@ -1067,15 +1207,40 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             }
 
             @Override
+            public Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+                throws Stitcher.StitchingException {
+                return cached(caller, tree, Path.LOGICAL_VECTOR, type, methods);
+            }
+
+            @Override
             public Class<?> compileFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
                 throws Stitcher.StitchingException {
+                return compileFilterEvalBlockLoop(caller, predicateTree, projectionTree, null);
+            }
+
+            @Override
+            public Class<?> compileFilterEvalBlockLoop(
+                MethodHandles.Lookup caller,
+                FusionNode predicateTree,
+                FusionNode projectionTree,
+                MethodType type,
+                String... methods
+            ) throws Stitcher.StitchingException {
                 // Key the same way production FusionCompilationService does so a repeat hits the Failure marker.
                 Shape shape = new Shape(
                     FusionPlanner.filterEvalShapeOf(predicateTree, projectionTree),
                     ElementKind.LONG,
                     Path.FILTER_EVAL_BLOCK
                 );
-                return cache.get(shape, () -> stitch.stitch(caller, predicateTree, Path.FILTER_EVAL_BLOCK));
+                return cache.get(
+                    shape,
+                    () -> FusedClassCache.stitchAndResolve(
+                        () -> stitch.stitch(caller, predicateTree, Path.FILTER_EVAL_BLOCK),
+                        caller,
+                        type,
+                        methods
+                    )
+                );
             }
         };
     }

@@ -145,13 +145,19 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
             FusionDump.beginThreadCapture(captured);
         }
         try {
-            Class<?> fusedClass = compiler.compileFilterEvalBlockLoop(LOOKUP, predicateTree, projectionTree);
             MethodType type = fusedType(
                 predicateInputElements,
                 projectionInputElements,
                 projectionOutputElement,
                 constantParamTypes(predicateConstants),
                 constantParamTypes(projectionConstants)
+            );
+            Class<?> fusedClass = compiler.compileFilterEvalBlockLoop(
+                LOOKUP,
+                predicateTree,
+                projectionTree,
+                type,
+                Stitcher.FUSED_METHOD_NAME
             );
             handle = LOOKUP.findStatic(fusedClass, Stitcher.FUSED_METHOD_NAME, type);
         } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError e) {

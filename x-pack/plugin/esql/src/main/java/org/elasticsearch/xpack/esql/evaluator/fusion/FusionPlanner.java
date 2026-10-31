@@ -40,6 +40,7 @@ import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.Esq
 import org.elasticsearch.xpack.esql.planner.Layout;
 
 import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -119,11 +120,39 @@ public final class FusionPlanner {
     interface FusedClassCompiler {
         Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
 
+        /**
+         * Like {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode)} but the production compiler resolves
+         * {@code methods} against {@code type} <em>inside</em> the cached unit so a {@code findStatic} miss is
+         * negatively cached (WARN once). Test doubles default to the 2-arg form.
+         */
+        default Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+            throws Stitcher.StitchingException {
+            return compileBlockLoop(caller, tree);
+        }
+
         Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
+
+        /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
+        default Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+            throws Stitcher.StitchingException {
+            return compileVectorLoop(caller, tree);
+        }
 
         Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
 
+        /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
+        default Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+            throws Stitcher.StitchingException {
+            return compileVectorLoopChecked(caller, tree);
+        }
+
         Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
+
+        /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
+        default Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+            throws Stitcher.StitchingException {
+            return compileLogicalBlockLoop(caller, tree);
+        }
 
         /**
          * Compiles the dense 2VL logical vector loop (ALL-RAW + ALL-INTERFACE methods on one class). Defaulted so
@@ -132,6 +161,12 @@ public final class FusionPlanner {
          */
         default Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
             throw new UnsupportedOperationException("compileLogicalVectorLoop not implemented by this compiler");
+        }
+
+        /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
+        default Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+            throws Stitcher.StitchingException {
+            return compileLogicalVectorLoop(caller, tree);
         }
 
         /**
@@ -144,6 +179,17 @@ public final class FusionPlanner {
             throw new UnsupportedOperationException("compileFilterEvalBlockLoop not implemented by this compiler");
         }
 
+        /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
+        default Class<?> compileFilterEvalBlockLoop(
+            MethodHandles.Lookup caller,
+            FusionNode predicateTree,
+            FusionNode projectionTree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
+            return compileFilterEvalBlockLoop(caller, predicateTree, projectionTree);
+        }
+
         /**
          * Compiles the opt-in SIMD (Vector-API) variant of the plain-vector path for a boolean comparison (B2), where
          * {@code comparison} is the {@code VectorOperators.Comparison} constant name. Defaulted so existing test doubles
@@ -154,6 +200,17 @@ public final class FusionPlanner {
             throw new UnsupportedOperationException("compileVectorLoopSimd not implemented by this compiler");
         }
 
+        /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
+        default Class<?> compileVectorLoopSimd(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            String comparison,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
+            return compileVectorLoopSimd(caller, tree, comparison);
+        }
+
         /**
          * Compiles the multi-value mapping block loop for a unary convert kernel (TO_LOWER/TO_UPPER). Defaulted so
          * existing test doubles need not implement it; {@link FusionCompilationService} provides the real, cache-backed
@@ -161,6 +218,12 @@ public final class FusionPlanner {
          */
         default Class<?> compileMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
             throw new UnsupportedOperationException("compileMappingBlockLoop not implemented by this compiler");
+        }
+
+        /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
+        default Class<?> compileMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
+            throws Stitcher.StitchingException {
+            return compileMappingBlockLoop(caller, tree);
         }
     }
 

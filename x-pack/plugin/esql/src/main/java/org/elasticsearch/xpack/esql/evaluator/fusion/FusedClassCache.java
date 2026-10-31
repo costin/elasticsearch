@@ -10,6 +10,8 @@ package org.elasticsearch.xpack.esql.evaluator.fusion;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.lang.ref.Reference;
 import java.lang.ref.SoftReference;
 import java.lang.ref.WeakReference;
@@ -157,12 +159,33 @@ final class FusedClassCache {
 
     /**
      * The stitch operation deferred behind the cache; invoked at most once per live shape (single-flight).
-     * {@link ReflectiveOperationException} is declared so a {@code findStatic} failure inside a stitch lambda can
-     * take the same wrap-and-negative-cache path as emit/{@code LinkageError} failures.
+     * {@link ReflectiveOperationException} is declared so a {@code findStatic} failure inside a stitch lambda
+     * (see {@link #stitchAndResolve}) takes the same wrap-and-negative-cache path as emit/{@code LinkageError}
+     * failures. Production compilers must resolve the factory's expected method(s) <em>inside</em> this lambda —
+     * a {@code findStatic} after {@link #get} returns would cache the class as a success and WARN on every plan.
      */
     @FunctionalInterface
     interface ClassStitcher {
         Class<?> stitch() throws Stitcher.StitchingException, ReflectiveOperationException;
+    }
+
+    /**
+     * Stitches then resolves {@code methods} against {@code type} on the resulting class, still returning the
+     * {@link Class}. WHY this lives on the cache and must run inside {@link #get}'s stitcher lambda: a
+     * {@code findStatic} miss is a {@link ReflectiveOperationException}, which {@link #wrapStitchFailures}
+     * turns into a negatively-cached {@link Stitcher.StitchingException}({@code firstFailure=true}). Resolving
+     * <em>after</em> {@link #get} would store the class as a success and WARN on every subsequent plan.
+     * {@code type == null} (or no method names) skips resolution so 2-arg compile entry points stay stitch-only.
+     */
+    static Class<?> stitchAndResolve(ClassStitcher stitcher, MethodHandles.Lookup lookup, MethodType type, String... methods)
+        throws Stitcher.StitchingException, ReflectiveOperationException {
+        Class<?> fused = stitcher.stitch();
+        if (type != null) {
+            for (String method : methods) {
+                lookup.findStatic(fused, method, type);
+            }
+        }
+        return fused;
     }
 
     /**
