@@ -21,6 +21,7 @@ import org.elasticsearch.compute.data.BooleanBlock;
 import org.elasticsearch.compute.data.BytesRefBlock;
 import org.elasticsearch.compute.data.BytesRefVector;
 import org.elasticsearch.compute.data.DoubleBlock;
+import org.elasticsearch.compute.data.IntBlock;
 import org.elasticsearch.compute.data.IntVector;
 import org.elasticsearch.compute.data.LongBigArrayVector;
 import org.elasticsearch.compute.data.LongBlock;
@@ -449,6 +450,9 @@ public class SlowPathFusionBenchmark {
                 } else if (fused instanceof DoubleBlock l && unfused instanceof DoubleBlock u) {
                     fv = l.getDouble(fi + v);
                     uv = u.getDouble(ui + v);
+                } else if (fused instanceof IntBlock l && unfused instanceof IntBlock u) {
+                    fv = l.getInt(fi + v);
+                    uv = u.getInt(ui + v);
                 } else if (fused instanceof BooleanBlock l && unfused instanceof BooleanBlock u) {
                     fv = l.getBoolean(fi + v);
                     uv = u.getBoolean(ui + v);
