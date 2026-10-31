@@ -8,6 +8,9 @@
 package org.elasticsearch.xpack.esql.datasource.jdbc;
 
 import org.elasticsearch.xpack.esql.datasources.StorageIterator;
+import org.elasticsearch.xpack.esql.datasources.spi.ExternalSourceMetrics;
+import org.elasticsearch.xpack.esql.datasources.spi.StorageChildren;
+import org.elasticsearch.xpack.esql.datasources.spi.StorageIdentity;
 import org.elasticsearch.xpack.esql.datasources.spi.StorageObject;
 import org.elasticsearch.xpack.esql.datasources.spi.StoragePath;
 import org.elasticsearch.xpack.esql.datasources.spi.StorageProvider;
@@ -27,6 +30,10 @@ import java.util.Locale;
  * SPI contract -- mirroring Flight's {@code FlightStorageProvider} pattern.
  */
 public final class JdbcStorageProvider implements StorageProvider {
+
+    private record JdbcIdentity() implements StorageIdentity {}
+
+    private static final JdbcIdentity JDBC_IDENTITY = new JdbcIdentity();
 
     @Override
     public StorageObject newObject(StoragePath path) {
@@ -49,6 +56,11 @@ public final class JdbcStorageProvider implements StorageProvider {
     @Override
     public StorageIterator listObjects(StoragePath prefix, boolean recursive) throws IOException {
         throw new UnsupportedOperationException("JDBC sources do not support directory listing");
+    }
+
+    @Override
+    public StorageChildren listChildren(StoragePath prefix, int limit) {
+        return null; // JDBC has no directory listing at all
     }
 
     @Override
@@ -106,6 +118,12 @@ public final class JdbcStorageProvider implements StorageProvider {
             this.knownLastModified = lastModified;
         }
 
+        /**
+         * JDBC objects are not {@code AbstractMeteredStorageObject}s and keep no I/O counters, so there is nothing to attach.
+         */
+        @Override
+        public void attachMetrics(ExternalSourceMetrics metrics, String scheme) {}
+
         @Override
         public InputStream newStream() throws IOException {
             throw notByteAddressable();
@@ -138,6 +156,11 @@ public final class JdbcStorageProvider implements StorageProvider {
         @Override
         public StoragePath path() {
             return path;
+        }
+
+        @Override
+        public StorageIdentity storageIdentity() {
+            return JDBC_IDENTITY;
         }
     }
 }

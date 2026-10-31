@@ -176,6 +176,38 @@ public class JdbcDataSourcePluginTests extends ESTestCase {
         }
     }
 
+    /**
+     * Audit redaction is keyed off {@link JdbcDataSourcePlugin#datasourceSecretSettingNames()} at REST-filter time,
+     * before the handler can reject an unknown or flag-disabled type. The set must therefore contain the typed
+     * JDBC credential keys even when the feature flag is off, and must not be empty.
+     */
+    public void testDatasourceSecretSettingNamesCoversJdbcCredentials() {
+        try (JdbcDataSourcePlugin plugin = new JdbcDataSourcePlugin()) {
+            Set<String> secrets = plugin.datasourceSecretSettingNames();
+            assertTrue("password must be redacted from audit bodies", secrets.contains("password"));
+            assertTrue("user must be redacted from audit bodies", secrets.contains("user"));
+            assertTrue("access_key_id must be redacted from audit bodies", secrets.contains("access_key_id"));
+            assertTrue("secret_access_key must be redacted from audit bodies", secrets.contains("secret_access_key"));
+            assertTrue("session_token must be redacted from audit bodies", secrets.contains("session_token"));
+            assertEquals(
+                "secret names must match the sanitizer's credential-key set (single source of truth)",
+                JdbcUrlSanitizer.credentialKeys(),
+                secrets
+            );
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    public void testTestConnectionSchemesMapsJdbcTypeWhenFlagEnabled() {
+        assumeJdbcFlagEnabled();
+        try (JdbcDataSourcePlugin plugin = new JdbcDataSourcePlugin()) {
+            assertEquals(Map.of("jdbc", "jdbc:postgresql"), plugin.testConnectionSchemes());
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
     public void testGetSettingsExposesRuntimeConfigSettings() {
         try (JdbcDataSourcePlugin plugin = new JdbcDataSourcePlugin()) {
             java.util.List<? extends org.elasticsearch.common.settings.Setting<?>> s = plugin.getSettings();

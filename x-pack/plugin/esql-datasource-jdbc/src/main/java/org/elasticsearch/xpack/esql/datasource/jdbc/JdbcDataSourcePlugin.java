@@ -135,6 +135,27 @@ public class JdbcDataSourcePlugin extends Plugin implements DataSourcePlugin, Re
         return Set.copyOf(JdbcConnectorFactory.SUPPORTED_SCHEMES);
     }
 
+    /**
+     * PUT type {@code jdbc} is not a URI scheme: storage and connector registries key on the compound schemes
+     * ({@code jdbc:postgresql}, …). Map the type name so {@code DataSourceModule.testConnection} can find a probe.
+     */
+    @Override
+    public Map<String, String> testConnectionSchemes() {
+        if (jdbcEnabled() == false) {
+            return Map.of();
+        }
+        return Map.of("jdbc", "jdbc:postgresql");
+    }
+
+    /**
+     * Credential field names accepted on a JDBC data-source PUT. Invoked unconditionally at startup for REST
+     * audit-body redaction — do not gate on the feature flag (see {@link DataSourcePlugin#datasourceSecretSettingNames()}).
+     */
+    @Override
+    public Set<String> datasourceSecretSettingNames() {
+        return JdbcUrlSanitizer.credentialKeys();
+    }
+
     @Override
     public Set<String> supportedConnectorSchemes() {
         if (jdbcEnabled() == false) {
