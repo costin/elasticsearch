@@ -25,7 +25,6 @@ import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Cast;
-import org.elasticsearch.xpack.esql.expression.function.scalar.string.ChangeCase;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Concat;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.LTrim;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Left;
@@ -44,7 +43,6 @@ import java.lang.invoke.MethodType;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
 
@@ -594,14 +592,6 @@ public final class FusionPlanner {
             // commonType); its value rides in as an argument at eval time rather than being baked into the bytecode.
             return buildConstant(literal, expected, ctx);
         }
-        if (exp instanceof ChangeCase changeCase) {
-            // TO_LOWER/TO_UPPER (@ConvertEvaluator) MAP over a multi-valued position (a multi-valued keyword yields a
-            // multi-valued result, no warning). They fuse ONLY as a ROOT via the multi-value mapping block loop (which
-            // reproduces that mapping); nested in a single-value kernel they would need the parent to handle a
-            // multi-value intermediate, so buildChangeCase refuses a non-root position (the enclosing tree then doesn't
-            // fuse the ChangeCase). Locale + Case are captured as reference constants.
-            return buildChangeCase(changeCase, ctx, root);
-        }
         if (exp instanceof Left) {
             // LEFT(str, length) (#8b): a BytesRef -> BytesRef kernel whose first two @Fixed params are per-driver SCRATCH
             // buffers (a reusable BytesRef + a UTF8CodePoint), created fresh per driver rather than captured. Its body
@@ -640,6 +630,9 @@ public final class FusionPlanner {
             return null;
         }
         FusionDescriptor descriptor = ((FusionAware) factory).fusionDescriptor();
+        if (descriptor.mapping()) {
+            return buildMapping(exp, (FusionAware) factory, descriptor, ctx, root);
+        }
         // The @Fusable kernel must be THIS expression's own kernel — i.e. declared on this expression's class (Add
         // declares Add#processLongs, Floor declares Floor#..., etc.), so exp.children() ARE the kernel's operands.
         // A DELEGATING function breaks that: e.g. BUCKET(field, span).toEvaluator builds Mul(Floor(Div(field, span)),
@@ -718,47 +711,95 @@ public final class FusionPlanner {
     );
 
     /**
-     * The manually-built kernel descriptor for {@code ChangeCase#process(BytesRef, @Fixed Locale, @Fixed Case)}. The
-     * {@code $Case} inner-class descriptor is written explicitly. Not overflow-checked; a null input yields null. Fused
-     * only via the multi-value mapping loop (it maps over multi-values).
-     */
-    private static final FusionDescriptor CHANGE_CASE_DESCRIPTOR = new FusionDescriptor(
-        ChangeCase.class,
-        "process",
-        "(Lorg/apache/lucene/util/BytesRef;Ljava/util/Locale;"
-            + "Lorg/elasticsearch/xpack/esql/expression/function/scalar/string/ChangeCase$Case;)Lorg/apache/lucene/util/BytesRef;",
-        false,
-        true
-    );
-
-    /**
-     * Builds the fused node for a {@code TO_LOWER}/{@code TO_UPPER} ({@link ChangeCase}) expression as a MULTI-VALUE
-     * MAPPING kernel: a single kernel over its BytesRef field child plus two object {@code @Fixed} reference constants
-     * (the query {@link Locale} and the {@code UPPER}/{@code LOWER} {@link ChangeCase.Case}). Fuses ONLY at the root —
-     * a nested position returns {@code null} (refuse) so a single-value parent never sees a mapped multi-value
+     * Builds the fused node for a mapping {@code @ConvertEvaluator} (e.g. {@code TO_LOWER}/{@code TO_UPPER}): a
+     * single kernel over its BytesRef field child plus the Factory's {@code @Fixed} SINGLETON constants. Fuses ONLY
+     * at the root — a nested position returns {@code null} so a single-value parent never sees a mapped multi-value
      * intermediate. Sets {@link PlanContext#mapping} so the factory routes it to the mapping block loop.
+     *
+     * <p>The anti-delegation guard is {@code kernelClass.isAssignableFrom(exp.getClass())} rather than {@code ==}:
+     * {@code @ConvertEvaluator} lives on the declaring class (e.g. {@code ChangeCase.process}) while the expression
+     * is a concrete subclass ({@code ToLower}/{@code ToUpper}). A converter's single non-fixed child is
+     * {@code exp.children().get(0)}, lining up with the kernel's one BytesRef input.
      */
-    private static FusionNode buildChangeCase(ChangeCase changeCase, PlanContext ctx, boolean root) {
+    private static FusionNode buildMapping(
+        Expression exp,
+        FusionAware factory,
+        FusionDescriptor descriptor,
+        PlanContext ctx,
+        boolean root
+    ) {
         if (root == false) {
             return null;
         }
-        FusionNode field = build(changeCase.field(), ctx, ElementKind.BYTES_REF, changeCase.source(), false);
+        if (descriptor.kernelClass().isAssignableFrom(exp.getClass()) == false) {
+            return null;
+        }
+        List<Expression> children = exp.children();
+        if (children.size() != 1) {
+            return null;
+        }
+        FusionNode field = build(children.get(0), ctx, ElementKind.BYTES_REF, exp.source(), false);
         if (field == null || field instanceof FusionNode.Input == false) {
             // The mapping loop maps a single column input; only a direct BytesRef column child is supported.
             return null;
         }
-        FusionNode.Kernel kernel = new FusionNode.Kernel(
-            CHANGE_CASE_DESCRIPTOR,
-            List.of(
-                field,
-                FusionNode.Constant.reference(changeCase.configuration().locale(), Locale.class),
-                FusionNode.Constant.reference(changeCase.caseType(), ChangeCase.Case.class)
-            )
-        );
-        ctx.kernelSources.put(kernel, changeCase.source());
+        List<Object> fixedArgs = factory.fusionFixedArgs();
+        List<Class<?>> fixedTypes = mappingFixedArgTypes(descriptor.kernelType());
+        if (fixedTypes == null || fixedTypes.size() != fixedArgs.size()) {
+            return null;
+        }
+        List<FusionNode> operands = new ArrayList<>(1 + fixedArgs.size());
+        operands.add(field);
+        for (int i = 0; i < fixedArgs.size(); i++) {
+            // Use the DECLARED kernel parameter type, not value.getClass() — enum constants like ChangeCase.Case.LOWER
+            // are anonymous subclasses (ChangeCase$Case$1) that would miss the kernel's ChangeCase$Case parameter.
+            operands.add(FusionNode.Constant.reference(fixedArgs.get(i), fixedTypes.get(i)));
+        }
+        FusionNode.Kernel kernel = new FusionNode.Kernel(descriptor, operands);
+        ctx.kernelSources.put(kernel, exp.source());
         ctx.outputElement = ElementKind.BYTES_REF;
         ctx.mapping = true;
         return kernel;
+    }
+
+    /**
+     * Declared reference types of the {@code @Fixed} parameters in {@code kernelType}, i.e. the JVM argument list
+     * after the leading {@code Lorg/apache/lucene/util/BytesRef;} input. {@code /} is converted to {@code .};
+     * {@code $} is kept so inner classes (e.g. {@code ChangeCase$Case}) load as the declared type.
+     */
+    private static List<Class<?>> mappingFixedArgTypes(String kernelType) {
+        if (kernelType == null || kernelType.startsWith("(") == false) {
+            return null;
+        }
+        int close = kernelType.indexOf(')');
+        if (close < 0) {
+            return null;
+        }
+        String args = kernelType.substring(1, close);
+        String bytesRef = "Lorg/apache/lucene/util/BytesRef;";
+        if (args.startsWith(bytesRef) == false) {
+            return null;
+        }
+        args = args.substring(bytesRef.length());
+        List<Class<?>> types = new ArrayList<>();
+        int i = 0;
+        while (i < args.length()) {
+            if (args.charAt(i) != 'L') {
+                return null;
+            }
+            int semi = args.indexOf(';', i);
+            if (semi < 0) {
+                return null;
+            }
+            String binaryName = args.substring(i + 1, semi).replace('/', '.');
+            try {
+                types.add(Class.forName(binaryName));
+            } catch (ClassNotFoundException e) {
+                return null;
+            }
+            i = semi + 1;
+        }
+        return types;
     }
 
     /**

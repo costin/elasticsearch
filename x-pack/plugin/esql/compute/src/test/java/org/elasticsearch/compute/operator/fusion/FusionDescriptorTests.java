@@ -69,6 +69,19 @@ public class FusionDescriptorTests extends ESTestCase {
         assertThat(a, not(b));
     }
 
+    public void testMappingDefaultsFalseOnConvenienceConstructors() {
+        assertThat(descriptor(KERNEL_TYPE, false, true).mapping(), is(false));
+        assertThat(descriptor(KERNEL_TYPE, false, true).variadic(), is(false));
+        FusionDescriptor variadic = new FusionDescriptor(FusionDescriptorTests.class, "fixtureProcess", KERNEL_TYPE, false, true, "", true);
+        assertThat(variadic.variadic(), is(true));
+        assertThat(variadic.mapping(), is(false));
+    }
+
+    public void testFusionFixedArgsDefaultEmpty() {
+        FusionAware fusionAware = () -> descriptor(KERNEL_TYPE, false, true);
+        assertThat(fusionAware.fusionFixedArgs().isEmpty(), is(true));
+    }
+
     private static FusionDescriptor descriptor(String kernelType, boolean overflowChecked, boolean allNullsIsNull) {
         return new FusionDescriptor(FusionDescriptorTests.class, "fixtureProcess", kernelType, overflowChecked, allNullsIsNull);
     }

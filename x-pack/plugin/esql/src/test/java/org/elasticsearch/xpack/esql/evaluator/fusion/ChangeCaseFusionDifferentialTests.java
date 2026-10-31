@@ -11,15 +11,26 @@ import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BytesRefBlock;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.compute.operator.fusion.FusionAware;
+import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.ChangeCase;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToLower;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToUpper;
 import org.elasticsearch.xpack.esql.planner.Layout;
 import org.elasticsearch.xpack.esql.session.Configuration;
+
+import java.lang.reflect.Field;
+import java.util.List;
+import java.util.Locale;
+
+import static org.hamcrest.Matchers.instanceOf;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 
 /**
  * Task 4 (multi-value mapping) end-to-end: {@code TO_LOWER}/{@code TO_UPPER} ({@link
@@ -56,6 +67,34 @@ public class ChangeCaseFusionDifferentialTests extends FusionDifferentialTestCas
 
         Block in = keyword("Hello", "WORLD", "MiXeD", null, "", "Grüße δΔ", "already lower");
         runDifferentialWarnings(fused, unfused, ElementKind.BYTES_REF, new Block[] { in }, 7, "toLower(s)");
+    }
+
+    /**
+     * D2: TO_LOWER fuses through the generated {@link FusionAware} descriptor (not a hand-written
+     * {@code CHANGE_CASE_DESCRIPTOR}). The mapping flag and {@code fusionFixedArgs} come from the convert Factory.
+     */
+    public void testToLowerFusesThroughGeneratedFusionAwareDescriptor() {
+        for (Field field : FusionPlanner.class.getDeclaredFields()) {
+            assertThat(
+                "CHANGE_CASE_DESCRIPTOR must be deleted; mapping converters use generated FusionAware",
+                field.getName(),
+                not("CHANGE_CASE_DESCRIPTOR")
+            );
+        }
+        FieldAttribute s = field("s", DataType.KEYWORD);
+        Layout layout = layout(s);
+        Expression expr = new ToLower(Source.EMPTY, s, CFG);
+        FusedExpressionEvaluatorFactory fused = assertFuses(fusedFactory(expr, layout), "toLower generated FusionAware");
+        ExpressionEvaluator.Factory unfused = fused.unfusedFactory();
+        assertThat("ChangeCaseEvaluator.Factory must implement FusionAware", unfused, instanceOf(FusionAware.class));
+        FusionDescriptor descriptor = ((FusionAware) unfused).fusionDescriptor();
+        assertThat(descriptor.kernelClass(), is(ChangeCase.class));
+        assertThat(descriptor.kernelMethod(), is("process"));
+        assertThat("generated convert descriptor is a mapping kernel", descriptor.mapping(), is(true));
+        List<Object> fixed = ((FusionAware) unfused).fusionFixedArgs();
+        assertThat(fixed.size(), is(2));
+        assertThat(fixed.get(0), instanceOf(Locale.class));
+        assertThat(fixed.get(1), is(ChangeCase.Case.LOWER));
     }
 
     /**

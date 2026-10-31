@@ -13,6 +13,7 @@ import com.squareup.javapoet.MethodSpec;
 import com.squareup.javapoet.TypeName;
 import com.squareup.javapoet.TypeSpec;
 
+import org.elasticsearch.compute.ann.Fixed;
 import org.elasticsearch.compute.gen.argument.Argument;
 import org.elasticsearch.compute.gen.argument.FixedArgument;
 import org.elasticsearch.compute.gen.argument.StandardArgument;
@@ -37,6 +38,7 @@ import static org.elasticsearch.compute.gen.Types.BYTES_REF_VECTOR_BUILDER;
 import static org.elasticsearch.compute.gen.Types.DRIVER_CONTEXT;
 import static org.elasticsearch.compute.gen.Types.EXPRESSION_EVALUATOR;
 import static org.elasticsearch.compute.gen.Types.EXPRESSION_EVALUATOR_FACTORY;
+import static org.elasticsearch.compute.gen.Types.FUSION_AWARE;
 import static org.elasticsearch.compute.gen.Types.INT_VECTOR;
 import static org.elasticsearch.compute.gen.Types.ORDINALS_BYTES_REF_VECTOR;
 import static org.elasticsearch.compute.gen.Types.SOURCE;
@@ -47,12 +49,14 @@ import static org.elasticsearch.compute.gen.Types.vectorType;
 
 public class ConvertEvaluatorImplementer {
 
+    private final Elements elements;
     private final TypeElement declarationType;
     private final EvaluatorImplementer.ProcessFunction processFunction;
     private final boolean canProcessOrdinals;
     private final ClassName implementation;
     private final StandardArgument argument;
     private final List<TypeMirror> warnExceptions;
+    private final boolean fusable;
 
     public ConvertEvaluatorImplementer(
         Elements elements,
@@ -61,6 +65,18 @@ public class ConvertEvaluatorImplementer {
         String extraName,
         List<TypeMirror> warnExceptions
     ) {
+        this(elements, types, processFunction, extraName, warnExceptions, false);
+    }
+
+    public ConvertEvaluatorImplementer(
+        Elements elements,
+        javax.lang.model.util.Types types,
+        ExecutableElement processFunction,
+        String extraName,
+        List<TypeMirror> warnExceptions,
+        boolean fusable
+    ) {
+        this.elements = elements;
         this.declarationType = (TypeElement) processFunction.getEnclosingElement();
         this.processFunction = new EvaluatorImplementer.ProcessFunction(types, processFunction, warnExceptions);
         this.canProcessOrdinals = warnExceptions.isEmpty()
@@ -80,11 +96,35 @@ public class ConvertEvaluatorImplementer {
         }
 
         this.warnExceptions = warnExceptions;
+        this.fusable = fusable;
+        if (fusable) {
+            admitFusableConvert();
+        }
 
         this.implementation = ClassName.get(
             elements.getPackageOf(declarationType).toString(),
             declarationType.getSimpleName() + extraName + "Evaluator"
         );
+    }
+
+    /**
+     * Compile-time admission for {@code @ConvertEvaluator + @Fusable}: no {@code warnExceptions}, a BytesRef
+     * first input, and only SINGLETON non-{@code jitConstant} {@code @Fixed} params. Anything else is a
+     * generation error until a converter needs a richer mapping shape.
+     */
+    private void admitFusableConvert() {
+        if (warnExceptions.isEmpty() == false) {
+            throw new IllegalArgumentException("@ConvertEvaluator + @Fusable cannot declare warnExceptions");
+        }
+        if (argument.type().equals(BYTES_REF) == false) {
+            throw new IllegalArgumentException("@ConvertEvaluator + @Fusable requires a BytesRef first input");
+        }
+        for (int a = 1; a < processFunction.args.size(); a++) {
+            if (processFunction.args.get(a) instanceof FixedArgument fa && fa.scope() == Fixed.Scope.SINGLETON) {
+                continue;
+            }
+            throw new IllegalArgumentException("@ConvertEvaluator + @Fusable supports only SINGLETON non-jitConstant @Fixed params");
+        }
     }
 
     public JavaFile sourceFile() {
@@ -359,14 +399,30 @@ public class ConvertEvaluatorImplementer {
     private TypeSpec factory() {
         TypeSpec.Builder builder = TypeSpec.classBuilder("Factory");
         builder.addSuperinterface(EXPRESSION_EVALUATOR_FACTORY);
+        // When the convert kernel is @Fusable the Factory also implements FusionAware so the planner
+        // can recover the mapping descriptor at plan time. When it is not @Fusable the emitted Factory
+        // must remain byte-for-byte identical to the pre-fusion output (additive invariant).
+        if (fusable) {
+            builder.addSuperinterface(FUSION_AWARE);
+        }
         builder.addModifiers(Modifier.PUBLIC, Modifier.STATIC);
 
         builder.addField(SOURCE, "source", Modifier.PRIVATE, Modifier.FINAL);
         processFunction.args.forEach(a -> a.declareFactoryField(builder));
 
+        if (fusable) {
+            builder.addField(
+                FusionAwareGen.fusionDescriptorField(elements, declarationType, processFunction.function, false, true, "", true)
+            );
+        }
+
         builder.addMethod(processFunction.factoryCtor());
         builder.addMethod(processFunction.factoryGet(implementation));
         builder.addMethod(processFunction.toStringMethod(implementation));
+        if (fusable) {
+            builder.addMethod(FusionAwareGen.fusionDescriptorMethod());
+            builder.addMethod(FusionAwareGen.fusionFixedArgsMethod(processFunction.args));
+        }
         return builder.build();
     }
 }

@@ -11,6 +11,7 @@ import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.lucene.BytesRefs;
 import org.elasticsearch.compute.ann.ConvertEvaluator;
 import org.elasticsearch.compute.ann.Fixed;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.tree.Source;
@@ -102,6 +103,7 @@ public abstract class ChangeCase extends EsqlConfigurationFunction {
     }
 
     @ConvertEvaluator
+    @Fusable
     static BytesRef process(BytesRef val, @Fixed Locale locale, @Fixed Case caseType) {
         return BytesRefs.toBytesRef(caseType.process(val.utf8ToString(), locale));
     }

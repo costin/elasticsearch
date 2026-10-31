@@ -123,6 +123,7 @@ public class EvaluatorProcessor implements Processor {
                 }
                 ConvertEvaluator convertEvaluatorAnn = evaluatorMethod.getAnnotation(ConvertEvaluator.class);
                 if (convertEvaluatorAnn != null) {
+                    Fusable convertFusableAnn = evaluatorMethod.getAnnotation(Fusable.class);
                     try {
                         AggregatorProcessor.write(
                             evaluatorMethod,
@@ -132,7 +133,8 @@ public class EvaluatorProcessor implements Processor {
                                 env.getTypeUtils(),
                                 (ExecutableElement) evaluatorMethod,
                                 convertEvaluatorAnn.extraName(),
-                                warnExceptionsTypes
+                                warnExceptionsTypes,
+                                convertFusableAnn != null
                             ).sourceFile(),
                             env
                         );

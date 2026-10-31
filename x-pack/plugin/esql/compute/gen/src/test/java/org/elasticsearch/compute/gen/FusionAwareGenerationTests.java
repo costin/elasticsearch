@@ -9,6 +9,7 @@ package org.elasticsearch.compute.gen;
 
 import com.squareup.javapoet.JavaFile;
 
+import org.elasticsearch.compute.ann.ConvertEvaluator;
 import org.elasticsearch.compute.ann.Evaluator;
 import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.test.ESTestCase;
@@ -79,7 +80,10 @@ public class FusionAwareGenerationTests extends ESTestCase {
         assertThat(generated, containsString("private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor("));
         // kernel class, method, descriptor (long, long) -> long, overflowChecked=true, allNullsIsNull=true, and the
         // overflow exception type derived from @Evaluator.warnExceptions (binding rule #3).
-        assertThat(generated, containsString("FusableKernel.class, \"process\", \"(JJ)J\", true, true, \"java.lang.ArithmeticException\")"));
+        assertThat(
+            generated,
+            containsString("FusableKernel.class, \"process\", \"(JJ)J\", true, true, \"java.lang.ArithmeticException\")")
+        );
         assertThat(generated, containsString("public FusionDescriptor fusionDescriptor()"));
         assertThat(generated, containsString("return FUSION_DESCRIPTOR;"));
     }
@@ -134,6 +138,104 @@ public class FusionAwareGenerationTests extends ESTestCase {
         assertThat(generated, not(containsString("FusionAware")));
         assertThat(generated, not(containsString("FUSION_DESCRIPTOR")));
         assertThat(generated, not(containsString("fusionDescriptor")));
+        assertThat(generated, not(containsString("fusionFixedArgs")));
+    }
+
+    /**
+     * D2: {@code @ConvertEvaluator + @Fusable} on a BytesRef kernel with a {@code @Fixed} SINGLETON param must emit a
+     * Factory that implements {@code FusionAware}, a {@code FUSION_DESCRIPTOR} with {@code mapping=true},
+     * {@code fusionDescriptor()}, and {@code fusionFixedArgs()} returning the fixed field(s) in kernel-parameter order.
+     */
+    public void testFusableConvertEmitsMappingAwareFactory() {
+        String source = """
+            package test;
+            import org.apache.lucene.util.BytesRef;
+            import org.elasticsearch.compute.ann.ConvertEvaluator;
+            import org.elasticsearch.compute.ann.Fixed;
+            import org.elasticsearch.compute.ann.Fusable;
+            import java.util.Locale;
+            class ConvertKernel {
+                @ConvertEvaluator
+                @Fusable
+                static BytesRef process(BytesRef val, @Fixed Locale locale) {
+                    return val;
+                }
+            }
+            """;
+
+        String generated = generateEvaluator(source, "test.ConvertKernelEvaluator");
+
+        assertThat(generated, containsString("class Factory implements ExpressionEvaluator.Factory, FusionAware"));
+        assertThat(generated, containsString("private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor("));
+        assertThat(
+            generated,
+            containsString(
+                "ConvertKernel.class, \"process\", "
+                    + "\"(Lorg/apache/lucene/util/BytesRef;Ljava/util/Locale;)Lorg/apache/lucene/util/BytesRef;\", "
+                    + "false, true, \"\", false, true)"
+            )
+        );
+        assertThat(generated, containsString("public FusionDescriptor fusionDescriptor()"));
+        assertThat(generated, containsString("public List<Object> fusionFixedArgs()"));
+        assertThat(generated, containsString("return List.of(locale)"));
+    }
+
+    /**
+     * D2 additive invariant: the same convert kernel without {@code @Fusable} must emit a Factory with no fusion
+     * metadata whatsoever. Drift here is a BLOCKER.
+     */
+    public void testNonFusableConvertEmitsUnchangedFactory() {
+        String source = """
+            package test;
+            import org.apache.lucene.util.BytesRef;
+            import org.elasticsearch.compute.ann.ConvertEvaluator;
+            import org.elasticsearch.compute.ann.Fixed;
+            import java.util.Locale;
+            class PlainConvert {
+                @ConvertEvaluator
+                static BytesRef process(BytesRef val, @Fixed Locale locale) {
+                    return val;
+                }
+            }
+            """;
+
+        String generated = generateEvaluator(source, "test.PlainConvertEvaluator");
+
+        assertThat(generated, containsString("class Factory implements ExpressionEvaluator.Factory {"));
+        assertThat(generated, not(containsString("FusionAware")));
+        assertThat(generated, not(containsString("FUSION_DESCRIPTOR")));
+        assertThat(generated, not(containsString("fusionDescriptor")));
+        assertThat(generated, not(containsString("fusionFixedArgs")));
+    }
+
+    /**
+     * D2 admission: {@code @ConvertEvaluator + @Fusable + warnExceptions} is a compile error.
+     */
+    public void testFusableConvertWithWarnExceptionsIsCompileError() {
+        String source = """
+            package test;
+            import org.apache.lucene.util.BytesRef;
+            import org.elasticsearch.compute.ann.ConvertEvaluator;
+            import org.elasticsearch.compute.ann.Fusable;
+            class WarnConvert {
+                @ConvertEvaluator(warnExceptions = { ArithmeticException.class })
+                @Fusable
+                static BytesRef process(BytesRef val) {
+                    return val;
+                }
+            }
+            """;
+
+        List<String> errors = generateErrors(source);
+        assertFalse("expected a compile error for @ConvertEvaluator + @Fusable + warnExceptions", errors.isEmpty());
+        boolean mentionsWarn = false;
+        for (String error : errors) {
+            if (error.contains("warnExceptions") || error.contains("Fusable") || error.contains("failed to build")) {
+                mentionsWarn = true;
+                break;
+            }
+        }
+        assertTrue("error should mention warnExceptions or Fusable, got " + errors, mentionsWarn);
     }
 
     /**
@@ -167,26 +269,58 @@ public class FusionAwareGenerationTests extends ESTestCase {
                 }
             }
             assertTrue("annotation processing failed: " + errors, success);
+            errors.addAll(processor.errors);
         } catch (Exception e) {
             throw new AssertionError("compilation setup failed", e);
         }
 
         String generated = processor.generated.get(generatedClassName);
-        assertNotNull(
-            "generator did not produce [" + generatedClassName + "]; produced: " + processor.generated.keySet(),
-            generated
-        );
+        assertNotNull("generator did not produce [" + generatedClassName + "]; produced: " + processor.generated.keySet(), generated);
         return generated;
     }
 
+    /** Like {@link #generateEvaluator} but returns processor/javac errors instead of generated source. */
+    private List<String> generateErrors(String source) {
+        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        assertNotNull("system Java compiler is required for this test", compiler);
+
+        DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
+        JavaFileObject input = new SimpleJavaFileObject(URI.create("string:///test/Kernel.java"), Kind.SOURCE) {
+            @Override
+            public CharSequence getCharContent(boolean ignoreEncodingErrors) {
+                return source;
+            }
+        };
+
+        CapturingProcessor processor = new CapturingProcessor();
+        List<String> options = List.of("-classpath", System.getProperty("java.class.path"), "-proc:only");
+        List<String> errors = new ArrayList<>();
+
+        try (StandardJavaFileManager fileManager = compiler.getStandardFileManager(diagnostics, null, null)) {
+            JavaCompiler.CompilationTask task = compiler.getTask(null, fileManager, diagnostics, options, null, List.of(input));
+            task.setProcessors(List.of(processor));
+            task.call();
+            for (Diagnostic<? extends JavaFileObject> d : diagnostics.getDiagnostics()) {
+                if (d.getKind() == Diagnostic.Kind.ERROR) {
+                    errors.add(d.getMessage(null));
+                }
+            }
+            errors.addAll(processor.errors);
+        } catch (Exception e) {
+            errors.add(e.getMessage() == null ? e.toString() : e.getMessage());
+        }
+        return errors;
+    }
+
     /**
-     * In-test processor mirroring {@link EvaluatorProcessor}'s {@code @Evaluator} branch: it constructs the real
-     * {@link EvaluatorImplementer} from a genuine {@link ExecutableElement} and stashes the generated source text
-     * instead of writing it through the Filer.
+     * In-test processor mirroring {@link EvaluatorProcessor}'s {@code @Evaluator} and {@code @ConvertEvaluator}
+     * branches: it constructs the real implementer from a genuine {@link ExecutableElement} and stashes the generated
+     * source text instead of writing it through the Filer.
      */
-    @SupportedAnnotationTypes("org.elasticsearch.compute.ann.Evaluator")
+    @SupportedAnnotationTypes({ "org.elasticsearch.compute.ann.Evaluator", "org.elasticsearch.compute.ann.ConvertEvaluator" })
     private static final class CapturingProcessor extends AbstractProcessor {
         private final Map<String, String> generated = new HashMap<>();
+        private final List<String> errors = new ArrayList<>();
 
         @Override
         public SourceVersion getSupportedSourceVersion() {
@@ -210,6 +344,24 @@ public class FusionAwareGenerationTests extends ESTestCase {
                     fusableAnn != null && fusableAnn.overflowChecked()
                 ).sourceFile();
                 generated.put(file.packageName + "." + file.typeSpec.name, file.toString());
+            }
+            for (Element method : roundEnv.getElementsAnnotatedWith(ConvertEvaluator.class)) {
+                ConvertEvaluator convertAnn = method.getAnnotation(ConvertEvaluator.class);
+                Fusable fusableAnn = method.getAnnotation(Fusable.class);
+                List<TypeMirror> warnExceptions = Annotations.listAttributeValues(method, Set.of(ConvertEvaluator.class), "warnExceptions");
+                try {
+                    JavaFile file = new ConvertEvaluatorImplementer(
+                        processingEnv.getElementUtils(),
+                        processingEnv.getTypeUtils(),
+                        (ExecutableElement) method,
+                        convertAnn.extraName(),
+                        warnExceptions,
+                        fusableAnn != null
+                    ).sourceFile();
+                    generated.put(file.packageName + "." + file.typeSpec.name, file.toString());
+                } catch (RuntimeException e) {
+                    errors.add(e.getMessage() == null ? e.toString() : e.getMessage());
+                }
             }
             return true;
         }

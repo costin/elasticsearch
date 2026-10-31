@@ -7,6 +7,8 @@
 
 package org.elasticsearch.compute.operator.fusion;
 
+import java.util.List;
+
 /**
  * Implemented by {@code *Evaluator.Factory} classes whose kernel {@code process} method was
  * annotated with {@link org.elasticsearch.compute.ann.Fusable}. The stitcher uses this to look
@@ -14,4 +16,12 @@ package org.elasticsearch.compute.operator.fusion;
  */
 public interface FusionAware {
     FusionDescriptor fusionDescriptor();
+
+    /**
+     * The {@code @Fixed} SINGLETON constants in kernel-parameter order, consumed by the planner's mapping
+     * route to build reference constants. Empty for arithmetic {@code @Evaluator} kernels.
+     */
+    default List<Object> fusionFixedArgs() {
+        return List.of();
+    }
 }

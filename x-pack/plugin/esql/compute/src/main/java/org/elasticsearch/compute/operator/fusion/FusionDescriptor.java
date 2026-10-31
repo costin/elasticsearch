@@ -26,6 +26,10 @@ package org.elasticsearch.compute.operator.fusion;
  *                              operands (e.g. {@code CONCAT}'s {@code BytesRef[] values}). When {@code true} the tree
  *                              supplies the fixed leading operands followed by the array's elements as extra children,
  *                              and the stitcher builds the array per row from those trailing children.
+ * @param mapping               whether this is a multi-value mapping convert kernel ({@code @ConvertEvaluator}): the
+ *                              planner routes it through the mapping block loop instead of the arithmetic kernel path.
+ *                              Generated {@code @Evaluator} descriptors and hand-written string kernels default this
+ *                              to {@code false}; only the convert generator emits {@code true}.
  */
 public record FusionDescriptor(
     Class<?> kernelClass,
@@ -34,7 +38,8 @@ public record FusionDescriptor(
     boolean overflowChecked,
     boolean allNullsIsNull,
     String overflowExceptionType,
-    boolean variadic
+    boolean variadic,
+    boolean mapping
 ) {
     /**
      * Convenience constructor for callers and tests that predate the explicit {@link #overflowExceptionType}
@@ -56,7 +61,10 @@ public record FusionDescriptor(
         );
     }
 
-    /** Convenience constructor (the shape the annotation processor emits): explicit overflow type, not variadic. */
+    /**
+     * Convenience constructor (the shape the annotation processor emits for {@code @Evaluator} kernels): explicit
+     * overflow type, not variadic, not mapping.
+     */
     public FusionDescriptor(
         Class<?> kernelClass,
         String kernelMethod,
@@ -65,7 +73,20 @@ public record FusionDescriptor(
         boolean allNullsIsNull,
         String overflowExceptionType
     ) {
-        this(kernelClass, kernelMethod, kernelType, overflowChecked, allNullsIsNull, overflowExceptionType, false);
+        this(kernelClass, kernelMethod, kernelType, overflowChecked, allNullsIsNull, overflowExceptionType, false, false);
+    }
+
+    /** Convenience constructor: explicit overflow type and variadic flag, not mapping. */
+    public FusionDescriptor(
+        Class<?> kernelClass,
+        String kernelMethod,
+        String kernelType,
+        boolean overflowChecked,
+        boolean allNullsIsNull,
+        String overflowExceptionType,
+        boolean variadic
+    ) {
+        this(kernelClass, kernelMethod, kernelType, overflowChecked, allNullsIsNull, overflowExceptionType, variadic, false);
     }
 
     /** Whether this kernel declares an overflow exception the stitcher must catch around its spliced body. */
