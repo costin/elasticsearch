@@ -150,8 +150,9 @@ record Element(
 
     /**
      * Internal name of the public {@code *Vector} interface this element reads through, e.g.
-     * {@code org/elasticsearch/compute/data/LongVector}. The dense-logical all-interface variant {@code CHECKCAST}s
-     * each input to this type (any vector kind) and calls {@link #getValueMethod} via {@code INVOKEINTERFACE}.
+     * {@code org/elasticsearch/compute/data/LongVector}. The all-interface dense variants (logical and arithmetic)
+     * {@code CHECKCAST} each input to this type (any vector kind) and call {@link #getValueMethod} via
+     * {@code INVOKEINTERFACE}.
      */
     String vectorInternalName() {
         return vectorDescriptor.substring(1, vectorDescriptor.length() - 1);

@@ -33,6 +33,7 @@ import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.core.type.EsField;
 import org.elasticsearch.xpack.esql.evaluator.EvalMapper;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.LastEvalPath;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.VectorStrategy;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Abs;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
@@ -648,9 +649,9 @@ public class EvalMapperFusionWiringTests extends ESTestCase {
         assertThat("eval-time linkage failure must be counted exactly once (latched)", FusionTelemetry.totalFailures(), is(before + 1));
     }
 
-    // (WARNING) A vector-fast-path-eligible fused factory must route a non-*ArrayVector (but non-null) input — here a
-    // ConstantLongVector — through the block path (no ClassCastException) and still match the unfused chain.
-    public void testConstantVectorInputRoutesThroughBlockPath() {
+    // A vector-fast-path-eligible fused factory must accept a non-*ArrayVector dense input (here a ConstantLongVector)
+    // on the ALL-INTERFACE vector path (no ClassCastException) and still match the unfused chain.
+    public void testConstantVectorInputRoutesThroughInterfacePath() {
         FieldAttribute a = field("a", DataType.LONG);
         FieldAttribute b = field("b", DataType.LONG);
         FieldAttribute c = field("c", DataType.LONG);
@@ -679,8 +680,8 @@ public class EvalMapperFusionWiringTests extends ESTestCase {
         LongBlock fusedResult = null;
         LongBlock referenceResult = null;
         try {
-            // b is a dense ConstantLongVector: asVector() is non-null but not a LongArrayVector, so vectorEligible()
-            // must reject the whole page and take the block path rather than throwing a ClassCastException.
+            // b is a dense ConstantLongVector: asVector() is non-null but not a LongArrayVector, so the page takes
+            // ALL-INTERFACE (typed LongVector.getLong) rather than throwing a ClassCastException on VectorUnsafe.
             fusedPage = new Page(
                 blockFactory.newLongArrayVector(av, positionCount).asBlock(),
                 blockFactory.newConstantLongVector(constantB, positionCount).asBlock(),
@@ -692,6 +693,11 @@ public class EvalMapperFusionWiringTests extends ESTestCase {
                 blockFactory.newLongArrayVector(cv.clone(), positionCount).asBlock()
             );
             fusedResult = (LongBlock) fused.eval(fusedPage);
+            assertThat(
+                "ConstantLongVector page must take ALL-INTERFACE, not BLOCK",
+                FusedExpressionEvaluatorFactory.lastEvalPath(fused),
+                is(LastEvalPath.INTERFACE)
+            );
             referenceResult = (LongBlock) reference.eval(referencePage);
             for (int p = 0; p < positionCount; p++) {
                 long expected = referenceResult.getLong(referenceResult.getFirstValueIndex(p));

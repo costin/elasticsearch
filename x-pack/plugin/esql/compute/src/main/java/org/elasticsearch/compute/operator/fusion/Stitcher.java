@@ -112,6 +112,15 @@ public final class Stitcher {
     public static final String FUSED_RAW_METHOD_NAME = "fusedRaw";
 
     /**
+     * The ALL-INTERFACE sibling of {@link #FUSED_RAW_METHOD_NAME} on the checked-vector path. One hidden class carries
+     * both the ALL-RAW {@code fusedRaw} (VectorUnsafe + {@code xALOAD}) and this ALL-INTERFACE {@code fusedRawInterface}
+     * (typed {@code *Vector.getX(p)}) so the factory picks per page without a second {@code defineHiddenClass}. Same
+     * overflow-abandon contract as {@code fusedRaw}: {@code return null} on the first declared overflow so the caller
+     * re-runs the matching builder method.
+     */
+    public static final String FUSED_RAW_INTERFACE_METHOD_NAME = "fusedRawInterface";
+
+    /**
      * HotSpot's default {@code FreqInlineSize} (criterion #6): a hot method above this many bytecodes is not inlined
      * into its caller, defeating the single-hot-body goal. The stitcher measures the emitted {@code fused} loop
      * method's {@code Code} length and refuses to fuse (throwing {@link StitchingException} so the caller falls back to
@@ -433,8 +442,10 @@ public final class Stitcher {
      * is needed and the disjoint ranges guarantee a child's evaluation never clobbers a sibling's stored argument.
      *
      * @param caller the caller's lookup (from the module that owns the kernels); the fused class is defined here
-     * @param tree   the expression tree to fuse; all inputs are homogeneous primitive {@code *ArrayVector}s
-     * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME}
+     * @param tree   the expression tree to fuse; dense primitive vectors (any kind: {@code *ArrayVector},
+     *               {@code Constant*Vector}, {@code *BigArrayVector})
+     * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME} (ALL-RAW) and
+     *         {@link #FUSED_INTERFACE_METHOD_NAME} (ALL-INTERFACE)
      * @throws StitchingException if the caller lacks the access to define the hidden class, or the emitted class
      *                            fails JVM verification/linking — the caller should fall back to the unfused path
      */
@@ -443,34 +454,71 @@ public final class Stitcher {
     }
 
     /**
-     * Builds the class bytes for the fused vector loop. Kept separate from {@link #compileVectorLoop} so the
-     * verification boundary is exactly the {@code defineHiddenClass} call — everything here is pure ASM tree
-     * manipulation on cloned kernel bodies.
+     * Builds the class bytes for the fused vector loop. One hidden class carries both the ALL-RAW {@code fused}
+     * method ({@code VectorUnsafe} + {@code xALOAD}) and the ALL-INTERFACE {@code fusedInterface} method (typed
+     * {@code *Vector.getX(p)}), same signature, so the factory picks per page without a second
+     * {@code defineHiddenClass}. Kept separate from {@link #compileVectorLoop} so the verification boundary is
+     * exactly the {@code defineHiddenClass} call — everything here is pure ASM tree manipulation on cloned kernel
+     * bodies.
      */
     private byte[] emitVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         // One walk derives every structural fact this emit path needs (arity, constants-in-emit-order, ...).
         FusionSignature signature = FusionSignature.of(tree);
-        int arity = signature.arity();
         int[] consumed = signature.consumedInputs();
         // Per-input leaf elements (a tree may mix int/long/double via cast kernels) vs the OUTPUT element (the output
         // array + produced vector). They coincide for a homogeneous arithmetic root and differ for a comparison root
         // (numeric inputs feed a boolean output) or any cast-bridged input.
         Element[] inputElements = inputElements(signature);
         Element outputElement = Element.of(rootReturnType(tree));
-
-        // Frame layout: [0] BlockFactory, [1] int positionCount, [2 .. 2+arity) input Vectors, then one trailing
-        // primitive parameter per embedded constant (in canonical emit order). The per-input raw arrays, the output
-        // array, and the loop counter sit in the fixed region ABOVE the parameters — so their bases are all shifted up
-        // by the constant parameters' total slot size; each kernel body then gets a disjoint slot range above that.
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
-        // Parameter region [0..): BlockFactory, positionCount, one Vector ref per input, one primitive per constant.
+
+        MethodNode raw = emitPlainVectorMethod(tree, inputElements, outputElement, constants, consumed, true);
+        MethodNode iface = emitPlainVectorMethod(tree, inputElements, outputElement, constants, consumed, false);
+        if (hostMethodInterceptor != null) {
+            hostMethodInterceptor.accept(raw);
+            hostMethodInterceptor.accept(iface);
+        }
+        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$VectorLoop"), raw);
+        classNode.methods.add(iface);
+        // Measure the inline body WITHOUT enforcing: an oversized inline loop is not refused (which would degrade to
+        // block-only), it is split into a private static compute() helper (B1) so the fast path survives. The RAW
+        // (exact-*ArrayVector) method is the hot path and governs the inline/split decision: INVOKEINTERFACE reads
+        // are larger than xALOAD, so INTERFACE can exceed the budget while RAW still fits. When RAW fits, both
+        // methods stay inline in the one hidden class — the larger INTERFACE fallback may miss the JIT inline
+        // heuristic but is correctness-safe under enforce=false and is the less-hot CONST_COL/BIGARRAY path. When
+        // RAW itself overflows, both are split via the shared compute() helper so one cache entry still covers RAW
+        // and INTERFACE. A future refinement could emit a mixed class (inline RAW + split INTERFACE) so the
+        // interface method also stays inlinable; not done now to keep the emitter simple.
+        byte[] inline = serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "plain-vector loop", false);
+        if (methodCodeLength(inline, FUSED_METHOD_NAME) <= MAX_FUSED_METHOD_BYTECODES) {
+            return inline;
+        }
+        return emitVectorLoopSplit(caller, tree, inputElements, outputElement, constants);
+    }
+
+    /**
+     * One plain-vector method: {@code fused} when {@code raw} (VectorUnsafe + xALOAD) or {@code fusedInterface}
+     * (typed {@code *Vector.getX(p)}). Signature is {@code (BlockFactory, int, Vector..., constants...)*Vector};
+     * the loop writes {@code T[]} and returns {@code new*ArrayVector(out, n)}.
+     */
+    private MethodNode emitPlainVectorMethod(
+        FusionNode tree,
+        Element[] inputElements,
+        Element outputElement,
+        List<FusionNode.Constant> constants,
+        int[] consumed,
+        boolean raw
+    ) {
+        int arity = inputElements.length;
+        // Frame layout: [0] BlockFactory, [1] int positionCount, [2 .. 2+arity) input Vectors, then one trailing
+        // primitive parameter per embedded constant (in canonical emit order). The per-input extracted refs (raw
+        // arrays OR typed *Vector), the output array, and the loop counter sit ABOVE the parameters.
         FrameLayout frame = new FrameLayout();
         frame.slot();                                                       // [0] BlockFactory
         frame.slot();                                                       // [1] int positionCount
         int inputBase = frame.slots(arity);                                 // [2 .. 2+arity) input Vectors
         Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
-        // Scratch region above the parameters: per-input raw arrays, the output array, the loop counter.
-        int rawArrayBase = frame.slots(arity);
+        int extractedBase = frame.slots(arity);                             // per-input raw array OR typed *Vector
         int outSlot = frame.slot();
         int pSlot = frame.slot();
         int kernelBase = frame.mark();
@@ -485,33 +533,16 @@ public final class Stitcher {
         MethodNode host = new MethodNode(
             Opcodes.ASM9,
             Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            FUSED_METHOD_NAME,
+            raw ? FUSED_METHOD_NAME : FUSED_INTERFACE_METHOD_NAME,
             desc.toString(),
             null,
             null
         );
         InsnList insns = host.instructions;
 
-        // Cast each CONSUMED input to its concrete *ArrayVector ONCE and read its backing array into a local (JIT #6).
-        // The array is fetched through the public VectorUnsafe forwarder (INVOKESTATIC) rather than the package-private
-        // rawValues() (INVOKEVIRTUAL), so this hidden class can be defined in the caller's own module. Only inputs the
-        // tree actually reads are cast/extracted (matching the checked-vector path): a declared-but-unread index (a
-        // gap in [0,arity)) is never touched, so no wasted CHECKCAST/extract and no ClassCastException on a vector no
-        // leaf consumes.
+        // Narrow each CONSUMED input once, outside the loop (JIT #6: no per-position checkcast).
         for (int i : consumed) {
-            Element inputElement = inputElements[i];
-            insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
-            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKESTATIC,
-                    VECTOR_UNSAFE,
-                    inputElement.vectorUnsafeMethod(),
-                    inputElement.vectorUnsafeDescriptor(),
-                    false
-                )
-            );
-            insns.add(new VarInsnNode(Opcodes.ASTORE, rawArrayBase + i));
+            emitExtractConsumedInput(insns, inputElements[i], inputBase + i, extractedBase + i, raw);
         }
 
         // out = new T[positionCount]; T is the OUTPUT element (boolean[] for a comparison root).
@@ -538,13 +569,7 @@ public final class Stitcher {
             insns,
             constantSlots,
             kernelBase,
-            // Plain-vector leaf: a<index>[p], read at this leaf's own element.
-            input -> {
-                Element element = inputElements[input.index()];
-                insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + input.index()));
-                insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-                insns.add(new InsnNode(element.type().getOpcode(Opcodes.IALOAD)));
-            },
+            input -> emitReadExtractedAtP(insns, inputElements[input.index()], extractedBase + input.index(), pSlot, raw),
             // Plain vector has no overflow-checked kernels, so nothing runs before a body.
             kernel -> {}
         );
@@ -571,31 +596,17 @@ public final class Stitcher {
             )
         );
         insns.add(new InsnNode(Opcodes.ARETURN));
-
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-        }
-
-        ClassNode classNode = newFusedClass(fusedClassName(caller, "Fused$$VectorLoop"), host);
-        // Measure the inline body WITHOUT enforcing: an oversized inline loop is not refused (which would degrade to
-        // block-only), it is split into a private static compute() helper (B1) so the fast path survives.
-        byte[] inline = serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "plain-vector loop", false);
-        if (fusedMethodCodeLength(inline) <= MAX_FUSED_METHOD_BYTECODES) {
-            return inline;
-        }
-        return emitVectorLoopSplit(caller, tree, inputElements, outputElement, constants);
+        return host;
     }
 
     /**
      * Over-budget counterpart to the plain-vector fast path (B1): when the inline per-position expression would exceed
      * the {@link #MAX_FUSED_METHOD_BYTECODES} inlining budget, the whole stitched expression is lifted into a
      * {@code private static compute(v0, v1, …, c0, …)} helper (the same {@link StackKernelEmitter} output, but reading
-     * its inputs from parameters instead of {@code a_i[p]}). The top-level {@code fused} loop then only reads each
-     * {@code a_i[p]}, calls {@code compute}, and stores {@code out[p]} — a tiny, inlinable body that keeps the dense
-     * fast path (raw-array reads, no null/multi-value guards) instead of degrading to the block path. The small-tree
-     * common case never reaches here (it stays fully inline, so C2 can vectorize it); only a pathologically deep tree
-     * is split, and the top-level loop is still budget-enforced (so a genuinely un-inlinable loop shell — not expected —
-     * still refuses to fuse).
+     * its inputs from parameters instead of {@code a_i[p]}). The top-level {@code fused} / {@code fusedInterface} loops
+     * then only read each input at {@code p}, call {@code compute}, and store {@code out[p]} — a tiny, inlinable body
+     * that keeps the dense fast path instead of degrading to the block path. Both RAW and INTERFACE variants share
+     * one {@code compute} helper and one hidden class.
      */
     private byte[] emitVectorLoopSplit(
         MethodHandles.Lookup caller,
@@ -604,21 +615,44 @@ public final class Stitcher {
         Element outputElement,
         List<FusionNode.Constant> constants
     ) throws StitchingException {
-        int arity = inputElements.length;
         String internalName = fusedClassName(caller, "Fused$$VectorLoopSplit");
 
         // The compute helper: (v0, v1, …, c0, c1, …) -> result. Value params first (one per input, its own element),
-        // then one primitive per constant in canonical emit order.
+        // then one primitive per constant in canonical emit order. Shared by both read variants.
         MethodNode compute = emitVectorComputeHelper(tree, inputElements, outputElement, constants);
+        MethodNode raw = emitPlainVectorSplitMethod(inputElements, outputElement, constants, true, compute, internalName);
+        MethodNode iface = emitPlainVectorSplitMethod(inputElements, outputElement, constants, false, compute, internalName);
+        if (hostMethodInterceptor != null) {
+            hostMethodInterceptor.accept(raw);
+            hostMethodInterceptor.accept(iface);
+        }
+        ClassNode classNode = newFusedClass(internalName, raw);
+        classNode.methods.add(iface);
+        classNode.methods.add(compute);
+        // Enforce on the TOP-LEVEL loop only: it is now a handful of instructions (reads + one call + store), so this
+        // never trips for a real tree; the (unenforced) compute helper carries the large body.
+        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "plain-vector loop (split)", true);
+    }
 
-        // Top-level loop frame: [0] BlockFactory, [1] positionCount, [2 .. 2+arity) input Vectors, constants, then the
-        // per-input raw arrays, output array, loop counter (no kernel-body range — the body is a single compute call).
+    /**
+     * Split top-level loop for one plain-vector read variant: {@code fused} (ALL-RAW) or {@code fusedInterface}
+     * (ALL-INTERFACE). Reads each input at {@code p}, calls the shared {@code compute} helper, stores {@code out[p]}.
+     */
+    private MethodNode emitPlainVectorSplitMethod(
+        Element[] inputElements,
+        Element outputElement,
+        List<FusionNode.Constant> constants,
+        boolean raw,
+        MethodNode compute,
+        String internalName
+    ) {
+        int arity = inputElements.length;
         FrameLayout frame = new FrameLayout();
         frame.slot();                                                       // [0] BlockFactory
         frame.slot();                                                       // [1] int positionCount
         int inputBase = frame.slots(arity);                                 // [2 .. 2+arity) input Vectors
         Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
-        int rawArrayBase = frame.slots(arity);
+        int extractedBase = frame.slots(arity);
         int outSlot = frame.slot();
         int pSlot = frame.slot();
 
@@ -632,7 +666,7 @@ public final class Stitcher {
         MethodNode host = new MethodNode(
             Opcodes.ASM9,
             Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            FUSED_METHOD_NAME,
+            raw ? FUSED_METHOD_NAME : FUSED_INTERFACE_METHOD_NAME,
             loopDesc.toString(),
             null,
             null
@@ -640,19 +674,7 @@ public final class Stitcher {
         InsnList insns = host.instructions;
 
         for (int i = 0; i < arity; i++) {
-            Element inputElement = inputElements[i];
-            insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
-            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKESTATIC,
-                    VECTOR_UNSAFE,
-                    inputElement.vectorUnsafeMethod(),
-                    inputElement.vectorUnsafeDescriptor(),
-                    false
-                )
-            );
-            insns.add(new VarInsnNode(Opcodes.ASTORE, rawArrayBase + i));
+            emitExtractConsumedInput(insns, inputElements[i], inputBase + i, extractedBase + i, raw);
         }
         insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
         insns.add(new IntInsnNode(Opcodes.NEWARRAY, outputElement.newArrayType()));
@@ -667,14 +689,11 @@ public final class Stitcher {
         insns.add(new VarInsnNode(Opcodes.ILOAD, 1));
         insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
 
-        // out[p] = compute(a0[p], a1[p], …, c0, c1, …)
+        // out[p] = compute(v0[p], v1[p], …, c0, c1, …)
         insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
         insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
         for (int i = 0; i < arity; i++) {
-            Element inputElement = inputElements[i];
-            insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + i));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-            insns.add(new InsnNode(inputElement.type().getOpcode(Opcodes.IALOAD)));
+            emitReadExtractedAtP(insns, inputElements[i], extractedBase + i, pSlot, raw);
         }
         for (FusionNode.Constant constant : constants) {
             insns.add(new VarInsnNode(constantType(constant).getOpcode(Opcodes.ILOAD), constantSlots.get(constant)));
@@ -699,16 +718,7 @@ public final class Stitcher {
             )
         );
         insns.add(new InsnNode(Opcodes.ARETURN));
-
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-        }
-
-        ClassNode classNode = newFusedClass(internalName, host);
-        classNode.methods.add(compute);
-        // Enforce on the TOP-LEVEL loop only: it is now a handful of instructions (reads + one call + store), so this
-        // never trips for a real tree; the (unenforced) compute helper carries the large body.
-        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "plain-vector loop (split)", true);
+        return host;
     }
 
     /**
@@ -1029,10 +1039,11 @@ public final class Stitcher {
      * gate: overflow-checked {@code double} trees may now use this checked-vector fast path.
      *
      * @param caller the caller's lookup (from the module that owns the kernels); the fused class is defined here
-     * @param tree   the expression tree to fuse; all inputs are homogeneous no-null single-valued {@code *ArrayVector}s
-     * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME} (builder, overflow → nulls +
-     *         warnings) and {@link #FUSED_RAW_METHOD_NAME} (dense {@code *ArrayVector}, overflow → {@code null} so the
-     *         caller re-runs {@code fused})
+     * @param tree   the expression tree to fuse; dense no-null single-valued vectors (any kind)
+     * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME}/{@link #FUSED_INTERFACE_METHOD_NAME}
+     *         (builder, overflow → nulls + warnings; ALL-RAW vs ALL-INTERFACE reads) and
+     *         {@link #FUSED_RAW_METHOD_NAME}/{@link #FUSED_RAW_INTERFACE_METHOD_NAME} (dense {@code *ArrayVector},
+     *         overflow → {@code null} so the caller re-runs the matching builder method)
      * @throws StitchingException if the caller lacks the access to define the hidden class, or the emitted class
      *                            fails JVM verification/linking — the caller should fall back to the block path or
      *                            unfused chain
@@ -1042,11 +1053,12 @@ public final class Stitcher {
     }
 
     /**
-     * Builds the class bytes for the overflow-aware vector loop. One hidden class carries two methods of the same
-     * descriptor: {@link #FUSED_METHOD_NAME} appends through a builder (null + warning on overflow) and
-     * {@link #FUSED_RAW_METHOD_NAME} writes a dense {@code *ArrayVector}, returning {@code null} on the first
-     * declared overflow so the caller can re-run {@code fused}. Reads inputs from {@code VectorUnsafe} arrays (no
-     * per-position null/multi-value guard — a vector is dense and single-valued).
+     * Builds the class bytes for the overflow-aware vector loop. One hidden class carries four methods of the same
+     * descriptor so the factory picks ALL-RAW vs ALL-INTERFACE per page without a second {@code defineHiddenClass}:
+     * {@link #FUSED_METHOD_NAME}/{@link #FUSED_INTERFACE_METHOD_NAME} append through a builder (null + warning on
+     * overflow) and {@link #FUSED_RAW_METHOD_NAME}/{@link #FUSED_RAW_INTERFACE_METHOD_NAME} write a dense
+     * {@code *ArrayVector}, returning {@code null} on the first declared overflow so the caller can re-run the
+     * matching builder method. No per-position null/multi-value guard — a vector is dense and single-valued.
      */
     private byte[] emitVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         // One walk derives arity, consumed inputs, constants-in-emit-order, warning-source indices and overflow types.
@@ -1058,14 +1070,135 @@ public final class Stitcher {
         Element[] inputElements = inputElements(signature);
         Element outputElement = Element.of(rootReturnType(tree));
         Set<String> overflowTypes = signature.overflowExceptionInternalNames();
-
-        // Frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input Vectors, then one
-        // trailing primitive parameter per embedded constant (in canonical emit order). The per-input raw arrays, the
-        // builder, loop counter, per-input value slots, built result, the two exception slots and the current-kernel
-        // slot sit ABOVE the parameters (their bases shifted up by the constant parameters' total slot size); each
-        // kernel body then gets a disjoint range above that.
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
-        // Parameter region [0..): BlockFactory, Warnings[], positionCount, one Vector per input, one primitive per constant.
+        Map<FusionNode, Integer> sourceIndices = signature.warningSourceIndices();
+
+        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
+        for (int i = 0; i < arity; i++) {
+            desc.append("L").append(VECTOR).append(";");
+        }
+        appendConstantParamDescriptors(desc, constants);
+        desc.append(")").append(outputElement.blockDescriptor());
+        String checkedDesc = desc.toString();
+
+        MethodNode host = emitCheckedVectorBuilderMethod(
+            tree,
+            inputElements,
+            outputElement,
+            constants,
+            consumed,
+            overflowTypes,
+            sourceIndices,
+            checkedDesc,
+            true
+        );
+        MethodNode hostIface = emitCheckedVectorBuilderMethod(
+            tree,
+            inputElements,
+            outputElement,
+            constants,
+            consumed,
+            overflowTypes,
+            sourceIndices,
+            checkedDesc,
+            false
+        );
+        MethodNode raw = emitCheckedVectorRawMethod(
+            tree,
+            inputElements,
+            outputElement,
+            constants,
+            consumed,
+            overflowTypes,
+            checkedDesc,
+            true
+        );
+        MethodNode rawIface = emitCheckedVectorRawMethod(
+            tree,
+            inputElements,
+            outputElement,
+            constants,
+            consumed,
+            overflowTypes,
+            checkedDesc,
+            false
+        );
+        if (hostMethodInterceptor != null) {
+            hostMethodInterceptor.accept(host);
+            hostMethodInterceptor.accept(hostIface);
+            hostMethodInterceptor.accept(raw);
+            hostMethodInterceptor.accept(rawIface);
+        }
+
+        String internalName = fusedClassName(caller, "Fused$$CheckedVectorLoop");
+        ClassNode classNode = newFusedClass(internalName, host);
+        classNode.methods.add(hostIface);
+        classNode.methods.add(raw);
+        classNode.methods.add(rawIface);
+        byte[] inline = serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "checked-vector loop", false);
+        // fusedRaw (exact-*ArrayVector) is the hot path and governs the inline/split decision: INVOKEINTERFACE
+        // reads are larger than xALOAD, so fusedRawInterface can exceed the budget while fusedRaw still fits.
+        // When fusedRaw fits, all four methods stay inline in the one hidden class — the larger INTERFACE
+        // fallback may miss the JIT inline heuristic but is correctness-safe under enforce=false and is the
+        // less-hot CONST_COL/BIGARRAY path. When fusedRaw itself overflows, both raw methods are split via the
+        // shared compute() helper so one cache entry still covers RAW and INTERFACE. A future refinement could
+        // emit a mixed class (inline RAW + split INTERFACE) so the interface method also stays inlinable; not
+        // done now to keep the emitter simple.
+        if (methodCodeLength(inline, FUSED_RAW_METHOD_NAME) <= MAX_FUSED_METHOD_BYTECODES) {
+            return inline;
+        }
+        // fusedRaw exceeded the inlining budget: lift the stitched expression into a private compute() helper
+        // (same split as emitVectorLoop) so the raw loops stay tiny. Both builder methods are unchanged.
+        MethodNode compute = emitVectorComputeHelper(tree, inputElements, outputElement, constants);
+        MethodNode splitRaw = emitCheckedVectorRawSplit(
+            inputElements,
+            outputElement,
+            constants,
+            overflowTypes,
+            checkedDesc,
+            compute,
+            internalName,
+            true
+        );
+        MethodNode splitRawIface = emitCheckedVectorRawSplit(
+            inputElements,
+            outputElement,
+            constants,
+            overflowTypes,
+            checkedDesc,
+            compute,
+            internalName,
+            false
+        );
+        ClassNode splitClass = newFusedClass(internalName, host);
+        splitClass.methods.add(hostIface);
+        splitClass.methods.add(splitRaw);
+        splitClass.methods.add(splitRawIface);
+        splitClass.methods.add(compute);
+        return serializeWithBudgetGuard(splitClass, frameComputingWriter(caller), "checked-vector loop (raw split)", false);
+    }
+
+    /**
+     * Builder-based checked-vector method: {@code fused} when {@code raw} (VectorUnsafe + xALOAD into value slots)
+     * or {@code fusedInterface} (typed {@code *Vector.getX(p)} into the same value slots). Overflow → null + warning
+     * on the currently-evaluating kernel's source. Output is always a {@code *Block.Builder}.
+     */
+    private MethodNode emitCheckedVectorBuilderMethod(
+        FusionNode tree,
+        Element[] inputElements,
+        Element outputElement,
+        List<FusionNode.Constant> constants,
+        int[] consumed,
+        Set<String> overflowTypes,
+        Map<FusionNode, Integer> sourceIndices,
+        String descriptor,
+        boolean raw
+    ) {
+        int arity = inputElements.length;
+        // Frame: [0] BlockFactory, [1] Warnings[], [2] int positionCount, [3 .. 3+arity) input Vectors, then one
+        // trailing primitive parameter per embedded constant (in canonical emit order). The per-input extracted refs,
+        // the builder, loop counter, per-input value slots, built result, the two exception slots and the
+        // current-kernel slot sit ABOVE the parameters.
         FrameLayout frame = new FrameLayout();
         frame.slot();                                                       // [0] BlockFactory
         int warningsArraySlot = frame.slot();                               // [1] Warnings[]
@@ -1075,7 +1208,7 @@ public final class Stitcher {
         // Scratch region above the parameters. Per-input value slots are sized by each input's own element (a
         // long/double takes two slots); an unused index (never expected) reserves one. The FrameLayout guarantees the
         // widths never collide.
-        int rawArrayBase = frame.slots(arity);
+        int extractedBase = frame.slots(arity);
         int builderSlot = frame.slot();
         int pSlot = frame.slot();
         int[] valueSlots = new int[arity];
@@ -1090,44 +1223,19 @@ public final class Stitcher {
         int currentKernelSlot = frame.slot();
         int kernelBase = frame.mark();
 
-        // Each kernel's warning-source slot into the runtime Warnings[]: its overflow warning registers on
-        // warnings[its slot], matching the unfused per-node evaluator source.
-        Map<FusionNode, Integer> sourceIndices = signature.warningSourceIndices();
-
-        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";").append(WARNINGS_ARRAY_DESCRIPTOR).append("I");
-        for (int i = 0; i < arity; i++) {
-            desc.append("L").append(VECTOR).append(";");
-        }
-        appendConstantParamDescriptors(desc, constants);
-        desc.append(")").append(outputElement.blockDescriptor());
-
         MethodNode host = new MethodNode(
             Opcodes.ASM9,
             Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            FUSED_METHOD_NAME,
-            desc.toString(),
+            raw ? FUSED_METHOD_NAME : FUSED_INTERFACE_METHOD_NAME,
+            descriptor,
             null,
             null
         );
         InsnList insns = host.instructions;
 
-        // Cast each CONSUMED input to its concrete *ArrayVector ONCE and read its backing array into a local. As in
-        // the plain vector loop, the array is fetched through the public VectorUnsafe forwarder (INVOKESTATIC) so this
-        // hidden class can be defined in the caller's own module and link non-java.base kernel callees.
+        // Narrow each CONSUMED input once, outside the loop (JIT #6).
         for (int i : consumed) {
-            Element inputElement = inputElements[i];
-            insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
-            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKESTATIC,
-                    VECTOR_UNSAFE,
-                    inputElement.vectorUnsafeMethod(),
-                    inputElement.vectorUnsafeDescriptor(),
-                    false
-                )
-            );
-            insns.add(new VarInsnNode(Opcodes.ASTORE, rawArrayBase + i));
+            emitExtractConsumedInput(insns, inputElements[i], inputBase + i, extractedBase + i, raw);
         }
 
         // out = bf.new*BlockBuilder(positionCount); the builder is the OUTPUT element (BooleanBlock.Builder for a
@@ -1161,12 +1269,10 @@ public final class Stitcher {
         insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
         insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
 
-        // v_i = a_i[p]; no null guard — a vector is dense and single-valued. Read with each input's OWN element opcodes.
+        // v_i = extracted_i[p]; no null guard — a vector is dense and single-valued.
         for (int i : consumed) {
             Element inputElement = inputElements[i];
-            insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + i));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-            insns.add(new InsnNode(inputElement.type().getOpcode(Opcodes.IALOAD)));
+            emitReadExtractedAtP(insns, inputElement, extractedBase + i, pSlot, raw);
             insns.add(new VarInsnNode(inputElement.type().getOpcode(Opcodes.ISTORE), valueSlots[i]));
         }
 
@@ -1264,36 +1370,7 @@ public final class Stitcher {
         insns.add(new InsnNode(Opcodes.ATHROW));
 
         host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
-
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-        }
-
-        String internalName = fusedClassName(caller, "Fused$$CheckedVectorLoop");
-        String checkedDesc = desc.toString();
-        MethodNode raw = emitCheckedVectorRawMethod(tree, inputElements, outputElement, constants, consumed, overflowTypes, checkedDesc);
-        ClassNode classNode = newFusedClass(internalName, host);
-        classNode.methods.add(raw);
-        byte[] inline = serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "checked-vector loop", false);
-        if (methodCodeLength(inline, FUSED_RAW_METHOD_NAME) <= MAX_FUSED_METHOD_BYTECODES) {
-            return inline;
-        }
-        // fusedRaw exceeded the inlining budget: lift the stitched expression into a private compute() helper
-        // (same split as emitVectorLoop) so the raw loop stays tiny. The builder-based fused method is unchanged.
-        MethodNode compute = emitVectorComputeHelper(tree, inputElements, outputElement, constants);
-        MethodNode splitRaw = emitCheckedVectorRawSplit(
-            inputElements,
-            outputElement,
-            constants,
-            overflowTypes,
-            checkedDesc,
-            compute,
-            internalName
-        );
-        ClassNode splitClass = newFusedClass(internalName, host);
-        splitClass.methods.add(splitRaw);
-        splitClass.methods.add(compute);
-        return serializeWithBudgetGuard(splitClass, frameComputingWriter(caller), "checked-vector loop (raw split)", false);
+        return host;
     }
 
     /**
@@ -1302,7 +1379,7 @@ public final class Stitcher {
      * {@code blockFactory.new*ArrayVector(out, n).asBlock()}. The whole loop sits in one try whose handlers catch
      * each declared overflow type and {@code return null} — no warnings, no {@code currentKernel} bookkeeping.
      * Non-overflow exceptions propagate. The {@code Warnings[]} parameter is accepted (same descriptor as {@code fused})
-     * and never read.
+     * and never read. {@code raw} selects ALL-RAW ({@code fusedRaw}) vs ALL-INTERFACE ({@code fusedRawInterface}).
      */
     private MethodNode emitCheckedVectorRawMethod(
         FusionNode tree,
@@ -1311,7 +1388,8 @@ public final class Stitcher {
         List<FusionNode.Constant> constants,
         int[] consumed,
         Set<String> overflowTypes,
-        String descriptor
+        String descriptor,
+        boolean raw
     ) {
         int arity = inputElements.length;
         FrameLayout frame = new FrameLayout();
@@ -1320,7 +1398,7 @@ public final class Stitcher {
         int pcSlot = frame.slot();                                          // [2] int positionCount
         int inputBase = frame.slots(arity);                                 // [3 .. 3+arity) input Vectors
         Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
-        int rawArrayBase = frame.slots(arity);
+        int extractedBase = frame.slots(arity);
         int outSlot = frame.slot();
         int pSlot = frame.slot();
         int kernelBase = frame.mark();
@@ -1328,7 +1406,7 @@ public final class Stitcher {
         MethodNode host = new MethodNode(
             Opcodes.ASM9,
             Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            FUSED_RAW_METHOD_NAME,
+            raw ? FUSED_RAW_METHOD_NAME : FUSED_RAW_INTERFACE_METHOD_NAME,
             descriptor,
             null,
             null
@@ -1336,19 +1414,7 @@ public final class Stitcher {
         InsnList insns = host.instructions;
 
         for (int i : consumed) {
-            Element inputElement = inputElements[i];
-            insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
-            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKESTATIC,
-                    VECTOR_UNSAFE,
-                    inputElement.vectorUnsafeMethod(),
-                    inputElement.vectorUnsafeDescriptor(),
-                    false
-                )
-            );
-            insns.add(new VarInsnNode(Opcodes.ASTORE, rawArrayBase + i));
+            emitExtractConsumedInput(insns, inputElements[i], inputBase + i, extractedBase + i, raw);
         }
 
         LabelNode tryStart = overflowTypes.isEmpty() ? null : new LabelNode();
@@ -1374,12 +1440,13 @@ public final class Stitcher {
 
         insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
         insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        StackKernelEmitter emitter = new StackKernelEmitter(insns, constantSlots, kernelBase, input -> {
-            Element element = inputElements[input.index()];
-            insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + input.index()));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-            insns.add(new InsnNode(element.type().getOpcode(Opcodes.IALOAD)));
-        }, kernel -> {});
+        StackKernelEmitter emitter = new StackKernelEmitter(
+            insns,
+            constantSlots,
+            kernelBase,
+            input -> emitReadExtractedAtP(insns, inputElements[input.index()], extractedBase + input.index(), pSlot, raw),
+            kernel -> {}
+        );
         emitter.emit(tree, outputElement);
         insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
 
@@ -1406,9 +1473,10 @@ public final class Stitcher {
 
     /**
      * Over-budget counterpart to {@link #emitCheckedVectorRawMethod}: the stitched expression lives in a
-     * {@code private static compute(...)} helper (reused from {@link #emitVectorComputeHelper}) and the {@code fusedRaw}
-     * loop only reads {@code a_i[p]}, calls {@code compute}, and stores {@code out[p]}. The overflow try still wraps
-     * the whole loop so a {@code Math.*Exact} throw from {@code compute} abandons the page with {@code return null}.
+     * {@code private static compute(...)} helper (reused from {@link #emitVectorComputeHelper}) and the
+     * {@code fusedRaw}/{@code fusedRawInterface} loop only reads each input at {@code p}, calls {@code compute},
+     * and stores {@code out[p]}. The overflow try still wraps the whole loop so a {@code Math.*Exact} throw from
+     * {@code compute} abandons the page with {@code return null}. {@code raw} selects ALL-RAW vs ALL-INTERFACE.
      */
     private MethodNode emitCheckedVectorRawSplit(
         Element[] inputElements,
@@ -1417,7 +1485,8 @@ public final class Stitcher {
         Set<String> overflowTypes,
         String descriptor,
         MethodNode compute,
-        String internalName
+        String internalName,
+        boolean raw
     ) {
         int arity = inputElements.length;
         FrameLayout frame = new FrameLayout();
@@ -1426,14 +1495,14 @@ public final class Stitcher {
         int pcSlot = frame.slot();                                          // [2] int positionCount
         int inputBase = frame.slots(arity);
         Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
-        int rawArrayBase = frame.slots(arity);
+        int extractedBase = frame.slots(arity);
         int outSlot = frame.slot();
         int pSlot = frame.slot();
 
         MethodNode host = new MethodNode(
             Opcodes.ASM9,
             Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            FUSED_RAW_METHOD_NAME,
+            raw ? FUSED_RAW_METHOD_NAME : FUSED_RAW_INTERFACE_METHOD_NAME,
             descriptor,
             null,
             null
@@ -1441,19 +1510,7 @@ public final class Stitcher {
         InsnList insns = host.instructions;
 
         for (int i = 0; i < arity; i++) {
-            Element inputElement = inputElements[i];
-            insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
-            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKESTATIC,
-                    VECTOR_UNSAFE,
-                    inputElement.vectorUnsafeMethod(),
-                    inputElement.vectorUnsafeDescriptor(),
-                    false
-                )
-            );
-            insns.add(new VarInsnNode(Opcodes.ASTORE, rawArrayBase + i));
+            emitExtractConsumedInput(insns, inputElements[i], inputBase + i, extractedBase + i, raw);
         }
 
         LabelNode tryStart = overflowTypes.isEmpty() ? null : new LabelNode();
@@ -1479,10 +1536,7 @@ public final class Stitcher {
         insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
         insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
         for (int i = 0; i < arity; i++) {
-            Element inputElement = inputElements[i];
-            insns.add(new VarInsnNode(Opcodes.ALOAD, rawArrayBase + i));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-            insns.add(new InsnNode(inputElement.type().getOpcode(Opcodes.IALOAD)));
+            emitReadExtractedAtP(insns, inputElements[i], extractedBase + i, pSlot, raw);
         }
         for (FusionNode.Constant constant : constants) {
             insns.add(new VarInsnNode(constantType(constant).getOpcode(Opcodes.ILOAD), constantSlots.get(constant)));
@@ -1541,6 +1595,53 @@ public final class Stitcher {
         insns.add(new InsnNode(Opcodes.ARETURN));
     }
 
+    /**
+     * Narrows one consumed input once, outside the loop (JIT #6: no per-position checkcast). ALL-RAW: CHECKCAST to
+     * {@code *ArrayVector} and {@code VectorUnsafe} extract into {@code destSlot}. ALL-INTERFACE: CHECKCAST to the
+     * typed {@code *Vector} interface and store that reference — {@code Constant*Vector}/{@code *BigArrayVector} then
+     * read through {@code getX(p)} at the hidden class's own call sites.
+     */
+    private static void emitExtractConsumedInput(InsnList insns, Element inputElement, int inputSlot, int destSlot, boolean raw) {
+        insns.add(new VarInsnNode(Opcodes.ALOAD, inputSlot));
+        if (raw) {
+            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
+            insns.add(
+                new MethodInsnNode(
+                    Opcodes.INVOKESTATIC,
+                    VECTOR_UNSAFE,
+                    inputElement.vectorUnsafeMethod(),
+                    inputElement.vectorUnsafeDescriptor(),
+                    false
+                )
+            );
+        } else {
+            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.vectorInternalName()));
+        }
+        insns.add(new VarInsnNode(Opcodes.ASTORE, destSlot));
+    }
+
+    /**
+     * Pushes {@code extracted[p]} onto the stack. ALL-RAW: {@code xALOAD} from the backing array. ALL-INTERFACE:
+     * {@code INVOKEINTERFACE *Vector.getX(I)}.
+     */
+    private static void emitReadExtractedAtP(InsnList insns, Element element, int extractedSlot, int pSlot, boolean raw) {
+        insns.add(new VarInsnNode(Opcodes.ALOAD, extractedSlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        if (raw) {
+            insns.add(new InsnNode(element.type().getOpcode(Opcodes.IALOAD)));
+        } else {
+            insns.add(
+                new MethodInsnNode(
+                    Opcodes.INVOKEINTERFACE,
+                    element.vectorInternalName(),
+                    element.getValueMethod(),
+                    element.getValueDescriptor(),
+                    true
+                )
+            );
+        }
+    }
+
     /** Extracts a kernel's straight-line {@link Body} from its template {@link MethodNode} (registry lookup + lift). */
     private Body extractKernelBody(FusionNode.Kernel kernel) {
         return BodyExtractor.extract(templates.methodNode(kernel.descriptor()));
@@ -1548,8 +1649,10 @@ public final class Stitcher {
 
     /**
      * Emits an {@link FusionNode.Input} leaf's value for the current position onto the operand stack, typed to the
-     * leaf's own element. The two stack-based paths differ only here: the plain-vector fast path reads
-     * {@code rawArray[p]}, while the checked-vector path reads a value already loaded into the leaf's value local.
+     * leaf's own element. The two stack-based paths differ only here: the plain-vector and checked-raw fast paths
+     * inject {@link #emitReadExtractedAtP} after an outside-the-loop {@link #emitExtractConsumedInput} (ALL-RAW
+     * {@code xALOAD} or ALL-INTERFACE {@code *Vector.getX(p)}), while the checked-vector builder path reads a
+     * value already loaded into the leaf's value local.
      */
     @FunctionalInterface
     private interface LeafReader {
