@@ -7,8 +7,6 @@
 package org.elasticsearch.xpack.encryption;
 
 import org.elasticsearch.TransportVersion;
-import org.elasticsearch.action.admin.cluster.tasks.PendingClusterTasksRequest;
-import org.elasticsearch.action.admin.cluster.tasks.TransportPendingClusterTasksAction;
 import org.elasticsearch.cluster.AbstractNamedDiffable;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.ClusterStateUpdateTask;
@@ -49,9 +47,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.UnaryOperator;
 
+import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
 import static org.hamcrest.Matchers.anEmptyMap;
-import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.hasItem;
@@ -80,22 +79,9 @@ public class KeyRotationIT extends SecurityIntegTestCase {
         for (String nodeName : internalCluster().getNodeNames()) {
             internalCluster().getInstance(KeyRotationCoordinator.class, nodeName).close();
         }
-        assertBusy(
-            () -> assertThat(
-                client().execute(TransportPendingClusterTasksAction.TYPE, new PendingClusterTasksRequest(TEST_REQUEST_TIMEOUT))
-                    .get()
-                    .pendingTasks()
-                    .stream()
-                    .filter(t -> {
-                        String src = t.getSource().string();
-                        return src.contains("project-encryption-key") || src.startsWith("re-encrypt-");
-                    })
-                    .toList(),
-                empty()
-            ),
-            30,
-            TimeUnit.SECONDS
-        );
+        var request = new EncryptionResetRequest(TEST_REQUEST_TIMEOUT, TEST_REQUEST_TIMEOUT, true);
+        assertAcked(client().execute(TransportEncryptionResetAction.TYPE, request).actionGet());
+        waitNoPendingTasksOnAll();
     }
 
     @Override
@@ -170,8 +156,7 @@ public class KeyRotationIT extends SecurityIntegTestCase {
         final TestControlState state = new TestControlState();
         for (String nodeName : internalCluster().getNodeNames()) {
             KeyRotationCoordinator coordinator = internalCluster().getInstance(KeyRotationCoordinator.class, nodeName);
-            EncryptionService service = internalCluster().getInstance(EncryptionService.class, nodeName);
-            coordinator.register(new TestHandler<>(customName, factory, service, state));
+            coordinator.register(new TestHandler<>(customName, factory, state));
         }
         return state;
     }
@@ -224,7 +209,8 @@ public class KeyRotationIT extends SecurityIntegTestCase {
     public void testRotationCycleWithNoHandlers() throws Exception {
         String originalKeyId = metadataOnMaster().getActiveKeyId();
         // With no handlers registered, ticks rotate the active key on each rotation_interval and retire any non-active key
-        // older than the grace window (10 * check_interval). The original install key eventually ages past grace and is dropped.
+        // older than the grace window (10 * check_interval), except the most recently deactivated one. The original install key is
+        // eventually dropped.
         assertBusy(() -> {
             ProjectEncryptionKeyMetadata m = metadataOnMaster();
             assertThat(m, notNullValue());
@@ -258,6 +244,16 @@ public class KeyRotationIT extends SecurityIntegTestCase {
             assertThat("beta blob re-encrypted off initial", betaBlob.blob.keyId(), not(equalTo(initialKeyId)));
             assertThat("alpha blob's key still present", m.getKeys().keySet(), hasItem(alphaBlob.blob.keyId()));
             assertThat("beta blob's key still present", m.getKeys().keySet(), hasItem(betaBlob.blob.keyId()));
+            assertThat(
+                "handlerKeyIds not in sync with actual keys",
+                m.getHandlerKeyIds().get(AlphaBlob.TYPE),
+                equalTo(alphaBlob.blob.keyId())
+            );
+            assertThat(
+                "handlerKeyIds not in sync with actual keys",
+                m.getHandlerKeyIds().get(BetaBlob.TYPE),
+                equalTo(betaBlob.blob.keyId())
+            );
         }, 30, TimeUnit.SECONDS);
 
         AlphaBlob alphaBlob = customOnMaster(AlphaBlob.TYPE);
@@ -428,24 +424,21 @@ public class KeyRotationIT extends SecurityIntegTestCase {
     /**
      * Re-encrypts a {@link TestBlobBase}-shaped custom under the active key.
      */
-    private record TestHandler<T extends TestBlobBase>(
-        String customName,
-        Function<EncryptedData, T> factory,
-        EncryptionService encryptionService,
-        TestControlState state
-    ) implements EncryptedDataHandler<T> {
+    private record TestHandler<T extends TestBlobBase>(String customName, Function<EncryptedData, T> factory, TestControlState state)
+        implements
+            EncryptedDataHandler<T> {
 
         @Override
-        public T reEncrypt(T current, EncryptionService service, String activeKeyId) {
+        public T reEncrypt(T current, UnaryOperator<EncryptedData> rewrapper) {
             state.callCount.incrementAndGet();
             if (current == null) {
                 return null;
             }
-            if (current.blob.keyId().equals(activeKeyId)) {
-                return current;
+            EncryptedData rewrapped = rewrapper.apply(current.blob);
+            if (rewrapped == null) {
+                return null;
             }
-            byte[] plaintext = encryptionService.decrypt(current.blob);
-            return factory.apply(encryptionService.encrypt(plaintext));
+            return rewrapped == current.blob ? current : factory.apply(rewrapped);
         }
     }
 }

@@ -7,9 +7,12 @@
 
 package org.elasticsearch.xpack.stateless.reshard;
 
+import org.elasticsearch.action.support.ActionTestUtils;
+import org.elasticsearch.action.support.SubscribableListener;
 import org.elasticsearch.action.support.master.MasterNodeRequestHelper;
 import org.elasticsearch.cluster.SnapshotsInProgress;
 import org.elasticsearch.cluster.metadata.IndexReshardingState;
+import org.elasticsearch.cluster.routing.allocation.decider.ThrottlingAllocationDecider;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.index.Index;
@@ -34,12 +37,13 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.elasticsearch.cluster.routing.IndexRoutingTestHelper.makeIdThatRoutesToShard;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertResponse;
-import static org.elasticsearch.xpack.stateless.reshard.ReshardingTestHelpers.makeIdThatRoutesToShard;
 import static org.elasticsearch.xpack.stateless.reshard.ReshardingTestHelpers.postSplitRouting;
 import static org.elasticsearch.xpack.stateless.reshard.SplitSourceService.RESHARD_SPLIT_DELETE_UNOWNED_GRACE_PERIOD;
 
 public class SnapshotsWithReshardingIT extends AbstractStatelessPluginIntegTestCase {
+
     public void testShardSnapshotIsFailedWhenReshardingMetadataIsPresent() {
         startMasterOnlyNode();
         var indexNode = startIndexNode();
@@ -140,6 +144,80 @@ public class SnapshotsWithReshardingIT extends AbstractStatelessPluginIntegTestC
         // Restored index should not have resharding metadata to avoid
         // restarting a split from an inconsistent state.
         assertNull(restoredMetadata.getReshardingMetadata());
+    }
+
+    /**
+     * A snapshot of an index whose split targets are still recovering completes without waiting for them to start.
+     */
+    public void testSnapshotDoesNotWaitForRecoveringSplitTargets() {
+        startMasterOnlyNode();
+        final var indexNode = startIndexNode();
+        ensureStableCluster(2);
+
+        final var repoName = randomRepoName();
+        createRepository(repoName, "fs");
+
+        final int shards = between(1, 5);
+        updateClusterSettings(
+            Settings.builder()
+                .put(ThrottlingAllocationDecider.CLUSTER_ROUTING_ALLOCATION_NODE_INITIAL_PRIMARIES_RECOVERIES_SETTING.getKey(), shards)
+        );
+        final var indexName = randomIndexName();
+        createIndex(indexName, shards, 0);
+        ensureGreen();
+        indexDocs(indexName, randomIntBetween(10, 100));
+        final var index = resolveIndex(indexName);
+
+        // Hold the split targets recovering. The source and target shards are on the same node, so the start split
+        // requests are local and must be held on the handling side rather than when sent.
+        final var startSplitGate = new SubscribableListener<Void>();
+        MockTransportService.getInstance(indexNode)
+            .addRequestHandlingBehavior(
+                TransportReshardSplitAction.START_SPLIT_ACTION_NAME,
+                (handler, request, channel, task) -> startSplitGate.addListener(
+                    ActionTestUtils.assertNoFailureListener(ignored -> handler.messageReceived(request, channel, task))
+                )
+            );
+
+        try {
+            client().execute(TransportReshardAction.TYPE, new ReshardIndexRequest(indexName)).actionGet();
+            // Wait for all split targets to be assigned.
+            awaitClusterState(state -> {
+                final var indexRoutingTable = state.routingTable(state.metadata().projectFor(index).id()).index(index);
+                return indexRoutingTable.size() == shards * 2
+                    && indexRoutingTable.allShards().allMatch(shard -> shard.primaryShard().assignedToNode());
+            });
+
+            final var createSnapshotResponse = client().admin()
+                .cluster()
+                .prepareCreateSnapshot(TEST_REQUEST_TIMEOUT, repoName, randomSnapshotName())
+                .setWaitForCompletion(true)
+                .setIndices(indexName)
+                .setPartial(randomBoolean())
+                .get(SAFE_AWAIT_TIMEOUT);
+
+            final var snapshotInfo = createSnapshotResponse.getSnapshotInfo();
+            assertEquals(SnapshotState.PARTIAL, snapshotInfo.state());
+            assertEquals(shards * 2, snapshotInfo.totalShards());
+            assertEquals(0, snapshotInfo.successfulShards());
+            assertEquals(shards * 2, snapshotInfo.failedShards());
+            assertTrue(
+                snapshotInfo.shardFailures().toString(),
+                snapshotInfo.shardFailures().stream().allMatch(ssf -> ssf.reason().contains("cannot snapshot a shard during resharding"))
+            );
+
+            // The snapshot completed while the split targets were still recovering.
+            final var state = clusterService().state();
+            final var indexRoutingTable = state.routingTable(state.metadata().projectFor(index).id()).index(index);
+            for (int shard = shards; shard < shards * 2; shard++) {
+                assertFalse(indexRoutingTable.shard(shard).primaryShard().started());
+            }
+        } finally {
+            startSplitGate.onResponse(null);
+        }
+
+        waitForReshardCompletion(index);
+        ensureGreen(indexName);
     }
 
     public void testShardSnapshotIsFailedDueToConcurrentCompletedSplit() {
@@ -360,17 +438,21 @@ public class SnapshotsWithReshardingIT extends AbstractStatelessPluginIntegTestC
     }
 
     // Tests that when we adjust index metadata we properly handle index metadata deduplication.
+    // Also verifies post-reshard snapshot captures document deletes from cleanup by restoring and searching
     public void testNextSnapshotHasCorrectMetadata() {
         var indexNode = startMasterAndIndexNode();
-        ensureStableCluster(1);
+        startSearchNode();
+        ensureStableCluster(2);
 
         createRepository("test-repo", "fs");
 
         final int shards = between(1, 10);
         var indexName = randomAlphaOfLength(10).toLowerCase(Locale.ROOT);
-        createIndex(indexName, shards, 0);
+        // Need at least one search replica so the restored index is searchable.
+        createIndex(indexName, shards, 1);
         ensureGreen();
-        indexDocs(indexName, randomIntBetween(10, 100));
+        final int numDocs = randomIntBetween(10, 100);
+        indexDocs(indexName, numDocs);
 
         if (randomBoolean()) {
             // Create a pre-split snapshot to ensure we won't reuse the metadata later.
@@ -465,6 +547,15 @@ public class SnapshotsWithReshardingIT extends AbstractStatelessPluginIntegTestC
         assertEquals(shards * 2, restoredMetadata.getNumberOfShards());
         // Sanity check - it should be null anyway since the split is complete.
         assertNull(restoredMetadata.getReshardingMetadata());
+
+        assertResponse(
+            prepareSearch(restoredIndexName).setQuery(QueryBuilders.matchAllQuery())
+                .setTrackTotalHits(true)
+                .setAllowPartialSearchResults(false),
+            searchResponse -> {
+                assertEquals(numDocs, searchResponse.getHits().getTotalHits().value());
+            }
+        );
     }
 
     @Override

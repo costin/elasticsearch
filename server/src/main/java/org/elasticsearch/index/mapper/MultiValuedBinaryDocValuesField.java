@@ -10,15 +10,21 @@
 package org.elasticsearch.index.mapper;
 
 import org.apache.lucene.document.NumericDocValuesField;
+import org.apache.lucene.index.CorruptIndexException;
+import org.apache.lucene.index.IndexableFieldType;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.BytesRefBuilder;
 import org.elasticsearch.common.io.stream.ByteArrayStreamInput;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
+import org.elasticsearch.common.io.stream.StreamOutputHelper;
+import org.elasticsearch.index.IndexMode;
 import org.elasticsearch.index.IndexVersion;
 import org.elasticsearch.index.IndexVersions;
 import org.elasticsearch.simdvec.ESVectorUtil;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Collection;
@@ -32,9 +38,25 @@ import java.util.TreeSet;
  */
 public abstract class MultiValuedBinaryDocValuesField extends CustomDocValuesField {
 
+    /**
+     * Whether a {@code null} the parser is looking at is kept as a slot, or is the field being absent.
+     *
+     * <p>In a strictly columnar index a null counts only where it is an element of the field's own array, which is the position
+     * synthetic source has to put it back into; {@code f: null} and {@code f: []} say the document has nothing for the field. That
+     * is a property of the mapping, so it holds whichever layout is writing the doc values — the ColumNAR codec's payload and the
+     * in-order column give the same answer, and so does {@code exists}. Everywhere else a null is kept as it always was.
+     *
+     * <p>The immediate parent rather than {@link DocumentParserContext#isPartOfArray()}: that is also true of a null inside an array
+     * of objects, where the position belongs to the objects, and flattening {@code obj: [{f: null}, {f: "a"}]} into
+     * {@code f: [null, "a"]} is not an order to promise.
+     */
+    public static boolean keepsNullSlot(DocumentParserContext context, IndexMode mode) {
+        return mode.isStrictColumnar() == false || context.isImmediateParentAnArray();
+    }
+
     // vints are unlike normal ints in that they may require 5 bytes instead of 4
     // see BytesStreamOutput.writeVInt()
-    private static final int VINT_MAX_BYTES = 5;
+    public static final int VINT_MAX_BYTES = 5;
 
     /**
      * Controls how values are collected and ordered in a multi-valued binary doc values field.
@@ -113,6 +135,15 @@ public abstract class MultiValuedBinaryDocValuesField extends CustomDocValuesFie
     }
 
     /**
+     * Whether an index created on {@code indexVersion} writes multi-valued binary doc values in the {@link SeparateCount} layout (the
+     * value field plus a {@code .counts} companion) rather than the deprecated {@link IntegratedCount} one. Everything that writes the
+     * layout, including the columnar batch path, has to decide through this one predicate so that they cannot disagree.
+     */
+    static boolean useSeparateCount(IndexVersion indexVersion) {
+        return indexVersion.onOrAfter(IndexVersions.DEPRECATE_INTEGRATED_COUNTS_BINARY_DOC_VALUES);
+    }
+
+    /**
      * This function exists for backwards compatibility with old indices that used {@link IntegratedCount}.
      * <p>
      * For indices created on or after {@link IndexVersions#DEPRECATE_INTEGRATED_COUNTS_BINARY_DOC_VALUES}, the {@link SeparateCount}
@@ -125,7 +156,7 @@ public abstract class MultiValuedBinaryDocValuesField extends CustomDocValuesFie
         ValueOrdering ordering,
         IndexVersion indexVersion
     ) {
-        if (indexVersion.onOrAfter(IndexVersions.DEPRECATE_INTEGRATED_COUNTS_BINARY_DOC_VALUES)) {
+        if (useSeparateCount(indexVersion)) {
             SeparateCount.addToDoc(doc, fieldName, value, ordering);
         } else {
             IntegratedCount.addToDoc(doc, fieldName, value, ordering);
@@ -155,7 +186,7 @@ public abstract class MultiValuedBinaryDocValuesField extends CustomDocValuesFie
         } else {
             // In the non-nested case all ignored source values only need to be added to one Lucene document,
             // and then we can avoid the usage of LuceneDocument#addWithKey(...), which results in redundant hash map interaction.
-            final boolean useSeparateCount = indexVersion.onOrAfter(IndexVersions.DEPRECATE_INTEGRATED_COUNTS_BINARY_DOC_VALUES);
+            final boolean useSeparateCount = useSeparateCount(indexVersion);
             var ignoredSourceField = useSeparateCount ? new SeparateCount(fieldName, ordering) : new IntegratedCount(fieldName, ordering);
             var luceneDocument = ignoredFieldValues.iterator().next().doc();
             for (var value : ignoredFieldValues) {
@@ -239,6 +270,12 @@ public abstract class MultiValuedBinaryDocValuesField extends CustomDocValuesFie
     public static class SeparateCount extends MultiValuedBinaryDocValuesField {
 
         public static final String COUNT_FIELD_SUFFIX = ".counts";
+
+        /**
+         * The field type of the {@code .counts} companion, as produced by {@link NumericDocValuesField#indexedField}. Exposed so the
+         * columnar batch-mapping path can attach a {@code .counts} output column carrying exactly the type the row path writes.
+         */
+        public static final IndexableFieldType COUNT_FIELD_TYPE = NumericDocValuesField.indexedField("_sentinel", 0).fieldType();
 
         // Held here so addToDoc can update the count on each value without a second keyedFields lookup.
         NumericDocValuesField countField;
@@ -517,6 +554,28 @@ public abstract class MultiValuedBinaryDocValuesField extends CustomDocValuesFie
         }
 
         /**
+         * Appends one slot to a document blob under construction in {@code blob}, growing it as needed, and returns
+         * the write position just past the slot. A {@code null} {@code value} denotes a null slot. Same wire format
+         * as {@link #encode(Collection)}: {@code [len+1][val]}, with {@code [0]} for a null slot.
+         *
+         * <p>Note this always writes the length prefix, including for the first slot. A document that turns out to
+         * hold exactly one non-null slot is stored raw (see {@link #encode(Collection)}); the caller handles that by
+         * emitting a view that starts after the prefix, which sits at {@code returnedPos - value.length}.
+         */
+        public static int appendSlot(BytesRefBuilder blob, int pos, BytesRef value) {
+            final int valueLength = value == null ? 0 : value.length;
+            // grow (not growNoCopy): earlier slots of this document must survive.
+            blob.grow(pos + VINT_MAX_BYTES + valueLength);
+            final byte[] buffer = blob.bytes();
+            pos = StreamOutputHelper.putVInt(buffer, value == null ? 0 : valueLength + 1, pos);
+            if (value != null) {
+                System.arraycopy(value.bytes, value.offset, buffer, pos, valueLength);
+                pos += valueLength;
+            }
+            return pos;
+        }
+
+        /**
          * Decodes the minimum ({@code maxMode=false}) or maximum ({@code maxMode=true}) non-null value from a multi-slot
          * ({@code slotCount > 1}) {@code ArrayOrderInlineNull} blob. Values are stored in document order (not sorted) with
          * inline nulls, so unlike {@link SeparateCount#decodeExtreme}, this must scan every slot and compare values;
@@ -649,8 +708,7 @@ public abstract class MultiValuedBinaryDocValuesField extends CustomDocValuesFie
             for (BytesRef slot : slots) {
                 byteCount += slot.length;
             }
-            int streamSize = byteCount + slotCount * VINT_MAX_BYTES;
-            try (BytesStreamOutput out = new BytesStreamOutput(streamSize)) {
+            try (BytesStreamOutput out = new BytesStreamOutput(streamSize(byteCount, slotCount))) {
                 for (int i = 0; i < slotCount; i++) {
                     BytesRef slot = slots.get(i);
                     if (nullMarkers.get(i)) {
@@ -671,6 +729,108 @@ public abstract class MultiValuedBinaryDocValuesField extends CustomDocValuesFie
             } catch (IOException e) {
                 throw new UncheckedIOException("Failed to encode keyed inline null binary value", e);
             }
+        }
+
+        /**
+         * Appends one keyed slot to a document blob under construction in {@code blob}, growing it as needed, and
+         * returns the write position just past the slot. {@code keyPrefix} is {@code key\0}; a {@code null}
+         * {@code value} denotes a null slot.
+         *
+         * <p>Same wire format as {@link #encode(ArrayList, BitSet)}: {@code [valueLen+1][key\0value]}, with
+         * {@code [0][key\0]} for a null slot. Every slot carries a VInt prefix (no single-slot raw passthrough);
+         * the separator byte is always written; slot order is load-bearing.
+         */
+        public static int appendSlot(BytesRefBuilder blob, int pos, BytesRef keyPrefix, BytesRef value) {
+            assert keyPrefix.length > 0 && keyPrefix.bytes[keyPrefix.offset + keyPrefix.length - 1] == 0
+                : "key prefix must be non-empty and end with \\0";
+            final int valueLength = value == null ? 0 : value.length;
+            // grow (not growNoCopy): earlier slots of this document must survive.
+            blob.grow(pos + VINT_MAX_BYTES + keyPrefix.length + valueLength);
+            final byte[] buffer = blob.bytes();
+            // Null slot: [0]key\0. Non-null slot: [valueLen+1]key\0value.
+            pos = StreamOutputHelper.putVInt(buffer, value == null ? 0 : valueLength + 1, pos);
+            System.arraycopy(keyPrefix.bytes, keyPrefix.offset, buffer, pos, keyPrefix.length);
+            pos += keyPrefix.length;
+            if (value != null) {
+                System.arraycopy(value.bytes, value.offset, buffer, pos, valueLength);
+                pos += valueLength;
+            }
+            return pos;
+        }
+
+        /**
+         * Reads the slots of one document in the order they are stored. A slot that runs past the end of the document fails with a
+         * {@link CorruptIndexException} rather than being read from whatever follows it.
+         */
+        public static final class SlotReader {
+            private final ByteArrayStreamInput in = new ByteArrayStreamInput();
+            private final BytesRef value = new BytesRef();
+            private byte[] bytes;
+            private int end;
+            private int remaining;
+            private int slotStart;
+            private int keyStart;
+            private int keyLength;
+            private int valueLength;
+
+            /** Positions before the first of the {@code count} slots of {@code slots}. */
+            public void reset(BytesRef slots, int count) {
+                bytes = slots.bytes;
+                end = slots.offset + slots.length;
+                remaining = count;
+                in.reset(slots.bytes, slots.offset, slots.length);
+            }
+
+            /** Moves to the next slot, and returns whether there is one. */
+            public boolean next() throws IOException {
+                if (remaining == 0) {
+                    return false;
+                }
+                remaining--;
+                slotStart = in.getPosition();
+                int prefix = in.readVInt();
+                keyStart = in.getPosition();
+                keyLength = ESVectorUtil.indexOf(bytes, keyStart, end - keyStart, (byte) 0);
+                valueLength = prefix - 1;
+                if (keyLength == -1 || prefix < 0 || valueLength > end - (keyStart + keyLength + 1)) {
+                    throw new CorruptIndexException("keyed slot runs past the end of the document", "binary doc values");
+                }
+                in.setPosition(slotEnd());
+                return true;
+            }
+
+            /** The key of the current slot. */
+            public String key() {
+                return new String(bytes, keyStart, keyLength, StandardCharsets.UTF_8);
+            }
+
+            /** Whether the current slot holds a null. */
+            public boolean isNull() {
+                return valueLength == -1;
+            }
+
+            /** The value of the current slot, shared with the next calls; only valid if it isn't {@link #isNull() null}. */
+            public BytesRef value() {
+                assert isNull() == false;
+                value.bytes = bytes;
+                value.offset = keyStart + keyLength + 1;
+                value.length = valueLength;
+                return value;
+            }
+
+            /** Where the current slot starts in the bytes of the document, its length prefix included. */
+            public int slotStart() {
+                return slotStart;
+            }
+
+            /** Where the current slot ends in the bytes of the document. */
+            public int slotEnd() {
+                return keyStart + keyLength + 1 + Math.max(valueLength, 0);
+            }
+        }
+
+        private static int streamSize(int byteCount, int slotCount) {
+            return byteCount + slotCount * VINT_MAX_BYTES;
         }
 
     }

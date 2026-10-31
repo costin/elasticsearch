@@ -46,7 +46,22 @@ public class AllocationEstimatorTestObject {
         return n;
     }
 
+    /** Static method allowlisted with a per-argument estimator; used as a static-method reference target for PR 8. */
+    public static int staticAllocating(int n) {
+        return n;
+    }
+
+    /** Estimator for {@link #staticAllocating(int)}: matches the static Java signature and scales with the argument. */
+    public static long staticAllocatingEstimate(int n) {
+        return 16L * n;
+    }
+
     /** Instance method allowlisted with {@code @allocates}; used to exercise the {@code def}-dispatch constant charge. */
+    /** Its estimator lives in a class that is not allowlisted, like the x-pack ones. */
+    public int externallyEstimated(int n) {
+        return n;
+    }
+
     public int constantAllocating() {
         return 0;
     }
@@ -101,6 +116,16 @@ public class AllocationEstimatorTestObject {
     /** Fixed zero-cost estimator for {@link #zeroAllocating()}: an audited no-op charges nothing. */
     public static long zeroEstimate(AllocationEstimatorTestObject receiver) {
         return 0;
+    }
+
+    /** Getter reachable by property shorthand ({@code o.estimatedValue}); its estimator must run on that path too. */
+    public int getEstimatedValue() {
+        return 0;
+    }
+
+    /** Fixed-cost estimator for {@link #getEstimatedValue()}. */
+    public static long estimatedValueEstimate(AllocationEstimatorTestObject receiver) {
+        return 72;
     }
 
     /** Fixed-cost estimator for {@link #constantBoxed}: instance signature (receiver first) with the boxed parameter type. */

@@ -13,12 +13,12 @@ import org.apache.lucene.document.Field;
 import org.apache.lucene.document.SortedSetDocValuesField;
 import org.apache.lucene.document.StoredField;
 import org.apache.lucene.document.StringField;
-import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.xcontent.XContentParserUtils;
 import org.elasticsearch.index.IndexVersion;
 import org.elasticsearch.index.mapper.ContentPath;
 import org.elasticsearch.index.mapper.DocumentParserContext;
+import org.elasticsearch.index.mapper.FallbackPostMapper;
 import org.elasticsearch.index.mapper.FieldMapper;
 import org.elasticsearch.index.mapper.MappedFieldType;
 import org.elasticsearch.index.mapper.MultiValuedBinaryDocValuesField;
@@ -55,6 +55,7 @@ class FlattenedFieldParser {
     private final FlattenedFieldMapper.PreserveLeafArrays preserveLeafArrays;
 
     private final boolean writeDimensionRouting;
+    private final int maxKeyedValueLength;
 
     FlattenedFieldParser(
         String rootFieldFullPath,
@@ -71,7 +72,8 @@ class FlattenedFieldParser {
         FlattenedFieldMapper.PreserveLeafArrays preserveLeafArrays,
         IndexVersion indexVersion,
         boolean writeDimensionRouting,
-        boolean usesArrayOrderBinaryDocValues
+        boolean usesArrayOrderBinaryDocValues,
+        int maxKeyedValueLength
     ) {
         this.rootFieldFullPath = rootFieldFullPath;
         this.keyedFieldFullPath = keyedFieldFullPath;
@@ -88,6 +90,7 @@ class FlattenedFieldParser {
         this.preserveLeafArrays = preserveLeafArrays;
         this.indexVersion = indexVersion;
         this.writeDimensionRouting = writeDimensionRouting;
+        this.maxKeyedValueLength = maxKeyedValueLength;
     }
 
     public void parse(final DocumentParserContext documentParserContext, FlattenedFieldArrayContext arrayContext) throws IOException {
@@ -142,32 +145,33 @@ class FlattenedFieldParser {
             String value = parser.text();
             addField(context, path, currentName, value);
         } else if (token == XContentParser.Token.VALUE_NULL) {
-            String key = path.pathAsText(currentName);
-            if (key.contains(SEPARATOR)) {
-                throw new IllegalArgumentException(
-                    "Keys in [flattened] fields cannot contain the reserved character \\0. Offending key: [" + key + "]."
-                );
-            }
-            FieldMapper mappedSubField = mappedSubFields.get(key);
-            if (mappedSubField != null) {
-                mappedSubField.parse(context.documentParserContext());
-            } else if (nullValue != null) {
-                addField(context, path, currentName, nullValue);
-            } else if (usesArrayOrderBinaryDocValues) {
-                // Document-order mode: record a null slot with the key inline so synthetic source can reconstruct it.
-                MultiValuedBinaryDocValuesField.KeyedArrayOrderInlineNull.recordNull(
-                    context.documentParserContext.doc(),
-                    keyedFieldFullPath,
-                    new BytesRef(key + SEPARATOR)
-                );
-            } else if (preserveLeafArrays == FlattenedFieldMapper.PreserveLeafArrays.EXACT) {
-                context.arrayContext.recordNull(key);
-            }
+            addNull(context, path, currentName);
         } else {
             // Note that we throw an exception here just to be safe. We don't actually expect to reach
             // this case, since XContentParser verifies that the input is well-formed as it parses.
             throw new IllegalArgumentException("Encountered unexpected token [" + token.toString() + "].");
         }
+    }
+
+    /**
+     * Builds the error for a {@code key\0value} encoding that is longer than the field allows. The row path and the columnar
+     * batch path both use it so that they report the same message.
+     */
+    static IllegalArgumentException overLimitSizeKeyedValueException(String rootFieldFullPath, String key, int valueLength, int maxLength) {
+        return new IllegalArgumentException(
+            "Flattened field ["
+                + rootFieldFullPath
+                + "] contains a field"
+                + " whose keyed encoding is longer than the allowed max length of "
+                + maxLength
+                + " bytes. Key length: "
+                + key.length()
+                + ", value length: "
+                + valueLength
+                + " for key starting with ["
+                + key.substring(0, Math.min(key.length(), 50))
+                + "]"
+        );
     }
 
     private void addField(Context context, ContentPath path, String currentName, String value) throws IOException {
@@ -182,7 +186,7 @@ class FlattenedFieldParser {
         // and are not part of the flattened field's root/keyed representation.
         FieldMapper mappedSubField = mappedSubFields.get(key);
         if (mappedSubField != null) {
-            mappedSubField.parse(context.documentParserContext());
+            FallbackPostMapper.parseField(context.documentParserContext(), mappedSubField);
             return;
         }
 
@@ -217,22 +221,11 @@ class FlattenedFieldParser {
             return;
         }
 
-        // check the keyed value doesn't exceed the IndexWriter.MAX_TERM_LENGTH limit enforced by Lucene at index time
-        // in that case we can already throw a more user friendly exception here which includes the offending fields key and value lengths
-        if (bytesKeyedValue.length > IndexWriter.MAX_TERM_LENGTH) {
-            String msg = "Flattened field ["
-                + rootFieldFullPath
-                + "] contains one immense field"
-                + " whose keyed encoding is longer than the allowed max length of "
-                + IndexWriter.MAX_TERM_LENGTH
-                + " bytes. Key length: "
-                + key.length()
-                + ", value length: "
-                + value.length()
-                + " for key starting with ["
-                + key.substring(0, Math.min(key.length(), 50))
-                + "]";
-            throw new IllegalArgumentException(msg);
+        // check the keyed value doesn't exceed the IndexWriter.MAX_TERM_LENGTH limit enforced by Lucene at index time, or the non-indexed
+        // field limit for fields without terms in columnar index modes; we can throw a more user friendly exception here with the key
+        // and value lengths
+        if (bytesKeyedValue.length > maxKeyedValueLength) {
+            throw overLimitSizeKeyedValueException(rootFieldFullPath, key, value.length(), maxKeyedValueLength);
         }
         BytesRef bytesValue = new BytesRef(value);
         if (fieldType.indexType().hasTerms()) {
@@ -286,6 +279,44 @@ class FlattenedFieldParser {
                 final BytesRef keyedFieldValue = FlattenedFieldParser.extractValue(bytesKeyedValue);
                 context.documentParserContext().getRoutingFields().addString(rootFieldFullPath + "." + keyedFieldName, keyedFieldValue);
             }
+        }
+    }
+
+    private void addNull(Context context, ContentPath path, String currentName) throws IOException {
+        String key = path.pathAsText(currentName);
+        if (key.contains(SEPARATOR)) {
+            throw new IllegalArgumentException(
+                "Keys in [flattened] fields cannot contain the reserved character \\0. Offending key: [" + key + "]."
+            );
+        }
+        FieldMapper mappedSubField = mappedSubFields.get(key);
+        if (mappedSubField != null) {
+            FallbackPostMapper.parseField(context.documentParserContext(), mappedSubField);
+        } else if (nullValue != null) {
+            addField(context, path, currentName, nullValue);
+        } else if (usesArrayOrderBinaryDocValues) {
+            // Document-order mode: record a null slot with the key inline so synthetic source can reconstruct it.
+            MultiValuedBinaryDocValuesField.KeyedArrayOrderInlineNull.recordNull(
+                context.documentParserContext.doc(),
+                keyedFieldFullPath,
+                new BytesRef(key + SEPARATOR)
+            );
+        } else if (preserveLeafArrays == FlattenedFieldMapper.PreserveLeafArrays.EXACT) {
+            context.arrayContext.recordNull(key);
+        }
+    }
+
+    /**
+     * Indexes the current parser value at {@code path} (already a full dotted key from the document root). A null token records a null
+     * slot via {@link #addNull} to preserve columnar array order; any other token is indexed via {@link #addField}.
+     */
+    void indexValueAtPath(DocumentParserContext documentParserContext, FlattenedFieldArrayContext arrayContext, String path)
+        throws IOException {
+        Context context = new Context(documentParserContext.parser(), documentParserContext, arrayContext);
+        if (documentParserContext.parser().currentToken() == XContentParser.Token.VALUE_NULL) {
+            addNull(context, new ContentPath(), path);
+        } else {
+            addField(context, new ContentPath(), path, documentParserContext.parser().text());
         }
     }
 

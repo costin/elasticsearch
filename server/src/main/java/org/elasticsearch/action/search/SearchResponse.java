@@ -9,9 +9,11 @@
 
 package org.elasticsearch.action.search;
 
+import org.elasticsearch.ExceptionsHelper;
 import org.elasticsearch.TransportVersion;
 import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.action.OriginalIndices;
+import org.elasticsearch.action.ShardOperationFailedException;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.collect.Iterators;
@@ -25,6 +27,8 @@ import org.elasticsearch.common.xcontent.ChunkedToXContentHelper;
 import org.elasticsearch.common.xcontent.ChunkedToXContentObject;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.core.RefCounted;
+import org.elasticsearch.core.Releasable;
+import org.elasticsearch.core.Releasables;
 import org.elasticsearch.core.SimpleRefCounted;
 import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.index.store.DirectoryMetrics;
@@ -102,6 +106,13 @@ public class SearchResponse extends ActionResponse implements ChunkedToXContentO
      */
     private transient long queryPhaseAggregationBreakerBytes = 0;
 
+    // Coordinator fetch-breaker charge for the hits below, released when this response is.
+    @Nullable
+    private transient Releasable coordinatorFetchCharge;
+
+    // Size of the aggregations as read off the wire, or -1 if unknown, so that they can be estimated without serializing them again.
+    private transient long serializedAggregationsBytes = -1;
+
     // SearchHits from top_hits aggs to release when this response is released.
     private final List<SearchHits> topHitsToRelease;
 
@@ -116,11 +127,16 @@ public class SearchResponse extends ActionResponse implements ChunkedToXContentO
     public SearchResponse(StreamInput in) throws IOException {
         this.hits = SearchHits.readFrom(in);
         if (in.readBoolean()) {
+            // Only a stream backed by bytes knows exactly how many are left.
+            final int availableBefore = in.supportReadAllToReleasableBytesReference() ? in.available() : -1;
             // deserialize the aggregations trying to deduplicate the object created
             // TODO: use DelayableWriteable instead.
             this.aggregations = InternalAggregations.readFrom(
                 DelayableWriteable.wrapWithDeduplicatorStreamInput(in, in.getTransportVersion(), in.namedWriteableRegistry())
             );
+            if (availableBefore >= 0) {
+                this.serializedAggregationsBytes = availableBefore - in.available();
+            }
             this.topHitsToRelease = collectTopHitsFromAggregations(this.aggregations, false);
         } else {
             this.aggregations = null;
@@ -225,6 +241,7 @@ public class SearchResponse extends ActionResponse implements ChunkedToXContentO
             searchResponseSections.transferCompletionOptionHitsToRelease()
         );
         this.timeRangeFilterFromMillis = searchResponseSections.timeRangeFilterFromMillis;
+        this.coordinatorFetchCharge = searchResponseSections.transferCoordinatorFetchCharge();
         if (this.profileResults != null) {
             this.profileResults.setOriginalSource(source);
             this.profileResults.setRequestIndices(indices);
@@ -313,6 +330,7 @@ public class SearchResponse extends ActionResponse implements ChunkedToXContentO
                 hit.decRef();
             }
             hits.decRef();
+            Releasables.closeExpectNoException(coordinatorFetchCharge);
             return true;
         }
         return false;
@@ -482,6 +500,41 @@ public class SearchResponse extends ActionResponse implements ChunkedToXContentO
     void setQueryPhaseAggregationBreakerBytes(long queryPhaseAggregationBreakerBytes) {
         assert queryPhaseAggregationBreakerBytes >= 0 : "bytes must be non-negative";
         this.queryPhaseAggregationBreakerBytes = queryPhaseAggregationBreakerBytes;
+    }
+
+    boolean hasCoordinatorFetchCharge() {
+        return coordinatorFetchCharge != null;
+    }
+
+    /**
+     * The serialized size of the aggregations when this response read them from a stream that knows its remaining size, such as a transport
+     * message, or -1 if it has no aggregations, read them from another stream, or was built in memory.
+     */
+    long serializedAggregationsBytes() {
+        return serializedAggregationsBytes;
+    }
+
+    /**
+     * Takes the charge for the hits of a response built without search phase sections, such as a merged cross-cluster response. It is
+     * released with this response.
+     */
+    void adoptCoordinatorFetchCharge(@Nullable Releasable charge) {
+        assert coordinatorFetchCharge == null : "a coordinator fetch charge was already adopted";
+        coordinatorFetchCharge = charge;
+    }
+
+    /**
+     * Hands the coordinating node's fetch charge for the hits to a caller that keeps the hits alive past this response.
+     * The sections hand their charge to the response when it is built (see
+     * {@link SearchResponseSections#transferCoordinatorFetchCharge()}), so from then on it can only be taken from here.
+     *
+     * @return the charge, or {@code null} if there is none
+     */
+    @Nullable
+    Releasable transferCoordinatorFetchCharge() {
+        Releasable charge = coordinatorFetchCharge;
+        coordinatorFetchCharge = null;
+        return charge;
     }
 
     @Override
@@ -1220,9 +1273,12 @@ public class SearchResponse extends ActionResponse implements ChunkedToXContentO
                     }
                     builder.endObject();
                 }
-                if (failures != null && failures.size() > 0) {
+                if (failures != null && failures.isEmpty() == false) {
                     builder.startArray(RestActions.FAILURES_FIELD.getPreferredName());
-                    for (ShardSearchFailure failure : failures) {
+                    ShardOperationFailedException[] groupedFailures = ExceptionsHelper.groupBy(
+                        failures.toArray(ShardSearchFailure.EMPTY_ARRAY)
+                    );
+                    for (ShardOperationFailedException failure : groupedFailures) {
                         failure.toXContent(builder, params);
                     }
                     builder.endArray();

@@ -10,12 +10,15 @@ import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.time.DateUtils;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.data.DoubleRangeBlockBuilder;
 import org.elasticsearch.compute.data.LongRangeBlockBuilder;
 import org.elasticsearch.compute.data.TDigestHolder;
 import org.elasticsearch.exponentialhistogram.ExponentialHistogram;
+import org.elasticsearch.xpack.esql.core.expression.AnyNullIsNull;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
 import org.elasticsearch.xpack.esql.core.expression.Literal;
+import org.elasticsearch.xpack.esql.core.expression.NullMisuseSuggestion;
 import org.elasticsearch.xpack.esql.core.expression.predicate.Negatable;
 import org.elasticsearch.xpack.esql.core.querydsl.query.Query;
 import org.elasticsearch.xpack.esql.core.querydsl.query.TermQuery;
@@ -38,7 +41,7 @@ import java.util.Optional;
 
 import static org.elasticsearch.xpack.esql.expression.Foldables.literalValueOf;
 
-public class Equals extends EsqlBinaryComparison implements Negatable<EsqlBinaryComparison> {
+public class Equals extends EsqlBinaryComparison implements Negatable<EsqlBinaryComparison>, AnyNullIsNull, NullMisuseSuggestion {
     public static final NamedWriteableRegistry.Entry ENTRY = new NamedWriteableRegistry.Entry(
         Expression.class,
         "Equals",
@@ -54,6 +57,7 @@ public class Equals extends EsqlBinaryComparison implements Negatable<EsqlBinary
         Map.entry(DataType.DATETIME, EqualsLongsEvaluator.Factory::new),
         Map.entry(DataType.DATE_NANOS, EqualsLongsEvaluator.Factory::new),
         Map.entry(DataType.DATE_RANGE, EqualsLongRangeEvaluator.Factory::new),
+        Map.entry(DataType.DOUBLE_RANGE, EqualsDoubleRangeEvaluator.Factory::new),
         Map.entry(DataType.GEO_POINT, EqualsGeometriesEvaluator.Factory::new),
         Map.entry(DataType.CARTESIAN_POINT, EqualsGeometriesEvaluator.Factory::new),
         Map.entry(DataType.GEO_SHAPE, EqualsGeometriesEvaluator.Factory::new),
@@ -93,6 +97,7 @@ public class Equals extends EsqlBinaryComparison implements Negatable<EsqlBinary
                 "date_range",
                 "dense_vector",
                 "double",
+                "double_range",
                 "exponential_histogram",
                 "flattened",
                 "geo_point",
@@ -122,6 +127,7 @@ public class Equals extends EsqlBinaryComparison implements Negatable<EsqlBinary
                 "date_range",
                 "dense_vector",
                 "double",
+                "double_range",
                 "exponential_histogram",
                 "flattened",
                 "geo_point",
@@ -201,8 +207,7 @@ public class Equals extends EsqlBinaryComparison implements Negatable<EsqlBinary
                         if (value instanceof BytesRef br) {
                             value = br.utf8ToString();
                         }
-                        TermQuery termQuery = new TermQuery(source(), kn, value);
-                        return new SingleValueQuery(termQuery, kn, false);
+                        return new TermQuery(source(), kn, value);
                     }).orElseThrow();
                 }
             }
@@ -285,6 +290,11 @@ public class Equals extends EsqlBinaryComparison implements Negatable<EsqlBinary
         return lhs.equals(rhs);
     }
 
+    @Evaluator(extraName = "DoubleRange")
+    static boolean processDoubleRange(DoubleRangeBlockBuilder.DoubleRange lhs, DoubleRangeBlockBuilder.DoubleRange rhs) {
+        return lhs.equals(rhs);
+    }
+
     @Evaluator(extraName = "TDigest")
     static boolean processTDigest(TDigestHolder lhs, TDigestHolder rhs) {
         return lhs.equals(rhs);
@@ -293,6 +303,11 @@ public class Equals extends EsqlBinaryComparison implements Negatable<EsqlBinary
     @Evaluator(extraName = "ExponentialHistogram")
     static boolean processExponentialHistogram(ExponentialHistogram lhs, ExponentialHistogram rhs) {
         return ExponentialHistogram.equals(lhs, rhs);
+    }
+
+    @Override
+    public String nullMisuseAlternative() {
+        return NullMisuseSuggestion.equalsNullToIsNull(left(), right(), false);
     }
 
 }

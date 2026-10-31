@@ -13,7 +13,9 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.compute.ann.Evaluator;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.approximation.Approximation;
+import org.elasticsearch.xpack.esql.core.expression.AnyNullIsNull;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
+import org.elasticsearch.xpack.esql.core.expression.NonDeterministic;
 import org.elasticsearch.xpack.esql.core.tree.NodeInfo;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
@@ -35,7 +37,7 @@ import static org.elasticsearch.xpack.esql.core.expression.TypeResolutions.isTyp
  * This function is used internally by {@link Approximation}, and is not exposed
  * to users via the {@link EsqlFunctionRegistry}.
  */
-public class Random extends UnaryScalarFunction {
+public class Random extends UnaryScalarFunction implements AnyNullIsNull, NonDeterministic {
     public static final NamedWriteableRegistry.Entry ENTRY = new NamedWriteableRegistry.Entry(Expression.class, "Random", Random::new);
 
     @FunctionInfo(

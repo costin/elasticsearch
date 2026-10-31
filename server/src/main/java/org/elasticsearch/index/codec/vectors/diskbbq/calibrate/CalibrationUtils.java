@@ -15,9 +15,12 @@ import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.FloatVectorValues;
 import org.apache.lucene.index.KnnVectorValues;
 import org.apache.lucene.index.MergeState;
+import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.util.Bits;
+import org.apache.lucene.util.IntroSelector;
+import org.apache.lucene.util.IntroSorter;
 import org.elasticsearch.index.codec.vectors.cluster.KMeansFloatVectorValues;
 import org.elasticsearch.index.codec.vectors.diskbbq.Preconditioner;
 import org.elasticsearch.simdvec.ESVectorUtil;
@@ -36,7 +39,11 @@ import java.util.Random;
  */
 public final class CalibrationUtils {
 
-    static final int MAX_QUERY_SAMPLE = 1024;
+    // Query sample for calibration: a small query set (256) is sufficient to average rank distances and
+    // quantization-error statistics, and drives both the manifold fit and the residual error sweep, so it
+    // is the dominant lever on calibration cost. The corpus sample stays large (16384) to keep the manifold
+    // distance-scaling fit accurate.
+    static final int MAX_QUERY_SAMPLE = 256;
     static final int MAX_CORPUS_SAMPLE = 16384;
     static final long CALIBRATION_SEED = 215873873L;
 
@@ -268,7 +275,7 @@ public final class CalibrationUtils {
      * tracked via a {@link HashMap} keyed on the swapped positions. This is O(totalSample) time and
      * space with no rejection retries and no boxing beyond the map entries.
      */
-    static SampledData sampleData(FloatVectorValues vectorValues, int maxQuerySample, int maxCorpusSample) throws IOException {
+    static SampledData sampleData(FloatVectorValues vectorValues, int maxQuerySample, int maxCorpusSample) {
         int n = vectorValues.size();
         Random rng = new Random(CALIBRATION_SEED);
         int nQueries = Math.min(maxQuerySample, n / 2);
@@ -292,8 +299,8 @@ public final class CalibrationUtils {
         return new SampledData(queryOrdinals, corpusOrdinals);
     }
 
-    private static FloatVectorValues segmentFloatVectorValues(FieldInfo fieldInfo, MergeState mergeState, int segmentIndex)
-        throws IOException {
+    /** Opens the segment's vectors for {@code fieldInfo} as {@link ByteVectorValues} or {@link FloatVectorValues} per its encoding. */
+    private static KnnVectorValues segmentVectorValues(FieldInfo fieldInfo, MergeState mergeState, int segmentIndex) throws IOException {
         if (mergeState.fieldInfos != null) {
             if (mergeState.fieldInfos[segmentIndex].fieldInfo(fieldInfo.name) == null) {
                 return null;
@@ -303,7 +310,9 @@ public final class CalibrationUtils {
         if (reader == null) {
             return null;
         }
-        return reader.getFloatVectorValues(fieldInfo.name);
+        return fieldInfo.getVectorEncoding() == VectorEncoding.BYTE
+            ? reader.getByteVectorValues(fieldInfo.name)
+            : reader.getFloatVectorValues(fieldInfo.name);
     }
 
     /**
@@ -320,7 +329,7 @@ public final class CalibrationUtils {
         }
         int total = 0;
         for (int i = 0; i < mergeState.knnVectorsReaders.length; i++) {
-            FloatVectorValues segmentVectors = segmentFloatVectorValues(fieldInfo, mergeState, i);
+            KnnVectorValues segmentVectors = segmentVectorValues(fieldInfo, mergeState, i);
             if (segmentVectors == null) {
                 continue;
             }
@@ -344,7 +353,7 @@ public final class CalibrationUtils {
      * pre-computed total vector count (avoids a second metadata pass when the caller already
      * holds the result of {@link #countMergedVectors}).
      */
-    public static KMeansFloatVectorValues buildSampled(FieldInfo fieldInfo, MergeState mergeState, int totalVectors) throws IOException {
+    public static FloatVectorValues buildSampled(FieldInfo fieldInfo, MergeState mergeState, int totalVectors) throws IOException {
         return buildSampled(fieldInfo, mergeState, totalVectors, MAX_QUERY_SAMPLE + MAX_CORPUS_SAMPLE);
     }
 
@@ -356,7 +365,8 @@ public final class CalibrationUtils {
      * ({@code segQuota = segSize × totalSample / totalVectors}). Within the segment, vectors
      * are read at evenly-spaced ordinals ({@code stride = segSize / segQuota}) via
      * {@link FloatVectorValues#vectorValue(int)}, which on flat-binary storage is an O(1) seek.
-     * At most {@code totalSample} {@code float[]} arrays are materialised on the heap.
+     * At most {@code totalSample} {@code float[]} arrays are materialised on the heap. For {@code BYTE} fields the
+     * sample is instead kept as {@code byte[]} arrays and widened to float per read, so it stays a quarter of the size.
      *
      * <p>Compared with a full-scan reservoir approach, this reads only
      * {@code totalSample / totalVectors} of the data — typically hundreds of times less IO for
@@ -364,7 +374,7 @@ public final class CalibrationUtils {
      * Each segment's {@link FloatVectorValues} is opened, read at strided ordinals, then
      * immediately released; no readers are left dangling.
      */
-    public static KMeansFloatVectorValues buildSampled(FieldInfo fieldInfo, MergeState mergeState, int totalVectors, int totalSample)
+    public static FloatVectorValues buildSampled(FieldInfo fieldInfo, MergeState mergeState, int totalVectors, int totalSample)
         throws IOException {
         Objects.requireNonNull(fieldInfo, "fieldInfo");
         Objects.requireNonNull(mergeState, "mergeState");
@@ -373,26 +383,100 @@ public final class CalibrationUtils {
             return KMeansFloatVectorValues.build(List.of(), null, dim);
         }
 
-        List<float[]> result = new ArrayList<>(Math.min(totalSample, totalVectors));
+        boolean isByte = fieldInfo.getVectorEncoding() == VectorEncoding.BYTE;
+        int capacity = Math.min(totalSample, totalVectors);
+        List<byte[]> byteResult = isByte ? new ArrayList<>(capacity) : null;
+        List<float[]> floatResult = isByte ? null : new ArrayList<>(capacity);
+        int sampled = 0;
 
         for (int i = 0; i < mergeState.knnVectorsReaders.length; i++) {
-            FloatVectorValues fvv = segmentFloatVectorValues(fieldInfo, mergeState, i);
-            if (fvv == null || fvv.size() == 0) {
+            KnnVectorValues vectors = segmentVectorValues(fieldInfo, mergeState, i);
+            if (vectors == null || vectors.size() == 0) {
                 continue;
             }
-            int segSize = fvv.size();
+            int segSize = vectors.size();
             // Proportional quota: segment contributes in proportion to its share of total vectors.
             int segQuota = Math.max(1, Math.min(segSize, (int) ((long) segSize * totalSample / totalVectors)));
             // Stride gives even coverage across the full ordinal range of this segment.
             int stride = Math.max(1, segSize / segQuota);
 
-            for (int ord = 0; ord < segSize && result.size() < totalSample; ord += stride) {
-                result.add(fvv.vectorValue(ord).clone());
+            for (int ord = 0; ord < segSize && sampled < totalSample; ord += stride) {
+                // segmentVectorValues opened the segment per the field's encoding, so these casts match isByte
+                if (isByte) {
+                    byteResult.add(((ByteVectorValues) vectors).vectorValue(ord).clone());
+                } else {
+                    floatResult.add(((FloatVectorValues) vectors).vectorValue(ord).clone());
+                }
+                sampled++;
             }
-            // fvv goes out of scope; no reference to the segment reader is retained.
         }
 
-        return KMeansFloatVectorValues.build(result, null, dim);
+        return isByte
+            ? new WidenedByteVectorValues(ByteVectorValues.fromBytes(byteResult, dim))
+            : KMeansFloatVectorValues.build(floatResult, null, dim);
+    }
+
+    /**
+     * Fills {@code idx[0..n)} with the indices of the {@code n} largest {@code keys[0..len)}, ordered by
+     * descending key.
+     * Requires {@code idx.length >= len} and {@code 0 <= n <= len}. Survivors are ordered descending so the caller
+     * accumulates error moments largest-first.
+     */
+    static void selectTopNDescending(double[] keys, int[] idx, int len, int n) {
+        for (int i = 0; i < len; i++) {
+            idx[i] = i;
+        }
+        int m = Math.min(n, len);
+        if (m <= 0) {
+            return;
+        }
+        if (m < len) {
+            // partition idx so idx[0..m) hold the m largest keys (unordered). select(from, to, k) leaves the k
+            // elements that sort first in [from, k); under this descending comparator those are the m largest.
+            new IntroSelector() {
+                double pivot;
+
+                @Override
+                protected void swap(int i, int j) {
+                    int tmp = idx[i];
+                    idx[i] = idx[j];
+                    idx[j] = tmp;
+                }
+
+                @Override
+                protected void setPivot(int i) {
+                    pivot = keys[idx[i]];
+                }
+
+                @Override
+                protected int comparePivot(int j) {
+                    // descending: pivot sorts before j when pivot's key is larger
+                    return Double.compare(keys[idx[j]], pivot);
+                }
+            }.select(0, len, m);
+        }
+        // order the m selected indices descending by key.
+        new IntroSorter() {
+            double pivot;
+
+            @Override
+            protected void swap(int i, int j) {
+                int tmp = idx[i];
+                idx[i] = idx[j];
+                idx[j] = tmp;
+            }
+
+            @Override
+            protected void setPivot(int i) {
+                pivot = keys[idx[i]];
+            }
+
+            @Override
+            protected int comparePivot(int j) {
+                // descending: pivot sorts before j when pivot's key is larger
+                return Double.compare(keys[idx[j]], pivot);
+            }
+        }.sort(0, m);
     }
 
 }

@@ -221,7 +221,8 @@ public class ClusterInfoWriteLoadForecasterIT extends ESIntegTestCase {
             true,
             RecoverySource.EmptyStoreRecoverySource.INSTANCE,
             new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, null),
-            ShardRouting.Role.DEFAULT
+            ShardRouting.Role.DEFAULT,
+            ShardRouting.RecoveryPriority.UNASSIGNED_NEW_PRIMARY
         );
         shardRouting = shardRouting.initialize(assignedShardNodeId, null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
         shardRouting = shardRouting.moveToStarted(ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
@@ -230,6 +231,7 @@ public class ClusterInfoWriteLoadForecasterIT extends ESIntegTestCase {
         stats.store = new StoreStats(shardDiskSize, 1, 1);
         stats.indexing = new IndexingStats(
             new IndexingStats.Stats(
+                1,
                 1,
                 1,
                 1,
@@ -283,7 +285,8 @@ public class ClusterInfoWriteLoadForecasterIT extends ESIntegTestCase {
                                         utilizationThreshold,
                                         hotspot
                                     )
-                                )
+                                ),
+                                Map.of()
                             )
                         );
                     })),

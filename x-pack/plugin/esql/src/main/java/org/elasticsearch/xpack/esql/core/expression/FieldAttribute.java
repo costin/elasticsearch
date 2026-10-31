@@ -143,7 +143,7 @@ public sealed class FieldAttribute extends TypedAttribute permits TimeSeriesMeta
         if (in.getTransportVersion().supports(ESQL_FIELD_ATTRIBUTE_DROP_TYPE) == false) {
             in.readOptionalString();
         }
-        Nullability nullability = in.readEnum(Nullability.class);
+        Nullability nullability = Nullability.readFrom(in);
         NameId nameId = NameId.readFrom((PlanStreamInput) in);
         boolean synthetic = in.readBoolean();
 
@@ -186,12 +186,16 @@ public sealed class FieldAttribute extends TypedAttribute permits TimeSeriesMeta
             if (out.getTransportVersion().supports(ESQL_FIELD_ATTRIBUTE_DROP_TYPE) == false) {
                 dataType().writeTo(out);
             }
-            field.writeTo(out);
+            if (field instanceof PotentiallyUnmappedKeywordEsField punk) {
+                punk.writeTo(out, fieldName().string());
+            } else {
+                field.writeTo(out);
+            }
             if (out.getTransportVersion().supports(ESQL_FIELD_ATTRIBUTE_DROP_TYPE) == false) {
                 // We used to write the qualifier here, even though it was always null.
                 out.writeOptionalString(null);
             }
-            out.writeEnum(nullable());
+            nullable().writeTo(out);
             id().writeTo(out);
             out.writeBoolean(synthetic());
             // Keep writing `_timeseries` as `FieldAttribute` and append the extra metadata only

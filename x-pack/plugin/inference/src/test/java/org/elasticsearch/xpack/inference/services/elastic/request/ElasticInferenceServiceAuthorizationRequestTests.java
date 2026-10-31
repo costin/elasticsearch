@@ -57,7 +57,7 @@ public class ElasticInferenceServiceAuthorizationRequestTests extends ESTestCase
     }
 
     public void testCreateUri_CreatesUri() throws URISyntaxException {
-        String url = "https://inference.us-east-1.aws.svc.elastic.cloud";
+        String url = "https://inference.svc.elastic.cloud";
 
         var request = new ElasticInferenceServiceAuthorizationRequest(
             url,
@@ -82,7 +82,7 @@ public class ElasticInferenceServiceAuthorizationRequestTests extends ESTestCase
         );
 
         var httpRequest = RequestTests.getHttpRequestSync(request);
-        var header = httpRequest.httpRequestBase().getFirstHeader(X_ELASTIC_INFERENCE_ALLOWED_REGIONS_HEADER);
+        var header = httpRequest.httpRequest().getFirstHeader(X_ELASTIC_INFERENCE_ALLOWED_REGIONS_HEADER);
 
         assertThat(header.getValue(), equalTo("aws:eu-west-1"));
     }

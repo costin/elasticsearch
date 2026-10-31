@@ -19,14 +19,13 @@ import org.elasticsearch.xpack.esql.core.querydsl.query.Query;
 import org.elasticsearch.xpack.esql.core.util.CollectionUtils;
 import org.elasticsearch.xpack.esql.core.util.Queries;
 import org.elasticsearch.xpack.esql.datasources.FilterEvaluationOrderEstimator;
-import org.elasticsearch.xpack.esql.datasources.FormatNameResolver;
 import org.elasticsearch.xpack.esql.datasources.FormatReaderRegistry;
 import org.elasticsearch.xpack.esql.datasources.PhysicalNames;
 import org.elasticsearch.xpack.esql.datasources.spi.ConnectorFactory;
+import org.elasticsearch.xpack.esql.datasources.spi.ErrorPolicy;
 import org.elasticsearch.xpack.esql.datasources.spi.ExternalSourceFactory;
 import org.elasticsearch.xpack.esql.datasources.spi.FilterPushdownSupport;
 import org.elasticsearch.xpack.esql.datasources.spi.FormatReader;
-import org.elasticsearch.xpack.esql.expression.function.scalar.string.FieldExtract;
 import org.elasticsearch.xpack.esql.expression.predicate.Predicates;
 import org.elasticsearch.xpack.esql.expression.predicate.Range;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.EsqlBinaryComparison;
@@ -46,11 +45,8 @@ import org.elasticsearch.xpack.esql.plan.physical.PhysicalPlan;
 import org.elasticsearch.xpack.esql.plan.physical.ProjectExec;
 
 import java.util.ArrayList;
-import java.util.BitSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 
 import static java.util.Arrays.asList;
@@ -257,8 +253,34 @@ public class PushFiltersToSource extends PhysicalOptimizerRules.ParameterizedOpt
             return filterExec;
         }
 
-        FilterPushdownSupport pushdownSupport = resolveFilterPushdownSupport(externalExec, ctx);
+        // Connector path first: JDBC (and other ConnectorFactory sources) are not in the FormatReaderRegistry.
+        FilterPushdownSupport connectorSupport = resolveConnectorFilterPushdownSupport(externalExec, ctx);
+        FormatReader formatReader = null;
+        FilterPushdownSupport pushdownSupport = connectorSupport;
         if (pushdownSupport == null) {
+            formatReader = resolveFormatReader(externalExec.sourceType(), ctx);
+            pushdownSupport = formatReader != null ? formatReader.filterPushdownSupport() : null;
+        }
+        if (pushdownSupport == null) {
+            return filterExec;
+        }
+
+        // Withhold pushdown when the reader cannot honour skip_row on its filtered decode path. Parquet turns on
+        // late materialization the moment a predicate reaches it, and that path emits pages without the row-drop
+        // compaction, so a coercion failure would silently null the cell and keep the row -- null_field semantics
+        // for a skip_row read. Leaving the predicate in the FilterExec above the source costs the row-group and
+        // page-index skipping but keeps results correct on both counts: the filter still runs, and every batch
+        // goes through the decode path that drops rows.
+        //
+        // This must happen here, at the mint, rather than at the operator factory. The pushed filter is the only
+        // signal the reader keys late materialization off, and by the time the factory sees the plan the FilterExec
+        // for a Pushability.YES conjunct has already been dropped -- so the factory can neither suppress the filter
+        // (rows would leak unfiltered) nor undo the late-mat decision it implies.
+        //
+        // The connector path has no FormatReader, so this guard applies only to the file path.
+        if (formatReader != null
+            && formatReader.dropsRowsUnderPushedFilter() == false
+            && externalExec.declaredReadSpec().dropsRowsOnCoercionFailure(ErrorPolicy.forReader(externalExec.config(), formatReader))) {
             return filterExec;
         }
 
@@ -339,44 +361,44 @@ public class PushFiltersToSource extends PhysicalOptimizerRules.ParameterizedOpt
         return expr.references().stream().anyMatch(a -> columnNames.contains(a.name()));
     }
 
-    static String resolveFormatName(Map<String, Object> config, String sourcePath) {
-        return FormatNameResolver.resolve(config, sourcePath);
-    }
-
     /**
-     * Resolves filter pushdown support for an external source.
-     * <p>
-     * Resolution is by SOURCE TYPE. A connector source (e.g. {@code jdbc:postgresql}) is not registered in the
-     * {@link FormatReaderRegistry}; it lives in the {@code sourceFactories} map keyed by its compound scheme, so we
-     * look it up there first and consult {@link ExternalSourceFactory#filterPushdownSupport()}. A file-based source
-     * falls through to the {@link FormatReaderRegistry}, resolving the format by name exactly as before. Both maps are
-     * carried on {@link ExternalOptimizerContext}; a {@code null} context (or absent lookup) means "no pushdown".
+     * Connector-path lookup: a connector source (e.g. {@code jdbc:postgresql}) is not registered in the
+     * {@link FormatReaderRegistry}; it lives in the {@code sourceFactories} map keyed by its compound scheme.
+     * Returns {@code null} when there is no connector factory (or it has no pushdown support) so the caller
+     * can fall through to the file-based {@link #resolveFormatReader} path.
      */
-    private static FilterPushdownSupport resolveFilterPushdownSupport(ExternalSourceExec externalExec, LocalPhysicalOptimizerContext ctx) {
-        ExternalOptimizerContext external = ctx.external();
+    private static FilterPushdownSupport resolveConnectorFilterPushdownSupport(
+        ExternalSourceExec externalExec,
+        LocalPhysicalOptimizerContext ctx
+    ) {
+        ExternalOptimizerContext external = ctx == null ? null : ctx.external();
         if (external == null) {
             return null;
         }
-        // Connector sources: resolve by the (compound) sourceType against the connector factory map.
         Map<String, ExternalSourceFactory> sourceFactories = external.sourceFactories();
         String sourceType = externalExec.sourceType();
-        if (sourceFactories != null && sourceType != null) {
-            ExternalSourceFactory factory = sourceFactories.get(sourceType);
-            if (factory instanceof ConnectorFactory) {
-                FilterPushdownSupport support = factory.filterPushdownSupport();
-                if (support != null) {
-                    return support;
-                }
-            }
-        }
-        // File-based sources: resolve by format name through the FormatReaderRegistry (unchanged behavior).
-        FormatReaderRegistry formatReaderRegistry = external.formatReaderRegistry();
-        if (formatReaderRegistry == null) {
+        if (sourceFactories == null || sourceType == null) {
             return null;
         }
-        String formatName = resolveFormatName(externalExec.config(), externalExec.sourcePath());
-        FormatReader formatReader = formatReaderRegistry.findByName(formatName);
-        return formatReader != null ? formatReader.filterPushdownSupport() : null;
+        ExternalSourceFactory factory = sourceFactories.get(sourceType);
+        if (factory instanceof ConnectorFactory) {
+            return factory.filterPushdownSupport();
+        }
+        return null;
+    }
+
+    /**
+     * Resolves the configured reader for the given format, or {@code null} when the rule has no way to look one up
+     * (no external context, no registry, format unregistered). Callers read both
+     * {@link FormatReader#filterPushdownSupport()} and {@link FormatReader#dropsRowsUnderPushedFilter()} off it, so
+     * it returns the reader rather than the support object alone.
+     * Keys on {@link org.elasticsearch.xpack.esql.plan.physical.ExternalSourceExec#sourceType()}, the same
+     * origin as {@code InsertExternalFieldExtraction} / {@code PushStatsToExternalSource} — not a last-dot of
+     * {@code sourcePath()}, which would mis-read a compressed text file as {@code gz}.
+     */
+    static FormatReader resolveFormatReader(String formatName, LocalPhysicalOptimizerContext ctx) {
+        FormatReaderRegistry formatReaderRegistry = ctx == null || ctx.external() == null ? null : ctx.external().formatReaderRegistry();
+        return formatReaderRegistry != null ? formatReaderRegistry.findByName(formatName) : null;
     }
 
     private static PhysicalPlan planFilterExec(FilterExec filterExec, ParameterizedQueryExec pqExec, LocalPhysicalOptimizerContext ctx) {
@@ -442,7 +464,7 @@ public class PushFiltersToSource extends PhysicalOptimizerRules.ParameterizedOpt
         LucenePushdownPredicates pushdownPredicates,
         AttributeMap<Attribute> aliasReplacedBy
     ) {
-        List<Expression> conjuncts = combineFieldExtractRangePairs(splitAnd(condition), pushdownPredicates, aliasReplacedBy);
+        List<Expression> conjuncts = splitAnd(condition);
 
         List<Expression> pushable = new ArrayList<>();
         List<Expression> nonPushable = new ArrayList<>();
@@ -460,99 +482,5 @@ public class PushFiltersToSource extends PhysicalOptimizerRules.ParameterizedOpt
             }
         }
         return new PushdownClassification(pushable, nonPushable);
-    }
-
-    /**
-     * Pre-combines pairs of {@code field_extract(root, "key") >|>= lo} and
-     * {@code field_extract(root, "key") <|<= hi} conjuncts into a single {@link Range} node so
-     * the closed range can push to a {@code RangeQuery} on the keyed sub-field {@code root.key}.
-     * Single-sided ranges over {@code field_extract} are left untouched: the underlying
-     * {@code KeyedFlattenedFieldType.rangeQuery} requires both bounds, so an open range cannot
-     * be safely pushed.
-     * <p>
-     * Two {@code field_extract} expressions are considered the same LHS when
-     * {@link FieldExtract#tryAsKeyedSubfieldName} returns the same synthetic field name for
-     * both. {@code aliasReplacedBy} is applied to each conjunct before the inspection so the
-     * {@code | EVAL e = field_extract(F, "k") | WHERE e >= "a" AND e <= "z"} shape is folded
-     * identically to writing the {@code field_extract} call inline.
-     * <p>
-     * Runs <em>before</em> classification because the individual halves are not pushable in
-     * isolation; the mirror combiner {@link #combineEligiblePushableToRange} runs <em>after</em>
-     * classification because for indexed {@link Attribute} LHS the individual comparisons are
-     * already pushable.
-     * <p>
-     * Package-private so the unit tests in {@code PushFiltersToSourceTests} can drive it
-     * directly (same pattern as {@link #referencesAnyColumn}).
-     */
-    static List<Expression> combineFieldExtractRangePairs(
-        List<Expression> conjuncts,
-        LucenePushdownPredicates pushdownPredicates,
-        AttributeMap<Attribute> aliasReplacedBy
-    ) {
-        // Holds the BC in its alias-resolved form (so the produced Range references the
-        // underlying field_extract directly, never a ReferenceAttribute alias).
-        record Half(int conjunctIndex, EsqlBinaryComparison resolvedBc) {}
-
-        Map<String, Half> lowerByKeyedName = new LinkedHashMap<>();
-        Map<String, Half> upperByKeyedName = new LinkedHashMap<>();
-
-        for (int i = 0; i < conjuncts.size(); i++) {
-            Expression resolved = aliasReplacedBy.isEmpty()
-                ? conjuncts.get(i)
-                : conjuncts.get(i).transformUp(ReferenceAttribute.class, r -> aliasReplacedBy.resolve(r, r));
-
-            if (resolved instanceof EsqlBinaryComparison bc && bc.right().foldable() && bc.left() instanceof FieldExtract fe) {
-                Optional<String> keyedName = fe.tryAsKeyedSubfieldName(pushdownPredicates);
-                if (keyedName.isEmpty()) {
-                    continue;
-                }
-                String name = keyedName.get();
-                if (bc instanceof GreaterThan || bc instanceof GreaterThanOrEqual) {
-                    lowerByKeyedName.putIfAbsent(name, new Half(i, bc));
-                } else if (bc instanceof LessThan || bc instanceof LessThanOrEqual) {
-                    upperByKeyedName.putIfAbsent(name, new Half(i, bc));
-                }
-            }
-        }
-
-        if (lowerByKeyedName.isEmpty() || upperByKeyedName.isEmpty()) {
-            return conjuncts;
-        }
-
-        BitSet consumed = new BitSet(conjuncts.size());
-        List<Expression> additions = new ArrayList<>();
-        for (Map.Entry<String, Half> entry : lowerByKeyedName.entrySet()) {
-            Half lower = entry.getValue();
-            Half upper = upperByKeyedName.get(entry.getKey());
-            if (upper == null) {
-                continue;
-            }
-            consumed.set(lower.conjunctIndex);
-            consumed.set(upper.conjunctIndex);
-            additions.add(
-                new Range(
-                    lower.resolvedBc.source(),
-                    lower.resolvedBc.left(),
-                    lower.resolvedBc.right(),
-                    lower.resolvedBc instanceof GreaterThanOrEqual,
-                    upper.resolvedBc.right(),
-                    upper.resolvedBc instanceof LessThanOrEqual,
-                    lower.resolvedBc.zoneId()
-                )
-            );
-        }
-
-        if (additions.isEmpty()) {
-            return conjuncts;
-        }
-
-        List<Expression> result = new ArrayList<>(conjuncts.size() - additions.size());
-        for (int i = 0; i < conjuncts.size(); i++) {
-            if (consumed.get(i) == false) {
-                result.add(conjuncts.get(i));
-            }
-        }
-        result.addAll(additions);
-        return result;
     }
 }
