@@ -514,6 +514,7 @@ public class FusionBenchmark {
 
     @Setup(Level.Trial)
     public void setup() {
+        FusionBenchmarkGuard.assertVerifyDisabled();
         // The fusion decision is made when the factory is built, so the switch must be set FIRST (criterion #3 path).
         ExpressionEvaluator.Factory factory = factory(expression, fusion);
         if (fusion && isFused(factory) == false) {

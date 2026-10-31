@@ -222,6 +222,7 @@ public class FusionFollowupBenchmark {
 
     @Setup(Level.Trial)
     public void setup() {
+        FusionBenchmarkGuard.assertVerifyDisabled();
         if (pollute) {
             pollute(shape);
         }

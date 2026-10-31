@@ -9,6 +9,7 @@ package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.core.Assertions;
 
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -39,6 +40,12 @@ import java.util.concurrent.ThreadLocalRandom;
  * {@link org.elasticsearch.xpack.esql.plugin.EsqlPlugin} sets once from the node settings at component creation via
  * {@link #initFromNodeSettings(Settings)}. The initial values also honor the matching system properties so a JVM-level
  * flag (e.g. {@code -Desql.fusion.enabled=false}) takes effect in unit tests and tooling that never build a plugin.
+ *
+ * <p>{@code esql.fusion.verify} is <b>not</b> a node {@link Setting} and is <b>not</b> registered in
+ * {@code EsqlPlugin}. It is a test/CI-only system property that latches into a {@code static final} boolean (see
+ * {@link #isVerifyEnabled()}): default {@link Assertions#ENABLED} so {@code -ea} test JVMs A/B every fused page
+ * against the unfused evaluator, and production / JMH (no {@code -ea}) pay zero cost. {@code -Desql.fusion.verify=false}
+ * disables the A/B even when assertions are on.
  */
 public final class FusionSettings {
 
@@ -143,6 +150,16 @@ public final class FusionSettings {
     /** The effective A/B sampling fraction in {@code [0.0, 1.0]} (1.0 = always). Cold-path read. */
     private static volatile double sampleFraction = initialDoubleProperty("esql.fusion.sample", 1.0);
 
+    /**
+     * Test/CI-only {@code esql.fusion.verify}. <b>Not</b> a node {@link Setting} — do not register it in
+     * {@code EsqlPlugin}. Read once into a {@code static final} so the fused-eval {@code if (isVerifyEnabled())}
+     * branch is a single constant the JIT folds away in production (no {@code -ea}) and in JMH (no {@code -ea}).
+     * Default is {@link Assertions#ENABLED}; {@code -Desql.fusion.verify=false} disables even when {@code -ea} is on.
+     * Tests that need the comparison off in-process use {@code FusionVerify.skipForTests} (inside the already-dead
+     * production branch), not a mutable override of this flag.
+     */
+    private static final boolean VERIFY_ENABLED = resolveVerifyEnabled(System.getProperty("esql.fusion.verify"), Assertions.ENABLED);
+
     private static boolean initialEnabledDefault() {
         // Honor -Desql.fusion.enabled before any plugin wiring so JVM-flagged runs (tests, benchmarks) behave.
         String property = System.getProperty("esql.fusion.enabled");
@@ -204,6 +221,22 @@ public final class FusionSettings {
     /** Whether fusion may be attempted on this node. */
     public static boolean isEnabled() {
         return enabled;
+    }
+
+    /**
+     * Whether fused evaluators must A/B each page against the unfused fallback and fail on any difference.
+     * Test/CI-only; production reads a {@code static final false} and the JIT removes the branch.
+     */
+    public static boolean isVerifyEnabled() {
+        return VERIFY_ENABLED;
+    }
+
+    /**
+     * Resolves {@code esql.fusion.verify}: unset → {@code assertionsEnabled}; otherwise {@link Boolean#parseBoolean}.
+     * Package-private so unit tests can pin the property/assertions matrix without reloading this class.
+     */
+    static boolean resolveVerifyEnabled(String property, boolean assertionsEnabled) {
+        return property == null ? assertionsEnabled : Boolean.parseBoolean(property);
     }
 
     /**

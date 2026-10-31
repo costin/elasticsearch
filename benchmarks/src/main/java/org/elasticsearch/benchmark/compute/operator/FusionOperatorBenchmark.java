@@ -148,6 +148,7 @@ public class FusionOperatorBenchmark {
 
     @Setup(Level.Trial)
     public void setup() {
+        FusionBenchmarkGuard.assertVerifyDisabled();
         this.factory = factory(expression, fusion);
         if (fusion && isFused(factory) == false) {
             throw new AssertionError("[" + expression + "] must fuse when fusion=true but got [" + factory.getClass().getName() + "]");

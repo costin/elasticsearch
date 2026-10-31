@@ -83,6 +83,7 @@ public class FusionStrategyBenchmark {
 
     @Setup(Level.Trial)
     public void setup() {
+        FusionBenchmarkGuard.assertVerifyDisabled();
         if (pollute == Pollution.TYPES || pollute == Pollution.ALL) {
             polluteTypes();
         }

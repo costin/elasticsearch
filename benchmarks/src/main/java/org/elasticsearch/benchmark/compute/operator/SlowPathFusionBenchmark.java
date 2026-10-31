@@ -371,6 +371,7 @@ public class SlowPathFusionBenchmark {
 
     @Setup(Level.Trial)
     public void setup() {
+        FusionBenchmarkGuard.assertVerifyDisabled();
         if (pollute) {
             pollute(shape);
         }
