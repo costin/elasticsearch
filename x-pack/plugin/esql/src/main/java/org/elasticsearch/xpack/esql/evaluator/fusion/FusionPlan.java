@@ -47,7 +47,15 @@ record FusionPlan(
      * {@code Stitcher.compileMappingBlockLoop} (block-only, no vector fast path) instead of the ordinary single-value
      * block path, which would wrongly warn+null a multi-value.
      */
-    boolean mapping
+    boolean mapping,
+    /**
+     * When true, the fused evaluator may evaluate ordinal/constant {@code BYTES_REF} pages once over the dictionary
+     * (or a single constant position) and rebuild the output encoding, instead of the per-row block loop. True iff
+     * the tree has exactly one column input, that input is {@code BYTES_REF}, and no kernel can warn (no overflow-
+     * checked / {@code warnExceptions} kernel). Warning-capable trees are excluded because evaluating a dictionary
+     * can warn for unreferenced entries, in a different order, breaking warning parity.
+     */
+    boolean encodingAware
 ) {
     /** The embedded constants in the Stitcher's canonical emit order — read from the signature (single source of truth). */
     List<FusionNode.Constant> constants() {

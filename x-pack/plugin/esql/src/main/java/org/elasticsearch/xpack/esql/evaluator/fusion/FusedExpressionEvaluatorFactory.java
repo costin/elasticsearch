@@ -7,6 +7,7 @@
 
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.RamUsageEstimator;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BlockFactory;
@@ -24,6 +25,7 @@ import org.elasticsearch.compute.data.IntVector;
 import org.elasticsearch.compute.data.LongArrayVector;
 import org.elasticsearch.compute.data.LongBlock;
 import org.elasticsearch.compute.data.LongVector;
+import org.elasticsearch.compute.data.OrdinalBytesRefVector;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.data.Vector;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
@@ -159,7 +161,12 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
          */
         INTERFACE,
         /** Block path (nulls / multi-values, or no vector strategy). */
-        BLOCK
+        BLOCK,
+        /**
+         * Encoding-aware path (D1): a single BYTES_REF column with no warning-capable kernel, evaluated once over
+         * the ordinal dictionary (or once for a constant) so the fused output keeps ordinal/constant encoding.
+         */
+        ENCODING_AWARE
     }
 
     /**
@@ -214,12 +221,17 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      */
     private final List<FusionNode.Constant> constants;
     /**
-     * True only for the {@link FusionPlan#mapping()} construction path (TO_LOWER/TO_UPPER). The unfused encoding fast
-     * path computes per dictionary entry (and short-circuits constants), so for ordinal/constant inputs the fused
-     * per-row loop is both slower and loses the output encoding; the guard restores parity by deferring to the unfused
-     * evaluator for those pages only.
+     * True only for the {@link FusionPlan#mapping()} construction path (TO_LOWER/TO_UPPER). Mapping trees compile
+     * via {@link Stitcher#compileMappingBlockLoop} (block-only, maps over multi-values). Encoding of ordinal/constant
+     * pages is handled separately by {@code encodingAware}.
      */
     private final boolean mapping;
+    /**
+     * When true, {@link FusedExpressionEvaluator#eval} may evaluate ordinal/constant {@code BYTES_REF} pages once
+     * over the dictionary (or a single constant position) and rebuild the output encoding. See
+     * {@link FusionPlan#encodingAware()}.
+     */
+    private final boolean encodingAware;
 
     private FusedExpressionEvaluatorFactory(
         Source[] warningSources,
@@ -231,7 +243,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         ExpressionEvaluator.Factory unfused,
         String shape,
         List<FusionNode.Constant> constants,
-        boolean mapping
+        boolean mapping,
+        boolean encodingAware
     ) {
         this(
             warningSources,
@@ -246,7 +259,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             unfused,
             shape,
             constants,
-            mapping
+            mapping,
+            encodingAware
         );
     }
 
@@ -261,7 +275,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         ExpressionEvaluator.Factory unfused,
         String shape,
         List<FusionNode.Constant> constants,
-        boolean mapping
+        boolean mapping,
+        boolean encodingAware
     ) {
         this(
             warningSources,
@@ -276,7 +291,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             unfused,
             shape,
             constants,
-            mapping
+            mapping,
+            encodingAware
         );
     }
 
@@ -293,7 +309,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         ExpressionEvaluator.Factory unfused,
         String shape,
         List<FusionNode.Constant> constants,
-        boolean mapping
+        boolean mapping,
+        boolean encodingAware
     ) {
         this.warningSources = warningSources;
         this.inputChannels = inputChannels;
@@ -308,6 +325,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         this.shape = shape;
         this.constants = constants;
         this.mapping = mapping;
+        this.encodingAware = encodingAware;
     }
 
     /**
@@ -383,7 +401,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     unfused,
                     shape,
                     constants,
-                    true
+                    true,
+                    plan.encodingAware()
                 );
             }
             if (tree instanceof FusionNode.Logical) {
@@ -416,7 +435,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                         unfused,
                         shape,
                         constants,
-                        false
+                        false,
+                        plan.encodingAware()
                     );
                 } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError vectorFailure) {
                     logPlanTimeStitchFailure(logger, shape, FusedClassCache.Path.LOGICAL_VECTOR, false, vectorFailure);
@@ -431,7 +451,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                         unfused,
                         shape,
                         constants,
-                        false
+                        false,
+                        plan.encodingAware()
                     );
                 }
             }
@@ -456,7 +477,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     unfused,
                     shape,
                     constants,
-                    false
+                    false,
+                    plan.encodingAware()
                 );
             }
 
@@ -542,7 +564,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     unfused,
                     shape,
                     constants,
-                    false
+                    false,
+                    plan.encodingAware()
                 );
             }
 
@@ -559,7 +582,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 unfused,
                 shape,
                 constants,
-                false
+                false,
+                plan.encodingAware()
             );
         } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError e) {
             // Any plan-time stitch failure must fall back to the unfused chain and record the shape (criterion #5):
@@ -628,6 +652,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             shape,
             resolveConstantValues(constants, context),
             mapping,
+            encodingAware,
             FusionSettings.isVectorReadsInterface()
         );
     }
@@ -654,6 +679,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             shape,
             resolveConstantValues(constants, context),
             mapping,
+            encodingAware,
             vectorReadsInterface
         );
     }
@@ -876,12 +902,17 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         // The embedded constants' values, appended (after the input vectors/blocks) to the fused method's invoke args.
         private final Object[] constantValues;
         /**
-         * True only for the mapping (TO_LOWER/TO_UPPER) construction path. The unfused encoding fast path computes per
-         * dictionary entry (and short-circuits constants), so for ordinal/constant inputs the fused per-row loop is
-         * both slower and loses the output encoding; the guard restores parity by deferring to the unfused evaluator
-         * for those pages only.
+         * True only for the mapping (TO_LOWER/TO_UPPER) construction path. Mapping trees compile via the mapping
+         * block loop; encoding of ordinal/constant pages is handled by {@code encodingAware}. Retained (unread at
+         * eval time after D1) so D4 can remove the depth-1 mapping exemption and this field together.
          */
+        @SuppressWarnings("unused")
         private final boolean mapping;
+        /**
+         * When true, ordinal/constant {@code BYTES_REF} pages are evaluated once over the dictionary (or a single
+         * constant position) so the fused output keeps that encoding. See {@link FusionPlan#encodingAware()}.
+         */
+        private final boolean encodingAware;
 
         // Spreaders bound ONCE per evaluator: handle.asSpreader(Object[].class, argCount) is resolved here (ctor)
         // rather than re-resolved every page by handle.invokeWithArguments (which does an Invokers.spreadInvoker
@@ -954,6 +985,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             String shape,
             Object[] constantValues,
             boolean mapping,
+            boolean encodingAware,
             boolean vectorReadsInterface
         ) {
             this.warningSources = warningSources;
@@ -967,6 +999,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             this.shape = shape;
             this.constantValues = constantValues;
             this.mapping = mapping;
+            this.encodingAware = encodingAware;
             this.vectorReadsInterface = vectorReadsInterface;
 
             int arity = inputChannels.length;
@@ -1003,21 +1036,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 // evaluator's life rather than re-failing the fused handle per page.
                 return unfusedFallback().eval(page);
             }
-            // Mapping convert kernels (TO_LOWER/TO_UPPER): the unfused encoding fast path computes per dictionary
-            // entry (and short-circuits constants), so for ordinal/constant inputs the fused per-row loop is both
-            // slower and loses the output encoding. Defer to the unfused evaluator for those pages only.
-            if (mapping && inputChannels.length == 1) {
-                Block input = page.getBlock(inputChannels[0]);
-                if (input instanceof BytesRefBlock block) {
-                    if (block.asOrdinals() != null) {
-                        return unfusedFallback().eval(page);
-                    }
-                    BytesRefVector vector = block.asVector();
-                    if (vector != null && (vector.isConstant() || vector.asOrdinals() != null)) {
-                        return unfusedFallback().eval(page);
-                    }
-                }
-            }
             int arity = inputChannels.length;
             // Borrowed from the page; the page owns them, so we neither incRef nor close them.
             Block[] inputs = new Block[arity];
@@ -1036,7 +1054,12 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 // handled by invokeWithArguments against the primitive parameter types of the resolved MethodType.
                 int constCount = constantValues.length;
                 fused = null;
-                if (vectorHandle != null) {
+                // Encoding-aware (D1): a single BYTES_REF column with no warning-capable kernel. Ordinal vectors are
+                // evaluated once over the dictionary; constants once; anything else falls through to the normal path.
+                if (encodingAware && arity == 1 && inputs[0] instanceof BytesRefBlock bytesRefInput) {
+                    fused = evalEncodingAware(bytesRefInput, blockFactory, positionCount);
+                }
+                if (fused == null && vectorHandle != null) {
                     Vector[] dense = denseVectors(inputs);
                     if (dense != null) {
                         fused = evalDenseVectorPage(dense, blockFactory, positionCount, arity, constCount);
@@ -1044,7 +1067,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     if (fused == null) {
                         lastEvalPath = LastEvalPath.BLOCK;
                     }
-                } else {
+                } else if (fused == null) {
                     lastEvalPath = LastEvalPath.BLOCK;
                 }
                 if (fused == null) {
@@ -1083,6 +1106,174 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 return FusionVerify.verifyPage(verifyUnfused(), page, fused, shape, vectorStrategy, lastEvalPath);
             }
             return fused;
+        }
+
+        /**
+         * Encoding-aware fused eval (D1). Returns a result when the input is an ordinal or constant {@code BYTES_REF}
+         * vector, else {@code null} so the caller falls through to the normal fused path. Detection order matches the
+         * unfused convert evaluator: ordinals first, then constant. Ordinal <em>blocks</em> (nulls in the ordinals)
+         * have {@code asVector() == null} and stay on the block path.
+         */
+        private Block evalEncodingAware(BytesRefBlock input, BlockFactory blockFactory, int positionCount) throws Throwable {
+            BytesRefVector vector = input.asVector();
+            if (vector == null) {
+                return null;
+            }
+            OrdinalBytesRefVector ordinals = vector.asOrdinals();
+            if (ordinals != null) {
+                return evalEncodingAwareOrdinals(ordinals, blockFactory, positionCount);
+            }
+            if (vector.isConstant()) {
+                return evalEncodingAwareConstant(vector, blockFactory, positionCount);
+            }
+            return null;
+        }
+
+        /**
+         * Evaluate the fused handle once over the dictionary, then wrap (BYTES_REF) or gather (primitive/boolean).
+         * {@code dict} is page-owned so it is incRef'd before wrapping as a block; that extra ref is closed with
+         * {@code dictBlock}. Result ordinals are incRef'd because the output co-owns them with the page.
+         */
+        private Block evalEncodingAwareOrdinals(OrdinalBytesRefVector ordinals, BlockFactory blockFactory, int positionCount)
+            throws Throwable {
+            BytesRefVector dict = ordinals.getDictionaryVector();
+            dict.incRef();
+            Block dictBlock = dict.asBlock();
+            Block dictResult = null;
+            try {
+                dictResult = invokeBlockHandle(dictBlock, dict.getPositionCount());
+                Block wrapped = wrapOrGatherEncodingAware(dictResult, ordinals.getOrdinalsVector(), positionCount, blockFactory);
+                if (wrapped != null) {
+                    lastEvalPath = LastEvalPath.ENCODING_AWARE;
+                }
+                return wrapped;
+            } finally {
+                Releasables.closeExpectNoException(dictResult, dictBlock);
+            }
+        }
+
+        /**
+         * Evaluate the fused handle on a single constant position, then expand to {@code positionCount}.
+         */
+        private Block evalEncodingAwareConstant(BytesRefVector vector, BlockFactory blockFactory, int positionCount) throws Throwable {
+            BytesRef scratch = new BytesRef();
+            Block oneInput = blockFactory.newConstantBytesRefBlockWith(vector.getBytesRef(0, scratch), 1);
+            Block oneResult = null;
+            try {
+                oneResult = invokeBlockHandle(oneInput, 1);
+                Vector oneVec = oneResult.asVector();
+                if (oneVec == null) {
+                    return null;
+                }
+                Block expanded = expandConstant(oneVec, positionCount, blockFactory);
+                lastEvalPath = LastEvalPath.ENCODING_AWARE;
+                return expanded;
+            } finally {
+                Releasables.closeExpectNoException(oneResult, oneInput);
+            }
+        }
+
+        /**
+         * Run the same fused block-loop handle used for the normal path, over {@code input} of {@code positionCount}
+         * positions (the dictionary, or a 1-position constant).
+         */
+        private Block invokeBlockHandle(Block input, int positionCount) throws Throwable {
+            Object[] args = blockScratch;
+            int arity = inputChannels.length;
+            args[0] = driverContext.blockFactory();
+            args[1] = warnings();
+            args[2] = positionCount;
+            args[3] = input;
+            System.arraycopy(constantValues, 0, args, 3 + arity, constantValues.length);
+            return (Block) blockSpreader.invoke(args);
+        }
+
+        /**
+         * BYTES_REF dictionary result: retain ordinals and wrap as {@link OrdinalBytesRefVector}. Primitive/boolean:
+         * gather {@code out[p] = dict[ord[p]]} into a raw array vector. Returns {@code null} when the dictionary
+         * evaluation produced nulls (no dense vector) so the caller falls through to the row-wise block path.
+         */
+        private static Block wrapOrGatherEncodingAware(Block dictResult, IntVector ordinals, int positionCount, BlockFactory blockFactory) {
+            Vector dictVec = dictResult.asVector();
+            if (dictVec == null) {
+                return null;
+            }
+            if (dictResult instanceof BytesRefBlock) {
+                return wrapOrdinalBytesRef((BytesRefVector) dictVec, ordinals);
+            }
+            return gatherPrimitive(dictVec, ordinals, positionCount, blockFactory);
+        }
+
+        /**
+         * Transfers an extra ref on {@code ordinals} and {@code dictVec} into a new ordinal vector's block. The
+         * {@link OrdinalBytesRefVector#asBlock()} pattern shares those children without a further incRef (same as the
+         * unfused convert evaluator). On failure the extra refs are released.
+         */
+        private static Block wrapOrdinalBytesRef(BytesRefVector dictVec, IntVector ordinals) {
+            ordinals.incRef();
+            dictVec.incRef();
+            boolean success = false;
+            try {
+                Block result = new OrdinalBytesRefVector(ordinals, dictVec).asBlock();
+                success = true;
+                return result;
+            } finally {
+                if (success == false) {
+                    Releasables.closeExpectNoException(ordinals, dictVec);
+                }
+            }
+        }
+
+        private static Block gatherPrimitive(Vector dictVec, IntVector ordinals, int positionCount, BlockFactory blockFactory) {
+            if (dictVec instanceof BooleanVector dict) {
+                boolean[] out = new boolean[positionCount];
+                for (int p = 0; p < positionCount; p++) {
+                    out[p] = dict.getBoolean(ordinals.getInt(p));
+                }
+                return blockFactory.newBooleanArrayVector(out, positionCount).asBlock();
+            }
+            if (dictVec instanceof IntVector dict) {
+                int[] out = new int[positionCount];
+                for (int p = 0; p < positionCount; p++) {
+                    out[p] = dict.getInt(ordinals.getInt(p));
+                }
+                return blockFactory.newIntArrayVector(out, positionCount).asBlock();
+            }
+            if (dictVec instanceof LongVector dict) {
+                long[] out = new long[positionCount];
+                for (int p = 0; p < positionCount; p++) {
+                    out[p] = dict.getLong(ordinals.getInt(p));
+                }
+                return blockFactory.newLongArrayVector(out, positionCount).asBlock();
+            }
+            if (dictVec instanceof DoubleVector dict) {
+                double[] out = new double[positionCount];
+                for (int p = 0; p < positionCount; p++) {
+                    out[p] = dict.getDouble(ordinals.getInt(p));
+                }
+                return blockFactory.newDoubleArrayVector(out, positionCount).asBlock();
+            }
+            throw new AssertionError("unexpected encoding-aware dictionary result " + dictVec.getClass());
+        }
+
+        private static Block expandConstant(Vector one, int positionCount, BlockFactory blockFactory) {
+            if (one instanceof BytesRefVector v) {
+                BytesRef scratch = new BytesRef();
+                return blockFactory.newConstantBytesRefBlockWith(v.getBytesRef(0, scratch), positionCount);
+            }
+            if (one instanceof BooleanVector v) {
+                return blockFactory.newConstantBooleanBlockWith(v.getBoolean(0), positionCount);
+            }
+            if (one instanceof IntVector v) {
+                return blockFactory.newConstantIntBlockWith(v.getInt(0), positionCount);
+            }
+            if (one instanceof LongVector v) {
+                return blockFactory.newConstantLongBlockWith(v.getLong(0), positionCount);
+            }
+            if (one instanceof DoubleVector v) {
+                return blockFactory.newConstantDoubleBlockWith(v.getDouble(0), positionCount);
+            }
+            throw new AssertionError("unexpected encoding-aware constant result " + one.getClass());
         }
 
         /**

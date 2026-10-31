@@ -303,7 +303,8 @@ public final class FusionPlanner {
             warningSources(signature.warningSourceIndices(), ctx),
             shape,
             vectorComparison,
-            ctx.mapping
+            ctx.mapping,
+            encodingAware(tree, inputElements, ctx.overflowChecked)
         );
 
         long minRows = FusionSettings.adaptiveMinRows();
@@ -1286,6 +1287,57 @@ public final class FusionPlanner {
             case BOOLEAN -> type == DataType.BOOLEAN;
             case BYTES_REF -> type == DataType.KEYWORD || type == DataType.TEXT;
         };
+    }
+
+    /**
+     * Plan-time encoding-aware flag (D1): true when the tree has exactly one column input, that input is
+     * {@code BYTES_REF}, and no kernel can warn. Constants are allowed. Warning-capable trees are excluded because
+     * evaluating a dictionary can warn for entries no row references, in a different order.
+     */
+    private static boolean encodingAware(FusionNode tree, ElementKind[] inputElements, boolean overflowChecked) {
+        if (overflowChecked || inputElements.length != 1 || inputElements[0] != ElementKind.BYTES_REF) {
+            return false;
+        }
+        return countInputLeaves(tree) == 1 && hasWarningKernel(tree) == false;
+    }
+
+    private static int countInputLeaves(FusionNode node) {
+        if (node instanceof FusionNode.Input) {
+            return 1;
+        }
+        if (node instanceof FusionNode.Constant) {
+            return 0;
+        }
+        if (node instanceof FusionNode.Kernel kernel) {
+            int n = 0;
+            for (FusionNode child : kernel.children()) {
+                n += countInputLeaves(child);
+            }
+            return n;
+        }
+        if (node instanceof FusionNode.Logical logical) {
+            return countInputLeaves(logical.left()) + countInputLeaves(logical.right());
+        }
+        throw new AssertionError("unexpected fusion node " + node);
+    }
+
+    /** True if any kernel is overflow-checked or declares a warn-exception type. */
+    private static boolean hasWarningKernel(FusionNode node) {
+        if (node instanceof FusionNode.Kernel kernel) {
+            if (kernel.descriptor().overflowChecked() || kernel.descriptor().hasOverflowException()) {
+                return true;
+            }
+            for (FusionNode child : kernel.children()) {
+                if (hasWarningKernel(child)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (node instanceof FusionNode.Logical logical) {
+            return hasWarningKernel(logical.left()) || hasWarningKernel(logical.right());
+        }
+        return false;
     }
 
     /** Kernel depth: 0 for a bare input, 1 for a kernel/logical of inputs, ≥2 once a node has a kernel/logical child. */
