@@ -43,11 +43,12 @@ import java.util.List;
  *
  * <h2>Fallback (criterion #5, kill-switch discipline)</h2>
  * If the stitch fails at plan time ({@link Stitcher.StitchingException} / {@link LinkageError} / a resolution failure),
- * {@link #create} logs a warning, records the failure in {@link FusionTelemetry}, and returns a fallback factory whose
- * evaluator reproduces {@code Filter → Eval} from the two unfused {@link ExpressionEvaluator.Factory}s — so the
- * {@link org.elasticsearch.compute.operator.FilterEvalOperator} still works, identically. As a defensive net, a
- * {@link LinkageError} escaping the fused handle at evaluation time is likewise caught and re-served from the unfused
- * pair (latched off for the rest of the evaluator's life).
+ * {@link #create} records the failure in {@link FusionTelemetry} and returns a fallback factory whose evaluator
+ * reproduces {@code Filter → Eval} from the two unfused {@link ExpressionEvaluator.Factory}s — so the
+ * {@link org.elasticsearch.compute.operator.FilterEvalOperator} still works, identically. Filter-eval is block-only,
+ * so a stitch failure is always a full unfused fallback: WARN once per shape (first-failure signal from the cache),
+ * DEBUG on repeats. As a defensive net, a {@link LinkageError} escaping the fused handle at evaluation time is
+ * likewise caught and re-served from the unfused pair (latched off for the rest of the evaluator's life).
  */
 public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluator.Factory {
 
@@ -140,8 +141,8 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
             );
             handle = LOOKUP.findStatic(fusedClass, Stitcher.FUSED_METHOD_NAME, type);
         } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError e) {
-            // The single, deduplicated plan-time WARN for a failing shape is now emitted once by FusedClassCache.
-            logger.debug(() -> "filter-eval fusion stitch failed for shape [" + shape + "]; falling back to unfused chain", e);
+            // Filter-eval is block-only: a stitch failure loses fusion entirely, so WARN once per shape.
+            FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure(logger, shape, FusedClassCache.Path.FILTER_EVAL_BLOCK, true, e);
             FusionTelemetry.recordFailure(shape);
             handle = null;
         }

@@ -81,10 +81,11 @@ import java.util.List;
  *
  * <h2>Fallback (acceptance criterion #5)</h2>
  * If any required stitch fails at plan time ({@link Stitcher.StitchingException} / {@link LinkageError}),
- * {@link #tryCreate} logs a warning, records the failure in {@link FusionTelemetry}, and returns the unfused factory
- * unchanged — the caller cannot tell fusion was attempted. As a defensive net, a {@link LinkageError} escaping the
- * fused method at evaluation time is likewise caught by {@link FusedExpressionEvaluator} and re-served from the
- * unfused chain.
+ * {@link #tryCreate} records the failure in {@link FusionTelemetry} and returns the unfused factory unchanged —
+ * the caller cannot tell fusion was attempted. A first-time full fallback WARNs (the expression is now unfused);
+ * a vector-path-only failure that still fuses via the block path stays at DEBUG. Repeats of a negatively-cached
+ * shape are DEBUG. As a defensive net, a {@link LinkageError} escaping the fused method at evaluation time is
+ * likewise caught by {@link FusedExpressionEvaluator} and re-served from the unfused chain.
  */
 final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Factory {
 
@@ -295,9 +296,10 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     }
 
     /**
-     * Stitches {@code tree} into its runtime path(s) and returns a fused factory, or — on any stitch failure — logs a
-     * warning, records the failure, and returns {@code unfused} unchanged (criterion #5). This is the single place the
-     * routing decision (which vector fast path, if any, to compile) is made.
+     * Stitches {@code tree} into its runtime path(s) and returns a fused factory, or — on any stitch failure that
+     * loses fusion entirely — logs a warning (once per shape), records the failure, and returns {@code unfused}
+     * unchanged (criterion #5). A vector-path-only failure degrades to block-only fusion at DEBUG. This is the
+     * single place the routing decision (which vector fast path, if any, to compile) is made.
      *
      * @param compiler the stitch entry points; the test seam substitutes a failing implementation here
      */
@@ -311,12 +313,12 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     }
 
     /**
-     * Stitches {@code tree} and returns the fused factory, or {@code null} on any stitch failure (logging a warning and
-     * recording the failure, exactly as {@link #tryCreate}). Unlike {@link #tryCreate} this does <b>not</b> substitute
-     * the unfused factory on failure — it returns {@code null} — so the caller can distinguish "fused" from "could not
-     * fuse". The adaptive path ({@link AdaptiveFusionEvaluatorFactory}) uses this so a deferred stitch that fails is
-     * abandoned (the evaluator stays on its already-running unfused chain) rather than swapped for a fresh unfused
-     * factory.
+     * Stitches {@code tree} and returns the fused factory, or {@code null} on any stitch failure that loses fusion
+     * entirely (logging and recording the failure, exactly as {@link #tryCreate}). Unlike {@link #tryCreate} this
+     * does <b>not</b> substitute the unfused factory on failure — it returns {@code null} — so the caller can
+     * distinguish "fused" from "could not fuse". The adaptive path ({@link AdaptiveFusionEvaluatorFactory}) uses this
+     * so a deferred stitch that fails is abandoned (the evaluator stays on its already-running unfused chain) rather
+     * than swapped for a fresh unfused factory.
      */
     static FusedExpressionEvaluatorFactory tryCreateFusedOrNull(
         FusionPlan plan,
@@ -340,10 +342,14 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         // appended to every resolved MethodType and their values are marshalled into the invoke args, both in the
         // Stitcher's single canonical emit order — so one stitched class serves every constant value.
         Class<?>[] constantParamTypes = constantParamTypes(constants);
+        // Tracks which compile path is in flight so the outer catch can name it. Starts as BLOCK (the common
+        // arithmetic entry); mapping / logical-block overwrite it before those compiles run.
+        FusedClassCache.Path compilingPath = FusedClassCache.Path.BLOCK;
         try {
             if (plan.mapping()) {
                 // Multi-value mapping convert kernel (TO_LOWER/TO_UPPER): block-only (it maps over multi-values, so no
                 // vector fast path). Its method signature is the ordinary block shape, so binding is identical.
+                compilingPath = FusedClassCache.Path.MAPPING_BLOCK;
                 Class<?> mappingClass = compiler.compileMappingBlockLoop(LOOKUP, tree);
                 MethodHandle mappingHandle = LOOKUP.findStatic(
                     mappingClass,
@@ -367,6 +373,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 // A 3VL AND/OR tree always compiles the nullable block path (nulls / multi-values). The dense 2VL
                 // vector loop is compiled alongside it; a stitch failure there degrades to block-only rather than
                 // dropping fusion entirely (same policy as the arithmetic vector-path degrade).
+                compilingPath = FusedClassCache.Path.LOGICAL_BLOCK;
                 Class<?> logicalClass = compiler.compileLogicalBlockLoop(LOOKUP, tree);
                 MethodHandle logicalHandle = LOOKUP.findStatic(
                     logicalClass,
@@ -392,10 +399,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                         false
                     );
                 } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError vectorFailure) {
-                    logger.debug(
-                        () -> "fused logical vector fast path unavailable for shape [" + shape + "]; degrading to block-only fusion",
-                        vectorFailure
-                    );
+                    logPlanTimeStitchFailure(logger, shape, FusedClassCache.Path.LOGICAL_VECTOR, false, vectorFailure);
                     FusionTelemetry.recordVectorDegraded(shape);
                     return new FusedExpressionEvaluatorFactory(
                         warningSources,
@@ -444,6 +448,11 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             MethodHandle vectorHandleRaw = null;
             MethodHandle vectorHandleRawInterface = null;
             VectorStrategy strategy;
+            // Named before the try so the catch can report which vector path failed (the cache cannot know the
+            // consequence, so this factory is the single site that distinguishes degrade-to-block from unfused).
+            FusedClassCache.Path vectorPath = overflowChecked == false
+                ? (useSimd ? FusedClassCache.Path.SIMD_VECTOR : FusedClassCache.Path.PLAIN_VECTOR)
+                : FusedClassCache.Path.CHECKED_VECTOR;
             try {
                 if (overflowChecked == false) {
                     Class<?> vectorClass;
@@ -484,10 +493,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 // guard refusing a deep tree (StitchingException) — the block path is budget-unenforced and still fuses
                 // it correctly. Degrade to BLOCK-ONLY (VectorStrategy.NONE, no vector handle) rather than losing all
                 // fusion: values/nulls/warnings are identical to the block path, we just forgo the vector fast path.
-                logger.debug(
-                    () -> "fused vector fast path unavailable for shape [" + shape + "]; degrading to block-only fusion",
-                    vectorFailure
-                );
+                logPlanTimeStitchFailure(logger, shape, vectorPath, false, vectorFailure);
                 FusionTelemetry.recordVectorDegraded(shape);
                 return new FusedExpressionEvaluatorFactory(
                     warningSources,
@@ -526,11 +532,36 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             // - RuntimeException: Stitcher.emit* can reject an ill-shaped tree with a bare IllegalArgumentException
             // before the define-hidden-class try-block, and we defensively treat any other unchecked failure the
             // same way — fusion is an optimization and must never break the query.
-            // The single, deduplicated WARN for a failing shape is now emitted once by FusedClassCache; this catch
-            // also handles post-stitch reflect/link failures which are rare and logged at DEBUG.
-            logger.debug(() -> "fusion stitch failed for shape [" + shape + "]; falling back to unfused evaluator chain", e);
+            // WARN once per shape (firstFailure from the cache) because fusion is lost entirely; repeats DEBUG.
+            logPlanTimeStitchFailure(logger, shape, compilingPath, true, e);
             FusionTelemetry.recordFailure(shape);
             return null;
+        }
+    }
+
+    /**
+     * The single plan-time stitch-failure log site. WHY this lives in the factory, not the cache: only the factory
+     * knows whether fusion was lost entirely ({@code unfusedFallback}) or the shape still fused via the block path.
+     * The cache supplies {@link Stitcher.StitchingException#isFirstFailure()} so a full-unfused fallback WARNs
+     * exactly once per shape; vector/SIMD/logical-vector degrades, and every repeat, stay at DEBUG. Non-cached
+     * failures (a {@code findStatic} miss, a test compiler that bypasses the cache) are treated as first failures.
+     */
+    static void logPlanTimeStitchFailure(Logger log, String shape, FusedClassCache.Path path, boolean unfusedFallback, Throwable failure) {
+        boolean firstFailure = true;
+        if (failure instanceof Stitcher.StitchingException se) {
+            firstFailure = se.isFirstFailure();
+        }
+        if (unfusedFallback && firstFailure) {
+            log.warn("fusion stitch failed for shape [{}] on path [{}]; falling back to unfused evaluator chain", shape, path, failure);
+        } else if (unfusedFallback) {
+            log.debug(
+                "fusion stitch previously failed for shape [{}] on path [{}]; falling back to unfused evaluator chain",
+                shape,
+                path,
+                failure
+            );
+        } else {
+            log.debug("fusion stitch failed for shape [{}] on path [{}]; degrading to block-only fusion", shape, path, failure);
         }
     }
 

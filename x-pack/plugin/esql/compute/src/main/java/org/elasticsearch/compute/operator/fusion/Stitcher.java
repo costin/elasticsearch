@@ -3953,10 +3953,32 @@ public final class Stitcher {
      * Typed, catchable failure for a stitch that could not be verified or defined. Callers catch this to fall
      * back to the unfused evaluator chain (binding rule #5); it wraps the underlying {@link LinkageError} or
      * access failure so the cause is preserved for diagnostics.
+     *
+     * <p>{@link #isFirstFailure()} is the cache's "attempted this shape once" signal, not a logging decision.
+     * The esql-proper factory uses it to WARN only when fusion is lost entirely (and only on the first failure
+     * for that shape); a vector-path degrade that still fuses via the block path stays at DEBUG. Default
+     * {@code true}: a stitcher-originated exception is a first failure unless the class cache reconstructed
+     * it from a negative-cache marker ({@code firstFailure=false}).
      */
     public static final class StitchingException extends Exception {
+        private final boolean firstFailure;
+
         public StitchingException(String message, Throwable cause) {
+            this(message, cause, true);
+        }
+
+        public StitchingException(String message, Throwable cause, boolean firstFailure) {
             super(message, cause);
+            this.firstFailure = firstFailure;
+        }
+
+        /**
+         * {@code true} unless this exception was reconstructed from a negative-cache marker. WHY the factory
+         * (not the cache) consults this: only the factory knows whether the shape fell back to unfused or
+         * still fused via the block path, so the WARN-vs-DEBUG choice lives there.
+         */
+        public boolean isFirstFailure() {
+            return firstFailure;
         }
     }
 }

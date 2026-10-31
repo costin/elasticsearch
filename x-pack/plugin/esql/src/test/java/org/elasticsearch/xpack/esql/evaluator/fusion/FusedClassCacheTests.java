@@ -13,7 +13,6 @@ import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.test.MockLog;
-import org.elasticsearch.test.junit.annotations.TestLogging;
 import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
@@ -70,7 +69,7 @@ import static org.hamcrest.Matchers.sameInstance;
  *       returned), for both the {@link RefType#SOFT} default and the {@link RefType#WEAK} toggle.</li>
  *   <li><b>Admission</b>: no admission filter was adopted (D3), so a first-sight shape stitches immediately.</li>
  *   <li><b>Negative stitch cache</b>: a failing shape is attempted once and retained as a marker (bounded by
- *       {@link FusedClassCache#MAX_ENTRIES} + eviction); the first failure logs WARN, repeats log DEBUG.</li>
+ *       {@link FusedClassCache#MAX_ENTRIES} + eviction); the first thrown exception has {@code isFirstFailure()==true}, repeats have {@code false}. The cache does not log (the factory is the single WARN site).</li>
  * </ol>
  * A final smoke test proves the cache is wired into the plan-time path: two identical {@link EvalMapper} builds of the
  * same fusable shape stitch once and then hit the cache.
@@ -346,10 +345,12 @@ public class FusedClassCacheTests extends ESTestCase {
         Stitcher.StitchingException first = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
         assertThat(first.getMessage(), is("boom"));
         assertThat("the original StitchingException keeps its cause", first.getCause(), instanceOf(VerifyError.class));
+        assertThat("the first failure is signalled to the factory", first.isFirstFailure(), is(true));
         for (int i = 0; i < 2; i++) {
             Stitcher.StitchingException repeat = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
             assertThat(repeat.getMessage(), is("boom"));
             assertThat("reconstructed marker exceptions drop the cause", repeat.getCause(), nullValue());
+            assertThat("repeats must not re-signal first failure", repeat.isFirstFailure(), is(false));
         }
         assertThat("a failing shape must be attempted exactly once", invocations.get(), is(1));
         assertThat("the negative-cache marker is retained", cache.size(), is(1));
@@ -360,12 +361,9 @@ public class FusedClassCacheTests extends ESTestCase {
     /**
      * A1(a): an {@link IllegalArgumentException} from emit (or ASM {@code MethodTooLargeException}) must take the
      * same negative-cache path as {@link Stitcher.StitchingException}, so resolving the shape three times stitches
-     * once. The first failure WARNs; repeats stay at DEBUG.
+     * once. The first thrown exception has {@code isFirstFailure()==true}; repeats have {@code false}. The cache
+     * itself does not WARN — the factory is the single WARN site.
      */
-    @TestLogging(
-        value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG",
-        reason = "assert an IAE stitch failure WARNs once then DEBUG on negative-cache hits"
-    )
     public void testRuntimeExceptionIsNegativeCachedAndWarnsOnce() {
         FusedClassCache cache = new FusedClassCache();
         AtomicInteger invocations = new AtomicInteger();
@@ -375,16 +373,17 @@ public class FusedClassCacheTests extends ESTestCase {
         };
         try (var first = MockLog.capture(FusedClassCache.class)) {
             first.addExpectation(
-                new MockLog.SeenEventExpectation(
-                    "first-failure WARN",
+                new MockLog.UnseenEventExpectation(
+                    "cache must not WARN (logging moved to factory)",
                     FusedClassCache.class.getCanonicalName(),
                     Level.WARN,
-                    "*fusion stitch failed for shape*"
+                    "*fusion stitch*"
                 )
             );
             Stitcher.StitchingException thrown = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
             assertThat("the original failure is preserved as the cause", thrown.getCause(), instanceOf(IllegalArgumentException.class));
             assertThat(thrown.getCause().getMessage(), is("injected emit failure"));
+            assertThat("the first failure is signalled to the factory", thrown.isFirstFailure(), is(true));
             first.assertAllExpectationsMatched();
         }
         try (var repeats = MockLog.capture(FusedClassCache.class)) {
@@ -396,17 +395,10 @@ public class FusedClassCacheTests extends ESTestCase {
                     "*fusion stitch*"
                 )
             );
-            repeats.addExpectation(
-                new MockLog.SeenEventExpectation(
-                    "repeat DEBUG",
-                    FusedClassCache.class.getCanonicalName(),
-                    Level.DEBUG,
-                    "*previously failed for shape*"
-                )
-            );
             for (int i = 0; i < 2; i++) {
                 Stitcher.StitchingException repeat = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
                 assertThat("reconstructed marker exceptions drop the cause", repeat.getCause(), nullValue());
+                assertThat("repeats must not re-signal first failure", repeat.isFirstFailure(), is(false));
             }
             repeats.assertAllExpectationsMatched();
         }
@@ -418,12 +410,9 @@ public class FusedClassCacheTests extends ESTestCase {
 
     /**
      * A1: an unwrapped {@link LinkageError} (the third kind that used to escape the negative cache) must also be
-     * attempted once and WARN once, with the original error preserved as the cause.
+     * attempted once, with {@code isFirstFailure()==true} then {@code false}, and the original error preserved as
+     * the cause. The cache itself does not WARN.
      */
-    @TestLogging(
-        value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG",
-        reason = "assert a LinkageError stitch failure WARNs once then DEBUG on negative-cache hits"
-    )
     public void testLinkageErrorIsNegativeCachedAndAttemptedOnce() {
         FusedClassCache cache = new FusedClassCache();
         AtomicInteger invocations = new AtomicInteger();
@@ -433,16 +422,17 @@ public class FusedClassCacheTests extends ESTestCase {
         };
         try (var first = MockLog.capture(FusedClassCache.class)) {
             first.addExpectation(
-                new MockLog.SeenEventExpectation(
-                    "first-failure WARN",
+                new MockLog.UnseenEventExpectation(
+                    "cache must not WARN (logging moved to factory)",
                     FusedClassCache.class.getCanonicalName(),
                     Level.WARN,
-                    "*fusion stitch failed for shape*"
+                    "*fusion stitch*"
                 )
             );
             Stitcher.StitchingException thrown = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
             assertThat("the original failure is preserved as the cause", thrown.getCause(), instanceOf(LinkageError.class));
             assertThat(thrown.getCause().getMessage(), is("injected linkage failure"));
+            assertThat("the first failure is signalled to the factory", thrown.isFirstFailure(), is(true));
             first.assertAllExpectationsMatched();
         }
         try (var repeats = MockLog.capture(FusedClassCache.class)) {
@@ -454,17 +444,10 @@ public class FusedClassCacheTests extends ESTestCase {
                     "*fusion stitch*"
                 )
             );
-            repeats.addExpectation(
-                new MockLog.SeenEventExpectation(
-                    "repeat DEBUG",
-                    FusedClassCache.class.getCanonicalName(),
-                    Level.DEBUG,
-                    "*previously failed for shape*"
-                )
-            );
             for (int i = 0; i < 2; i++) {
                 Stitcher.StitchingException repeat = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
                 assertThat("reconstructed marker exceptions drop the cause", repeat.getCause(), nullValue());
+                assertThat("repeats must not re-signal first failure", repeat.isFirstFailure(), is(false));
             }
             repeats.assertAllExpectationsMatched();
         }
@@ -475,13 +458,10 @@ public class FusedClassCacheTests extends ESTestCase {
 
     /**
      * A1: a {@link ReflectiveOperationException} (the shape of a {@code findStatic} miss on the emitted class) must
-     * take the same negative-cache path and WARN once. The {@link FusedClassCache.ClassStitcher} seam declares it so
-     * a test can inject {@link NoSuchMethodException} without wrapping.
+     * take the same negative-cache path, with {@code isFirstFailure()==true} then {@code false}. The
+     * {@link FusedClassCache.ClassStitcher} seam declares it so a test can inject {@link NoSuchMethodException}
+     * without wrapping. The cache itself does not WARN.
      */
-    @TestLogging(
-        value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG",
-        reason = "assert a ReflectiveOperationException stitch failure WARNs once then DEBUG on negative-cache hits"
-    )
     public void testReflectiveOperationExceptionIsNegativeCachedAndAttemptedOnce() {
         FusedClassCache cache = new FusedClassCache();
         AtomicInteger invocations = new AtomicInteger();
@@ -491,16 +471,17 @@ public class FusedClassCacheTests extends ESTestCase {
         };
         try (var first = MockLog.capture(FusedClassCache.class)) {
             first.addExpectation(
-                new MockLog.SeenEventExpectation(
-                    "first-failure WARN",
+                new MockLog.UnseenEventExpectation(
+                    "cache must not WARN (logging moved to factory)",
                     FusedClassCache.class.getCanonicalName(),
                     Level.WARN,
-                    "*fusion stitch failed for shape*"
+                    "*fusion stitch*"
                 )
             );
             Stitcher.StitchingException thrown = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
             assertThat("the original failure is preserved as the cause", thrown.getCause(), instanceOf(NoSuchMethodException.class));
             assertThat(thrown.getCause().getMessage(), is("injected findStatic failure"));
+            assertThat("the first failure is signalled to the factory", thrown.isFirstFailure(), is(true));
             first.assertAllExpectationsMatched();
         }
         try (var repeats = MockLog.capture(FusedClassCache.class)) {
@@ -512,17 +493,10 @@ public class FusedClassCacheTests extends ESTestCase {
                     "*fusion stitch*"
                 )
             );
-            repeats.addExpectation(
-                new MockLog.SeenEventExpectation(
-                    "repeat DEBUG",
-                    FusedClassCache.class.getCanonicalName(),
-                    Level.DEBUG,
-                    "*previously failed for shape*"
-                )
-            );
             for (int i = 0; i < 2; i++) {
                 Stitcher.StitchingException repeat = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
                 assertThat("reconstructed marker exceptions drop the cause", repeat.getCause(), nullValue());
+                assertThat("repeats must not re-signal first failure", repeat.isFirstFailure(), is(false));
             }
             repeats.assertAllExpectationsMatched();
         }
@@ -555,32 +529,23 @@ public class FusedClassCacheTests extends ESTestCase {
         assertThat(cache.size(), is(1));
     }
 
-    @TestLogging(
-        value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG",
-        reason = "assert the single plan-time WARN then DEBUG on negative-cache hits"
-    )
     public void testFailedStitchLogsWarnOnceThenDebug() {
         FusedClassCache cache = new FusedClassCache();
         FusedClassCache.ClassStitcher stitcher = () -> { throw new Stitcher.StitchingException("boom", new VerifyError("injected")); };
         try (var mockLog = MockLog.capture(FusedClassCache.class)) {
             mockLog.addExpectation(
-                new MockLog.SeenEventExpectation(
-                    "first-failure WARN",
+                new MockLog.UnseenEventExpectation(
+                    "cache must not WARN (logging moved to factory)",
                     FusedClassCache.class.getCanonicalName(),
                     Level.WARN,
-                    "*fusion stitch failed for shape*"
+                    "*fusion stitch*"
                 )
             );
-            mockLog.addExpectation(
-                new MockLog.SeenEventExpectation(
-                    "repeat DEBUG",
-                    FusedClassCache.class.getCanonicalName(),
-                    Level.DEBUG,
-                    "*previously failed for shape*"
-                )
-            );
-            for (int i = 0; i < 3; i++) {
-                expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
+            Stitcher.StitchingException first = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
+            assertThat("the first failure is signalled to the factory", first.isFirstFailure(), is(true));
+            for (int i = 0; i < 2; i++) {
+                Stitcher.StitchingException repeat = expectThrows(Stitcher.StitchingException.class, () -> cache.get(SHAPE_A, stitcher));
+                assertThat("repeats must not re-signal first failure", repeat.isFirstFailure(), is(false));
             }
             mockLog.assertAllExpectationsMatched();
         }

@@ -8,8 +8,6 @@
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.elasticsearch.compute.operator.fusion.Stitcher;
-import org.elasticsearch.logging.LogManager;
-import org.elasticsearch.logging.Logger;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
 
 import java.lang.ref.Reference;
@@ -72,12 +70,14 @@ import java.util.concurrent.atomic.LongAdder;
  * The wrap covers {@link RuntimeException}, {@link ReflectiveOperationException}, and unwrapped {@link LinkageError}
  * (turned into a {@link Stitcher.StitchingException} by {@link #wrapStitchFailures}) so a failing shape is stored as a
  * lightweight {@link Failure} marker and attempted exactly once per lifetime — bounded by {@link #MAX_ENTRIES} plus
- * eviction, after which it re-attempts once. The single plan-time WARN is emitted here, once per shape, with repeats
- * at DEBUG. Other {@link Error}s, including {@link VirtualMachineError} (e.g. {@link OutOfMemoryError}) and siblings
- * such as {@link AssertionError}, are treated as transient: they propagate unwrapped and {@link #get} drops the empty
- * slot so a later attempt can succeed. {@link OutOfMemoryError} is a {@link VirtualMachineError}, which is an
- * {@link Error} but <em>not</em> a {@link LinkageError} — wrapping {@code LinkageError} specifically (not {@code Error})
- * is what keeps those transient failures retryable.
+ * eviction, after which it re-attempts once. The thrown {@link Stitcher.StitchingException} carries
+ * {@link Stitcher.StitchingException#isFirstFailure()} so the factory — which alone knows whether fusion was lost
+ * entirely or only a vector path degraded — can WARN once per shape on full unfused fallback and stay at DEBUG for
+ * a degrade-to-block. This cache does not log. Other {@link Error}s, including {@link VirtualMachineError}
+ * (e.g. {@link OutOfMemoryError}) and siblings such as {@link AssertionError}, are treated as transient: they
+ * propagate unwrapped and {@link #get} drops the empty slot so a later attempt can succeed. {@link OutOfMemoryError}
+ * is a {@link VirtualMachineError}, which is an {@link Error} but <em>not</em> a {@link LinkageError} — wrapping
+ * {@code LinkageError} specifically (not {@code Error}) is what keeps those transient failures retryable.
  *
  * <h2>No admission filter (D3)</h2>
  * Every miss stitches immediately; there is no threshold-2 "stitch only on the second sighting" admission gate. See the
@@ -85,8 +85,6 @@ import java.util.concurrent.atomic.LongAdder;
  * cost/cardinality reasoning behind dropping the {@code ConstantMethodResultSpecializer} precedent here.
  */
 final class FusedClassCache {
-
-    private static final Logger logger = LogManager.getLogger(FusedClassCache.class);
 
     /**
      * Lightweight negative-cache payload for a shape whose stitch failed with a {@link Stitcher.StitchingException}.
@@ -170,11 +168,11 @@ final class FusedClassCache {
     /**
      * Converts a stitch-time {@link RuntimeException}, {@link ReflectiveOperationException}, or unwrapped
      * {@link LinkageError} into a {@link Stitcher.StitchingException} (cause preserved) so the failure takes the
-     * negative-cache path and the single WARN. {@link VirtualMachineError} is rethrown unwrapped (explicit catch,
-     * documentation that OOM is not a {@link LinkageError}): a transient OOM must be retried, not remembered as a
-     * permanent shape failure. Other {@link Error}s are not caught here and fall through to {@link #get}'s empty-slot
-     * drop. Invoked only from {@link Entry#resolve} so every cache-backed stitch (plan-time and adaptive switch) is
-     * covered once.
+     * negative-cache path and the factory's first-failure signal. {@link VirtualMachineError} is rethrown unwrapped
+     * (explicit catch, documentation that OOM is not a {@link LinkageError}): a transient OOM must be retried, not
+     * remembered as a permanent shape failure. Other {@link Error}s are not caught here and fall through to
+     * {@link #get}'s empty-slot drop. Invoked only from {@link Entry#resolve} so every cache-backed stitch (plan-time
+     * and adaptive switch) is covered once.
      */
     private static Class<?> wrapStitchFailures(ClassStitcher stitcher) throws Stitcher.StitchingException {
         try {
@@ -191,7 +189,7 @@ final class FusedClassCache {
     /**
      * One cache slot. Holds either the stitched class through a {@link Reference}, or a {@link Failure} negative-cache
      * marker when the stitch failed, both guarded by the entry monitor; the monitor is what serialises concurrent
-     * stitches of the same shape into a single spin (or a single first-failure WARN).
+     * stitches of the same shape into a single spin (and a single {@code firstFailure=true} exception).
      */
     private final class Entry {
         // Volatile because the lock-free fast path in resolve() (and isEmpty()) reads it outside the monitor; all
@@ -202,7 +200,7 @@ final class FusedClassCache {
         // negative-cache hit: later lookups throw without invoking the stitcher.
         private volatile Failure failure;
 
-        Class<?> resolve(Shape shape, ClassStitcher stitcher) throws Stitcher.StitchingException {
+        Class<?> resolve(ClassStitcher stitcher) throws Stitcher.StitchingException {
             // Fast path: a live class is returned without taking the monitor, so steady-state hits never contend.
             Reference<Class<?>> current = ref;
             if (current != null) {
@@ -224,14 +222,8 @@ final class FusedClassCache {
                 }
                 if (failure != null) {
                     negativeHits.increment();
-                    logger.debug(
-                        () -> "fusion stitch previously failed for shape ["
-                            + shape
-                            + "]; using cached failure ["
-                            + (failure.causeClassName() == null ? failure.message() : failure.causeClassName() + ": " + failure.message())
-                            + "] (falling back to unfused)"
-                    );
-                    throw new Stitcher.StitchingException(failure.message(), null);
+                    // Reconstruct with firstFailure=false so the factory DEBUGs a repeat instead of WARNing again.
+                    throw new Stitcher.StitchingException(failure.message(), null, false);
                 }
                 if (current != null) {
                     // The reference existed but its referent was reclaimed/cleared: re-stitch this generation.
@@ -247,7 +239,9 @@ final class FusedClassCache {
                 } catch (Stitcher.StitchingException e) {
                     this.failure = new Failure(e.getCause() == null ? null : e.getCause().getClass().getName(), e.getMessage());
                     failures.increment();
-                    logger.warn(() -> "fusion stitch failed for shape [" + shape + "]; falling back to unfused evaluator chain", e);
+                    // Do not log here: the factory decides WARN vs DEBUG from e.isFirstFailure() and the consequence
+                    // (full unfused fallback vs degrade-to-block). wrapStitchFailures already produced a
+                    // firstFailure=true StitchingException.
                     throw e;
                 }
             }
@@ -294,14 +288,15 @@ final class FusedClassCache {
      * {@link RuntimeException} / {@link ReflectiveOperationException} / {@link LinkageError} wrapped by
      * {@link #wrapStitchFailures}) is negatively cached as a lightweight {@link Failure} marker so a failing shape is
      * attempted exactly once per lifetime (bounded by {@link #MAX_ENTRIES} + eviction, after which it re-attempts
-     * once). The single plan-time WARN is emitted here, once per shape, with repeats at DEBUG. Other {@link Error}s
-     * (including {@link VirtualMachineError}) are treated as transient: they propagate and the empty slot is dropped
-     * so a later attempt can succeed.
+     * once). The thrown exception's {@link Stitcher.StitchingException#isFirstFailure()} is {@code true} on that first
+     * attempt and {@code false} on later negative-cache hits, so the factory can WARN once per shape when fusion is
+     * lost. Other {@link Error}s (including {@link VirtualMachineError}) are treated as transient: they propagate and
+     * the empty slot is dropped so a later attempt can succeed.
      */
     Class<?> get(Shape shape, ClassStitcher stitcher) throws Stitcher.StitchingException {
         Entry entry = classes.computeIfAbsent(shape, unused -> new Entry());
         try {
-            Class<?> stitched = entry.resolve(shape, stitcher);
+            Class<?> stitched = entry.resolve(stitcher);
             evictIfOverCapacity(shape);
             return stitched;
         } catch (Stitcher.StitchingException e) {
