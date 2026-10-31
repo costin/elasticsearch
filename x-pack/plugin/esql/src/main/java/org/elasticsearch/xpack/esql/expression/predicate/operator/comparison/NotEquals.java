@@ -190,6 +190,8 @@ public class NotEquals extends EsqlBinaryComparison implements Negatable<EsqlBin
         return lhs != rhs;
     }
 
+    // overflowChecked = false: BytesRef.equals is public and throw-free; the fused hidden class can link it.
+    @Fusable(overflowChecked = false)
     @Evaluator(extraName = "BytesRef")
     static boolean processBytesRef(BytesRef lhs, BytesRef rhs) {
         return false == lhs.equals(rhs);

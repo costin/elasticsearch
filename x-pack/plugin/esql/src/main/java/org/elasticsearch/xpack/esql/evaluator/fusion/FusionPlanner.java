@@ -282,7 +282,21 @@ public final class FusionPlanner {
         // A lone single-value BytesRef string function (LEFT/SPACE/CONCAT) fuses at depth 1 only under the opt-in
         // esql.fusion.string_depth1 switch (its win is marginal — string work dominates — so it is off by default).
         boolean stringDepth1 = ctx.outputElement == ElementKind.BYTES_REF && ctx.mapping == false && FusionSettings.isStringDepth1Enabled();
-        if (depth(tree) < 2 && simdWorthwhile == false && ctx.mapping == false && stringDepth1 == false) {
+        boolean encodingAware = encodingAware(tree, inputElements, ctx.overflowChecked);
+        // A lone BytesRef comparison (column == literal, column != literal, or literal == column) is depth-1, but
+        // the encoding-aware dictionary gather evaluates once per distinct value — the same depth-1 exemption as
+        // SIMD / mapping / stringDepth1.
+        boolean bytesRefComparisonDepth1 = encodingAware && ctx.outputElement == ElementKind.BOOLEAN;
+        // D3 nested mapping is a one-column encoding-aware chain. Two BytesRef columns (e.g. k1 == TO_LOWER(k2))
+        // share one spare and would overwrite the lhs; refuse so they stay unfused.
+        if (containsNestedMapping(tree) && inputElements.length > 1) {
+            return null;
+        }
+        if (depth(tree) < 2
+            && simdWorthwhile == false
+            && ctx.mapping == false
+            && stringDepth1 == false
+            && bytesRefComparisonDepth1 == false) {
             // A lone kernel is not worth fusing on the scalar paths — leave it to the generated evaluator.
             return null;
         }
@@ -302,7 +316,7 @@ public final class FusionPlanner {
             shape,
             vectorComparison,
             ctx.mapping,
-            encodingAware(tree, inputElements, ctx.overflowChecked)
+            encodingAware
         );
 
         long minRows = FusionSettings.adaptiveMinRows();
@@ -364,6 +378,12 @@ public final class FusionPlanner {
             || projCtx.outputElement == ElementKind.BOOLEAN
             || projCtx.inputElements.isEmpty()
             || (projectionTree instanceof FusionNode.Kernel) == false) {
+            return null;
+        }
+        // Nested mapping (D3) needs a per-page MV fallback that FilterEval does not have; a ROOT mapping projection
+        // (EVAL TO_LOWER(k)) would be stitched single-value and warn+null on MV instead of mapping. Refuse both so
+        // those shapes stay on the unfused Filter→Eval chain. The single-expression path handles them.
+        if (containsNestedMapping(predicateTree) || containsNestedMapping(projectionTree) || predCtx.mapping || projCtx.mapping) {
             return null;
         }
 
@@ -631,7 +651,7 @@ public final class FusionPlanner {
         }
         FusionDescriptor descriptor = ((FusionAware) factory).fusionDescriptor();
         if (descriptor.mapping()) {
-            return buildMapping(exp, (FusionAware) factory, descriptor, ctx, root);
+            return buildMapping(exp, (FusionAware) factory, descriptor, ctx, expected, root);
         }
         // The @Fusable kernel must be THIS expression's own kernel — i.e. declared on this expression's class (Add
         // declares Add#processLongs, Floor declares Floor#..., etc.), so exp.children() ARE the kernel's operands.
@@ -712,9 +732,16 @@ public final class FusionPlanner {
 
     /**
      * Builds the fused node for a mapping {@code @ConvertEvaluator} (e.g. {@code TO_LOWER}/{@code TO_UPPER}): a
-     * single kernel over its BytesRef field child plus the Factory's {@code @Fixed} SINGLETON constants. Fuses ONLY
-     * at the root — a nested position returns {@code null} so a single-value parent never sees a mapped multi-value
-     * intermediate. Sets {@link PlanContext#mapping} so the factory routes it to the mapping block loop.
+     * single kernel over its BytesRef field child plus the Factory's {@code @Fixed} SINGLETON constants.
+     *
+     * <p>At the root this is a multi-value mapping convert: {@link PlanContext#mapping} is set so the factory
+     * compiles via {@code compileMappingBlockLoop}. In a <b>non-root</b> position the kernel is admitted only as a
+     * child of a single-value parent that consumes {@code BytesRef} (e.g. {@code LENGTH}, {@code Equals}) — the
+     * parent compiles via the ordinary block path ({@code ctx.mapping} stays false) and the nested mapping body is
+     * spliced as a unary kernel. Multi-value pages of such a chain fall back to unfused at eval time (D3). A mapping
+     * under a LOGICAL root never reaches here ({@link #buildComparisonOperand} refuses non-Attribute/Literal
+     * children). A mapping under another mapping is refused by the direct-{@link FusionNode.Input} field restriction
+     * (one mapping level only).
      *
      * <p>The anti-delegation guard is {@code kernelClass.isAssignableFrom(exp.getClass())} rather than {@code ==}:
      * {@code @ConvertEvaluator} lives on the declaring class (e.g. {@code ChangeCase.process}) while the expression
@@ -726,9 +753,11 @@ public final class FusionPlanner {
         FusionAware factory,
         FusionDescriptor descriptor,
         PlanContext ctx,
+        ElementKind expected,
         boolean root
     ) {
-        if (root == false) {
+        if (root == false && expected != ElementKind.BYTES_REF) {
+            // Nested mapping is only a child of a single-value parent that consumes BytesRef (LENGTH, Equals).
             return null;
         }
         if (descriptor.kernelClass().isAssignableFrom(exp.getClass()) == false) {
@@ -740,7 +769,8 @@ public final class FusionPlanner {
         }
         FusionNode field = build(children.get(0), ctx, ElementKind.BYTES_REF, exp.source(), false);
         if (field == null || field instanceof FusionNode.Input == false) {
-            // The mapping loop maps a single column input; only a direct BytesRef column child is supported.
+            // Direct BytesRef column input only — also refuses a mapping under another mapping (the inner
+            // mapping would be a Kernel, not an Input).
             return null;
         }
         List<Object> fixedArgs = factory.fusionFixedArgs();
@@ -757,8 +787,12 @@ public final class FusionPlanner {
         }
         FusionNode.Kernel kernel = new FusionNode.Kernel(descriptor, operands);
         ctx.kernelSources.put(kernel, exp.source());
-        ctx.outputElement = ElementKind.BYTES_REF;
-        ctx.mapping = true;
+        if (root) {
+            // Root mapping compiles via compileMappingBlockLoop; a nested mapping does not flip this — the parent
+            // single-value kernel (LENGTH→int, Equals→boolean) compiles via the ordinary block path.
+            ctx.outputElement = ElementKind.BYTES_REF;
+            ctx.mapping = true;
+        }
         return kernel;
     }
 
@@ -1184,23 +1218,31 @@ public final class FusionPlanner {
     }
 
     /**
-     * Builds a {@link FusionNode.Constant} at the {@code expected} element the consuming kernel requires (its value
-     * threaded to the fused method as a trailing primitive argument), from a numeric {@link Literal}, or {@code null}
-     * if it cannot be fused: the consuming element must be numeric, the
-     * literal's declared type must be that element or a supported widening into it (so converting the value here is
-     * exact-for-the-cast the unfused chain would apply), and the value must be non-{@code null}. A {@code null} literal
-     * is <b>refused</b>, so a subtree containing one falls back to the unfused chain — the correct + simplest handling
-     * (ESQL normally folds null literals away, and a per-position "constant is null" would just null every row, which
-     * the unfused evaluator already does).
+     * Builds a {@link FusionNode.Constant} at the {@code expected} element the consuming kernel requires, from a
+     * numeric or keyword {@link Literal}, or {@code null} if it cannot be fused. Numeric literals are trailing
+     * primitive arguments (with a supported widening into {@code expected}). A keyword/text literal is a captured
+     * {@link FusionNode.Constant#reference reference} {@code BytesRef} (F3), loaded with {@code ALOAD} via the D2
+     * reference-constant machinery. A {@code null} literal is <b>refused</b>, so a subtree containing one falls back
+     * to the unfused chain — the correct + simplest handling (ESQL normally folds null literals away, and a
+     * per-position "constant is null" would just null every row, which the unfused evaluator already does).
      */
     private static FusionNode buildConstant(Literal literal, ElementKind expected, PlanContext ctx) {
-        if (expected == null || expected == ElementKind.BOOLEAN || expected == ElementKind.BYTES_REF) {
-            // Only numeric constants are threaded as trailing primitive arguments. A boolean- or BytesRef-typed
-            // constant leaf is out of scope (no BytesRef constant marshalling this slice), so refuse to fuse it.
+        if (expected == null || expected == ElementKind.BOOLEAN) {
+            // A boolean-typed constant leaf is out of scope, so refuse to fuse it.
             return null;
         }
         Object value = literal.value();
-        if (value == null || value instanceof Number == false) {
+        if (value == null) {
+            return null;
+        }
+        if (expected == ElementKind.BYTES_REF) {
+            if (value instanceof BytesRef bytesRef) {
+                // Keyword/text literal: captured reference constant, same trailing-arg path as a converter @Fixed.
+                return FusionNode.Constant.reference(bytesRef, BytesRef.class);
+            }
+            return null;
+        }
+        if (value instanceof Number == false) {
             return null;
         }
         ElementKind literalElement = elementOf(literal.dataType());
@@ -1214,7 +1256,7 @@ public final class FusionPlanner {
             case LONG -> new FusionNode.Constant(number.longValue(), 'J');
             case INT -> new FusionNode.Constant(number.intValue(), 'I');
             case DOUBLE -> new FusionNode.Constant(number.doubleValue(), 'D');
-            // Unreachable: BOOLEAN/BYTES_REF constant leaves are rejected by the guard above; listed for exhaustiveness.
+            // Unreachable: BOOLEAN is rejected by the guard above; BYTES_REF is handled before this switch.
             case BOOLEAN, BYTES_REF -> null;
         };
     }
@@ -1294,10 +1336,10 @@ public final class FusionPlanner {
     /**
      * The supported element kind for a column/literal {@link DataType}, or {@code null} if not fusable. Numeric types
      * map to their primitive element; {@code KEYWORD}/{@code TEXT} map to {@link ElementKind#BYTES_REF} so a string
-     * column can feed a {@code BytesRef}-consuming kernel (e.g. {@code LENGTH}). {@code BYTES_REF} is INPUT-only <b>to the
-     * planner</b>: the {@code Stitcher} block path can now also produce a {@code BytesRef} output (B3b), but this planner
-     * does not yet type a node's output {@code BYTES_REF} (no {@code BytesRef}-returning kernel is {@code @Fusable} +
-     * object-{@code @Fixed}-constant support is still needed), so it never emits a BytesRef-output tree today.
+     * column can feed a {@code BytesRef}-consuming kernel (e.g. {@code LENGTH}) and so a root mapping convert
+     * ({@code TO_LOWER}/{@code TO_UPPER}) can type its output {@code BYTES_REF}. The {@code Stitcher} block path
+     * produces that BytesRef output (B3b / D2); nested mapping under a single-value parent (D3) keeps the root's
+     * own output element (int / boolean).
      */
     private static ElementKind elementOf(DataType type) {
         if (type == DataType.LONG) {
@@ -1328,6 +1370,28 @@ public final class FusionPlanner {
             case BOOLEAN -> type == DataType.BOOLEAN;
             case BYTES_REF -> type == DataType.KEYWORD || type == DataType.TEXT;
         };
+    }
+
+    /**
+     * True when a mapping convert kernel sits in a non-root position (D3: {@code LENGTH(TO_LOWER(k))},
+     * {@code TO_LOWER(k)=="x"}). The root itself being a mapping kernel (lone {@code TO_LOWER}) is not nested.
+     */
+    static boolean containsNestedMapping(FusionNode node) {
+        if (node instanceof FusionNode.Kernel kernel) {
+            for (FusionNode child : kernel.children()) {
+                if (child instanceof FusionNode.Kernel childKernel && childKernel.descriptor().mapping()) {
+                    return true;
+                }
+                if (containsNestedMapping(child)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (node instanceof FusionNode.Logical logical) {
+            return containsNestedMapping(logical.left()) || containsNestedMapping(logical.right());
+        }
+        return false;
     }
 
     /**

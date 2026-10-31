@@ -261,6 +261,8 @@ public class Equals extends EsqlBinaryComparison implements Negatable<EsqlBinary
         return lhs == rhs;
     }
 
+    // overflowChecked = false: BytesRef.equals is public and throw-free; the fused hidden class can link it.
+    @Fusable(overflowChecked = false)
     @Evaluator(extraName = "BytesRef")
     static boolean processBytesRef(BytesRef lhs, BytesRef rhs) {
         return lhs.equals(rhs);

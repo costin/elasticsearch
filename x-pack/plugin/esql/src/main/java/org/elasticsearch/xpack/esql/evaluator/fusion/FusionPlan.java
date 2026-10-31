@@ -42,10 +42,10 @@ record FusionPlan(
      */
     String vectorComparison,
     /**
-     * Whether this is a MULTI-VALUE MAPPING tree — a unary {@code @ConvertEvaluator} kernel (e.g. TO_LOWER/TO_UPPER)
-     * that maps over every value of a position. When {@code true} the factory compiles the tree via
-     * {@code Stitcher.compileMappingBlockLoop} (block-only, no vector fast path) instead of the ordinary single-value
-     * block path, which would wrongly warn+null a multi-value.
+     * Whether the ROOT is a MULTI-VALUE MAPPING convert kernel (e.g. lone TO_LOWER/TO_UPPER). When {@code true} the
+     * factory compiles the tree via {@code Stitcher.compileMappingBlockLoop} (block-only, no vector fast path). A
+     * nested mapping under a single-value parent (D3: {@code LENGTH(TO_LOWER(k))}) leaves this {@code false} so the
+     * parent compiles via the ordinary block path; the nested mapping body is spliced as a unary kernel.
      */
     boolean mapping,
     /**

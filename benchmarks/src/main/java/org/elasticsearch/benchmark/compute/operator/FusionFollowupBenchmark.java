@@ -56,8 +56,8 @@ import java.util.concurrent.TimeUnit;
  * {@code pollute} recipe iterates {@code values()}, so a new constant would change pollution of every existing cell.
  *
  * <p>Helpers ({@code driverContext}, {@code longs}, {@code dictEntry}, {@code assertSameOutput}, ...) are reused from
- * {@link SlowPathFusionBenchmark}. Nested {@code TO_LOWER} cases are expected unfused today (until a later task);
- * {@code split} fuses today and {@link #setup} asserts {@code compute()} is present when the effective budget is
+ * {@link SlowPathFusionBenchmark}. Nested {@code TO_LOWER} cases fuse via D3/F3; {@code split} fuses today and
+ * {@link #setup} asserts {@code compute()} is present when the effective budget is
  * {@code <=} {@link Stitcher#DEFAULT_MAX_FUSED_METHOD_BYTECODES} and absent when the budget is raised (B3 unsplit).
  */
 @Warmup(iterations = 3, time = 2)
@@ -118,8 +118,8 @@ public class FusionFollowupBenchmark {
             }
         },
         /**
-         * {@code TO_LOWER(k) == "x"} over an {@code OrdinalBytesRefVector} with ~100 distinct values. Expected
-         * unfused until a later task (D3); measured fused-flag-on and -off anyway.
+         * {@code TO_LOWER(k) == "x"} over an {@code OrdinalBytesRefVector} with ~100 distinct values. Fuses via D3
+         * nested mapping + F3 keyword Equals.
          */
         EQ_TO_LOWER_ORDINAL {
             @Override
@@ -131,9 +131,14 @@ public class FusionFollowupBenchmark {
             Page page(int size) {
                 return ordinalPage(size);
             }
+
+            @Override
+            boolean fusesToday() {
+                return true;
+            }
         },
         /**
-         * {@code LENGTH(TO_LOWER(k))} over the same ordinal input. Expected unfused until D3.
+         * {@code LENGTH(TO_LOWER(k))} over the same ordinal input. Fuses via D3 nested mapping.
          */
         LENGTH_TO_LOWER_ORDINAL {
             @Override
@@ -147,10 +152,15 @@ public class FusionFollowupBenchmark {
             Page page(int size) {
                 return ordinalPage(size);
             }
+
+            @Override
+            boolean fusesToday() {
+                return true;
+            }
         },
         /**
          * {@code TO_LOWER(k) == "x"} over a plain (non-ordinal) {@code BytesRefArrayVector} with the same distinct
-         * values. Expected unfused until D3.
+         * values. Fuses via D3 nested mapping + F3 keyword Equals.
          */
         EQ_TO_LOWER_PLAIN {
             @Override
@@ -167,13 +177,18 @@ public class FusionFollowupBenchmark {
                     return new Page(builder.build().asBlock());
                 }
             }
+
+            @Override
+            boolean fusesToday() {
+                return true;
+            }
         };
 
         abstract Built build();
 
         abstract Page page(int size);
 
-        /** {@code true} only where fusion is expected today; nested TO_LOWER cases stay unfused until D3. */
+        /** {@code true} where fusion is expected today ({@code split} and the D3/F3 nested-mapping cells). */
         boolean fusesToday() {
             return false;
         }
@@ -238,19 +253,23 @@ public class FusionFollowupBenchmark {
             if (SlowPathFusionBenchmark.isFused(fused) == false) {
                 throw new AssertionError(shape + " did not fuse with fusion=true: " + fused.getClass().getName());
             }
-            boolean expectSplit = Stitcher.maxFusedMethodBytecodes() <= Stitcher.DEFAULT_MAX_FUSED_METHOD_BYTECODES;
-            if (FusionPlanner.fusedClassHasMethod(fused, "compute") != expectSplit) {
-                throw new AssertionError(
-                    shape
-                        + " fused; expected compute() "
-                        + (expectSplit ? "present" : "absent")
-                        + " at budget "
-                        + Stitcher.maxFusedMethodBytecodes()
-                        + " (default "
-                        + Stitcher.DEFAULT_MAX_FUSED_METHOD_BYTECODES
-                        + "): "
-                        + fused
-                );
+            // {@code split} is the only cell that exceeds the inlining budget and lifts into compute(). The D3/F3
+            // nested-mapping cells are small and must NOT have compute().
+            if (shape == Case.split) {
+                boolean expectSplit = Stitcher.maxFusedMethodBytecodes() <= Stitcher.DEFAULT_MAX_FUSED_METHOD_BYTECODES;
+                if (FusionPlanner.fusedClassHasMethod(fused, "compute") != expectSplit) {
+                    throw new AssertionError(
+                        shape
+                            + " fused; expected compute() "
+                            + (expectSplit ? "present" : "absent")
+                            + " at budget "
+                            + Stitcher.maxFusedMethodBytecodes()
+                            + " (default "
+                            + Stitcher.DEFAULT_MAX_FUSED_METHOD_BYTECODES
+                            + "): "
+                            + fused
+                    );
+                }
             }
         }
         this.page = shape.page(size);

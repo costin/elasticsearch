@@ -166,7 +166,12 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
          * Encoding-aware path (D1): a single BYTES_REF column with no warning-capable kernel, evaluated once over
          * the ordinal dictionary (or once for a constant) so the fused output keeps ordinal/constant encoding.
          */
-        ENCODING_AWARE
+        ENCODING_AWARE,
+        /**
+         * Nested-mapping tree (D3) on a non-vector page (nulls and/or multi-values): the fused single-value block
+         * path would warn+null at the parent, so the whole page is evaluated by {@code unfusedFallback()}.
+         */
+        UNFUSED_FALLBACK
     }
 
     /**
@@ -232,6 +237,12 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * {@link FusionPlan#encodingAware()}.
      */
     private final boolean encodingAware;
+    /**
+     * True when a mapping convert kernel sits under a single-value parent (D3). Non-vector pages (nulls and/or
+     * multi-values) evaluate via {@code unfusedFallback()} so MV semantics stay exact; dense/ordinal/constant
+     * vector pages take the fused + encoding-aware paths.
+     */
+    private final boolean nestedMapping;
 
     private FusedExpressionEvaluatorFactory(
         Source[] warningSources,
@@ -244,7 +255,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         String shape,
         List<FusionNode.Constant> constants,
         boolean mapping,
-        boolean encodingAware
+        boolean encodingAware,
+        boolean nestedMapping
     ) {
         this(
             warningSources,
@@ -260,7 +272,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             shape,
             constants,
             mapping,
-            encodingAware
+            encodingAware,
+            nestedMapping
         );
     }
 
@@ -276,7 +289,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         String shape,
         List<FusionNode.Constant> constants,
         boolean mapping,
-        boolean encodingAware
+        boolean encodingAware,
+        boolean nestedMapping
     ) {
         this(
             warningSources,
@@ -292,7 +306,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             shape,
             constants,
             mapping,
-            encodingAware
+            encodingAware,
+            nestedMapping
         );
     }
 
@@ -310,7 +325,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         String shape,
         List<FusionNode.Constant> constants,
         boolean mapping,
-        boolean encodingAware
+        boolean encodingAware,
+        boolean nestedMapping
     ) {
         this.warningSources = warningSources;
         this.inputChannels = inputChannels;
@@ -326,6 +342,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         this.constants = constants;
         this.mapping = mapping;
         this.encodingAware = encodingAware;
+        this.nestedMapping = nestedMapping;
     }
 
     /**
@@ -361,6 +378,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         // Unpack the typed plan once; the emit/bind body below is unchanged.
         Source[] warningSources = plan.warningSources();
         FusionNode tree = plan.tree();
+        boolean nestedMapping = FusionPlanner.containsNestedMapping(tree);
         int[] inputChannels = plan.channels();
         ElementKind[] inputElements = plan.inputElements();
         ElementKind outputElement = plan.outputElement();
@@ -402,7 +420,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     shape,
                     constants,
                     true,
-                    plan.encodingAware()
+                    plan.encodingAware(),
+                    nestedMapping
                 );
             }
             if (tree instanceof FusionNode.Logical) {
@@ -436,7 +455,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                         shape,
                         constants,
                         false,
-                        plan.encodingAware()
+                        plan.encodingAware(),
+                        nestedMapping
                     );
                 } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError vectorFailure) {
                     logPlanTimeStitchFailure(logger, shape, FusedClassCache.Path.LOGICAL_VECTOR, false, vectorFailure);
@@ -452,7 +472,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                         shape,
                         constants,
                         false,
-                        plan.encodingAware()
+                        plan.encodingAware(),
+                        nestedMapping
                     );
                 }
             }
@@ -478,7 +499,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     shape,
                     constants,
                     false,
-                    plan.encodingAware()
+                    plan.encodingAware(),
+                    nestedMapping
                 );
             }
 
@@ -565,7 +587,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     shape,
                     constants,
                     false,
-                    plan.encodingAware()
+                    plan.encodingAware(),
+                    nestedMapping
                 );
             }
 
@@ -583,7 +606,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 shape,
                 constants,
                 false,
-                plan.encodingAware()
+                plan.encodingAware(),
+                nestedMapping
             );
         } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError e) {
             // Any plan-time stitch failure must fall back to the unfused chain and record the shape (criterion #5):
@@ -653,6 +677,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             resolveConstantValues(constants, context),
             mapping,
             encodingAware,
+            nestedMapping,
             FusionSettings.isVectorReadsInterface()
         );
     }
@@ -680,6 +705,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             resolveConstantValues(constants, context),
             mapping,
             encodingAware,
+            nestedMapping,
             vectorReadsInterface
         );
     }
@@ -913,6 +939,10 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
          * constant position) so the fused output keeps that encoding. See {@link FusionPlan#encodingAware()}.
          */
         private final boolean encodingAware;
+        /**
+         * True when a mapping convert kernel sits under a single-value parent. Non-vector pages fall back to unfused.
+         */
+        private final boolean nestedMapping;
 
         // Spreaders bound ONCE per evaluator: handle.asSpreader(Object[].class, argCount) is resolved here (ctor)
         // rather than re-resolved every page by handle.invokeWithArguments (which does an Invokers.spreadInvoker
@@ -986,6 +1016,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             Object[] constantValues,
             boolean mapping,
             boolean encodingAware,
+            boolean nestedMapping,
             boolean vectorReadsInterface
         ) {
             this.warningSources = warningSources;
@@ -1000,6 +1031,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             this.constantValues = constantValues;
             this.mapping = mapping;
             this.encodingAware = encodingAware;
+            this.nestedMapping = nestedMapping;
             this.vectorReadsInterface = vectorReadsInterface;
 
             int arity = inputChannels.length;
@@ -1041,6 +1073,23 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             Block[] inputs = new Block[arity];
             for (int i = 0; i < arity; i++) {
                 inputs[i] = page.getBlock(inputChannels[i]);
+            }
+            // Nested mapping (D3): a non-vector page (nulls and/or multi-values) must keep unfused MV semantics.
+            // Fall back when ANY input is a non-vector (not only arity==1) so a refused-but-still-stitched
+            // multi-column tree cannot skip the fallback. Dense/ordinal/constant vector pages take the fused
+            // + encoding-aware paths below.
+            if (nestedMapping) {
+                boolean nonVector = false;
+                for (int i = 0; i < arity; i++) {
+                    if (inputs[i].asVector() == null) {
+                        nonVector = true;
+                        break;
+                    }
+                }
+                if (nonVector) {
+                    lastEvalPath = LastEvalPath.UNFUSED_FALLBACK;
+                    return unfusedFallback().eval(page);
+                }
             }
             int positionCount = page.getPositionCount();
             BlockFactory blockFactory = driverContext.blockFactory();
