@@ -53,7 +53,7 @@ import static org.hamcrest.Matchers.is;
  *   <li>Dense logical vector path (R2a) — {@link VectorStrategy#LOGICAL_VECTOR} over {@code *ArrayVector},
      *       {@code ConstantLongVector}, and {@code LongBigArrayVector} inputs, AND and OR, long/int/double, matching the
      *       unfused chain value-by-value. Null/multi-value pages stay on the 3VL block path above.
-     *       {@link #testDenseLogicalVectorPicksRawVsInterfaceVsBlock()} pins ALL-RAW vs ALL-INTERFACE vs BLOCK.</li>
+     *       {@link #testDenseLogicalVectorPicksInterfaceVsBlock()} pins INTERFACE vs BLOCK (INTERFACE-only after B2).</li>
  * </ul>
  */
 public class LogicalFusionDifferentialTests extends FusionDifferentialTestCase {
@@ -353,8 +353,8 @@ public class LogicalFusionDifferentialTests extends FusionDifferentialTestCase {
     }
 
     /**
-     * Mixed page: some inputs are {@code LongArrayVector} and some are {@code ConstantLongVector}. The factory must
-     * pick the all-interface variant (any non-array vector) and still match the unfused chain.
+     * Mixed page: some inputs are {@code LongArrayVector} and some are {@code ConstantLongVector}. LOGICAL_VECTOR is
+     * INTERFACE-only after B2, so mixed pages still match the unfused chain.
      */
     public void testDenseMixedArrayAndConstantLongVectorMatchesUnfused() {
         for (Connective connective : Connective.values()) {
@@ -395,11 +395,11 @@ public class LogicalFusionDifferentialTests extends FusionDifferentialTestCase {
     }
 
     /**
-     * Pins the per-page RAW vs INTERFACE vs BLOCK choice so an always-interface (or always-raw) regression is
-     * caught even when values still match the unfused chain. Test-only {@link LastEvalPath} seam; production
-     * dispatch is unchanged.
+     * Pins the per-page INTERFACE vs BLOCK choice so an always-block regression is caught even when values still
+     * match the unfused chain. B2: LOGICAL_VECTOR is INTERFACE-only — exact {@code *ArrayVector} pages take
+     * INTERFACE too, not RAW. Test-only {@link LastEvalPath} seam.
      */
-    public void testDenseLogicalVectorPicksRawVsInterfaceVsBlock() {
+    public void testDenseLogicalVectorPicksInterfaceVsBlock() {
         FieldAttribute a = field("a", DataType.LONG);
         FieldAttribute b = field("b", DataType.LONG);
         FieldAttribute c = field("c", DataType.LONG);
@@ -414,13 +414,13 @@ public class LogicalFusionDifferentialTests extends FusionDifferentialTestCase {
             int n = 8;
             assertLastEvalPath(
                 eval,
-                LastEvalPath.RAW,
+                LastEvalPath.INTERFACE,
                 new Block[] {
                     longArrayVectorColumn(n, 0),
                     longArrayVectorColumn(n, 1),
                     longArrayVectorColumn(n, 2),
                     longArrayVectorColumn(n, 3) },
-                "exact *ArrayVector page must take ALL-RAW"
+                "exact *ArrayVector page must take INTERFACE (logical vector is INTERFACE-only after B2)"
             );
             assertLastEvalPath(
                 eval,

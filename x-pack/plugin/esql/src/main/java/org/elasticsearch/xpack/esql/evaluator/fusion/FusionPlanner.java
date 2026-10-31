@@ -155,8 +155,8 @@ public final class FusionPlanner {
         }
 
         /**
-         * Compiles the dense 2VL logical vector loop (ALL-RAW + ALL-INTERFACE methods on one class). Defaulted so
-         * existing {@link FusedClassCompiler} test doubles need not override it; the production
+         * Compiles the dense 2VL logical vector loop (INTERFACE-only {@code fusedInterface} after B2; no RAW sibling).
+         * Defaulted so existing {@link FusedClassCompiler} test doubles need not override it; the production
          * {@link FusionCompilationService} compiler provides the real, cache-backed implementation.
          */
         default Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {

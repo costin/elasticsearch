@@ -138,9 +138,8 @@ final class FusedClassCache {
         /** {@link Stitcher#compileLogicalBlockLoop}: a 3VL {@code AND}/{@code OR} tree; nullable boolean, block-only. */
         LOGICAL_BLOCK,
         /**
-         * {@link Stitcher#compileLogicalVectorLoop}: the dense 2VL vector sibling of {@link #LOGICAL_BLOCK}. One
-         * hidden class carries both the ALL-RAW and ALL-INTERFACE methods, so a single cache entry covers both
-         * per-page read variants.
+         * {@link Stitcher#compileLogicalVectorLoop}: the dense 2VL vector sibling of {@link #LOGICAL_BLOCK}.
+         * INTERFACE-only after B2 ({@code fusedInterface}; no RAW sibling).
          */
         LOGICAL_VECTOR,
         /**

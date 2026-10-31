@@ -97,9 +97,10 @@ public final class Stitcher {
     public static final String FUSED_METHOD_NAME = "fused";
 
     /**
-     * The all-interface dense-logical sibling of {@link #FUSED_METHOD_NAME}. One hidden class carries both the ALL-RAW
-     * ({@code fused}: {@code VectorUnsafe} + {@code xALOAD}) and ALL-INTERFACE ({@code fusedInterface}: typed
-     * {@code *Vector.getX(p)}) variants so the factory picks per page without a second {@code defineHiddenClass}.
+     * ALL-INTERFACE sibling of {@link #FUSED_METHOD_NAME}: typed {@code *Vector.getX(p)} instead of
+     * {@code VectorUnsafe} + {@code xALOAD}. Arithmetic plain/checked vector classes still emit both methods so the
+     * factory picks per page. The logical vector class (B2) emits <em>only</em> this method — the logical RAW loop
+     * was the slow path and is not generated.
      */
     public static final String FUSED_INTERFACE_METHOD_NAME = "fusedInterface";
 
@@ -2468,21 +2469,16 @@ public final class Stitcher {
      * with {@code newBooleanArrayVector(out, n).asBlock()}. The 3VL block path ({@link #compileLogicalBlockLoop})
      * stays for pages that carry nulls or multi-values.
      *
-     * <p>One hidden class exposes <b>two</b> methods of the same signature so the factory picks per page without a
-     * second {@code defineHiddenClass}:
-     * <ul>
-     *   <li>{@link #FUSED_METHOD_NAME} — ALL-RAW: every input is an exact {@code *ArrayVector}; backing arrays are
-     *       extracted once via {@code VectorUnsafe} and the loop does {@code a[p]}.</li>
-     *   <li>{@link #FUSED_INTERFACE_METHOD_NAME} — ALL-INTERFACE: used when <em>any</em> input is a non-array vector
-     *       ({@code Constant*Vector}, {@code *BigArrayVector}, …); each input is narrowed once to its {@code *Vector}
-     *       interface and the loop does {@code v.getX(p)}.</li>
-     * </ul>
-     * Comparisons are spliced inline in the loop (C1 does not inline helpers &gt; 35 bytes). No {@code Warnings[]} —
-     * comparisons do not warn, and dense vectors have no multi-values.
+     * <p>INTERFACE-only after B2: the hidden class exposes {@link #FUSED_INTERFACE_METHOD_NAME} and not
+     * {@link #FUSED_METHOD_NAME}. Each input is narrowed once to its {@code *Vector} interface and the loop does
+     * {@code v.getX(p)}. The logical RAW loop ({@code VectorUnsafe} + {@code a[p]}) was the slow path (iteration-1
+     * M10) and is not emitted; arithmetic plain/checked paths still keep RAW. Comparisons are spliced inline in the
+     * loop (C1 does not inline helpers &gt; 35 bytes). No {@code Warnings[]} — comparisons do not warn, and dense
+     * vectors have no multi-values.
      *
      * @param caller the caller's lookup (from the module that owns the comparison kernels); the fused class is defined here
      * @param tree   the logical tree to fuse; its root is a {@link FusionNode.Logical}
-     * @return the defined hidden {@link Class} exposing {@link #FUSED_METHOD_NAME} and {@link #FUSED_INTERFACE_METHOD_NAME}
+     * @return the defined hidden {@link Class} exposing {@link #FUSED_INTERFACE_METHOD_NAME} only
      * @throws StitchingException if the caller lacks the access to define the hidden class or the emitted class fails
      *                            JVM verification/linking — the caller should keep the 3VL block path
      */
@@ -2666,8 +2662,8 @@ public final class Stitcher {
     }
 
     /**
-     * Builds the class bytes for the dense logical vector loop: one {@link #FUSED_METHOD_NAME} (ALL-RAW) method and
-     * one {@link #FUSED_INTERFACE_METHOD_NAME} (ALL-INTERFACE) method, same signature, sharing one hidden class.
+     * Builds the class bytes for the dense logical vector loop: INTERFACE-only {@link #FUSED_INTERFACE_METHOD_NAME}
+     * (B2). The RAW sibling is not emitted.
      */
     private byte[] emitLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         if ((tree instanceof FusionNode.Logical) == false) {
@@ -2681,25 +2677,22 @@ public final class Stitcher {
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
 
         String internalName = fusedClassName(caller, "Fused$$LogicalVectorLoop");
-        MethodNode raw = emitLogicalVectorMethod(tree, inputElements, outputElement, constants, consumed, arity, true);
-        MethodNode iface = emitLogicalVectorMethod(tree, inputElements, outputElement, constants, consumed, arity, false);
+        MethodNode iface = emitLogicalVectorMethod(tree, inputElements, outputElement, constants, consumed, arity);
         if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(raw);
             hostMethodInterceptor.accept(iface);
         }
-        ClassNode classNode = newFusedClass(internalName, raw);
-        classNode.methods.add(iface);
+        ClassNode classNode = newFusedClass(internalName, iface);
         // Not budget-enforced: a representative AND of two comparisons is a handful of bytecodes, and refusing a
         // deep tree would drop the dense path (the whole point of this emit) back to the 3VL builder loop. Measure
-        // via the test seam; log-only like the checked-vector / block fallbacks.
+        // via the test seam; log-only like the checked-vector / block fallbacks. serializeWithBudgetGuard looks up
+        // fused (absent here); size 0 skips the log — the INTERFACE body is the only method and is not refused.
         return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), "logical vector loop", false);
     }
 
     /**
-     * One dense-logical method: {@code fused} when {@code raw} (VectorUnsafe + xALOAD) or {@code fusedInterface}
-     * (typed {@code *Vector.getX(p)}). Signature is
+     * The dense-logical INTERFACE method {@code fusedInterface}: typed {@code *Vector.getX(p)} per input. Signature is
      * {@code (BlockFactory, int, Vector..., constants...)BooleanBlock}; the loop writes {@code boolean[]} and
-     * returns {@code newBooleanArrayVector(out, n).asBlock()}.
+     * returns {@code newBooleanArrayVector(out, n).asBlock()}. No RAW sibling (B2).
      */
     private MethodNode emitLogicalVectorMethod(
         FusionNode tree,
@@ -2707,15 +2700,14 @@ public final class Stitcher {
         Element outputElement,
         List<FusionNode.Constant> constants,
         int[] consumed,
-        int arity,
-        boolean raw
+        int arity
     ) {
         FrameLayout frame = new FrameLayout();
         frame.slot();                                                       // [0] BlockFactory
         frame.slot();                                                       // [1] int positionCount
         int inputBase = frame.slots(arity);                                 // [2 .. 2+arity) input Vectors
         Map<FusionNode.Constant, Integer> constantSlots = allocConstantSlots(constants, frame);
-        int extractedBase = frame.slots(arity);                             // per-input raw array OR typed *Vector
+        int extractedBase = frame.slots(arity);                             // per-input typed *Vector (INTERFACE-only)
         int outSlot = frame.slot();
         int pSlot = frame.slot();
         int kernelBase = frame.mark();
@@ -2730,7 +2722,7 @@ public final class Stitcher {
         MethodNode host = new MethodNode(
             Opcodes.ASM9,
             Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            raw ? FUSED_METHOD_NAME : FUSED_INTERFACE_METHOD_NAME,
+            FUSED_INTERFACE_METHOD_NAME,
             desc.toString(),
             null,
             null
@@ -2741,20 +2733,7 @@ public final class Stitcher {
         for (int i : consumed) {
             Element inputElement = inputElements[i];
             insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase + i));
-            if (raw) {
-                insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.arrayVectorInternalName()));
-                insns.add(
-                    new MethodInsnNode(
-                        Opcodes.INVOKESTATIC,
-                        VECTOR_UNSAFE,
-                        inputElement.vectorUnsafeMethod(),
-                        inputElement.vectorUnsafeDescriptor(),
-                        false
-                    )
-                );
-            } else {
-                insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.vectorInternalName()));
-            }
+            insns.add(new TypeInsnNode(Opcodes.CHECKCAST, inputElement.vectorInternalName()));
             insns.add(new VarInsnNode(Opcodes.ASTORE, extractedBase + i));
         }
 
@@ -2779,19 +2758,15 @@ public final class Stitcher {
             Element element = inputElements[input.index()];
             insns.add(new VarInsnNode(Opcodes.ALOAD, extractedBase + input.index()));
             insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-            if (raw) {
-                insns.add(new InsnNode(element.type().getOpcode(Opcodes.IALOAD)));
-            } else {
-                insns.add(
-                    new MethodInsnNode(
-                        Opcodes.INVOKEINTERFACE,
-                        element.vectorInternalName(),
-                        element.getValueMethod(),
-                        element.getValueDescriptor(),
-                        true
-                    )
-                );
-            }
+            insns.add(
+                new MethodInsnNode(
+                    Opcodes.INVOKEINTERFACE,
+                    element.vectorInternalName(),
+                    element.getValueMethod(),
+                    element.getValueDescriptor(),
+                    true
+                )
+            );
         }, kernel -> {});
         emitter.emit(tree, outputElement);
         insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));

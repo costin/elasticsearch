@@ -23,6 +23,7 @@ import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 
 /**
  * Structural proof for the dense logical vector path ({@link Stitcher#compileLogicalVectorLoop}): the emitted
@@ -48,8 +49,6 @@ public class StitcherLogicalVectorFusionTests extends ESTestCase {
     private static final FusionDescriptor GT = new FusionDescriptor(ComparisonKernels.class, "gt", "(JJ)Z", false, true);
     private static final FusionDescriptor LT = new FusionDescriptor(ComparisonKernels.class, "lt", "(JJ)Z", false, true);
 
-    private static final String VECTOR_UNSAFE = "org/elasticsearch/compute/data/VectorUnsafe";
-
     private Stitcher stitcher;
 
     @Override
@@ -59,11 +58,11 @@ public class StitcherLogicalVectorFusionTests extends ESTestCase {
     }
 
     /**
-     * The emitted logical VECTOR methods contain no {@code INVOKEINTERFACE}/{@code INVOKEVIRTUAL} on {@code Block}
-     * or any typed {@code *Block}, and no reference to any compute-data {@code *Builder}. {@code fusedInterface} must
-     * call typed {@code *Vector.getX} getters (not merely {@code asBlock}); {@code fused} must
-     * {@code INVOKESTATIC VectorUnsafe} and must not call those getters, so the two variants are structurally
-     * distinct. {@code BooleanVector.asBlock()} and {@code BlockFactory.newBooleanArrayVector} stay allowed.
+     * The emitted logical VECTOR method contains no {@code INVOKEINTERFACE}/{@code INVOKEVIRTUAL} on {@code Block}
+     * or any typed {@code *Block}, and no reference to any compute-data {@code *Builder}. B2: the logical vector
+     * class is INTERFACE-only ({@code fusedInterface} with typed {@code *Vector.getX}); the RAW {@code fused}
+     * sibling is not emitted (it was the slow path). {@code BooleanVector.asBlock()} and
+     * {@code BlockFactory.newBooleanArrayVector} stay allowed.
      */
     public void testLogicalVectorLoopHasNoBlockInterfaceOrBuilder() throws Exception {
         FusionNode tree = andGtLt();
@@ -72,17 +71,14 @@ public class StitcherLogicalVectorFusionTests extends ESTestCase {
 
         List<String> methods = new ArrayList<>();
         List<String> violations = new ArrayList<>();
-        // Count typed *Vector getters (getLong/getInt/getDouble) per method — NOT asBlock(), which both
-        // variants call on the BooleanVector result and which would make a class-wide >0 check vacuous.
+        // Count typed *Vector getters (getLong/getInt/getDouble) — NOT asBlock(), which the method also
+        // calls on the BooleanVector result and which would make a class-wide >0 check vacuous.
         int[] interfaceGetters = { 0 };
-        int[] rawGetters = { 0 };
-        int[] rawUnsafe = { 0 };
         new ClassReader(bytecode).accept(new ClassVisitor(Opcodes.ASM9) {
             @Override
             public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
                 methods.add(name);
                 boolean isInterfaceMethod = Stitcher.FUSED_INTERFACE_METHOD_NAME.equals(name);
-                boolean isRawMethod = Stitcher.FUSED_METHOD_NAME.equals(name);
                 return new MethodVisitor(Opcodes.ASM9) {
                     @Override
                     public void visitMethodInsn(int opcode, String owner, String mName, String mDesc, boolean isInterface) {
@@ -100,12 +96,6 @@ public class StitcherLogicalVectorFusionTests extends ESTestCase {
                         if (isInterfaceMethod && typedGetter) {
                             interfaceGetters[0]++;
                         }
-                        if (isRawMethod && typedGetter) {
-                            rawGetters[0]++;
-                        }
-                        if (isRawMethod && opcode == Opcodes.INVOKESTATIC && VECTOR_UNSAFE.equals(owner)) {
-                            rawUnsafe[0]++;
-                        }
                     }
 
                     @Override
@@ -118,16 +108,14 @@ public class StitcherLogicalVectorFusionTests extends ESTestCase {
             }
         }, 0);
 
-        assertThat("emitted both fused and fusedInterface", methods, hasItem(Stitcher.FUSED_METHOD_NAME));
-        assertThat("emitted both fused and fusedInterface", methods, hasItem(Stitcher.FUSED_INTERFACE_METHOD_NAME));
+        assertThat("logical vector is INTERFACE-only (B2): fusedInterface present", methods, hasItem(Stitcher.FUSED_INTERFACE_METHOD_NAME));
+        assertThat("logical vector is INTERFACE-only (B2): no RAW fused method", methods, not(hasItem(Stitcher.FUSED_METHOD_NAME)));
         assertThat("logical VECTOR methods must not invoke compute/data *Block or *Builder: " + violations, violations, is(empty()));
         assertThat(
             "fusedInterface must INVOKEINTERFACE getLong/getInt/getDouble on a *Vector (asBlock does not count)",
             interfaceGetters[0],
             greaterThan(0)
         );
-        assertThat("fused ALL-RAW must INVOKESTATIC VectorUnsafe", rawUnsafe[0], greaterThan(0));
-        assertThat("fused ALL-RAW must not call typed *Vector getters", rawGetters[0], is(0));
     }
 
     /**

@@ -69,9 +69,9 @@ import java.util.List;
  *       (or {@code fusedRawInterface}) first (dense {@code *ArrayVector} output); a {@code null} Block means the page
  *       overflowed and the matching builder-based {@code fused}/{@code fusedInterface} method re-runs that page.</li>
  *   <li><b>Dense logical vector path</b> ({@link Stitcher#compileLogicalVectorLoop}) — compiled for a 3VL
- *       {@code AND}/{@code OR} tree alongside its block path. At eval time, a page whose every input
- *       {@code asVector()} is non-null takes the 2VL vector loop (ALL-RAW or ALL-INTERFACE); otherwise the 3VL
- *       block path.</li>
+ *       {@code AND}/{@code OR} tree alongside its block path. INTERFACE-only after B2: a page whose every input
+ *       {@code asVector()} is non-null takes {@code fusedInterface}; otherwise the 3VL block path. The logical
+ *       RAW loop is not compiled.</li>
  * </ul>
  * All paths define their hidden class in <b>this</b> (esql-proper) caller module. The vector paths reach a dense
  * {@code *ArrayVector}'s package-private backing array through the public exported
@@ -130,7 +130,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         CHECKED_VECTOR,
         /**
          * {@link Stitcher#compileLogicalVectorLoop}: dense (any vector kind, no nulls / multi-values) 2VL evaluation
-         * of an {@code AND}/{@code OR} tree. Pages with nulls or multi-values still take the 3VL block path.
+         * of an {@code AND}/{@code OR} tree, INTERFACE-only after B2 ({@code fusedInterface}; no RAW sibling). Pages
+         * with nulls or multi-values still take the 3VL block path.
          */
         LOGICAL_VECTOR,
         /**
@@ -147,12 +148,15 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      */
     enum LastEvalPath {
         /**
-         * ALL-RAW: every input was an exact {@code *ArrayVector}. PLAIN/LOGICAL invoke
-         * {@link Stitcher#FUSED_METHOD_NAME}; CHECKED invokes {@link Stitcher#FUSED_RAW_METHOD_NAME} first (builder
-         * {@code fused} only on overflow).
+         * ALL-RAW: every input was an exact {@code *ArrayVector}. PLAIN invokes {@link Stitcher#FUSED_METHOD_NAME};
+         * CHECKED invokes {@link Stitcher#FUSED_RAW_METHOD_NAME} first (builder {@code fused} only on overflow).
+         * LOGICAL_VECTOR never takes this path (INTERFACE-only after B2).
          */
         RAW,
-        /** ALL-INTERFACE: at least one input was a non-array vector; {@link Stitcher#FUSED_INTERFACE_METHOD_NAME}. */
+        /**
+         * ALL-INTERFACE: {@link Stitcher#FUSED_INTERFACE_METHOD_NAME}. Arithmetic: at least one input was a non-array
+         * vector. {@link VectorStrategy#LOGICAL_VECTOR} always (INTERFACE-only after B2).
+         */
         INTERFACE,
         /** Block path (nulls / multi-values, or no vector strategy). */
         BLOCK
@@ -177,9 +181,10 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     private final MethodHandle blockHandle;
     private final MethodHandle vectorHandle;
     /**
-     * The ALL-INTERFACE sibling of {@link #vectorHandle}. Bound for {@link VectorStrategy#LOGICAL_VECTOR},
-     * {@link VectorStrategy#PLAIN_VECTOR} (scalar, not SIMD), and {@link VectorStrategy#CHECKED_VECTOR} (the builder
-     * {@code fusedInterface}). Null when no interface variant was compiled (block-only, SIMD). The factory picks
+     * The ALL-INTERFACE sibling of {@link #vectorHandle}. Bound for {@link VectorStrategy#PLAIN_VECTOR} (scalar, not
+     * SIMD) and {@link VectorStrategy#CHECKED_VECTOR} (the builder {@code fusedInterface}). Null for
+     * {@link VectorStrategy#LOGICAL_VECTOR} (the interface method is {@link #vectorHandle} itself — B2 deleted the
+     * logical RAW sibling) and when no interface variant was compiled (block-only, SIMD). Arithmetic picks
      * {@link #vectorHandle} (ALL-RAW) vs this handle per page.
      */
     private final MethodHandle vectorHandleInterface;
@@ -187,8 +192,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * The overflow-abandoning raw-array sibling of {@link #vectorHandle}, bound only for
      * {@link VectorStrategy#CHECKED_VECTOR}. Null on every other strategy. Eval invokes this first; a {@code null}
      * {@link Block} means the page overflowed and {@link #vectorHandle} (the builder-based {@code fused} method)
-     * re-runs it. Dedicated field — not {@link #vectorHandleInterface} — so LOGICAL_VECTOR's interface handle stays
-     * unambiguous.
+     * re-runs it. Dedicated field — not {@link #vectorHandleInterface} — so a CHECKED overflow-abandon handle stays
+     * distinct from the arithmetic INTERFACE sibling.
      */
     private final MethodHandle vectorHandleRaw;
     /**
@@ -391,22 +396,22 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 MethodHandle logicalHandle = LOOKUP.findStatic(logicalClass, Stitcher.FUSED_METHOD_NAME, logicalType);
                 try {
                     MethodType vectorType = logicalVectorType(arity, constantParamTypes);
+                    // B2: INTERFACE-only — resolve fusedInterface, not fused. A stitch/findStatic miss still
+                    // degrades to LOGICAL_BLOCK (the block handle already succeeded), not full unfused.
                     Class<?> vectorClass = compiler.compileLogicalVectorLoop(
                         LOOKUP,
                         tree,
                         vectorType,
-                        Stitcher.FUSED_METHOD_NAME,
                         Stitcher.FUSED_INTERFACE_METHOD_NAME
                     );
-                    MethodHandle rawHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, vectorType);
                     MethodHandle interfaceHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_INTERFACE_METHOD_NAME, vectorType);
                     return new FusedExpressionEvaluatorFactory(
                         warningSources,
                         inputChannels,
                         inputElements,
                         logicalHandle,
-                        rawHandle,
                         interfaceHandle,
+                        null,
                         VectorStrategy.LOGICAL_VECTOR,
                         unfused,
                         shape,
@@ -850,9 +855,10 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     /**
      * The runtime evaluator. Reads its leaf inputs directly from the page's channels (borrowed, never closed), then
      * dispatches to the fused method. Arithmetic {@link VectorStrategy#PLAIN_VECTOR}/{@link VectorStrategy#CHECKED_VECTOR}
-     * and {@link VectorStrategy#LOGICAL_VECTOR} all accept any dense vector kind ({@code Constant*Vector},
-     * {@code *BigArrayVector}, {@code *ArrayVector} — {@code asVector() != null}): exact {@code *ArrayVector} pages
-     * take ALL-RAW, other dense pages take ALL-INTERFACE. Null / multi-value pages take the block path.
+     * accept any dense vector kind ({@code Constant*Vector}, {@code *BigArrayVector}, {@code *ArrayVector} —
+     * {@code asVector() != null}): exact {@code *ArrayVector} pages take ALL-RAW, other dense pages take ALL-INTERFACE.
+     * {@link VectorStrategy#LOGICAL_VECTOR} is INTERFACE-only after B2 (no RAW sibling). Null / multi-value pages
+     * take the block path.
      */
     private static final class FusedExpressionEvaluator implements ExpressionEvaluator {
 
@@ -1088,29 +1094,26 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             throws Throwable {
             boolean exact = allExactArrayVectors(dense);
             return switch (vectorStrategy) {
-                case LOGICAL_VECTOR -> evalLogicalVector(dense, exact, blockFactory, positionCount, arity, constCount);
+                case LOGICAL_VECTOR -> evalLogicalVector(dense, blockFactory, positionCount, arity, constCount);
                 case PLAIN_VECTOR -> evalPlainVector(dense, exact, blockFactory, positionCount, arity, constCount);
                 case CHECKED_VECTOR -> evalCheckedVector(dense, exact, blockFactory, positionCount, arity, constCount);
                 case NONE -> null;
             };
         }
 
-        private Block evalLogicalVector(
-            Vector[] dense,
-            boolean exact,
-            BlockFactory blockFactory,
-            int positionCount,
-            int arity,
-            int constCount
-        ) throws Throwable {
-            lastEvalPath = exact ? LastEvalPath.RAW : LastEvalPath.INTERFACE;
-            MethodHandle spreader = exact ? vectorSpreader : vectorInterfaceSpreader;
+        /**
+         * LOGICAL_VECTOR is INTERFACE-only after B2: always {@code fusedInterface}. Does not consult
+         * {@link #allExactArrayVectors} / {@code vectorReadsInterface} — there is no RAW logical spreader to pick.
+         */
+        private Block evalLogicalVector(Vector[] dense, BlockFactory blockFactory, int positionCount, int arity, int constCount)
+            throws Throwable {
+            lastEvalPath = LastEvalPath.INTERFACE;
             Object[] args = vectorScratch;
             args[0] = blockFactory;
             args[1] = positionCount;
             System.arraycopy(dense, 0, args, 2, arity);
             System.arraycopy(constantValues, 0, args, 2 + arity, constCount);
-            return (Block) spreader.invoke(args);
+            return (Block) vectorSpreader.invoke(args);
         }
 
         private Block evalPlainVector(
