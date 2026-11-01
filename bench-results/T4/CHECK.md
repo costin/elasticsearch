@@ -80,6 +80,13 @@ Full CsvIT (ALL csv-spec, coverage on): 7657 tests, 252 skipped, 0 failures, 4m5
 Top refusals: depth<2=12585, Div=5858, MvSlice=4558, Case=1758, PackDimension=878, ToLong=802, UnpackDimension=756, IsNotNull=652, ToDouble=574, Bucket=505.
 Fails-before-fix (commit body): testDeclinedFilterEvalCountsAsOneTopLevel expected <1L> but was <3L>.
 
+## H10 — fuse DATETIME range comparisons as long (commit 333f1202b3f)
+Full fusion gate (implementer): BUILD SUCCESSFUL 4m41s. 2 reviewer nits applied (dense parity page straddles [t1,t2] incl boundaries; buildConstant comparison-only comment); targeted LogicalFusionDifferentialTests + spotless re-run green. Orchestrator confirming full gate at HEAD 333f1202b3f: BUILD SUCCESSFUL in 5m16s, GATE_EXIT=0.
+Reviewer GO (no blockers; scope/value-identity/mixed-type-refusal all verified against GreaterThanOrEqual.evaluatorMap + EsqlBinaryComparison.toEvaluator). 2 nits applied.
+DECISION: MAP DATETIME+DATE_NANOS to LONG for comparisons only (evidence: same-type date comparisons bind the long kernels; mixed-type still refuses; elementOf/arithmetic unchanged).
+No CsvIT (not an H1/H2/H5/final gate).
+Fails-before-fix (commit body): testDatetimeGteLteRangeFuses expected FusedExpressionEvaluatorFactory but was BooleanLogicExpressionEvaluator wrapping the Longs evaluators. testNotDensePathPicksInterfaceVsBlock is coverage (passed pre-change).
+
 ## H9 — F4 coverage probe comparable to F0 (uncommitted)
 Once per top-level expression; FUSED/ISLAND/FRAGMENT/NONE; first-refusal reason;
 sysprop-only `esql.fusion.coverage_report` (Setting removed). Gradle:

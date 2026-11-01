@@ -1,5 +1,5 @@
 # Iteration 4 report
-Code HEAD: 3e6d6d8dd9c (through H9)   Evidence HEAD: (pending)
+Code HEAD: 333f1202b3f (through H10)   Evidence HEAD: (pending)
 
 Delivery: direct push to `esql/fix/compute-codegen-followup`, no PR (operator directive).
 Driven by the orchestrator; each production change implemented test-first by a subagent,
@@ -17,7 +17,7 @@ reviewed by a fresh subagent, nits applied, then committed by the orchestrator.
 | H7 | done | 89a065fdb7c | FusionVerifyTests#testThrownKernelExceptionCarriesFusedFrameInfo; StitcherDebugInfoTests#testOversizedSourceFileAndKernelMapAreCappedAndStillDefine | y | Suppressed FusedFrameInfo(shape, KERNEL_MAP) attached at both fused factories' per-page catch/rethrow (RuntimeException with writableStackTrace=false, suppression off; cold-path only), so default traces (no -XX:+ShowHiddenFrames) name shape+kernel class#method. KERNEL_MAP resolved once per factory via revealDirect on block handle. SourceFile+KERNEL_MAP capped at 4KB on UTF-8 boundary so oversized signatures can't make ASM throw. Stale comments in FusedClassDebugInfo + Stitcher corrected. 2 reviewer nits applied (dead keep<0 clamp -> assert; trailing catch(Throwable) also attaches frame info). |
 | H8 | done | 6e3e4a8f5fe | FusionFallbackHardeningTests (ExactlyOnceWarnExpectation x5); FusedClassCacheTests#testCacheHitDoesNotCallFindStatic + through-production stitch-fail test; FusionVerifyTests#testVerifyPageNullPathLabelsQuestionMark | y | G7 count WARN == 1 over 3 plans (was at-least-once); G5 drive FusionCompilationService.cached (deleted type=null 2-arg compile* overloads); G5/E7 resolve MethodHandle+asSpreader once, store on CachedFused so cache hit skips findStatic/asSpreader (PENDING_RESOLVED thread-local, cleared in wrapStitchFailures finally); E7 18-arg ctor -> FusedDispatch record (hot-path fields copied in ctor, no per-page indirection); verify label ? when -ea off; VectorHandles renamed primary/primaryInterface/raw/rawInterface; G9 javadoc corrected (no C2 fold of instance final). planCachedThenGet benchmark deferred to H13. 1 reviewer doc nit applied, 2 refactor nits skipped. |
 | H9 | done | 3e6d6d8dd9c | FusionTelemetryCoverageTests (four-category + testDeclinedFilterEvalCountsAsOneTopLevel + sysprop-not-setting + testMapExpressionChildDoesNotInvokeRawFactory; 11 tests) | y | Coverage counted once per top-level expr (EVAL/WHERE/FilterEval pair) via FusionCoverage; FUSED/ISLAND/FRAGMENT/NONE + first-refusal reason; sysprop-only esql.fusion.coverage_report (registered Setting removed); zero production impact when off (plan-time volatile read short-circuit, ThreadLocal cleared in finally, classify wrapped in catch). Full CsvIT: FUSED 2.9% (down from F0 18.7%) \u2014 stated plainly; pre-H9 probe was not comparable. See Coverage section. 2 reviewer doc nits applied (recordFused test-only hazard, refusedAtPlan derived note); perf nit skipped. |
-| H10 | pending | | | | |
+| H10 | done (MAP) | 333f1202b3f | LogicalFusionDifferentialTests#{testDatetimeGteLteRangeFuses, testNotDensePathPicksInterfaceVsBlock} | y (map test); Not test is coverage (passed pre-change) | DECISION: MAP DATETIME+DATE_NANOS to LONG for comparisons ONLY (not an open question). Same-type unfused GTE/LTE/GT/LT/EQ/NEQ bind *LongsEvaluator / @Fusable processLongs(JJ) (GreaterThanOrEqual.evaluatorMap + siblings), so fused==unfused byte-identical. Scope: matches()/buildConstant comparison path only (single caller buildComparisonOperand); elementOf unchanged so arithmetic over dates still refuses. Mixed DATETIME-vs-DATE_NANOS uses non-FusionAware NanosMillis/MillisNanos kernels -> still refuses. H9 evidence: GTE/DATETIME absent from top-10 because first-refusal of And(GTE,LTE) is "And" (GTE is FusionAware); ~386 of that shape sits just under Bucket=505; shape is in csv-spec (PromQL withTimestampFilter). Dense parity test straddles [t1,t2] incl boundaries. |
 | H11 | pending | | | | |
 | H12 | pending | | | | |
 | H13 | pending | | | | |
@@ -86,4 +86,6 @@ Measured 2026-11-01 on a c7i.metal-24xl. tip / stabilize-final control / round-B
 H1: FilterEval LEFT/RIGHT shapes unstitchable (@Fixed scratch const "unsupported fused constant element [L]"); used k1==k2/k1!=k2/k1==TRIM(k2) two-column analogs for the filter-eval guards. LEFT(k1)==LEFT(k2) retained as coverage-only (each LEFT writes its own scratch, so it does not reproduce the aliasing pre-fix).
 
 ## Open questions
-(tracked per item; see H10 for DATETIME GTE/LTE)
+(tracked per item)
+- H10 DATETIME GTE/LTE: RESOLVED (mapped to LONG for comparisons; not open).
+- H5 follow-ups: compile-time guard for overflowChecked=false+warnExceptions; dictionarySafe classification test (not blocking).
