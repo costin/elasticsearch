@@ -39,19 +39,14 @@ import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.core.type.EsField;
 import org.elasticsearch.xpack.esql.evaluator.EvalMapper;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
-import org.elasticsearch.xpack.esql.expression.function.scalar.math.Round;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToLower;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
-import org.elasticsearch.xpack.esql.expression.predicate.logical.Not;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
-import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Div;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Sub;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
-import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThanOrEqual;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.LessThan;
-import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.LessThanOrEqual;
 import org.elasticsearch.xpack.esql.planner.Layout;
 import org.elasticsearch.xpack.esql.plugin.QueryPragmas;
 import org.elasticsearch.xpack.esql.session.Configuration;
@@ -271,40 +266,6 @@ public class SlowPathFusionBenchmark {
                 );
             }
         },
-        /** {@code a >= b AND c <= d}, long, dense. GTE/LTE already fuse; this cell measures the inclusive pair. */
-        AND_CMP_GTE_LTE_LONG {
-            @Override
-            Built build() {
-                FieldAttribute a = field("a", DataType.LONG), b = field("b", DataType.LONG);
-                FieldAttribute c = field("c", DataType.LONG), d = field("d", DataType.LONG);
-                Expression expr = new And(
-                    Source.EMPTY,
-                    new GreaterThanOrEqual(Source.EMPTY, a, b),
-                    new LessThanOrEqual(Source.EMPTY, c, d)
-                );
-                return new Built(expr, layout(a, b, c, d));
-            }
-
-            @Override
-            Page page(int size) {
-                return new Page(longs(size, i -> i % 50), longs(size, i -> i % 49), longs(size, i -> i % 40), longs(size, i -> i % 41));
-            }
-        },
-        /** {@code NOT(a > b AND c < d)}, long, dense. F2b: Kleene 3VL Not of a fusable AND of comparisons. */
-        NOT_AND_CMP_LONG {
-            @Override
-            Built build() {
-                FieldAttribute a = field("a", DataType.LONG), b = field("b", DataType.LONG);
-                FieldAttribute c = field("c", DataType.LONG), d = field("d", DataType.LONG);
-                Expression and = new And(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new LessThan(Source.EMPTY, c, d));
-                return new Built(new Not(Source.EMPTY, and), layout(a, b, c, d));
-            }
-
-            @Override
-            Page page(int size) {
-                return new Page(longs(size, i -> i % 50), longs(size, i -> i % 49), longs(size, i -> i % 40), longs(size, i -> i % 41));
-            }
-        },
         /** {@code TO_LOWER(s)} over an ordinal-encoded keyword vector with a 16-entry dictionary. Lone mapping is unfused (D4). */
         TO_LOWER_ORDINAL {
             @Override
@@ -357,47 +318,6 @@ public class SlowPathFusionBenchmark {
                 }
             }
         },
-        /**
-         * F1: {@code (a * b) / 1000} over long vectors. Depth ≥ 2 so it fuses; the compile-time divisor is baked as an
-         * immediate so C2 can strength-reduce the division. Kernel is still {@code processLongs}, not
-         * {@code *ByConstant}.
-         */
-        LONG_DIV_CONST {
-            @Override
-            Built build() {
-                FieldAttribute a = field("a", DataType.LONG), b = field("b", DataType.LONG);
-                Expression mul = new Mul(Source.EMPTY, a, b);
-                return new Built(new Div(Source.EMPTY, mul, new Literal(Source.EMPTY, 1000L, DataType.LONG)), layout(a, b));
-            }
-
-            @Override
-            Page page(int size) {
-                return new Page(longs(size, i -> i % 1000), longs(size, i -> 1 + i % 100));
-            }
-        },
-        /**
-         * {@code ROUND(d * 1.1, 3)} over double vectors. Round fusion is deferred (Round is a delegating expression,
-         * not {@code @Fusable}); this cell is an unfused baseline so a later round can measure a fused version against
-         * it. {@code fusesToday()==false}.
-         */
-        ROUND3 {
-            @Override
-            Built build() {
-                FieldAttribute d = field("d", DataType.DOUBLE);
-                Expression scaled = new Mul(Source.EMPTY, d, new Literal(Source.EMPTY, 1.1, DataType.DOUBLE));
-                return new Built(new Round(Source.EMPTY, scaled, new Literal(Source.EMPTY, 3, DataType.INTEGER)), layout(d));
-            }
-
-            @Override
-            boolean fusesToday() {
-                return false;
-            }
-
-            @Override
-            Page page(int size) {
-                return new Page(doubles(size, i -> i % 100));
-            }
-        },
         /** {@code (a + b) * c}, long, dense, but 10% of rows overflow on {@code a + b} -> null + warning. */
         OVERFLOW10_ADD_MUL_LONG {
             @Override
@@ -436,8 +356,7 @@ public class SlowPathFusionBenchmark {
         abstract Page page(int size);
 
         /**
-         * {@code true} where fusion is expected today. Lone mapping cells ({@code TO_LOWER_*}) stay unfused (D4);
-         * {@code ROUND3} stays unfused (Round fusion is deferred).
+         * {@code true} where fusion is expected today. Lone mapping cells ({@code TO_LOWER_*}) stay unfused (D4).
          */
         boolean fusesToday() {
             return true;

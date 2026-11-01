@@ -13,6 +13,7 @@ import org.elasticsearch.benchmark.Utils;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -78,6 +79,7 @@ public class FusionStrategyBenchmark {
     @Param({ "NONE" })
     public Pollution pollute;
 
+    private ExpressionEvaluator.Factory factory;
     private ExpressionEvaluator evaluator;
     private Page page;
 
@@ -97,7 +99,7 @@ public class FusionStrategyBenchmark {
             expected = reference.eval(page);
         }
         strategy.prepare();
-        ExpressionEvaluator.Factory factory = strategy.factory(shape);
+        factory = strategy.factory(shape);
         if (strategy == FusionStrategy.SPLICED && SlowPathFusionBenchmark.isFused(factory) == false) {
             throw new AssertionError(shape + " did not fuse: " + factory.getClass().getName());
         }
@@ -173,5 +175,39 @@ public class FusionStrategyBenchmark {
     @OutputTimeUnit(TimeUnit.MICROSECONDS)
     public ExpressionEvaluator.Factory planCached() {
         return strategy.factory(shape);
+    }
+
+    /**
+     * Plan-time cost per query with a cold class cache. Each invocation drops the process-wide fused-class cache
+     * then builds the factory (SPLICED: a stitch miss; others: the same build as {@link #planCached}).
+     */
+    @Benchmark
+    @BenchmarkMode(Mode.AverageTime)
+    @OutputTimeUnit(TimeUnit.MICROSECONDS)
+    public ExpressionEvaluator.Factory planMiss() {
+        FusionSettings.resetClassCacheForBenchmarks();
+        return strategy.factory(shape);
+    }
+
+    /** {@code get()} repetition count for {@link #planCachedThenGet}. */
+    @State(Scope.Thread)
+    public static class GetCount {
+        @Param({ "1", "4", "16" })
+        public int n;
+    }
+
+    /**
+     * Cached-factory {@code get()} cost: the factory is built once in {@link #setup} (warm class cache for SPLICED),
+     * then this cell calls {@code factory.get} {@link GetCount#n} times.
+     */
+    @Benchmark
+    @BenchmarkMode(Mode.AverageTime)
+    @OutputTimeUnit(TimeUnit.MICROSECONDS)
+    public void planCachedThenGet(GetCount gs, Blackhole bh) {
+        for (int i = 0; i < gs.n; i++) {
+            ExpressionEvaluator e = factory.get(driverContext);
+            bh.consume(e);
+            e.close();
+        }
     }
 }

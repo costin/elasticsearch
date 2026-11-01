@@ -24,16 +24,21 @@ import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.EvalMapper;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
+import org.elasticsearch.xpack.esql.expression.function.scalar.math.Round;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Length;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToLower;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
+import org.elasticsearch.xpack.esql.expression.predicate.logical.Not;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Div;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Sub;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.Equals;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThanOrEqual;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.LessThan;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.LessThanOrEqual;
 import org.elasticsearch.xpack.esql.planner.Layout;
 import org.elasticsearch.xpack.esql.session.Configuration;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -61,7 +66,10 @@ import java.util.concurrent.TimeUnit;
  * {@link SlowPathFusionBenchmark}. Nested {@code TO_LOWER} cases fuse via D3/F3. {@link Case#DEEP_ARITH} is a deep
  * arithmetic chain that fuses INLINE under the 8000-bytecode {@code HugeMethodLimit} huge-method guard.
  * {@link Case#DEEP_LOGICAL} is a deep balanced AND/OR nest of long comparisons that also fuses INLINE (comfortably
- * under the same guard). Both are correctness-checked in {@link #setup} via {@code assertSameOutput}.
+ * under the same guard). F1/F2 cells ({@link Case#LONG_DIV_CONST}, {@link Case#AND_CMP_GTE_LTE_LONG},
+ * {@link Case#NOT_AND_CMP_LONG}) and the unfused {@link Case#ROUND3} baseline live here so they do not change
+ * {@code SlowPathFusionBenchmark} pollution. Both fused and unfused cells are correctness-checked in {@link #setup}
+ * via {@code assertSameOutput}.
  */
 @Warmup(iterations = 3, time = 2)
 @Measurement(iterations = 5, time = 2)
@@ -223,11 +231,7 @@ public class FusionFollowupBenchmark {
             @Override
             Built build() {
                 FieldAttribute k = SlowPathFusionBenchmark.field("k", DataType.KEYWORD);
-                Expression expr = new Equals(
-                    Source.EMPTY,
-                    k,
-                    new Literal(Source.EMPTY, new BytesRef("x"), DataType.KEYWORD)
-                );
+                Expression expr = new Equals(Source.EMPTY, k, new Literal(Source.EMPTY, new BytesRef("x"), DataType.KEYWORD));
                 return new Built(expr, SlowPathFusionBenchmark.layout(k));
             }
 
@@ -245,13 +249,119 @@ public class FusionFollowupBenchmark {
             boolean fusesToday() {
                 return true;
             }
+        },
+        /** {@code a >= b AND c <= d}, long, dense. GTE/LTE already fuse; this cell measures the inclusive pair. */
+        AND_CMP_GTE_LTE_LONG {
+            @Override
+            Built build() {
+                FieldAttribute a = SlowPathFusionBenchmark.field("a", DataType.LONG);
+                FieldAttribute b = SlowPathFusionBenchmark.field("b", DataType.LONG);
+                FieldAttribute c = SlowPathFusionBenchmark.field("c", DataType.LONG);
+                FieldAttribute d = SlowPathFusionBenchmark.field("d", DataType.LONG);
+                Expression expr = new And(
+                    Source.EMPTY,
+                    new GreaterThanOrEqual(Source.EMPTY, a, b),
+                    new LessThanOrEqual(Source.EMPTY, c, d)
+                );
+                return new Built(expr, SlowPathFusionBenchmark.layout(a, b, c, d));
+            }
+
+            @Override
+            Page page(int size) {
+                return new Page(
+                    SlowPathFusionBenchmark.longs(size, i -> i % 50),
+                    SlowPathFusionBenchmark.longs(size, i -> i % 49),
+                    SlowPathFusionBenchmark.longs(size, i -> i % 40),
+                    SlowPathFusionBenchmark.longs(size, i -> i % 41)
+                );
+            }
+
+            @Override
+            boolean fusesToday() {
+                return true;
+            }
+        },
+        /** {@code NOT(a > b AND c < d)}, long, dense. F2b: Kleene 3VL Not of a fusable AND of comparisons. */
+        NOT_AND_CMP_LONG {
+            @Override
+            Built build() {
+                FieldAttribute a = SlowPathFusionBenchmark.field("a", DataType.LONG);
+                FieldAttribute b = SlowPathFusionBenchmark.field("b", DataType.LONG);
+                FieldAttribute c = SlowPathFusionBenchmark.field("c", DataType.LONG);
+                FieldAttribute d = SlowPathFusionBenchmark.field("d", DataType.LONG);
+                Expression and = new And(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new LessThan(Source.EMPTY, c, d));
+                return new Built(new Not(Source.EMPTY, and), SlowPathFusionBenchmark.layout(a, b, c, d));
+            }
+
+            @Override
+            Page page(int size) {
+                return new Page(
+                    SlowPathFusionBenchmark.longs(size, i -> i % 50),
+                    SlowPathFusionBenchmark.longs(size, i -> i % 49),
+                    SlowPathFusionBenchmark.longs(size, i -> i % 40),
+                    SlowPathFusionBenchmark.longs(size, i -> i % 41)
+                );
+            }
+
+            @Override
+            boolean fusesToday() {
+                return true;
+            }
+        },
+        /**
+         * F1: {@code (a * b) / 1000} over long vectors. Depth ≥ 2 so it fuses; the compile-time divisor is baked as an
+         * immediate so C2 can strength-reduce the division. Kernel is still {@code processLongs}, not
+         * {@code *ByConstant}.
+         */
+        LONG_DIV_CONST {
+            @Override
+            Built build() {
+                FieldAttribute a = SlowPathFusionBenchmark.field("a", DataType.LONG);
+                FieldAttribute b = SlowPathFusionBenchmark.field("b", DataType.LONG);
+                Expression mul = new Mul(Source.EMPTY, a, b);
+                return new Built(
+                    new Div(Source.EMPTY, mul, new Literal(Source.EMPTY, 1000L, DataType.LONG)),
+                    SlowPathFusionBenchmark.layout(a, b)
+                );
+            }
+
+            @Override
+            Page page(int size) {
+                return new Page(SlowPathFusionBenchmark.longs(size, i -> i % 1000), SlowPathFusionBenchmark.longs(size, i -> 1 + i % 100));
+            }
+
+            @Override
+            boolean fusesToday() {
+                return true;
+            }
+        },
+        /**
+         * {@code ROUND(d * 1.1, 3)} over double vectors. Round fusion is deferred (Round is a delegating expression,
+         * not {@code @Fusable}); this cell is an unfused baseline so a later round can measure a fused version against
+         * it. {@code fusesToday()==false}.
+         */
+        ROUND3 {
+            @Override
+            Built build() {
+                FieldAttribute d = SlowPathFusionBenchmark.field("d", DataType.DOUBLE);
+                Expression scaled = new Mul(Source.EMPTY, d, new Literal(Source.EMPTY, 1.1, DataType.DOUBLE));
+                return new Built(
+                    new Round(Source.EMPTY, scaled, new Literal(Source.EMPTY, 3, DataType.INTEGER)),
+                    SlowPathFusionBenchmark.layout(d)
+                );
+            }
+
+            @Override
+            Page page(int size) {
+                return new Page(SlowPathFusionBenchmark.doubles(size, i -> i % 100));
+            }
         };
 
         abstract Built build();
 
         abstract Page page(int size);
 
-        /** {@code true} where fusion is expected today ({@code DEEP_ARITH}, {@code DEEP_LOGICAL}, and the D3/F3 cells). */
+        /** {@code true} where fusion is expected today. {@link Case#ROUND3} keeps the default {@code false}. */
         boolean fusesToday() {
             return false;
         }
@@ -316,6 +426,8 @@ public class FusionFollowupBenchmark {
             if (SlowPathFusionBenchmark.isFused(fused) == false) {
                 throw new AssertionError(shape + " did not fuse with fusion=true: " + fused.getClass().getName());
             }
+        } else if (SlowPathFusionBenchmark.isFused(fused)) {
+            throw new AssertionError(shape + " fused with fusion=true but fusesToday=false: " + fused);
         }
         this.page = shape.page(size);
         SlowPathFusionBenchmark.assertSameOutput(

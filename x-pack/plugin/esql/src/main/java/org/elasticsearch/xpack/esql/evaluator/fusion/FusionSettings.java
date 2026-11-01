@@ -344,4 +344,14 @@ public final class FusionSettings {
     public static void setEnabledForBenchmarks(boolean value) {
         enabled = value;
     }
+
+    /**
+     * Benchmark-only PUBLIC hook that resets the process-wide fused-class cache state (drops all cached classes,
+     * zeroes telemetry counters, and clears baked-divisor/test hooks) so a JMH cell
+     * ({@code FusionStrategyBenchmark.planMiss}) can measure a cold stitch. The {@code :benchmarks} module cannot
+     * see the package-private {@code FusedClassCache#resetForTests}. Never called in production.
+     */
+    public static void resetClassCacheForBenchmarks() {
+        FusionPlanner.classCache().resetForTests();
+    }
 }
