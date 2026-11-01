@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.evaluator.fusion;
 import org.elasticsearch.compute.operator.fusion.FusionAware;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.test.ESTestCase;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Abs;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Div;
@@ -85,35 +86,50 @@ public class ArithmeticFactoryFusionAwareTests extends ESTestCase {
     }
 
     /**
-     * FusionPlanner.bakedDivModDescriptor synthesizes the 6-arg FusionDescriptor (explicit ArithmeticException)
-     * so it matches the generated DivLongsEvaluator / ModLongsEvaluator form literally. The records must equal.
+     * {@link FusionPlanner#bakedDivModDescriptor} must equal the generated {@code FUSION_DESCRIPTOR} on every
+     * Div/Mod × int/long/double {@code process*} factory (six records). Comparing against the generated field
+     * catches drift if either side changes the 6-arg form (explicit {@code ArithmeticException}, not variadic).
      */
-    public void testBakedDivModDescriptorEqualsGeneratedLongsFactories() throws Exception {
-        FusionDescriptor synthesizedDiv = new FusionDescriptor(
+    public void testBakedDivModDescriptorEqualsGeneratedFactories() throws Exception {
+        assertBakedDivModMatches(
             Div.class,
-            "processLongs",
-            "(JJ)J",
-            true,
-            true,
-            "java.lang.ArithmeticException"
+            ElementKind.INT,
+            "org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.DivIntsEvaluator$Factory"
         );
-        FusionDescriptor synthesizedMod = new FusionDescriptor(
+        assertBakedDivModMatches(
+            Div.class,
+            ElementKind.LONG,
+            "org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.DivLongsEvaluator$Factory"
+        );
+        assertBakedDivModMatches(
+            Div.class,
+            ElementKind.DOUBLE,
+            "org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.DivDoublesEvaluator$Factory"
+        );
+        assertBakedDivModMatches(
             Mod.class,
-            "processLongs",
-            "(JJ)J",
-            true,
-            true,
-            "java.lang.ArithmeticException"
+            ElementKind.INT,
+            "org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.ModIntsEvaluator$Factory"
         );
-        assertEquals(
-            "synthesized Div processLongs descriptor must equal generated DivLongsEvaluator$Factory.FUSION_DESCRIPTOR",
-            synthesizedDiv,
-            readFusionDescriptor("org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.DivLongsEvaluator$Factory")
+        assertBakedDivModMatches(
+            Mod.class,
+            ElementKind.LONG,
+            "org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.ModLongsEvaluator$Factory"
         );
+        assertBakedDivModMatches(
+            Mod.class,
+            ElementKind.DOUBLE,
+            "org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.ModDoublesEvaluator$Factory"
+        );
+    }
+
+    private static void assertBakedDivModMatches(Class<?> kernelClass, ElementKind element, String factoryFqn) throws Exception {
+        FusionDescriptor synthesized = FusionPlanner.bakedDivModDescriptor(kernelClass, element);
+        assertNotNull("bakedDivModDescriptor(" + kernelClass.getSimpleName() + ", " + element + ")", synthesized);
         assertEquals(
-            "synthesized Mod processLongs descriptor must equal generated ModLongsEvaluator$Factory.FUSION_DESCRIPTOR",
-            synthesizedMod,
-            readFusionDescriptor("org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.ModLongsEvaluator$Factory")
+            "bakedDivModDescriptor(" + kernelClass.getSimpleName() + ", " + element + ") must equal " + factoryFqn + ".FUSION_DESCRIPTOR",
+            synthesized,
+            readFusionDescriptor(factoryFqn)
         );
     }
 

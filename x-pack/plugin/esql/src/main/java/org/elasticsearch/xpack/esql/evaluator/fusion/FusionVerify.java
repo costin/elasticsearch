@@ -479,6 +479,14 @@ final class FusionVerify {
         BYTES_BY_SHAPE.put(shape, captured.toArray(byte[][]::new));
     }
 
+    /**
+     * Test-only: class bytes captured at stitch for {@code shape} (block then vector, in compile order), or
+     * {@code null} if none. Used to assert a DOUBLE divisor is a trailing parameter rather than an {@code LDC2_W}.
+     */
+    static byte[][] classBytesForTests(String shape) {
+        return BYTES_BY_SHAPE.get(shape);
+    }
+
     static Path dumpPath(String shape) {
         String hash = Integer.toUnsignedString(shape.hashCode(), 16);
         return Path.of(System.getProperty("java.io.tmpdir"), "esql-fusion-dumps", hash + ".class");

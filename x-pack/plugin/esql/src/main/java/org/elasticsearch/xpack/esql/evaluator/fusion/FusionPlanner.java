@@ -47,6 +47,8 @@ import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
 /**
@@ -106,6 +108,25 @@ public final class FusionPlanner {
     static FusedClassCache classCache() {
         return COMPILATION.cache();
     }
+
+    /**
+     * Maximum distinct baked Div/Mod divisor values admitted per un-baked shape. Further values of the same shape
+     * share one runtime-parameter class, bounding classes-per-shape at {@code BAKED_DIVISOR_CAP + 1}.
+     */
+    static final int BAKED_DIVISOR_CAP = 8;
+
+    /**
+     * Distinct baked Div/Mod divisor values admitted per un-baked shape (the {@link #shapeOf} string with baked
+     * values stripped). The inner set is capped at {@link #BAKED_DIVISOR_CAP}; the outer map is capped at
+     * {@link FusedClassCache#MAX_ENTRIES} so a long-lived node cannot accumulate unbounded shape keys after cache
+     * eviction. Plan-time can be multi-threaded, so both tiers are concurrent: the map is a {@link ConcurrentHashMap}
+     * and each inner set is {@link ConcurrentHashMap#newKeySet()}, with admission serialized per shape.
+     *
+     * <p>This lives on the planner rather than {@link FusedClassCache} because the bake decision happens at plan
+     * time, before cache lookup, and the cache key <em>includes</em> the baked value — the cache cannot admit
+     * before bake without a parallel map anyway.
+     */
+    private static final ConcurrentHashMap<String, Set<Object>> BAKED_DIVISORS_BY_UNBAKED_SHAPE = new ConcurrentHashMap<>();
 
     /**
      * The stitch entry points the planner uses. Extracted behind an interface so tests (in this package) can inject a
@@ -260,6 +281,9 @@ public final class FusionPlanner {
         if (tree == null || ctx.outputElement == null || ctx.inputElements.isEmpty()) {
             return refuseAtPlan();
         }
+        // H3: after the tree exists, un-bake over-cap Div/Mod divisors so they share one runtime-param class.
+        // Must run before FusionSignature.of: un-baking a constant adds a trailing parameter slot.
+        tree = applyBakedDivisorCap(tree, ctx);
         int[] channels = toIntArray(ctx.channels);
         ElementKind[] inputElements = ctx.inputElements.toArray(new ElementKind[0]);
         // The build walk appends one element per leaf input as it assigns channels, so every index in [0, arity) is
@@ -393,6 +417,8 @@ public final class FusionPlanner {
             FusionTelemetry.recordRefusedAtPlan();
             return null;
         }
+        predicateTree = applyBakedDivisorCap(predicateTree, predCtx);
+        projectionTree = applyBakedDivisorCap(projectionTree, projCtx);
 
         int[] predicateChannels = toIntArray(predCtx.channels);
         int[] projectionChannels = toIntArray(projCtx.channels);
@@ -558,6 +584,11 @@ public final class FusionPlanner {
          * {@code stringDepth1} so a lone converter stays unfused (D4); nested mapping leaves this false.
          */
         private boolean mapping;
+        /**
+         * True once this walk emitted a baked Div/Mod divisor. {@link #applyBakedDivisorCap} uses this as a
+         * hot-path early-out so trees with no baked constant skip the un-baked-shape string and rewrite.
+         */
+        private boolean hasBakedDivisor;
 
         PlanContext(Layout layout, Function<Expression, ExpressionEvaluator.Factory> rawFactory) {
             this.layout = layout;
@@ -735,11 +766,16 @@ public final class FusionPlanner {
         List<FusionNode> childNodes = new ArrayList<>(children.size());
         for (int i = 0; i < children.size(); i++) {
             Expression child = children.get(i);
-            // F1: bake ONLY the Literal in the divisor (rhs / second operand) of a Div or Mod kernel, so C2 sees a
-            // compile-time constant and strength-reduces the division. The lhs, and constants of every other kernel,
-            // stay runtime params so `a>5` and `a>6` still share a class. Keep the kernel = process* (not *ByConstant).
+            // F1/H3: bake ONLY an INT/LONG Literal in the divisor (rhs) of a Div or Mod kernel, so C2 can
+            // strength-reduce the division. DOUBLE divisors stay runtime params (C2 does not strength-reduce
+            // x/c for doubles). The lhs, and constants of every other kernel, stay runtime params so `a>5` and
+            // `a>6` still share a class. Keep the kernel = process* (not *ByConstant). Over-cap distinct INT/LONG
+            // values of one un-baked shape are un-baked after the tree is built (see applyBakedDivisorCap).
             FusionNode childNode;
-            if (i == 1 && child instanceof Literal literal && (exp instanceof Div || exp instanceof Mod)) {
+            if (i == 1
+                && child instanceof Literal literal
+                && (exp instanceof Div || exp instanceof Mod)
+                && (argElement == ElementKind.INT || argElement == ElementKind.LONG)) {
                 childNode = buildConstant(literal, argElement, ctx, true);
             } else {
                 // Each child must output this kernel's argument element; a mismatch is bridged by a widening cast inside
@@ -1285,11 +1321,11 @@ public final class FusionPlanner {
      * Builds a {@link FusionNode.Constant} at the {@code expected} element the consuming kernel requires, from a
      * numeric or keyword {@link Literal}, or {@code null} if it cannot be fused. Numeric literals are trailing
      * primitive arguments (with a supported widening into {@code expected}), unless {@code baked} is true — then the
-     * primitive is a bytecode immediate (F1: a Div/Mod divisor). A keyword/text literal is a captured
-     * {@link FusionNode.Constant#reference reference} {@code BytesRef} (F3), loaded with {@code ALOAD} via the D2
-     * reference-constant machinery. A {@code null} literal is <b>refused</b>, so a subtree containing one falls back
-     * to the unfused chain — the correct + simplest handling (ESQL normally folds null literals away, and a
-     * per-position "constant is null" would just null every row, which the unfused evaluator already does).
+     * primitive is a bytecode immediate (F1/H3: an INT/LONG Div/Mod divisor, never DOUBLE). A keyword/text literal
+     * is a captured {@link FusionNode.Constant#reference reference} {@code BytesRef} (F3), loaded with {@code ALOAD}
+     * through the D2 reference-constant machinery. A {@code null} literal is <b>refused</b>, so a subtree containing
+     * one falls back to the unfused chain — the correct + simplest handling (ESQL normally folds null literals away,
+     * and a per-position "constant is null" would just null every row, which the unfused evaluator already does).
      */
     private static FusionNode buildConstant(Literal literal, ElementKind expected, PlanContext ctx) {
         return buildConstant(literal, expected, ctx, false);
@@ -1325,7 +1361,7 @@ public final class FusionPlanner {
         // Convert to the expected element here — for a widening cast (int→long, int→double, long→double) this is exactly
         // the value the unfused Cast.cast(literal) would produce at runtime (e.g. (double) longValue, same precision).
         Number number = (Number) value;
-        return switch (expected) {
+        FusionNode constant = switch (expected) {
             case LONG -> baked ? FusionNode.Constant.baked(number.longValue(), 'J') : new FusionNode.Constant(number.longValue(), 'J');
             case INT -> baked ? FusionNode.Constant.baked(number.intValue(), 'I') : new FusionNode.Constant(number.intValue(), 'I');
             case DOUBLE -> baked
@@ -1334,6 +1370,10 @@ public final class FusionPlanner {
             // Unreachable: BOOLEAN is rejected by the guard above; BYTES_REF is handled before this switch.
             case BOOLEAN, BYTES_REF -> null;
         };
+        if (constant != null && baked) {
+            ctx.hasBakedDivisor = true;
+        }
+        return constant;
     }
 
     /**
@@ -1341,7 +1381,7 @@ public final class FusionPlanner {
      * or {@code null} if the element is not a fusable primitive. Used when the unfused factory is the constant-RHS
      * {@code *ByConstant} evaluator, which is not {@link FusionAware}.
      */
-    private static FusionDescriptor bakedDivModDescriptor(Class<?> kernelClass, ElementKind element) {
+    static FusionDescriptor bakedDivModDescriptor(Class<?> kernelClass, ElementKind element) {
         if (element == null) {
             return null;
         }
@@ -1353,6 +1393,100 @@ public final class FusionPlanner {
             case DOUBLE -> new FusionDescriptor(kernelClass, "processDoubles", "(DD)D", true, true, "java.lang.ArithmeticException");
             case BOOLEAN, BYTES_REF -> null;
         };
+    }
+
+    /**
+     * Un-bakes Div/Mod divisors of {@code tree} whose values were not admitted under {@link #BAKED_DIVISOR_CAP} for
+     * this tree's un-baked shape. Already-admitted values stay baked (reuse the existing class). Kernel identity in
+     * {@code ctx.kernelSources} is remapped when a {@link FusionNode.Kernel} is rewritten. Trees with no baked
+     * constant return unchanged without allocating a shape string.
+     */
+    private static FusionNode applyBakedDivisorCap(FusionNode tree, PlanContext ctx) {
+        if (ctx.hasBakedDivisor == false) {
+            return tree;
+        }
+        return rewriteOverCap(tree, unbakedShapeOf(tree), ctx);
+    }
+
+    private static FusionNode rewriteOverCap(FusionNode node, String unbakedShape, PlanContext ctx) {
+        return switch (node) {
+            case FusionNode.Constant constant -> {
+                if (constant.isBaked() && tryAdmitBakedDivisor(unbakedShape, constant.value()) == false) {
+                    yield new FusionNode.Constant(constant.value(), constant.element());
+                }
+                yield node;
+            }
+            case FusionNode.Input unused -> node;
+            case FusionNode.Kernel kernel -> {
+                List<FusionNode> children = kernel.children();
+                List<FusionNode> rewritten = null;
+                for (int i = 0; i < children.size(); i++) {
+                    FusionNode child = rewriteOverCap(children.get(i), unbakedShape, ctx);
+                    if (child != children.get(i)) {
+                        if (rewritten == null) {
+                            rewritten = new ArrayList<>(children);
+                        }
+                        rewritten.set(i, child);
+                    }
+                }
+                if (rewritten == null) {
+                    yield node;
+                }
+                FusionNode.Kernel replacement = new FusionNode.Kernel(kernel.descriptor(), rewritten);
+                Source source = ctx.kernelSources.remove(kernel);
+                if (source != null) {
+                    ctx.kernelSources.put(replacement, source);
+                }
+                yield replacement;
+            }
+            case FusionNode.Logical logical -> {
+                FusionNode left = rewriteOverCap(logical.left(), unbakedShape, ctx);
+                FusionNode right = rewriteOverCap(logical.right(), unbakedShape, ctx);
+                if (left == logical.left() && right == logical.right()) {
+                    yield node;
+                }
+                yield new FusionNode.Logical(logical.op(), left, right);
+            }
+            case FusionNode.Not not -> {
+                FusionNode child = rewriteOverCap(not.child(), unbakedShape, ctx);
+                yield child == not.child() ? node : new FusionNode.Not(child);
+            }
+        };
+    }
+
+    /**
+     * Admits {@code value} as a baked divisor of {@code unbakedShape}, or returns {@code false} so the planner emits
+     * the runtime-parameter form instead. Already-admitted values return {@code true} (reuse the baked class). The
+     * inner set is capped at {@link #BAKED_DIVISOR_CAP}; a brand-new un-baked shape is refused without insertion when
+     * the outer map is already at {@link FusedClassCache#MAX_ENTRIES}.
+     */
+    static boolean tryAdmitBakedDivisor(String unbakedShape, Object value) {
+        Set<Object> admitted = BAKED_DIVISORS_BY_UNBAKED_SHAPE.get(unbakedShape);
+        if (admitted == null) {
+            // Fail-safe bound on un-baked *shapes* (not cached classes); mixed-grain with MAX_ENTRIES, harmless.
+            if (BAKED_DIVISORS_BY_UNBAKED_SHAPE.size() >= FusedClassCache.MAX_ENTRIES) {
+                return false;
+            }
+            admitted = BAKED_DIVISORS_BY_UNBAKED_SHAPE.computeIfAbsent(unbakedShape, unused -> ConcurrentHashMap.newKeySet());
+        }
+        if (admitted.contains(value)) {
+            return true;
+        }
+        synchronized (admitted) {
+            if (admitted.contains(value)) {
+                return true;
+            }
+            if (admitted.size() >= BAKED_DIVISOR_CAP) {
+                return false;
+            }
+            admitted.add(value);
+            return true;
+        }
+    }
+
+    /** Test-only: drops every per-shape baked-divisor admission so a later test starts from a clean cap. */
+    static void resetBakedDivisorsForTests() {
+        BAKED_DIVISORS_BY_UNBAKED_SHAPE.clear();
     }
 
     /** JVM descriptor of the one supported reference argument/leaf element, {@code org.apache.lucene.util.BytesRef}. */
@@ -1583,23 +1717,34 @@ public final class FusionPlanner {
      */
     static String shapeOf(FusionNode node) {
         StringBuilder sb = new StringBuilder();
-        appendShape(node, sb);
+        appendShape(node, sb, false);
         return sb.toString();
     }
 
-    private static void appendShape(FusionNode node, StringBuilder sb) {
+    /**
+     * {@link #shapeOf} with baked constant values stripped ({@code #C:J:1000} → {@code #C:J}). This is the unit the
+     * H3 cap keys on: all baked values of one operator tree share this string, so the cap bounds classes per
+     * un-baked shape rather than globally.
+     */
+    static String unbakedShapeOf(FusionNode node) {
+        StringBuilder sb = new StringBuilder();
+        appendShape(node, sb, true);
+        return sb.toString();
+    }
+
+    private static void appendShape(FusionNode node, StringBuilder sb, boolean stripBakedValue) {
         if (node instanceof FusionNode.Logical logical) {
             // A Logical carries no descriptor; its bytecode is fully determined by the op + operand shapes.
             sb.append("LOGICAL:").append(logical.op()).append('(');
-            appendShape(logical.left(), sb);
+            appendShape(logical.left(), sb, stripBakedValue);
             sb.append(',');
-            appendShape(logical.right(), sb);
+            appendShape(logical.right(), sb, stripBakedValue);
             sb.append(')');
             return;
         }
         if (node instanceof FusionNode.Not not) {
             sb.append("NOT(");
-            appendShape(not.child(), sb);
+            appendShape(not.child(), sb, stripBakedValue);
             sb.append(')');
             return;
         }
@@ -1617,7 +1762,7 @@ public final class FusionPlanner {
                 if (i > 0) {
                     sb.append(',');
                 }
-                appendShape(children.get(i), sb);
+                appendShape(children.get(i), sb, stripBakedValue);
             }
             sb.append(')');
         } else if (node instanceof FusionNode.Constant constant) {
@@ -1626,11 +1771,11 @@ public final class FusionPlanner {
             // the argument supplied at eval time. Only the element-typed slot marker (`#C:<element>`) participates, so
             // a long constant and a double constant still key distinct classes (their emit paths differ), while all
             // values of one element share one hidden class — collapsing the former one-class-per-value cardinality.
-            // A baked constant (F1: a Div/Mod divisor) IS an immediate, so its value participates (`#C:J:1000`) —
-            // `x/1000` and `x/500` stitch to distinct classes. (An Input leaf, by contrast, stays `#` — its column
-            // binding is likewise not in the bytecode.)
+            // A baked constant (F1/H3: an INT/LONG Div/Mod divisor, capped per un-baked shape) IS an immediate, so its
+            // value participates (`#C:J:1000`) unless {@code stripBakedValue} (the H3 cap key). (An Input leaf stays
+            // `#` — its column binding is likewise not in the bytecode.)
             sb.append("#C:").append(constant.element());
-            if (constant.isBaked()) {
+            if (constant.isBaked() && stripBakedValue == false) {
                 sb.append(':').append(constant.value());
             }
         } else {

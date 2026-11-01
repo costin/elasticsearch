@@ -23,6 +23,8 @@ import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
 import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache.Path;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache.Shape;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.VectorStrategy;
 import org.elasticsearch.xpack.esql.expression.function.scalar.EsqlScalarFunction;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Abs;
@@ -51,6 +53,10 @@ import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.Les
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.LessThanOrEqual;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.NotEquals;
 import org.elasticsearch.xpack.esql.planner.Layout;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassVisitor;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -65,7 +71,9 @@ import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.lessThanOrEqualTo;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.notNullValue;
 
 /**
  * The unified, <b>spec-driven</b> generative differential harness (iter 23, Stage 4). One declarative palette of
@@ -1155,10 +1163,10 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
     }
 
     /**
-     * F1: a compile-time constant divisor of {@code Div} is baked as an immediate. {@code (a * b) / K} fuses (depth
-     * ≥ 2) and matches the unfused chain for int/long/double, including a baked {@code 0} (warn+null) and {@code MIN/-1}
-     * integer overflow (fused values+warnings == unfused). The spliced kernel is still {@code process*}, not
-     * {@code *ByConstant}.
+     * F1/H3: a compile-time constant INT/LONG divisor of {@code Div} is baked as an immediate (DOUBLE stays a
+     * trailing param). {@code (a * b) / K} fuses (depth ≥ 2) and matches the unfused chain for int/long/double,
+     * including a constant {@code 0} (warn+null) and {@code MIN/-1} integer overflow (fused values+warnings ==
+     * unfused). The spliced kernel is still {@code process*}, not {@code *ByConstant}.
      */
     public void testConstantDivisorDivMatchesUnfused() {
         assertConstantDivisorMatches(true, ElementKind.LONG, 1000L, false);
@@ -1172,8 +1180,8 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
     }
 
     /**
-     * F1: {@code Mod.process*} is {@code @Fusable(overflowChecked=true)}, so a constant-divisor {@code (a * b) % K}
-     * fuses with a baked divisor exactly like Div, including baked {@code 0} → warn+null and {@code MIN % -1}.
+     * F1/H3: {@code Mod.process*} is {@code @Fusable(overflowChecked=true)}, so a constant-divisor {@code (a * b) % K}
+     * fuses like Div (INT/LONG baked, DOUBLE a trailing param), including {@code 0} → warn+null and {@code MIN % -1}.
      */
     public void testConstantDivisorModMatchesUnfused() {
         assertConstantDivisorMatches(false, ElementKind.LONG, 7L, false);
@@ -1248,6 +1256,150 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
         int positions = 64;
         Block[] inputs = { denseColumn(ElementKind.LONG, positions, 1), denseColumn(ElementKind.LONG, positions, 2) };
         runConstantDifferential(expr, layout, ElementKind.BOOLEAN, inputs, positions, "(a*b)/1000 > 5 baked+runtime");
+    }
+
+    /**
+     * H3: 20 distinct LONG divisors over one un-baked shape ({@code (a*b)/K}) must create at most
+     * {@link FusionPlanner#BAKED_DIVISOR_CAP}+1 classes per emit path (8 baked immediates + 1 shared runtime-param
+     * class). Pre-H3 every divisor bakes, so this is 20 classes per path.
+     */
+    public void testBakedDivisorCapBoundsClassesPerShape() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        Layout layout = layout(a, b);
+        FusedClassCache cache = FusionPlanner.classCache();
+        int positions = 16;
+        int distinct = 20;
+        for (int k = 1; k <= distinct; k++) {
+            Expression expr = new Div(Source.EMPTY, new Mul(Source.EMPTY, a, b), constant(ElementKind.LONG, k));
+            Block[] inputs = { denseColumn(ElementKind.LONG, positions, 1), denseColumn(ElementKind.LONG, positions, 2) };
+            runConstantDifferential(expr, layout, ElementKind.LONG, inputs, positions, "(a*b)/" + k + " cap");
+        }
+        int capPlusOne = FusionPlanner.BAKED_DIVISOR_CAP + 1;
+        int block = 0;
+        int checked = 0;
+        for (Shape shape : cache.entriesForTests()) {
+            if (shape.path() == Path.BLOCK) {
+                block++;
+            } else if (shape.path() == Path.CHECKED_VECTOR) {
+                checked++;
+            }
+        }
+        assertThat(
+            "BLOCK classes for 20 LONG divisors of one un-baked shape must be <= cap+1, got " + block,
+            block,
+            lessThanOrEqualTo(capPlusOne)
+        );
+        assertThat(
+            "CHECKED_VECTOR classes for 20 LONG divisors of one un-baked shape must be <= cap+1, got " + checked,
+            checked,
+            lessThanOrEqualTo(capPlusOne)
+        );
+        assertThat("cap test must actually stitch (not refuse)", block, greaterThan(1));
+        assertThat("cap test must actually stitch the checked-vector path", checked, greaterThan(1));
+    }
+
+    /**
+     * H3: a DOUBLE Div divisor is a trailing runtime parameter, not an {@code LDC}/{@code LDC2_W} immediate.
+     * Pre-H3 doubles bake as {@code LDC2_W} and the shape carries {@code #C:D:<value>}.
+     */
+    public void testDoubleDivisorIsTrailingParameterNotImmediate() {
+        FieldAttribute a = field("a", DataType.DOUBLE);
+        FieldAttribute b = field("b", DataType.DOUBLE);
+        Layout layout = layout(a, b);
+        Expression expr = new Div(Source.EMPTY, new Mul(Source.EMPTY, a, b), constant(ElementKind.DOUBLE, 1000L));
+        FusedExpressionEvaluatorFactory fused = assertFuses(fusedFactory(expr, layout), "(a*b)/1000.0 double divisor");
+        String shape = fused.shape();
+        byte[][] classBytes = FusionVerify.classBytesForTests(shape);
+        assertThat("verify-mode must capture fused class bytes for " + shape, classBytes, notNullValue());
+        assertThat("verify-mode must capture at least one fused class", classBytes.length, greaterThan(0));
+        for (byte[] bytes : classBytes) {
+            assertThat("DOUBLE 1000.0 must not appear as LDC/LDC2_W", hasDoubleImmediate(bytes, 1000.0), is(false));
+            String desc = fusedMethodDescriptor(bytes);
+            assertThat("DOUBLE divisor must occupy a trailing D param: " + desc, trailingPrimitiveParamCount(desc, 'D'), greaterThan(0));
+        }
+        assertThat("DOUBLE divisor must not bake its value into the shape: " + shape, shape, not(containsString("#C:D:")));
+        assertThat("DOUBLE divisor must still occupy a typed constant slot: " + shape, shape, containsString("#C:D"));
+        int positions = 16;
+        Block[] inputs = { denseColumn(ElementKind.DOUBLE, positions, 1), denseColumn(ElementKind.DOUBLE, positions, 2) };
+        runConstantDifferential(expr, layout, ElementKind.DOUBLE, inputs, positions, "(a*b)/1000.0 double not-baked");
+    }
+
+    /**
+     * H3: a DOUBLE non-finite result with a NON-ZERO divisor (large/small → Inf via {@code asFiniteNumber}) must
+     * match unfused. The existing constant-divisor suite only covers {@code /0}.
+     */
+    public void testDoubleNonFiniteWithNonZeroDivisorMatchesUnfused() {
+        FieldAttribute a = field("a", DataType.DOUBLE);
+        FieldAttribute b = field("b", DataType.DOUBLE);
+        Layout layout = layout(a, b);
+        Literal tiny = new Literal(Source.EMPTY, 1e-300, DataType.DOUBLE);
+        Expression expr = new Div(Source.EMPTY, new Mul(Source.EMPTY, a, b), tiny);
+        int positions = 4;
+        Block[] inputs = {
+            blockFactory.newDoubleArrayVector(new double[] { 1e300, -1e300, 1.0, 0.0 }, positions).asBlock(),
+            blockFactory.newDoubleArrayVector(new double[] { 1.0, 1.0, 1.0, 1.0 }, positions).asBlock() };
+        runConstantDifferential(expr, layout, ElementKind.DOUBLE, inputs, positions, "(a*b)/1e-300 double Inf");
+    }
+
+    private static String fusedMethodDescriptor(byte[] bytecode) {
+        String[] desc = { null };
+        new ClassReader(bytecode).accept(new ClassVisitor(Opcodes.ASM9) {
+            @Override
+            public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                if (Stitcher.FUSED_METHOD_NAME.equals(name) && desc[0] == null) {
+                    desc[0] = descriptor;
+                }
+                return null;
+            }
+        }, 0);
+        assertThat("emitted class must define fused()", desc[0] != null, is(true));
+        return desc[0];
+    }
+
+    private static int trailingPrimitiveParamCount(String descriptor, char element) {
+        int close = descriptor.indexOf(')');
+        if (close < 0) {
+            return 0;
+        }
+        String params = descriptor.substring(1, close);
+        int lastRef = params.lastIndexOf(';');
+        int start = lastRef < 0 ? 0 : lastRef + 1;
+        int count = 0;
+        for (int i = start; i < params.length(); i++) {
+            if (params.charAt(i) == element) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static boolean hasDoubleImmediate(byte[] bytecode, double value) {
+        boolean[] found = { false };
+        new ClassReader(bytecode).accept(new ClassVisitor(Opcodes.ASM9) {
+            @Override
+            public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                return new MethodVisitor(Opcodes.ASM9) {
+                    @Override
+                    public void visitLdcInsn(Object cst) {
+                        if (cst instanceof Double d && Double.doubleToRawLongBits(d) == Double.doubleToRawLongBits(value)) {
+                            found[0] = true;
+                        }
+                    }
+
+                    @Override
+                    public void visitInsn(int opcode) {
+                        if (value == 0.0 && opcode == Opcodes.DCONST_0) {
+                            found[0] = true;
+                        }
+                        if (value == 1.0 && opcode == Opcodes.DCONST_1) {
+                            found[0] = true;
+                        }
+                    }
+                };
+            }
+        }, 0);
+        return found[0];
     }
 
     /**

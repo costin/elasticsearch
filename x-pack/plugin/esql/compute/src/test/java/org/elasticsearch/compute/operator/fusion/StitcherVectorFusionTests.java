@@ -61,6 +61,13 @@ public class StitcherVectorFusionTests extends ESTestCase {
         public static int processIntsMul(int lhs, int rhs) {
             return Math.multiplyExact(lhs, rhs);
         }
+
+        public static int processIntsDiv(int lhs, int rhs) {
+            if (rhs == 0) {
+                throw new ArithmeticException("/ by zero");
+            }
+            return lhs / rhs;
+        }
     }
 
     private CircuitBreakerService breakerService;
@@ -311,6 +318,70 @@ public class StitcherVectorFusionTests extends ESTestCase {
         assertThat(trailingPrimitiveParamCount(bakedDesc, 'J'), equalTo(0));
     }
 
+    /**
+     * F1/H3: INT-divisor variant of {@link #testBakedDivisorIsImmediateAndDoesNotConsumeParamSlot} on the
+     * checked-vector path. The immediate must still be present (INT stays baked).
+     */
+    public void testBakedIntDivisorIsImmediateOnCheckedPath() throws Exception {
+        FusionDescriptor mul = new FusionDescriptor(IntKernels.class, "processIntsMul", "(II)I", true, true);
+        FusionDescriptor div = new FusionDescriptor(IntKernels.class, "processIntsDiv", "(II)I", true, true);
+        FusionNode.Constant baked = FusionNode.Constant.baked(1000, 'I');
+        FusionNode mulNode = new FusionNode.Kernel(mul, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
+        FusionNode divTree = new FusionNode.Kernel(div, List.of(mulNode, baked));
+
+        byte[] bakedOnly = new Stitcher(new TemplateRegistry()).vectorLoopCheckedBytecode(MethodHandles.lookup(), divTree);
+        assertStructurallyValid(bakedOnly);
+        String bakedDesc = fusedMethodDescriptor(bakedOnly);
+        assertThat(
+            "baked int divisor must not add a trailing I param: " + bakedDesc,
+            trailingPrimitiveParamCount(bakedDesc, 'I'),
+            equalTo(0)
+        );
+        assertThat("baked 1000 must appear as an int immediate", hasIntImmediate(bakedOnly, 1000), is(true));
+    }
+
+    /**
+     * F1/H3: BLOCK-path variant of the LONG baked-divisor immediate test.
+     */
+    public void testBakedLongDivisorIsImmediateOnBlockPath() throws Exception {
+        FusionDescriptor mul = new FusionDescriptor(KernelFixtures.class, "processLongsMul", "(JJ)J", true, true);
+        FusionDescriptor div = new FusionDescriptor(KernelFixtures.class, "processLongsDiv", "(JJ)J", true, true);
+        FusionNode.Constant baked = FusionNode.Constant.baked(1000L, 'J');
+        FusionNode mulNode = new FusionNode.Kernel(mul, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
+        FusionNode divTree = new FusionNode.Kernel(div, List.of(mulNode, baked));
+
+        byte[] bakedOnly = new Stitcher(new TemplateRegistry()).blockLoopBytecode(MethodHandles.lookup(), divTree);
+        assertStructurallyValid(bakedOnly);
+        String bakedDesc = fusedMethodDescriptor(bakedOnly);
+        assertThat(
+            "baked long divisor must not add a trailing J param: " + bakedDesc,
+            trailingPrimitiveParamCount(bakedDesc, 'J'),
+            equalTo(0)
+        );
+        assertThat("baked 1000L must appear as an immediate on the BLOCK path", hasLongImmediate(bakedOnly, 1000L), is(true));
+    }
+
+    /**
+     * F1/H3: BLOCK-path INT-divisor variant. The immediate must still be present (INT stays baked).
+     */
+    public void testBakedIntDivisorIsImmediateOnBlockPath() throws Exception {
+        FusionDescriptor mul = new FusionDescriptor(IntKernels.class, "processIntsMul", "(II)I", true, true);
+        FusionDescriptor div = new FusionDescriptor(IntKernels.class, "processIntsDiv", "(II)I", true, true);
+        FusionNode.Constant baked = FusionNode.Constant.baked(1000, 'I');
+        FusionNode mulNode = new FusionNode.Kernel(mul, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
+        FusionNode divTree = new FusionNode.Kernel(div, List.of(mulNode, baked));
+
+        byte[] bakedOnly = new Stitcher(new TemplateRegistry()).blockLoopBytecode(MethodHandles.lookup(), divTree);
+        assertStructurallyValid(bakedOnly);
+        String bakedDesc = fusedMethodDescriptor(bakedOnly);
+        assertThat(
+            "baked int divisor must not add a trailing I param: " + bakedDesc,
+            trailingPrimitiveParamCount(bakedDesc, 'I'),
+            equalTo(0)
+        );
+        assertThat("baked 1000 must appear as an int immediate on the BLOCK path", hasIntImmediate(bakedOnly, 1000), is(true));
+    }
+
     private static void assertStructurallyValid(byte[] classBytes) {
         ClassReader reader = new ClassReader(classBytes);
         reader.accept(new CheckClassAdapter(new ClassWriter(0), false), 0);
@@ -347,6 +418,38 @@ public class StitcherVectorFusionTests extends ESTestCase {
             }
         }
         return count;
+    }
+
+    private static boolean hasIntImmediate(byte[] bytecode, int value) {
+        boolean[] found = { false };
+        new ClassReader(bytecode).accept(new ClassVisitor(Opcodes.ASM9) {
+            @Override
+            public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                return new MethodVisitor(Opcodes.ASM9) {
+                    @Override
+                    public void visitLdcInsn(Object cst) {
+                        if (cst instanceof Integer i && i == value) {
+                            found[0] = true;
+                        }
+                    }
+
+                    @Override
+                    public void visitIntInsn(int opcode, int operand) {
+                        if ((opcode == Opcodes.BIPUSH || opcode == Opcodes.SIPUSH) && operand == value) {
+                            found[0] = true;
+                        }
+                    }
+
+                    @Override
+                    public void visitInsn(int opcode) {
+                        if (value >= -1 && value <= 5 && opcode == Opcodes.ICONST_0 + value) {
+                            found[0] = true;
+                        }
+                    }
+                };
+            }
+        }, 0);
+        return found[0];
     }
 
     private static boolean hasLongImmediate(byte[] bytecode, long value) {

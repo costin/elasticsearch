@@ -28,8 +28,8 @@ import java.util.function.Function;
  *       (the value is <b>not</b> part of the cache key — only the constant's element-typed slot marker is).
  *       A <em>baked</em> constant is the exception: its value is pushed as a bytecode immediate
  *       ({@code LDC}/{@code ICONST}/{@code LCONST}/{@code DCONST}) at each use site and <b>does</b> enter the
- *       cache key, so distinct baked values stitch to distinct classes. Baking is reserved for a Div/Mod
- *       divisor so HotSpot C2 can strength-reduce the division.</li>
+ *       cache key, so distinct baked values stitch to distinct classes. Baking is reserved for an INT/LONG
+ *       Div/Mod divisor (capped per un-baked shape) so HotSpot C2 can strength-reduce the division.</li>
  *   <li>{@link Kernel} — an inner node that applies a fusable arithmetic kernel (identified by a
  *       {@link FusionDescriptor}) to its children. The child count and each child's category must
  *       match the kernel's JVM argument descriptor (e.g. a {@code (JJ)J} kernel has exactly two
@@ -86,8 +86,9 @@ public sealed interface FusionNode {
      * <p>A {@linkplain #baked(Object, char) baked} constant is the exception: the stitcher pushes its value as a
      * bytecode immediate ({@code LDC}/{@code ICONST}/{@code LCONST}/{@code DCONST}) at each use site, it consumes no
      * trailing parameter slot, and its value <b>does</b> enter the cache key (so {@code x/1000} and {@code x/500}
-     * stitch to distinct classes). Baking is reserved for a Div/Mod divisor so HotSpot C2 sees a compile-time constant
-     * and can strength-reduce the division; every other literal stays a runtime param.
+     * stitch to distinct classes). Baking is reserved for an INT/LONG Div/Mod divisor (capped per un-baked shape)
+     * so HotSpot C2 sees a compile-time constant and can strength-reduce the division; DOUBLE divisors and every
+     * other literal stay a runtime param.
      *
      * @param value   the literal's value, boxed as {@link Long}/{@link Integer}/{@link Double} to match {@code element};
      *                must not be {@code null} (a null literal is not fusable — the planner refuses that subtree). For a
