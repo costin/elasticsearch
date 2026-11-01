@@ -1,5 +1,5 @@
 # Iteration 4 report
-Code HEAD: b157ced1448 (through H12)   Evidence HEAD: (pending)
+Code HEAD: 3f2d8bbbfd1 (through H13+H16)   Evidence HEAD: (pending)
 
 Delivery: direct push to `esql/fix/compute-codegen-followup`, no PR (operator directive).
 Driven by the orchestrator; each production change implemented test-first by a subagent,
@@ -20,10 +20,10 @@ reviewed by a fresh subagent, nits applied, then committed by the orchestrator.
 | H10 | done (MAP) | 333f1202b3f | LogicalFusionDifferentialTests#{testDatetimeGteLteRangeFuses, testNotDensePathPicksInterfaceVsBlock} | y (map test); Not test is coverage (passed pre-change) | DECISION: MAP DATETIME+DATE_NANOS to LONG for comparisons ONLY (not an open question). Same-type unfused GTE/LTE/GT/LT/EQ/NEQ bind *LongsEvaluator / @Fusable processLongs(JJ) (GreaterThanOrEqual.evaluatorMap + siblings), so fused==unfused byte-identical. Scope: matches()/buildConstant comparison path only (single caller buildComparisonOperand); elementOf unchanged so arithmetic over dates still refuses. Mixed DATETIME-vs-DATE_NANOS uses non-FusionAware NanosMillis/MillisNanos kernels -> still refuses. H9 evidence: GTE/DATETIME absent from top-10 because first-refusal of And(GTE,LTE) is "And" (GTE is FusionAware); ~386 of that shape sits just under Bucket=505; shape is in csv-spec (PromQL withTimestampFilter). Dense parity test straddles [t1,t2] incl boundaries. |
 | H11 | done | 5879c12a57e | FusionClassDumpTests (E1 dump, 33 shapes); removed dead-path tests (testMappingBlockLoop*, testTinyLimitRefusesMapping) | n/a (pure refactor; E1 byte-identical is the proof) | Dedup: FusedBuilderEmit (prologue/epilogue), single this::intercept, test seams call emitters directly (8 forwarders removed), FusedMethodCodeLengths extracted. Deleted dead mapping path (compileMappingBlockLoop, Path.MAPPING_BLOCK, FusionPlan.mapping, factory/cache/planner branches) \u2014 reviewer verified unreachable in production (lone TO_LOWER stays unfused per D4; mapping_append_suffix was a test-only fixture). Stitcher 1482->1199 (<=1200); four-file total 4034->3363 (target <=3846). E1 byte-identical across pre-H1/H1/H2/H3/pre-H11/H11 (md5 7cbf6fa..., 33 shapes), reviewer independently reproduced. 2 reviewer nits (param count, redundant null guard) skipped as non-blocking. |
 | H12 | done (TO_VERSION deviated->refused) | b157ced1448 | FusionAwareGenerationTests#{testFusableConvertNonBytesRefInputIsCompileError, testFusableConvertThreadLocalFixedIsCompileError, testFusableConvertJitConstantFixedIsCompileError, testFusableConvertNonBytesRefReturnIsCompileError} | y | Generator rejects non-BytesRef return (was silently generated), non-BytesRef input, and THREAD_LOCAL/jitConstant @Fixed \u2014 each asserts the specific message. Fusable admission runs before the generic trailing-arg check. mappingFixedArgTypes uses kernel class loader. TO_VERSION refused (deviation from plan's 'eligible'): encodeVersion throws IAE on a legal >=128-digit keyword with no warnExceptions, and generated converters hardcode dictionarySafe=true, so encoding-aware fusion would throw on an unreferenced dict entry; reviewer confirmed refusal justified + no real kernel regressed (only ChangeCase is @Fusable, returns BytesRef). 1 doc nit applied (dictionarySafe proxy caveat). Converter table below. |
-| H13 | pending | | | | |
+| H13 | done | 3f2d8bbbfd1 | n/a (benchmark; smoke only) | n/a | Moved AND_CMP_GTE_LTE_LONG, NOT_AND_CMP_LONG, LONG_DIV_CONST, ROUND3 from SlowPathFusionBenchmark.Case to FusionFollowupBenchmark (SlowPath.Case == 96205ababfea's 14 constants, reviewer-verified; TO_LOWER_* fusesToday overrides stay). Added FusionStrategyBenchmark.planMiss (H16) + planCachedThenGet (H8, @Param n=1,4,16 nested state so run/planCached not multiplied) + confirmed KEYWORD_EQ_PLAIN (H4). Benchmark-only FusionSettings.resetClassCacheForBenchmarks hook. Followup setup asserts fusesToday consistency both ways. All smoke G3 (-f1 -wi1 -w1s -i1 -r1s -foe true, all params): PASS, no exceptions. 1 doc nit applied. |
 | H14 | pending | | | | |
 | H15 | pending | | | | |
-| H16 | pending | | | | |
+| H16 | done | 3f2d8bbbfd1 (with H13) | n/a (benchmark; smoke only) | n/a | FusionStrategyBenchmark.planMiss added (resets class cache per invocation then builds factory -> measures cold stitch miss; AverageTime). H16 'Do not' constraints respected: no hand-emitted stack frames, no disabled verification, no JDK ClassFile API. Smoked (strategy-h13.txt): 28 cells (7 shapes x 4 strategies), no exceptions. Human profiles with async-profiler (no timing read here). |
 
 ## Gates
 - Final *fusion* gate: (pending final run)
@@ -101,7 +101,17 @@ All six dumps share md5 7cbf6fa3520c30dd271ded1ca9b0dd8a (byte-identical through
 New helpers not in total: FusedBuilderEmit 82, FusedMethodCodeLengths 139.
 
 ## Benchmark cells added or moved (smoke tables in T4/smoke/)
-(pending H13/H16/H4/H8)
+Smoke protocol: -f 1 -wi 1 -w 1s -i 1 -r 1s -foe true, all @Params. No timings read (human runs timed on dedicated host).
+| Cell | Benchmark | Action | Smoke file | Result |
+|---|---|---|---|---|
+| AND_CMP_GTE_LTE_LONG | FusionFollowupBenchmark | moved from SlowPath (fusesToday=true) | followup-h13.txt | PASS |
+| NOT_AND_CMP_LONG | FusionFollowupBenchmark | moved from SlowPath (fusesToday=true) | followup-h13.txt | PASS |
+| LONG_DIV_CONST | FusionFollowupBenchmark | moved from SlowPath (fusesToday=true) | followup-h13.txt | PASS |
+| ROUND3 | FusionFollowupBenchmark | moved from SlowPath (fusesToday=false) | followup-h13.txt | PASS |
+| KEYWORD_EQ_PLAIN | FusionFollowupBenchmark | added in H4, smoked here | followup-h13.txt | PASS |
+| planMiss | FusionStrategyBenchmark | added (H16) | strategy-h13.txt | PASS (28 cells) |
+| planCachedThenGet | FusionStrategyBenchmark | added (H8), n=1,4,16 | strategy-h13.txt | PASS (84 cells) |
+| (SlowPath.Case restored) | SlowPathFusionBenchmark | 4 cases removed -> back to 96205ababfea set | slowpath-h13.txt | PASS (28 cells) |
 
 ## Measured by the reviewer (round C)
 Measured 2026-11-01 on a c7i.metal-24xl. tip / stabilize-final control / round-B HEAD.

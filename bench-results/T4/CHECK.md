@@ -103,6 +103,15 @@ DEVIATION: TO_VERSION refused (plan said "eligible"); recorded with reason. Conv
 No CsvIT (not an H1/H2/H5/final gate).
 Fails-before-fix (commit body): testFusableConvertNonBytesRefReturnIsCompileError (got none); testFusableConvertJitConstantFixedIsCompileError (got generic "fixed function args supported after the first").
 
+## H13+H16 — benchmark regroup + plan cells (commit 3f2d8bbbfd1)
+Benchmark-only (+ a benchmark-only FusionSettings reset hook). :benchmarks:compileJava PASS; :benchmarks:spotlessJavaCheck + :compute:spotlessJavaCheck + :esql:spotlessJavaCheck PASS. No full fusion gate needed (no fusion test / production-logic change beyond the benchmark hook).
+Reviewer GO (no blockers; SlowPath.Case == 96205ababfea 14 constants verified; planCachedThenGet n param scoped via nested @State so other cells not multiplied; planMiss resets cache per invocation; FusionSettings hook benchmark-only, not wired to any node path). 1 doc nit applied.
+Smoke G3 (-f1 -wi1 -w1s -i1 -r1s -foe true, all params), no timings read:
+- strategy-h13.txt: PASS (planMiss 28 cells, planCachedThenGet 84 cells)
+- followup-h13.txt: PASS (20 cells incl 4 moved + KEYWORD_EQ_PLAIN)
+- slowpath-h13.txt: PASS (28 cells, 4 moved names absent)
+Covers H13, H16 (planMiss), and the H8-deferred planCachedThenGet cell.
+
 ## H9 — F4 coverage probe comparable to F0 (uncommitted)
 Once per top-level expression; FUSED/ISLAND/FRAGMENT/NONE; first-refusal reason;
 sysprop-only `esql.fusion.coverage_report` (Setting removed). Gradle:
