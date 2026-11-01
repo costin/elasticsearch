@@ -1,5 +1,5 @@
 # Iteration 4 report
-Code HEAD: c1474931f0e (H1-H16 complete; H15 doc-only, H16 in H13 commit)   Evidence HEAD: (pending)
+Code HEAD: c1474931f0e (H1-H16 complete; H15 doc-only, H16 in H13 commit)   Evidence HEAD: e2a3acc5846
 
 Delivery: direct push to `esql/fix/compute-codegen-followup`, no PR (operator directive).
 Driven by the orchestrator; each production change implemented test-first by a subagent,
