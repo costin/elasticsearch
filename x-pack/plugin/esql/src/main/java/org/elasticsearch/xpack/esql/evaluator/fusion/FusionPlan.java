@@ -51,9 +51,10 @@ record FusionPlan(
     /**
      * When true, the fused evaluator may evaluate ordinal/constant {@code BYTES_REF} pages once over the dictionary
      * (or a single constant position) and rebuild the output encoding, instead of the per-row block loop. True iff
-     * the tree has exactly one column input, that input is {@code BYTES_REF}, and no kernel can warn (no overflow-
-     * checked / {@code warnExceptions} kernel). Warning-capable trees are excluded because evaluating a dictionary
-     * can warn for unreferenced entries, in a different order, breaking warning parity.
+     * the tree has exactly one column input, that input is {@code BYTES_REF}, there is a single input leaf, and
+     * every kernel is {@code !warns && dictionarySafe} (descriptor flags only). Warning-capable or throwing kernels
+     * are excluded because evaluating a dictionary can warn or throw for unreferenced entries, in a different
+     * order, breaking warning/exception parity.
      */
     boolean encodingAware
 ) {

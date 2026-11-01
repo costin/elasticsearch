@@ -304,7 +304,7 @@ public final class FusionPlanner {
         // ctx.mapping is true for a lone converter root (TO_LOWER/TO_UPPER); excluding it here keeps that kernel
         // from wrongly fusing via the string path. A converter fuses only as a nested mapping in a depth>=2 chain (D4).
         boolean stringDepth1 = ctx.outputElement == ElementKind.BYTES_REF && ctx.mapping == false && FusionSettings.isStringDepth1Enabled();
-        boolean encodingAware = encodingAware(tree, inputElements, ctx.overflowChecked);
+        boolean encodingAware = encodingAware(tree, inputElements);
         // A lone BytesRef comparison (column == literal, column != literal, or literal == column) is depth-1, but
         // the encoding-aware dictionary gather evaluates once per distinct value — the same depth-1 exemption as
         // SIMD / stringDepth1.
@@ -926,22 +926,28 @@ public final class FusionPlanner {
      * BytesRef[] values)} — variadic: the trailing {@code values} array gathers the N string operands. Not overflow-
      * checked: {@code Concat} declares no {@code @Evaluator.warnExceptions}, so an over-length concatenation throws
      * {@code EsqlClientException} which propagates (a query failure), exactly as the unfused evaluator does.
+     * {@code dictionarySafe=false}: evaluating an unreferenced dictionary entry past 1MB would throw even though
+     * no row hit it, so the encoding-aware ordinal path must refuse CONCAT.
      */
-    private static final FusionDescriptor CONCAT_DESCRIPTOR = new FusionDescriptor(
+    static final FusionDescriptor CONCAT_DESCRIPTOR = new FusionDescriptor(
         Concat.class,
         "process",
         "(Lorg/elasticsearch/compute/operator/BreakingBytesRefBuilder;[Lorg/apache/lucene/util/BytesRef;)Lorg/apache/lucene/util/BytesRef;",
         false,
         true,
         "",
-        true
+        true,
+        false,
+        false,
+        false
     );
 
     /**
      * Builds the fused node for a {@code CONCAT(a, b, ...)} ({@link Concat}) expression (variadic): a kernel whose first
      * operand is a per-driver breaker-accounted {@link BreakingBytesRefBuilder} scratch and whose remaining operands are
-     * the N string arguments — each of which must fuse to a {@code BytesRef} column input (a literal or nested function
-     * argument is not supported here, so the whole CONCAT then refuses). Produces a {@code BytesRef} (block-path only).
+     * the N string arguments — each of which must fuse to a {@code BytesRef} column input or a keyword/text literal
+     * (a nested function argument is not supported here, so the whole CONCAT then refuses). Produces a {@code BytesRef}
+     * (block-path only).
      */
     private static FusionNode buildConcat(Concat concat, PlanContext ctx, ElementKind expected, boolean root) {
         if (root == false && expected != ElementKind.BYTES_REF) {
@@ -957,9 +963,9 @@ public final class FusionPlanner {
         );
         for (Expression arg : args) {
             FusionNode node = build(arg, ctx, ElementKind.BYTES_REF, concat.source(), false);
-            // The array-gather emit reads each element as a fresh BytesRef from a column, so every operand must be a
-            // plain BytesRef column input; refuse the whole CONCAT otherwise (a literal/nested arg falls back to unfused).
-            if (node instanceof FusionNode.Input == false) {
+            // The array-gather emit reads each element as a fresh BytesRef from a column, or loads a captured
+            // keyword/text literal; refuse the whole CONCAT otherwise (a nested function arg falls back to unfused).
+            if (node instanceof FusionNode.Input == false && node instanceof FusionNode.Constant == false) {
                 return null;
             }
             kernelChildren.add(node);
@@ -977,7 +983,9 @@ public final class FusionPlanner {
      * The @Fixed param is a per-driver Releasable breaker-accounted scratch (first, before the int input). Overflow-
      * checked: {@code Space} declares {@code @Evaluator(warnExceptions = IllegalArgumentException.class)} (a negative or
      * too-long number throws), so the block emitter wraps the spliced body in a catch that warns + nulls, matching the
-     * unfused {@code SpaceEvaluator}. An all-null input yields null.
+     * unfused {@code SpaceEvaluator}. An all-null input yields null. {@code dictionarySafe=false}: SPACE can throw
+     * (caught as a warning) on a negative/too-long count, so the encoding-aware path must refuse it even though
+     * {@code warns=true} already excludes it.
      */
     private static final FusionDescriptor SPACE_DESCRIPTOR = new FusionDescriptor(
         Space.class,
@@ -985,7 +993,11 @@ public final class FusionPlanner {
         "(Lorg/elasticsearch/compute/operator/BreakingBytesRefBuilder;I)Lorg/apache/lucene/util/BytesRef;",
         true,
         true,
-        "java.lang.IllegalArgumentException"
+        "java.lang.IllegalArgumentException",
+        false,
+        false,
+        true,
+        false
     );
 
     /**
@@ -1385,8 +1397,9 @@ public final class FusionPlanner {
         if (element == null) {
             return null;
         }
-        // 6-arg form matches the generated DivLongsEvaluator / ModLongsEvaluator FUSION_DESCRIPTOR literally
-        // (explicit ArithmeticException, not variadic, not mapping).
+        // 6-arg convenience matches the generated DivLongsEvaluator / ModLongsEvaluator FUSION_DESCRIPTOR
+        // field-for-field: explicit ArithmeticException, not variadic, not mapping, warns=true (non-empty
+        // exception type), dictionarySafe=true (the throw is caught as a warning).
         return switch (element) {
             case LONG -> new FusionDescriptor(kernelClass, "processLongs", "(JJ)J", true, true, "java.lang.ArithmeticException");
             case INT -> new FusionDescriptor(kernelClass, "processInts", "(II)I", true, true, "java.lang.ArithmeticException");
@@ -1626,15 +1639,24 @@ public final class FusionPlanner {
     }
 
     /**
-     * Plan-time encoding-aware flag (D1): true when the tree has exactly one column input, that input is
-     * {@code BYTES_REF}, and no kernel can warn. Constants are allowed. Warning-capable trees are excluded because
-     * evaluating a dictionary can warn for entries no row references, in a different order.
+     * Test hook for the plan-time encoding-aware flag. Reads only descriptor flags ({@code warns},
+     * {@code dictionarySafe}) plus the single-{@code BYTES_REF}-column / single-leaf conditions.
      */
-    private static boolean encodingAware(FusionNode tree, ElementKind[] inputElements, boolean overflowChecked) {
-        if (overflowChecked || inputElements.length != 1 || inputElements[0] != ElementKind.BYTES_REF) {
+    static boolean encodingAwareForTests(FusionNode tree, ElementKind[] inputElements) {
+        return encodingAware(tree, inputElements);
+    }
+
+    /**
+     * Plan-time encoding-aware flag (D1): true when the tree has exactly one column input, that input is
+     * {@code BYTES_REF}, every kernel is {@code !warns && dictionarySafe}, and there is a single input leaf.
+     * Constants are allowed. Warning-capable or throwing kernels are excluded because evaluating a dictionary
+     * can warn or throw for entries no row references.
+     */
+    private static boolean encodingAware(FusionNode tree, ElementKind[] inputElements) {
+        if (inputElements.length != 1 || inputElements[0] != ElementKind.BYTES_REF) {
             return false;
         }
-        return countInputLeaves(tree) == 1 && hasWarningKernel(tree) == false;
+        return countInputLeaves(tree) == 1 && hasWarningKernel(tree) == false && dictionarySafeTree(tree);
     }
 
     private static int countInputLeaves(FusionNode node) {
@@ -1660,10 +1682,10 @@ public final class FusionPlanner {
         throw new AssertionError("unexpected fusion node " + node);
     }
 
-    /** True if any kernel is overflow-checked or declares a warn-exception type. */
+    /** True if any kernel declares {@code warnExceptions} ({@link FusionDescriptor#warns()}). */
     private static boolean hasWarningKernel(FusionNode node) {
         if (node instanceof FusionNode.Kernel kernel) {
-            if (kernel.descriptor().overflowChecked() || kernel.descriptor().hasOverflowException()) {
+            if (kernel.descriptor().warns()) {
                 return true;
             }
             for (FusionNode child : kernel.children()) {
@@ -1680,6 +1702,31 @@ public final class FusionPlanner {
             return hasWarningKernel(not.child());
         }
         return false;
+    }
+
+    /**
+     * True when every kernel in {@code node} is {@link FusionDescriptor#dictionarySafe()}. Hand-built CONCAT and
+     * SPACE are not; generated kernels are (throws are declared warnExceptions, encoded in {@code warns}).
+     */
+    private static boolean dictionarySafeTree(FusionNode node) {
+        if (node instanceof FusionNode.Kernel kernel) {
+            if (kernel.descriptor().dictionarySafe() == false) {
+                return false;
+            }
+            for (FusionNode child : kernel.children()) {
+                if (dictionarySafeTree(child) == false) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (node instanceof FusionNode.Logical logical) {
+            return dictionarySafeTree(logical.left()) && dictionarySafeTree(logical.right());
+        }
+        if (node instanceof FusionNode.Not not) {
+            return dictionarySafeTree(not.child());
+        }
+        return true;
     }
 
     /** Kernel depth: 0 for a bare input, 1 for a kernel/logical/Not of inputs, ≥2 once a node has a kernel/logical/Not child. */

@@ -82,10 +82,44 @@ public class FusionAwareGenerationTests extends ESTestCase {
         // overflow exception type derived from @Evaluator.warnExceptions (binding rule #3).
         assertThat(
             generated,
-            containsString("FusableKernel.class, \"process\", \"(JJ)J\", true, true, \"java.lang.ArithmeticException\")")
+            containsString(
+                "FusableKernel.class, \"process\", \"(JJ)J\", true, true, \"java.lang.ArithmeticException\", false, false, true, true)"
+            )
         );
         assertThat(generated, containsString("public FusionDescriptor fusionDescriptor()"));
         assertThat(generated, containsString("return FUSION_DESCRIPTOR;"));
+    }
+
+    /**
+     * H5: {@code @Fusable(overflowChecked = false)} with a non-empty {@code warnExceptions} must still emit
+     * {@code warns=true} on {@code FUSION_DESCRIPTOR}. {@code overflowExceptionType} stays empty (the stitcher
+     * catch is overflow-checked only); {@code warns} is independent so an encoding-aware planner cannot treat
+     * the kernel as warning-free.
+     */
+    public void testFusableOverflowUncheckedWarnExceptionsEmitsWarns() {
+        String source = """
+            package test;
+            import org.elasticsearch.compute.ann.Evaluator;
+            import org.elasticsearch.compute.ann.Fusable;
+            class WarnUncheckedKernel {
+                @Evaluator(warnExceptions = { IllegalArgumentException.class })
+                @Fusable(overflowChecked = false)
+                static long process(long lhs, long rhs) {
+                    return lhs + rhs;
+                }
+            }
+            """;
+
+        String generated = generateEvaluator(source, "test.WarnUncheckedKernelEvaluator");
+
+        assertThat(generated, containsString("class Factory implements ExpressionEvaluator.Factory, FusionAware"));
+        assertThat(generated, containsString("private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor("));
+        // overflowChecked=false, allNullsIsNull=true, overflowExceptionType="", variadic=false, mapping=false,
+        // warns=true (warnExceptions non-empty), dictionarySafe=true (generated kernel; throws are warnExceptions).
+        assertThat(
+            generated,
+            containsString("WarnUncheckedKernel.class, \"process\", \"(JJ)J\", false, true, \"\", false, false, true, true)")
+        );
     }
 
     /**
@@ -110,8 +144,8 @@ public class FusionAwareGenerationTests extends ESTestCase {
         String generated = generateEvaluator(source, "test.MixedKernelEvaluator");
 
         assertThat(generated, containsString(", FusionAware"));
-        // No overflowChecked and no warnExceptions -> empty overflow exception type.
-        assertThat(generated, containsString("MixedKernel.class, \"process\", \"(DI)D\", false, true, \"\")"));
+        // No overflowChecked and no warnExceptions -> empty overflow exception type, warns=false, dictionarySafe=true.
+        assertThat(generated, containsString("MixedKernel.class, \"process\", \"(DI)D\", false, true, \"\", false, false, false, true)"));
         assertThat(generated, containsString("public FusionDescriptor fusionDescriptor()"));
     }
 
@@ -172,7 +206,7 @@ public class FusionAwareGenerationTests extends ESTestCase {
             containsString(
                 "ConvertKernel.class, \"process\", "
                     + "\"(Lorg/apache/lucene/util/BytesRef;Ljava/util/Locale;)Lorg/apache/lucene/util/BytesRef;\", "
-                    + "false, true, \"\", false, true)"
+                    + "false, true, \"\", false, true, false, true)"
             )
         );
         assertThat(generated, containsString("public FusionDescriptor fusionDescriptor()"));

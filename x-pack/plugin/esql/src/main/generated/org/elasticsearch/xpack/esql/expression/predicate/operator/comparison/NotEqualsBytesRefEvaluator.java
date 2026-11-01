@@ -139,7 +139,7 @@ public final class NotEqualsBytesRefEvaluator implements ExpressionEvaluator {
   }
 
   static class Factory implements ExpressionEvaluator.Factory, FusionAware {
-    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(NotEquals.class, "processBytesRef", "(Lorg/apache/lucene/util/BytesRef;Lorg/apache/lucene/util/BytesRef;)Z", false, true, "");
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(NotEquals.class, "processBytesRef", "(Lorg/apache/lucene/util/BytesRef;Lorg/apache/lucene/util/BytesRef;)Z", false, true, "", false, false, false, true);
 
     private final Source source;
 

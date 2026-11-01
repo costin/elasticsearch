@@ -412,7 +412,17 @@ public class ConvertEvaluatorImplementer {
 
         if (fusable) {
             builder.addField(
-                FusionAwareGen.fusionDescriptorField(elements, declarationType, processFunction.function, false, true, "", true)
+                FusionAwareGen.fusionDescriptorField(
+                    elements,
+                    declarationType,
+                    processFunction.function,
+                    false,
+                    true,
+                    "",
+                    true,
+                    false,
+                    true
+                )
             );
         }
 

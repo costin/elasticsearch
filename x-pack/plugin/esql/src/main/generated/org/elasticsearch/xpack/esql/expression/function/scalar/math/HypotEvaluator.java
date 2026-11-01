@@ -132,7 +132,7 @@ public final class HypotEvaluator implements ExpressionEvaluator {
   }
 
   static class Factory implements ExpressionEvaluator.Factory, FusionAware {
-    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Hypot.class, "process", "(DD)D", false, true, "");
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Hypot.class, "process", "(DD)D", false, true, "", false, false, false, true);
 
     private final Source source;
 

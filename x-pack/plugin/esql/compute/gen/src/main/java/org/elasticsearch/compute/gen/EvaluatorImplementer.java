@@ -423,7 +423,13 @@ public class EvaluatorImplementer {
                     overflowChecked,
                     allNullsIsNull,
                     overflowExceptionType,
-                    false
+                    false,
+                    // warns is independent of overflowChecked: a @Fusable(overflowChecked=false) kernel with
+                    // warnExceptions must still be excluded from the encoding-aware dictionary path.
+                    processFunction.warnExceptions.isEmpty() == false,
+                    // Generated kernels are dictionary-safe: any throw is a declared warnException (caught as a
+                    // warning, encoded in warns) or they do not throw on input content.
+                    true
                 )
             );
         }

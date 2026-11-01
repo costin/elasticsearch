@@ -113,7 +113,7 @@ public final class LengthEvaluator implements ExpressionEvaluator {
   }
 
   static class Factory implements ExpressionEvaluator.Factory, FusionAware {
-    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Length.class, "process", "(Lorg/apache/lucene/util/BytesRef;)I", false, true, "");
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Length.class, "process", "(Lorg/apache/lucene/util/BytesRef;)I", false, true, "", false, false, false, true);
 
     private final Source source;
 

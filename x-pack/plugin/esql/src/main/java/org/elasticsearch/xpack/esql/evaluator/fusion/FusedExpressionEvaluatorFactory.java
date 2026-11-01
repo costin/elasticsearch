@@ -668,6 +668,14 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         return vectorStrategy;
     }
 
+    /**
+     * Test hook: whether this shape may evaluate ordinal/constant {@code BYTES_REF} pages over the dictionary
+     * (or a single constant position). See {@link FusionPlan#encodingAware()}.
+     */
+    boolean encodingAware() {
+        return encodingAware;
+    }
+
     /** Test hook (package-private): the shape identifier used for cache keys and verify-mode dump filenames. */
     String shape() {
         return shape;
@@ -1067,10 +1075,10 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 // handled by invokeWithArguments against the primitive parameter types of the resolved MethodType.
                 int constCount = constantValues.length;
                 fused = null;
-                // Encoding-aware (D1): a single BYTES_REF column with no warning-capable kernel. Dense ordinal
-                // vectors (and ordinals whose dictionary is no larger than the page) are evaluated once over the
-                // dictionary; constants once; sparse ordinals (dictionary larger than the page) and anything else
-                // fall through to the normal per-row path.
+                // Encoding-aware (D1): a single BYTES_REF column whose every kernel is !warns && dictionarySafe.
+                // Dense ordinal vectors (and ordinals whose dictionary is no larger than the page) are evaluated
+                // once over the dictionary; constants once; sparse ordinals (dictionary larger than the page) and
+                // anything else fall through to the normal per-row path.
                 if (encodingAware && arity == 1 && inputs[0] instanceof BytesRefBlock bytesRefInput) {
                     assert recordEncodingAwareDictPositions(0);
                     fused = evalEncodingAware(bytesRefInput, blockFactory, positionCount);

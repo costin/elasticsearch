@@ -30,6 +30,16 @@ package org.elasticsearch.compute.operator.fusion;
  *                              planner routes it through the mapping block loop instead of the arithmetic kernel path.
  *                              Generated {@code @Evaluator} descriptors and hand-written string kernels default this
  *                              to {@code false}; only the convert generator emits {@code true}.
+ * @param warns                 whether the kernel declares a {@code warnExceptions} type, independent of
+ *                              {@code overflowChecked}. The encoding-aware ordinal path refuses any tree containing
+ *                              a warning-capable kernel: evaluating a dictionary can warn for entries no row
+ *                              references, in a different order.
+ * @param dictionarySafe        whether evaluating this kernel over an unreferenced dictionary entry cannot throw
+ *                              an exception that is not a declared warn-exception. {@code false} for kernels that
+ *                              throw on input content (hand-built {@code CONCAT} past 1MB, {@code SPACE} on a
+ *                              negative/too-long count). Generated {@code @Evaluator}/{@code @ConvertEvaluator}
+ *                              kernels are {@code true}: any throw they make is a declared {@code warnExceptions}
+ *                              entry (caught as a warning, encoded in {@code warns}) or they do not throw.
  */
 public record FusionDescriptor(
     Class<?> kernelClass,
@@ -39,7 +49,9 @@ public record FusionDescriptor(
     boolean allNullsIsNull,
     String overflowExceptionType,
     boolean variadic,
-    boolean mapping
+    boolean mapping,
+    boolean warns,
+    boolean dictionarySafe
 ) {
     /**
      * Convenience constructor for callers and tests that predate the explicit {@link #overflowExceptionType}
@@ -48,7 +60,9 @@ public record FusionDescriptor(
      * NaN/Inf guard), which is exactly what the annotation processor derives from the kernel's
      * {@code @Evaluator.warnExceptions}. This overload reproduces that mapping so a descriptor built by hand
      * stays consistent with the generated one: {@code java.lang.ArithmeticException} when overflow-checked,
-     * empty otherwise. Not variadic.
+     * empty otherwise. Not variadic, not mapping. {@code warns} follows overflow-checked (the derived
+     * ArithmeticException is a warn-exception); {@code dictionarySafe} defaults to {@code true} (the throw
+     * is caught as a warning).
      */
     public FusionDescriptor(Class<?> kernelClass, String kernelMethod, String kernelType, boolean overflowChecked, boolean allNullsIsNull) {
         this(
@@ -57,13 +71,18 @@ public record FusionDescriptor(
             kernelType,
             overflowChecked,
             allNullsIsNull,
-            overflowChecked ? "java.lang.ArithmeticException" : ""
+            overflowChecked ? "java.lang.ArithmeticException" : "",
+            false,
+            false,
+            overflowChecked,
+            true
         );
     }
 
     /**
-     * Convenience constructor (the shape the annotation processor emits for {@code @Evaluator} kernels): explicit
-     * overflow type, not variadic, not mapping.
+     * Convenience constructor (the shape the annotation processor used to emit for {@code @Evaluator} kernels):
+     * explicit overflow type, not variadic, not mapping. {@code warns} is derived from a non-empty overflow
+     * exception type; {@code dictionarySafe} defaults to {@code true}.
      */
     public FusionDescriptor(
         Class<?> kernelClass,
@@ -73,7 +92,18 @@ public record FusionDescriptor(
         boolean allNullsIsNull,
         String overflowExceptionType
     ) {
-        this(kernelClass, kernelMethod, kernelType, overflowChecked, allNullsIsNull, overflowExceptionType, false, false);
+        this(
+            kernelClass,
+            kernelMethod,
+            kernelType,
+            overflowChecked,
+            allNullsIsNull,
+            overflowExceptionType,
+            false,
+            false,
+            hasExceptionType(overflowExceptionType),
+            true
+        );
     }
 
     /** Convenience constructor: explicit overflow type and variadic flag, not mapping. */
@@ -86,11 +116,54 @@ public record FusionDescriptor(
         String overflowExceptionType,
         boolean variadic
     ) {
-        this(kernelClass, kernelMethod, kernelType, overflowChecked, allNullsIsNull, overflowExceptionType, variadic, false);
+        this(
+            kernelClass,
+            kernelMethod,
+            kernelType,
+            overflowChecked,
+            allNullsIsNull,
+            overflowExceptionType,
+            variadic,
+            false,
+            hasExceptionType(overflowExceptionType),
+            true
+        );
+    }
+
+    /**
+     * Convenience constructor: explicit overflow type, variadic, and mapping. {@code warns} is derived from a
+     * non-empty overflow exception type; {@code dictionarySafe} defaults to {@code true}.
+     */
+    public FusionDescriptor(
+        Class<?> kernelClass,
+        String kernelMethod,
+        String kernelType,
+        boolean overflowChecked,
+        boolean allNullsIsNull,
+        String overflowExceptionType,
+        boolean variadic,
+        boolean mapping
+    ) {
+        this(
+            kernelClass,
+            kernelMethod,
+            kernelType,
+            overflowChecked,
+            allNullsIsNull,
+            overflowExceptionType,
+            variadic,
+            mapping,
+            hasExceptionType(overflowExceptionType),
+            true
+        );
     }
 
     /** Whether this kernel declares an overflow exception the stitcher must catch around its spliced body. */
     public boolean hasOverflowException() {
+        return hasExceptionType(overflowExceptionType);
+    }
+
+    private static boolean hasExceptionType(String overflowExceptionType) {
         return overflowExceptionType != null && overflowExceptionType.isEmpty() == false;
     }
 }

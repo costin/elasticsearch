@@ -119,7 +119,7 @@ public final class CbrtDoubleEvaluator implements ExpressionEvaluator {
   }
 
   static class Factory implements ExpressionEvaluator.Factory, FusionAware {
-    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Cbrt.class, "process", "(D)D", false, true, "");
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Cbrt.class, "process", "(D)D", false, true, "", false, false, true, true);
 
     private final Source source;
 

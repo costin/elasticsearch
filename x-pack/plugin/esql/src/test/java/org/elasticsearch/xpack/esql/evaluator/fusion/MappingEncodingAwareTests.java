@@ -18,6 +18,8 @@ import org.elasticsearch.compute.data.OrdinalBytesRefVector;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.FilterEvalEvaluator;
+import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
+import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
@@ -26,6 +28,7 @@ import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.LastEvalPath;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.Concat;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Length;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToLower;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToUpper;
@@ -483,6 +486,87 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
     }
 
     /**
+     * H5: {@code LENGTH(CONCAT(k, "x"))} must not be encoding-aware. CONCAT can throw on input content (over-length),
+     * so evaluating an unreferenced dictionary entry would fail a query no row would have failed. The planner reads
+     * that from the CONCAT descriptor ({@code dictionarySafe=false}), not from {@code overflowChecked}.
+     */
+    public void testLengthConcatIsNotEncodingAware() {
+        FieldAttribute k = field("k", DataType.KEYWORD);
+        Expression expr = new Length(Source.EMPTY, new Concat(Source.EMPTY, k, List.of(keywordLit("x"))));
+        ExpressionEvaluator.Factory factory = fusedFactory(expr, layout(k));
+        if (factory instanceof FusedExpressionEvaluatorFactory fused) {
+            assertThat("LENGTH(CONCAT(k,\"x\")) must not take the encoding-aware path", fused.encodingAware(), is(false));
+        }
+
+        // Structural: a LENGTH(CONCAT(single BytesRef leaf)) tree must not be encoding-aware even when CONCAT
+        // is not overflow-checked and declares no warnExceptions (the previous heuristic treated it as safe).
+        FusionDescriptor length = new FusionDescriptor(Length.class, "process", "(Lorg/apache/lucene/util/BytesRef;)I", false, true);
+        FusionNode tree = new FusionNode.Kernel(
+            length,
+            List.of(new FusionNode.Kernel(FusionPlanner.CONCAT_DESCRIPTOR, List.of(new FusionNode.Input(0))))
+        );
+        assertThat(
+            "LENGTH(CONCAT(k,...)) must not be encoding-aware",
+            FusionPlanner.encodingAwareForTests(
+                tree,
+                new FusedExpressionEvaluatorFactory.ElementKind[] { FusedExpressionEvaluatorFactory.ElementKind.BYTES_REF }
+            ),
+            is(false)
+        );
+    }
+
+    /**
+     * H5: an ordinal page whose dictionary holds an entry that would make CONCAT throw (BytesRef past 1MB), but which
+     * no row references, must evaluate without exception and match unfused. The encoding-aware dictionary path is
+     * forbidden for CONCAT; the per-row path never sees the unreferenced entry.
+     */
+    public void testLengthConcatUnusedHugeDictionaryEntryDoesNotThrow() {
+        FieldAttribute k = field("k", DataType.KEYWORD);
+        Expression expr = new Length(Source.EMPTY, new Concat(Source.EMPTY, k, List.of(keywordLit("x"))));
+        Layout layout = layout(k);
+
+        BytesRef small = new BytesRef("ok");
+        BytesRef huge = new BytesRef(new byte[1024 * 1024 + 1]);
+        int[] ordinals = { 0, 0, 0, 0 };
+        Block input = ordinalKeyword(new BytesRef[] { small, huge }, ordinals);
+        ExpressionEvaluator fused = null;
+        ExpressionEvaluator reference = null;
+        Page page = null;
+        Block fusedResult = null;
+        Block referenceResult = null;
+        try {
+            ExpressionEvaluator.Factory fusedFactory = fusedFactory(expr, layout);
+            ExpressionEvaluator.Factory unfusedFactory = unfusedFactory(expr, layout);
+            assertFuses(fusedFactory, "LENGTH(CONCAT(k,\"x\")) unused huge dict");
+            assertDoesNotFuse(unfusedFactory, "LENGTH(CONCAT(k,\"x\")) unused huge dict");
+
+            fused = fusedFactory.get(driverContext);
+            reference = unfusedFactory.get(driverContext);
+            page = new Page(ordinals.length, input);
+            drainWarnings();
+            fusedResult = fused.eval(page);
+            LastEvalPath path = FusedExpressionEvaluatorFactory.lastEvalPath(fused);
+            List<String> fusedWarnings = drainWarnings();
+            referenceResult = reference.eval(page);
+            List<String> referenceWarnings = drainWarnings();
+            assertThat(
+                "LENGTH(CONCAT(k,\"x\")) must not take the encoding-aware dictionary path",
+                path,
+                not(is(LastEvalPath.ENCODING_AWARE))
+            );
+            assertResultsEqual(ElementKind.INT, fusedResult, referenceResult, ordinals.length, "LENGTH(CONCAT(k,\"x\")) unused huge dict");
+            assertWarningsSubset(fusedWarnings, referenceWarnings, "LENGTH(CONCAT(k,\"x\")) unused huge dict");
+        } finally {
+            Releasables.closeExpectNoException(fusedResult, referenceResult, fused, reference);
+            if (page != null) {
+                page.releaseBlocks();
+            } else {
+                Releasables.closeExpectNoException(input);
+            }
+        }
+    }
+
+    /**
      * H4: a sparse ordinal page (dictionary much larger than the row count) must not take the dictionary path.
      * {@link OrdinalBytesRefVector#filter} rebuilds a plain vector and is not the source of a sparse ordinal page;
      * {@code slice}/{@code keepMask} retain the full dictionary. This test builds 10 ordinals over a 10_000-entry
@@ -739,11 +823,19 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
     }
 
     private Block ordinalKeyword(String[] dictionary, int[] ordinals) {
+        BytesRef[] entries = new BytesRef[dictionary.length];
+        for (int i = 0; i < dictionary.length; i++) {
+            entries[i] = new BytesRef(dictionary[i]);
+        }
+        return ordinalKeyword(entries, ordinals);
+    }
+
+    private Block ordinalKeyword(BytesRef[] dictionary, int[] ordinals) {
         BytesRefVector dict = null;
         IntVector ords = null;
         try (BytesRefVector.Builder dictBuilder = blockFactory.newBytesRefVectorBuilder(dictionary.length)) {
-            for (String entry : dictionary) {
-                dictBuilder.appendBytesRef(new BytesRef(entry));
+            for (BytesRef entry : dictionary) {
+                dictBuilder.appendBytesRef(entry);
             }
             dict = dictBuilder.build();
             ords = blockFactory.newIntArrayVector(ordinals, ordinals.length);

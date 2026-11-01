@@ -120,7 +120,7 @@ public final class AbsLongEvaluator implements ExpressionEvaluator {
   }
 
   static class Factory implements ExpressionEvaluator.Factory, FusionAware {
-    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Abs.class, "process", "(J)J", true, true, "java.lang.ArithmeticException");
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Abs.class, "process", "(J)J", true, true, "java.lang.ArithmeticException", false, false, true, true);
 
     private final Source source;
 

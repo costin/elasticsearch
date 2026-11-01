@@ -120,7 +120,7 @@ public final class LogConstantEvaluator implements ExpressionEvaluator {
   }
 
   static class Factory implements ExpressionEvaluator.Factory, FusionAware {
-    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Log.class, "process", "(D)D", true, true, "java.lang.ArithmeticException");
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Log.class, "process", "(D)D", true, true, "java.lang.ArithmeticException", false, false, true, true);
 
     private final Source source;
 

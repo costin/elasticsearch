@@ -202,9 +202,10 @@ final class BlockDfsEmitter {
             offset += argType.getSize();
         }
 
-        // Variadic kernel: build the trailing array argument from the remaining children (each a BytesRef column),
-        // gathering them into a fresh array at the array parameter's slot. Any null/multi-value element short-
-        // circuits the whole kernel (present=false), exactly like a fixed operand.
+        // Variadic kernel: build the trailing array argument from the remaining children (each a BytesRef column
+        // or a captured keyword/text literal), gathering them into a fresh array at the array parameter's slot.
+        // Any null/multi-value column element short-circuits the whole kernel (present=false), exactly like a
+        // fixed operand.
         if (variadic) {
             Element elementElem = Element.of(argTypes[argTypes.length - 1].getElementType());
             emitVarargsGather(nodeBase + offset, elementElem, children.subList(fixedArgs, children.size()), presentSlot, kernelSlot);
@@ -326,10 +327,11 @@ final class BlockDfsEmitter {
 
     /**
      * Builds a variadic kernel's trailing array argument: {@code arraySlot = new E[elements.size()]}, then reads each
-     * element (a BytesRef column) with the same null / multi-value guard as {@link #emitLeaf} and stores it into the
-     * array. Any null or multi-value element short-circuits the whole kernel ({@code present=false}) and a
+     * element (a BytesRef column, or a captured keyword/text literal) with the same null / multi-value guard as
+     * {@link #emitLeaf} (literals skip the guard: they are always present and single-valued) and stores it into the
+     * array. Any null or multi-value column element short-circuits the whole kernel ({@code present=false}) and a
      * multi-value element registers the single-value warning on {@code kernelSlot} — matching the unfused evaluator's
-     * per-argument semantics. Each element is read into a <b>fresh</b> {@code new E()} (not the shared reusable
+     * per-argument semantics. Each column element is read into a <b>fresh</b> {@code new E()} (not the shared reusable
      * spare) because all elements coexist in the array; a shared spare would alias every slot to the last value.
      */
     private void emitVarargsGather(int arraySlot, Element elementElem, List<FusionNode> elements, int presentSlot, int kernelSlot) {
@@ -340,14 +342,26 @@ final class BlockDfsEmitter {
         insns.add(new VarInsnNode(Opcodes.ASTORE, arraySlot));
         for (int k = 0; k < elements.size(); k++) {
             FusionNode element = elements.get(k);
+            LabelNode after = new LabelNode();
+            if (element instanceof FusionNode.Constant constant) {
+                // A captured keyword/text literal is always present and single-valued: store it into the array
+                // unless this kernel already short-circuited.
+                insns.add(new VarInsnNode(Opcodes.ILOAD, presentSlot));
+                insns.add(new JumpInsnNode(Opcodes.IFEQ, after));
+                insns.add(new VarInsnNode(Opcodes.ALOAD, arraySlot));
+                Stitcher.pushInt(insns, k);
+                Stitcher.loadConstantParam(insns, elementElem, constant, constantSlots.get(constant));
+                insns.add(new InsnNode(Opcodes.AASTORE));
+                insns.add(after);
+                continue;
+            }
             if ((element instanceof FusionNode.Input) == false) {
-                // The planner only builds variadic trees whose elements are BytesRef column inputs.
-                throw new IllegalArgumentException("a variadic array element must be a column input but was [" + element + "]");
+                // The planner only builds variadic trees whose elements are BytesRef column inputs or literals.
+                throw new IllegalArgumentException("a variadic array element must be a column input or constant but was [" + element + "]");
             }
             FusionNode.Input input = (FusionNode.Input) element;
             Element inputElement = inputElements[input.index()];
             int block = inputBase + input.index();
-            LabelNode after = new LabelNode();
             LabelNode fail = new LabelNode();
             LabelNode single = new LabelNode();
             // If the kernel already short-circuited, skip this element entirely.

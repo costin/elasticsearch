@@ -40,10 +40,11 @@ class FusionAwareGen {
     private FusionAwareGen() {}
 
     /**
-     * The static {@code FUSION_DESCRIPTOR} field. When {@code mapping} is {@code false} the initializer uses the
-     * 6-arg {@code FusionDescriptor} convenience constructor (not variadic, not mapping) so {@code @Evaluator}
-     * generated sources stay byte-for-byte identical. When {@code mapping} is {@code true} the initializer uses
-     * the 8-arg canonical constructor with {@code variadic=false, mapping=true}.
+     * The static {@code FUSION_DESCRIPTOR} field. Always emitted as the 10-arg canonical constructor so
+     * {@code warns} (warnExceptions non-empty, independent of {@code overflowChecked}) and
+     * {@code dictionarySafe} are explicit. Generated kernels are never variadic; {@code mapping} is
+     * {@code true} only for {@code @ConvertEvaluator}. Generated kernels are {@code dictionarySafe}
+     * because any throw they make is a declared {@code warnExceptions} entry (caught as a warning).
      */
     static FieldSpec fusionDescriptorField(
         Elements elements,
@@ -52,7 +53,9 @@ class FusionAwareGen {
         boolean overflowChecked,
         boolean allNullsIsNull,
         String overflowExceptionType,
-        boolean mapping
+        boolean mapping,
+        boolean warns,
+        boolean dictionarySafe
     ) {
         FieldSpec.Builder builder = FieldSpec.builder(
             FUSION_DESCRIPTOR,
@@ -61,31 +64,20 @@ class FusionAwareGen {
             Modifier.STATIC,
             Modifier.FINAL
         );
-        if (mapping) {
-            builder.initializer(
-                "new $T($T.class, $S, $S, $L, $L, $S, $L, $L)",
-                FUSION_DESCRIPTOR,
-                ClassName.get(declarationType),
-                kernelMethod.getSimpleName().toString(),
-                kernelTypeDescriptor(elements, kernelMethod),
-                overflowChecked,
-                allNullsIsNull,
-                overflowExceptionType,
-                false,
-                true
-            );
-        } else {
-            builder.initializer(
-                "new $T($T.class, $S, $S, $L, $L, $S)",
-                FUSION_DESCRIPTOR,
-                ClassName.get(declarationType),
-                kernelMethod.getSimpleName().toString(),
-                kernelTypeDescriptor(elements, kernelMethod),
-                overflowChecked,
-                allNullsIsNull,
-                overflowExceptionType
-            );
-        }
+        builder.initializer(
+            "new $T($T.class, $S, $S, $L, $L, $S, $L, $L, $L, $L)",
+            FUSION_DESCRIPTOR,
+            ClassName.get(declarationType),
+            kernelMethod.getSimpleName().toString(),
+            kernelTypeDescriptor(elements, kernelMethod),
+            overflowChecked,
+            allNullsIsNull,
+            overflowExceptionType,
+            false,
+            mapping,
+            warns,
+            dictionarySafe
+        );
         return builder.build();
     }
 

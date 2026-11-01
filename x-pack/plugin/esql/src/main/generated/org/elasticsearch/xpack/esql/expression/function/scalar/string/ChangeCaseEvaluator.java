@@ -143,7 +143,7 @@ public final class ChangeCaseEvaluator extends AbstractConvertFunction.AbstractE
   }
 
   public static class Factory implements ExpressionEvaluator.Factory, FusionAware {
-    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(ChangeCase.class, "process", "(Lorg/apache/lucene/util/BytesRef;Ljava/util/Locale;Lorg/elasticsearch/xpack/esql/expression/function/scalar/string/ChangeCase$Case;)Lorg/apache/lucene/util/BytesRef;", false, true, "", false, true);
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(ChangeCase.class, "process", "(Lorg/apache/lucene/util/BytesRef;Ljava/util/Locale;Lorg/elasticsearch/xpack/esql/expression/function/scalar/string/ChangeCase$Case;)Lorg/apache/lucene/util/BytesRef;", false, true, "", false, true, false, true);
 
     private final Source source;
 

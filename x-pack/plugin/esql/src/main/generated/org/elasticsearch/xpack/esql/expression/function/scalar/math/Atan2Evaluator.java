@@ -132,7 +132,7 @@ public final class Atan2Evaluator implements ExpressionEvaluator {
   }
 
   static class Factory implements ExpressionEvaluator.Factory, FusionAware {
-    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Atan2.class, "process", "(DD)D", false, true, "");
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Atan2.class, "process", "(DD)D", false, true, "", false, false, false, true);
 
     private final Source source;
 

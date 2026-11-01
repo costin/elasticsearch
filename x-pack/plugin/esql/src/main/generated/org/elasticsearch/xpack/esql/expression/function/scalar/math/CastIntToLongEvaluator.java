@@ -110,7 +110,7 @@ public final class CastIntToLongEvaluator implements ExpressionEvaluator {
   }
 
   static class Factory implements ExpressionEvaluator.Factory, FusionAware {
-    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Cast.class, "castIntToLong", "(I)J", false, true, "");
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(Cast.class, "castIntToLong", "(I)J", false, true, "", false, false, false, true);
 
     private final Source source;
 

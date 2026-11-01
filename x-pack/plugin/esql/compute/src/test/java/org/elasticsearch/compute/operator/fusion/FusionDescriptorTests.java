@@ -77,6 +77,30 @@ public class FusionDescriptorTests extends ESTestCase {
         assertThat(variadic.mapping(), is(false));
     }
 
+    public void testConvenienceConstructorsDeriveWarnsAndDefaultDictionarySafe() {
+        FusionDescriptor overflow = descriptor(KERNEL_TYPE, true, true);
+        assertThat(overflow.warns(), is(true));
+        assertThat(overflow.dictionarySafe(), is(true));
+        FusionDescriptor plain = descriptor(KERNEL_TYPE, false, true);
+        assertThat(plain.warns(), is(false));
+        assertThat(plain.dictionarySafe(), is(true));
+        FusionDescriptor explicit = new FusionDescriptor(
+            FusionDescriptorTests.class,
+            "fixtureProcess",
+            KERNEL_TYPE,
+            false,
+            true,
+            "",
+            true,
+            false,
+            false,
+            false
+        );
+        assertThat(explicit.warns(), is(false));
+        assertThat(explicit.dictionarySafe(), is(false));
+        assertThat(explicit.variadic(), is(true));
+    }
+
     public void testFusionFixedArgsDefaultEmpty() {
         FusionAware fusionAware = () -> descriptor(KERNEL_TYPE, false, true);
         assertThat(fusionAware.fusionFixedArgs().isEmpty(), is(true));
