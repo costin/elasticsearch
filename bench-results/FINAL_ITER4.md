@@ -1,5 +1,5 @@
 # Iteration 4 report
-Code HEAD: 333f1202b3f (through H10)   Evidence HEAD: (pending)
+Code HEAD: 5879c12a57e (through H11)   Evidence HEAD: (pending)
 
 Delivery: direct push to `esql/fix/compute-codegen-followup`, no PR (operator directive).
 Driven by the orchestrator; each production change implemented test-first by a subagent,
@@ -18,7 +18,7 @@ reviewed by a fresh subagent, nits applied, then committed by the orchestrator.
 | H8 | done | 6e3e4a8f5fe | FusionFallbackHardeningTests (ExactlyOnceWarnExpectation x5); FusedClassCacheTests#testCacheHitDoesNotCallFindStatic + through-production stitch-fail test; FusionVerifyTests#testVerifyPageNullPathLabelsQuestionMark | y | G7 count WARN == 1 over 3 plans (was at-least-once); G5 drive FusionCompilationService.cached (deleted type=null 2-arg compile* overloads); G5/E7 resolve MethodHandle+asSpreader once, store on CachedFused so cache hit skips findStatic/asSpreader (PENDING_RESOLVED thread-local, cleared in wrapStitchFailures finally); E7 18-arg ctor -> FusedDispatch record (hot-path fields copied in ctor, no per-page indirection); verify label ? when -ea off; VectorHandles renamed primary/primaryInterface/raw/rawInterface; G9 javadoc corrected (no C2 fold of instance final). planCachedThenGet benchmark deferred to H13. 1 reviewer doc nit applied, 2 refactor nits skipped. |
 | H9 | done | 3e6d6d8dd9c | FusionTelemetryCoverageTests (four-category + testDeclinedFilterEvalCountsAsOneTopLevel + sysprop-not-setting + testMapExpressionChildDoesNotInvokeRawFactory; 11 tests) | y | Coverage counted once per top-level expr (EVAL/WHERE/FilterEval pair) via FusionCoverage; FUSED/ISLAND/FRAGMENT/NONE + first-refusal reason; sysprop-only esql.fusion.coverage_report (registered Setting removed); zero production impact when off (plan-time volatile read short-circuit, ThreadLocal cleared in finally, classify wrapped in catch). Full CsvIT: FUSED 2.9% (down from F0 18.7%) \u2014 stated plainly; pre-H9 probe was not comparable. See Coverage section. 2 reviewer doc nits applied (recordFused test-only hazard, refusedAtPlan derived note); perf nit skipped. |
 | H10 | done (MAP) | 333f1202b3f | LogicalFusionDifferentialTests#{testDatetimeGteLteRangeFuses, testNotDensePathPicksInterfaceVsBlock} | y (map test); Not test is coverage (passed pre-change) | DECISION: MAP DATETIME+DATE_NANOS to LONG for comparisons ONLY (not an open question). Same-type unfused GTE/LTE/GT/LT/EQ/NEQ bind *LongsEvaluator / @Fusable processLongs(JJ) (GreaterThanOrEqual.evaluatorMap + siblings), so fused==unfused byte-identical. Scope: matches()/buildConstant comparison path only (single caller buildComparisonOperand); elementOf unchanged so arithmetic over dates still refuses. Mixed DATETIME-vs-DATE_NANOS uses non-FusionAware NanosMillis/MillisNanos kernels -> still refuses. H9 evidence: GTE/DATETIME absent from top-10 because first-refusal of And(GTE,LTE) is "And" (GTE is FusionAware); ~386 of that shape sits just under Bucket=505; shape is in csv-spec (PromQL withTimestampFilter). Dense parity test straddles [t1,t2] incl boundaries. |
-| H11 | pending | | | | |
+| H11 | done | 5879c12a57e | FusionClassDumpTests (E1 dump, 33 shapes); removed dead-path tests (testMappingBlockLoop*, testTinyLimitRefusesMapping) | n/a (pure refactor; E1 byte-identical is the proof) | Dedup: FusedBuilderEmit (prologue/epilogue), single this::intercept, test seams call emitters directly (8 forwarders removed), FusedMethodCodeLengths extracted. Deleted dead mapping path (compileMappingBlockLoop, Path.MAPPING_BLOCK, FusionPlan.mapping, factory/cache/planner branches) \u2014 reviewer verified unreachable in production (lone TO_LOWER stays unfused per D4; mapping_append_suffix was a test-only fixture). Stitcher 1482->1199 (<=1200); four-file total 4034->3363 (target <=3846). E1 byte-identical across pre-H1/H1/H2/H3/pre-H11/H11 (md5 7cbf6fa..., 33 shapes), reviewer independently reproduced. 2 reviewer nits (param count, redundant null guard) skipped as non-blocking. |
 | H12 | pending | | | | |
 | H13 | pending | | | | |
 | H14 | pending | | | | |
@@ -59,13 +59,27 @@ Top 10 first-refusal reasons: depth<2=12585, Div=5858, MvSlice=4558, Case=1758, 
 | (pending H12) | | |
 
 ## E1 (H11)
-| Step | Changed shapes (or "byte-identical") | Hash list file |
-| pre-H1 baseline | n/a | T4/e1/pre-h1.txt (pending) |
-| H1 | 2+-BytesRef-column shapes (extra per-column spare slot + init) | T4/e1/h1.txt (pending) |
+Corpus: FusionClassDumpTests, 33 shapes (TE structural corpus minus the dead-path-only
+mapping_append_suffix, which lost its producer when the mapping emit path was deleted).
+All six dumps share md5 7cbf6fa3520c30dd271ded1ca9b0dd8a (byte-identical throughout).
+| Step | Commit | Changed shapes | Hash list file |
+|---|---|---|---|
+| pre-H1 | dec0810a47a | baseline | T4/e1/pre-h1.txt |
+| H1 | 2a7e47987f9 | byte-identical (aliasing fix is eval-time spare, not fused-class bytes) | T4/e1/h1.txt |
+| H2 | 25fd1cabcaf | byte-identical (huge-method guard refuses; in-budget TE classes unchanged) | T4/e1/h2.txt |
+| H3 | 9622eed87db | byte-identical (TE bakedDiv already emitted bounded baked form) | T4/e1/h3.txt |
+| pre-H11 | 333f1202b3f | baseline for H11 | T4/e1/pre-h11.txt |
+| H11 | 5879c12a57e | byte-identical (pure refactor; REQUIRED) | T4/e1/h11.txt |
 
 ## Line counts (H11)
 | File | before | after |
-| (pending H11) | | |
+|---|---|---|
+| Stitcher.java | 1482 | 1199 (<=1200) |
+| VectorLoopEmitter.java | 1049 | 1013 |
+| BlockLoopEmitter.java | 1015 | 701 |
+| FilterEvalEmitter.java | 488 | 450 |
+| four-file total | 4034 | 3363 (E6 baseline 3996; target <=3846) |
+New helpers not in total: FusedBuilderEmit 82, FusedMethodCodeLengths 139.
 
 ## Benchmark cells added or moved (smoke tables in T4/smoke/)
 (pending H13/H16/H4/H8)

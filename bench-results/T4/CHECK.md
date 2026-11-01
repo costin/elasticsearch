@@ -87,6 +87,15 @@ DECISION: MAP DATETIME+DATE_NANOS to LONG for comparisons only (evidence: same-t
 No CsvIT (not an H1/H2/H5/final gate).
 Fails-before-fix (commit body): testDatetimeGteLteRangeFuses expected FusedExpressionEvaluatorFactory but was BooleanLogicExpressionEvaluator wrapping the Longs evaluators. testNotDensePathPicksInterfaceVsBlock is coverage (passed pre-change).
 
+## H11 — dedup emitters + drop dead mapping path (commit 5879c12a57e)
+Full fusion gate (implementer): BUILD SUCCESSFUL 5m5s. Orchestrator confirming full gate at HEAD 5879c12a57e: BUILD SUCCESSFUL in 4m35s, GATE_EXIT=0.
+Reviewer GO (no blockers; independently REPRODUCED E1 md5 7cbf6fa... 33 shapes; dead-path-unreachable proof traced through planOrNull depth guard; bytecode-identical prologue/epilogue extraction verified instruction-by-instruction). 2 nits skipped (non-blocking: param count, redundant null guard).
+Pure refactor \u2014 no fails-before-fix; E1 byte-identical is the proof.
+Line counts: Stitcher 1482->1199 (<=1200); four-file total 4034->3363 (target <=3846, 633 below E6 baseline 3996).
+Dead mapping path deleted (compileMappingBlockLoop/Path.MAPPING_BLOCK/FusionPlan.mapping/factory+cache+planner branches); lone TO_LOWER stays unfused per D4; nested mapping unchanged on ordinary block path.
+E1: all six dumps (pre-H1/H1/H2/H3/pre-H11/H11) md5 7cbf6fa3520c30dd271ded1ca9b0dd8a, byte-identical. Files T4/e1/{pre-h1,h1,h2,h3,pre-h11,h11}.txt.
+No CsvIT (not an H1/H2/H5/final gate).
+
 ## H9 — F4 coverage probe comparable to F0 (uncommitted)
 Once per top-level expression; FUSED/ISLAND/FRAGMENT/NONE; first-refusal reason;
 sysprop-only `esql.fusion.coverage_report` (Setting removed). Gradle:
