@@ -841,7 +841,7 @@ public final class FusionPlanner {
             return null;
         }
         List<Object> fixedArgs = factory.fusionFixedArgs();
-        List<Class<?>> fixedTypes = mappingFixedArgTypes(descriptor.kernelType());
+        List<Class<?>> fixedTypes = mappingFixedArgTypes(descriptor.kernelClass(), descriptor.kernelType());
         if (fixedTypes == null || fixedTypes.size() != fixedArgs.size()) {
             return null;
         }
@@ -867,9 +867,11 @@ public final class FusionPlanner {
     /**
      * Declared reference types of the {@code @Fixed} parameters in {@code kernelType}, i.e. the JVM argument list
      * after the leading {@code Lorg/apache/lucene/util/BytesRef;} input. {@code /} is converted to {@code .};
-     * {@code $} is kept so inner classes (e.g. {@code ChangeCase$Case}) load as the declared type.
+     * {@code $} is kept so inner classes (e.g. {@code ChangeCase$Case}) load as the declared type. Resolution uses
+     * the <em>kernel class's</em> loader, not the planner's, so a kernel defined in another module still resolves
+     * its own inner types.
      */
-    private static List<Class<?>> mappingFixedArgTypes(String kernelType) {
+    private static List<Class<?>> mappingFixedArgTypes(Class<?> kernelClass, String kernelType) {
         if (kernelType == null || kernelType.startsWith("(") == false) {
             return null;
         }
@@ -884,6 +886,7 @@ public final class FusionPlanner {
         }
         args = args.substring(bytesRef.length());
         List<Class<?>> types = new ArrayList<>();
+        ClassLoader loader = kernelClass.getClassLoader();
         int i = 0;
         while (i < args.length()) {
             if (args.charAt(i) != 'L') {
@@ -895,7 +898,7 @@ public final class FusionPlanner {
             }
             String binaryName = args.substring(i + 1, semi).replace('/', '.');
             try {
-                types.add(Class.forName(binaryName));
+                types.add(Class.forName(binaryName, true, loader));
             } catch (ClassNotFoundException e) {
                 return null;
             }

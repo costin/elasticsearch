@@ -260,16 +260,97 @@ public class FusionAwareGenerationTests extends ESTestCase {
             }
             """;
 
-        List<String> errors = generateErrors(source);
-        assertFalse("expected a compile error for @ConvertEvaluator + @Fusable + warnExceptions", errors.isEmpty());
-        boolean mentionsWarn = false;
-        for (String error : errors) {
-            if (error.contains("warnExceptions") || error.contains("Fusable") || error.contains("failed to build")) {
-                mentionsWarn = true;
-                break;
+        assertHasError(generateErrors(source), "@ConvertEvaluator + @Fusable cannot declare warnExceptions");
+    }
+
+    /**
+     * H12: {@code @ConvertEvaluator + @Fusable} on a non-BytesRef first input is a compile error. The mapping
+     * stitcher only splices a BytesRef column; a primitive/other first parameter is a generation error, not a
+     * silent skip.
+     */
+    public void testFusableConvertNonBytesRefInputIsCompileError() {
+        String source = """
+            package test;
+            import org.apache.lucene.util.BytesRef;
+            import org.elasticsearch.compute.ann.ConvertEvaluator;
+            import org.elasticsearch.compute.ann.Fusable;
+            class IntInputConvert {
+                @ConvertEvaluator
+                @Fusable
+                static BytesRef process(int val) {
+                    return new BytesRef();
+                }
             }
-        }
-        assertTrue("error should mention warnExceptions or Fusable, got " + errors, mentionsWarn);
+            """;
+
+        assertHasError(generateErrors(source), "@ConvertEvaluator + @Fusable requires a BytesRef first input");
+    }
+
+    /**
+     * H12: a THREAD_LOCAL {@code @Fixed} scratch (URL_ENCODE*) is rejected. Mapping fusion only admits
+     * SINGLETON non-{@code jitConstant} {@code @Fixed} params.
+     */
+    public void testFusableConvertThreadLocalFixedIsCompileError() {
+        String source = """
+            package test;
+            import org.apache.lucene.util.BytesRef;
+            import org.elasticsearch.compute.ann.ConvertEvaluator;
+            import org.elasticsearch.compute.ann.Fixed;
+            import org.elasticsearch.compute.ann.Fusable;
+            class ThreadLocalConvert {
+                @ConvertEvaluator
+                @Fusable
+                static BytesRef process(BytesRef val, @Fixed(scope = Fixed.Scope.THREAD_LOCAL) String scratch) {
+                    return val;
+                }
+            }
+            """;
+
+        assertHasError(generateErrors(source), "@ConvertEvaluator + @Fusable supports only SINGLETON non-jitConstant @Fixed params");
+    }
+
+    /**
+     * H12: a {@code jitConstant} {@code @Fixed} param is rejected with the same SINGLETON-non-jitConstant message.
+     */
+    public void testFusableConvertJitConstantFixedIsCompileError() {
+        String source = """
+            package test;
+            import org.apache.lucene.util.BytesRef;
+            import org.elasticsearch.compute.ann.ConvertEvaluator;
+            import org.elasticsearch.compute.ann.Fixed;
+            import org.elasticsearch.compute.ann.Fusable;
+            class JitConstantConvert {
+                @ConvertEvaluator
+                @Fusable
+                static BytesRef process(BytesRef val, @Fixed(jitConstant = true) int n) {
+                    return val;
+                }
+            }
+            """;
+
+        assertHasError(generateErrors(source), "@ConvertEvaluator + @Fusable supports only SINGLETON non-jitConstant @Fixed params");
+    }
+
+    /**
+     * H12: {@code @ConvertEvaluator + @Fusable} must return BytesRef. {@code buildMapping} hardcodes a
+     * {@code BYTES_REF} output; a primitive/other return was previously generated (silently wrong).
+     */
+    public void testFusableConvertNonBytesRefReturnIsCompileError() {
+        String source = """
+            package test;
+            import org.apache.lucene.util.BytesRef;
+            import org.elasticsearch.compute.ann.ConvertEvaluator;
+            import org.elasticsearch.compute.ann.Fusable;
+            class IntReturnConvert {
+                @ConvertEvaluator
+                @Fusable
+                static int process(BytesRef val) {
+                    return val.length;
+                }
+            }
+            """;
+
+        assertHasError(generateErrors(source), "@ConvertEvaluator + @Fusable requires a BytesRef return");
     }
 
     /**
@@ -311,6 +392,19 @@ public class FusionAwareGenerationTests extends ESTestCase {
         String generated = processor.generated.get(generatedClassName);
         assertNotNull("generator did not produce [" + generatedClassName + "]; produced: " + processor.generated.keySet(), generated);
         return generated;
+    }
+
+    /** Asserts that {@code errors} contains the exact admission-message substring, not a generic "failed to build". */
+    private static void assertHasError(List<String> errors, String expected) {
+        assertFalse("expected a compile error containing [" + expected + "], got none", errors.isEmpty());
+        boolean found = false;
+        for (String error : errors) {
+            if (error != null && error.contains(expected)) {
+                found = true;
+                break;
+            }
+        }
+        assertTrue("expected error containing [" + expected + "], got " + errors, found);
     }
 
     /** Like {@link #generateEvaluator} but returns processor/javac errors instead of generated source. */

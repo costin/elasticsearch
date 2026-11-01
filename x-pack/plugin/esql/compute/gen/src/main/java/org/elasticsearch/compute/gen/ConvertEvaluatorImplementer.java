@@ -88,17 +88,19 @@ public class ConvertEvaluatorImplementer {
             throw new IllegalArgumentException("first argument must be the field to process");
         }
         argument = (StandardArgument) this.processFunction.args.getFirst();
+        this.warnExceptions = warnExceptions;
+        this.fusable = fusable;
+        // Fusable admission runs before the generic trailing-arg check so a jitConstant @Fixed (which is
+        // not a FixedArgument) is rejected with the fusable-specific message rather than "fixed function
+        // args supported after the first".
+        if (fusable) {
+            admitFusableConvert();
+        }
         for (int a = 1; a < this.processFunction.args.size(); a++) {
             if (this.processFunction.args.get(a) instanceof FixedArgument == false) {
                 throw new IllegalArgumentException("fixed function args supported after the first");
                 // TODO support more function types when we need them
             }
-        }
-
-        this.warnExceptions = warnExceptions;
-        this.fusable = fusable;
-        if (fusable) {
-            admitFusableConvert();
         }
 
         this.implementation = ClassName.get(
@@ -109,8 +111,11 @@ public class ConvertEvaluatorImplementer {
 
     /**
      * Compile-time admission for {@code @ConvertEvaluator + @Fusable}: no {@code warnExceptions}, a BytesRef
-     * first input, and only SINGLETON non-{@code jitConstant} {@code @Fixed} params. Anything else is a
-     * generation error until a converter needs a richer mapping shape.
+     * first input <em>and</em> BytesRef return (the planner's {@code buildMapping} hardcodes a
+     * {@code BYTES_REF} output), and only SINGLETON non-{@code jitConstant} {@code @Fixed} params. Anything
+     * else is a generation error until a converter needs a richer mapping shape.
+     * Passing this gate marks the descriptor {@code dictionarySafe=true}, so a {@code @Fusable} converter
+     * MUST be dictionary-safe (no throw on any input content outside declared warnExceptions).
      */
     private void admitFusableConvert() {
         if (warnExceptions.isEmpty() == false) {
@@ -118,6 +123,9 @@ public class ConvertEvaluatorImplementer {
         }
         if (argument.type().equals(BYTES_REF) == false) {
             throw new IllegalArgumentException("@ConvertEvaluator + @Fusable requires a BytesRef first input");
+        }
+        if (processFunction.returnType().equals(BYTES_REF) == false) {
+            throw new IllegalArgumentException("@ConvertEvaluator + @Fusable requires a BytesRef return");
         }
         for (int a = 1; a < processFunction.args.size(); a++) {
             if (processFunction.args.get(a) instanceof FixedArgument fa && fa.scope() == Fixed.Scope.SINGLETON) {
