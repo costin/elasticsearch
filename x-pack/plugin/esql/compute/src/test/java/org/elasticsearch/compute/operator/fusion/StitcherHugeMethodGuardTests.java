@@ -31,7 +31,7 @@ import static org.hamcrest.Matchers.lessThanOrEqualTo;
  *
  * <p>The per-path tests drop the live limit to {@link #TINY_LIMIT} so a representative tree is over-budget
  * without walking to depth thousands. Pre-H2, LOGICAL_VECTOR measures only {@code fused} (absent → size 0) and
- * CHECKED/block/mapping/SIMD compile with {@code enforce=false}, so those cases must fail on pre-H2 code.
+ * CHECKED/block/SIMD compile with {@code enforce=false}, so those cases must fail on pre-H2 code.
  * Plain-vector, logical-block and filter-eval already enforced the named {@code fused} method.
  */
 public class StitcherHugeMethodGuardTests extends ESTestCase {
@@ -49,13 +49,6 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
     private static final FusionDescriptor MUL = new FusionDescriptor(ArithmeticKernels.class, "mul", "(JJ)J", true, true);
     private static final FusionDescriptor GT = new FusionDescriptor(ComparisonKernels.class, "gt", "(JJ)Z", false, true);
     private static final FusionDescriptor LT = new FusionDescriptor(ComparisonKernels.class, "lt", "(JJ)Z", false, true);
-    private static final FusionDescriptor APPEND_SUFFIX = new FusionDescriptor(
-        KernelFixtures.class,
-        "processAppendSuffix",
-        "(Lorg/apache/lucene/util/BytesRef;Ljava/lang/String;)Lorg/apache/lucene/util/BytesRef;",
-        false,
-        true
-    );
 
     /** {@code long} arithmetic kernels shaped like the production {@code Add}/{@code Mul}. */
     public static final class ArithmeticKernels {
@@ -123,11 +116,6 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
     /** FAIL-before: the block loop compiled with {@code enforce=false}. */
     public void testTinyLimitRefusesBlock() throws Exception {
         assertTinyLimitRefuses("block loop", () -> stitcher.blockLoopBytecode(MethodHandles.lookup(), arithmeticTree()));
-    }
-
-    /** FAIL-before: the mapping block loop compiled with {@code enforce=false}. */
-    public void testTinyLimitRefusesMapping() throws Exception {
-        assertTinyLimitRefuses("mapping block loop", () -> stitcher.mappingBlockLoopBytecode(MethodHandles.lookup(), mappingTree()));
     }
 
     /** Passing-before: the logical-block path already enforced the named {@code fused} method. */
@@ -253,10 +241,6 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
             new FusionNode.Kernel(GT, List.of(new FusionNode.Input(0), new FusionNode.Input(1))),
             new FusionNode.Kernel(LT, List.of(new FusionNode.Input(2), new FusionNode.Input(3)))
         );
-    }
-
-    private static FusionNode mappingTree() {
-        return new FusionNode.Kernel(APPEND_SUFFIX, List.of(new FusionNode.Input(0), FusionNode.Constant.reference("_x", String.class)));
     }
 
     /** A left-nested AND of {@code comparisons} column-column comparisons, matching the e2e 16-AND tree. */

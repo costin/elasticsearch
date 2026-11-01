@@ -26,10 +26,11 @@ package org.elasticsearch.compute.operator.fusion;
  *                              operands (e.g. {@code CONCAT}'s {@code BytesRef[] values}). When {@code true} the tree
  *                              supplies the fixed leading operands followed by the array's elements as extra children,
  *                              and the stitcher builds the array per row from those trailing children.
- * @param mapping               whether this is a multi-value mapping convert kernel ({@code @ConvertEvaluator}): the
- *                              planner routes it through the mapping block loop instead of the arithmetic kernel path.
- *                              Generated {@code @Evaluator} descriptors and hand-written string kernels default this
- *                              to {@code false}; only the convert generator emits {@code true}.
+ * @param mapping               whether this is a multi-value mapping convert kernel ({@code @ConvertEvaluator}).
+ *                              A lone converter is refused at plan time (D4). Nested under a single-value parent
+ *                              it splices as a unary kernel on the ordinary block path. Generated {@code @Evaluator}
+ *                              descriptors and hand-written string kernels default this to {@code false}; only the
+ *                              convert generator emits {@code true}.
  * @param warns                 whether the kernel declares a {@code warnExceptions} type, independent of
  *                              {@code overflowChecked}. The encoding-aware ordinal path refuses any tree containing
  *                              a warning-capable kernel: evaluating a dictionary can warn for entries no row

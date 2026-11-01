@@ -194,21 +194,16 @@ public final class Stitcher {
 
     public Stitcher(TemplateRegistry templates) {
         this.templates = templates;
-        this.vectors = new VectorLoopEmitter(templates, mn -> {
-            if (hostMethodInterceptor != null) {
-                hostMethodInterceptor.accept(mn);
-            }
-        });
-        this.blocks = new BlockLoopEmitter(templates, mn -> {
-            if (hostMethodInterceptor != null) {
-                hostMethodInterceptor.accept(mn);
-            }
-        });
-        this.filterEval = new FilterEvalEmitter(templates, mn -> {
-            if (hostMethodInterceptor != null) {
-                hostMethodInterceptor.accept(mn);
-            }
-        }, this.blocks);
+        this.vectors = new VectorLoopEmitter(templates, this::intercept);
+        this.blocks = new BlockLoopEmitter(templates, this::intercept);
+        this.filterEval = new FilterEvalEmitter(templates, this::intercept, this.blocks);
+    }
+
+    /** Test-only seam: production is a no-op. */
+    private void intercept(MethodNode mn) {
+        if (hostMethodInterceptor != null) {
+            hostMethodInterceptor.accept(mn);
+        }
     }
 
     /**
@@ -321,9 +316,7 @@ public final class Stitcher {
         host.instructions.add(new InsnNode(body.returnOpcode()));
 
         // Test-only: corrupt the assembled method to drive the verification-failure fallback. No-op in production.
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-        }
+        intercept(host);
 
         ClassNode classNode = newFusedClass(hiddenClassInternalName(caller, descriptor), host, debug);
 
@@ -515,20 +508,9 @@ public final class Stitcher {
 
     /**
      * Fuses an expression {@code tree} of primitive {@code *ArrayVector} inputs (no nulls) into a single counted
-     * loop over {@code positionCount} and materialises it as a hidden class. The emitted {@link #FUSED_METHOD_NAME}
-     * method has the shape
-     * <pre>{@code
-     * static LongVector fused(BlockFactory bf, int positionCount, Vector in0, Vector in1, Vector in2) {
-     *     long[] a0 = VectorUnsafe.longs((LongArrayVector) in0);   // cast + read once, outside the loop
-     *     long[] a1 = VectorUnsafe.longs((LongArrayVector) in1);
-     *     long[] a2 = VectorUnsafe.longs((LongArrayVector) in2);
-     *     long[] out = new long[positionCount];
-     *     for (int p = 0; p < positionCount; p++) {
-     *         out[p] = (a0[p] + a1[p]) * a2[p];              // stitched kernel bodies, inline
-     *     }
-     *     return bf.newLongArrayVector(out, positionCount);
-     * }
-     * }</pre>
+     * loop over {@code positionCount} and materialises it as a hidden class. {@link #FUSED_METHOD_NAME} reads each
+     * backing array once via {@code VectorUnsafe} outside the loop, writes {@code out[p]}, and wraps with
+     * {@code new*ArrayVector}.
      *
      * <p><b>Overflow.</b> This array-output fast path has no null bitmask, so it is only valid when no kernel can
      * throw on overflow (an escaping {@code ArithmeticException} would abort the whole method rather than nulling one
@@ -545,13 +527,9 @@ public final class Stitcher {
      * caller's {@link MethodHandles.Lookup} — exactly as {@link #compileBlockLoop} does. This unifies the block and
      * vector lookup and lets the vector path fuse esql-proper/esql-core kernels (e.g. {@code NumericUtils}).
      *
-     * <p><b>Tree walk &amp; slot allocation.</b> The tree is emitted post-order. Each {@link FusionNode.Kernel}
-     * node is assigned a <em>disjoint</em> local-slot range starting at a running base; the next node's base is
-     * advanced by the kernel body's {@code maxLocals} ({@code base += body.maxLocals()}) so no two kernels' locals
-     * collide. Each body is {@linkplain SlotRemapper#shift shifted} into its range and spliced via the
-     * {@link BodyExtractor}. Intermediate results ride the operand stack — a child's value is stored into its
-     * parent kernel's (shifted) argument slot immediately before the parent body runs — so no per-node result slot
-     * is needed and the disjoint ranges guarantee a child's evaluation never clobbers a sibling's stored argument.
+     * <p><b>Tree walk &amp; slot allocation.</b> Post-order: each {@link FusionNode.Kernel} gets a disjoint
+     * local-slot range ({@code base += body.maxLocals()}), {@linkplain SlotRemapper#shift shifted} and spliced.
+     * Intermediate results ride the operand stack into the parent kernel's argument slots.
      *
      * @param caller the caller's lookup (from the module that owns the kernels); the fused class is defined here
      * @param tree   the expression tree to fuse; dense primitive vectors (any kind: {@code *ArrayVector},
@@ -563,7 +541,7 @@ public final class Stitcher {
      *                            should fall back to the unfused path
      */
     public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return defineOrThrow(caller, emitVectorLoop(caller, tree), "vector-loop class");
+        return defineOrThrow(caller, vectors.emitVectorLoop(caller, tree), "vector-loop class");
     }
 
     /**
@@ -576,7 +554,7 @@ public final class Stitcher {
      * @throws StitchingException on verification/link/access failure — the caller falls back to the scalar path
      */
     public Class<?> compileVectorLoopSimd(MethodHandles.Lookup caller, FusionNode tree, String comparison) throws StitchingException {
-        return defineOrThrow(caller, emitVectorLoopSimd(caller, tree, comparison), "SIMD vector-loop class");
+        return defineOrThrow(caller, vectors.emitVectorLoopSimd(caller, tree, comparison), "SIMD vector-loop class");
     }
 
     /**
@@ -587,33 +565,9 @@ public final class Stitcher {
      * output" the plain array-vector fast path cannot provide: an {@code ArrayVector} has no null bitmask, whereas
      * the unfused vector-path evaluator (e.g. {@code AddLongsEvaluator.eval(int, LongVector, LongVector)}) already
      * builds a {@code *Block} via a builder and appends {@code null} on a caught {@code ArithmeticException}. One hidden
-     * class exposes both methods of the same descriptor:
-     * <pre>{@code
-     * static LongBlock fused(BlockFactory bf, Warnings[] warnings, int n, Vector in0, Vector in1) {
-     *     // builder path: appendLong; on overflow registerException + appendNull
-     *     long[] a0 = VectorUnsafe.longs((LongArrayVector) in0);
-     *     long[] a1 = VectorUnsafe.longs((LongArrayVector) in1);
-     *     LongBlock.Builder out = bf.newLongBlockBuilder(n);
-     *     try {
-     *         for (int p = 0; p < n; p++) {
-     *             try { out.appendLong(process(a0[p], a1[p])); }
-     *             catch (ArithmeticException e) { warnings[k].registerException(e); out.appendNull(); }
-     *         }
-     *         return out.build();
-     *     } finally { out.close(); }
-     * }
-     * static LongBlock fusedRaw(BlockFactory bf, Warnings[] warnings, int n, Vector in0, Vector in1) {
-     *     // dense ArrayVector path; warnings[] is unused (uniform binding). On the first overflow return null
-     *     // so the caller re-runs fused.
-     *     long[] a0 = VectorUnsafe.longs((LongArrayVector) in0);
-     *     long[] a1 = VectorUnsafe.longs((LongArrayVector) in1);
-     *     try {
-     *         long[] out = new long[n];
-     *         for (int p = 0; p < n; p++) out[p] = process(a0[p], a1[p]);
-     *         return bf.newLongArrayVector(out, n).asBlock();
-     *     } catch (ArithmeticException e) { return null; }
-     * }
-     * }</pre>
+     * class exposes both methods of the same descriptor: builder {@code fused}/{@code fusedInterface} (overflow →
+     * null + warning) and dense {@code fusedRaw}/{@code fusedRawInterface} (first overflow returns {@code null} so
+     * the caller re-runs the matching builder method).
      *
      * <p><b>Backing-array access via {@code VectorUnsafe} (no teleport; {@code double} now links).</b> Like
      * {@link #compileVectorLoop}, this path reads each input's backing array through the public exported
@@ -636,44 +590,14 @@ public final class Stitcher {
      *                            unfused chain
      */
     public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return defineOrThrow(caller, emitVectorLoopChecked(caller, tree), "checked vector-loop class");
+        return defineOrThrow(caller, vectors.emitVectorLoopChecked(caller, tree), "checked vector-loop class");
     }
 
     /**
      * Fuses an expression {@code tree} whose inputs are primitive {@code *Block}s that may carry nulls and/or
      * multi-valued positions into a single position-by-position loop, and materialises it as a hidden class. This
      * is the null-tolerant fallback to {@link #compileVectorLoop}: the caller uses the vector fast path when every
-     * input is a no-null single-valued {@code *ArrayVector}, and this block path otherwise. The emitted
-     * {@link #FUSED_METHOD_NAME} method has the shape
-     * <pre>{@code
-     * static LongBlock fused(BlockFactory bf, Warnings warnings, int positionCount,
-     *                        LongBlock b0, LongBlock b1, LongBlock b2) {
-     *     LongBlock.Builder out = bf.newLongBlockBuilder(positionCount);
-     *     try {
-     *         position: for (int p = 0; p < positionCount; p++) {
-     *             for (LongBlock b : {b0, b1, b2}) {          // each CONSUMED input, in leaf order
-     *                 int c = b.getValueCount(p);
-     *                 if (c == 0) { out.appendNull(); continue position; }              // null -> null, no warning
-     *                 if (c > 1)  { warnings.registerException(                          // multi-value -> null + warning
-     *                                   new IllegalArgumentException("single-value function encountered multi-value"));
-     *                               out.appendNull(); continue position; }
-     *             }
-     *             long v0 = b0.getLong(b0.getFirstValueIndex(p));
-     *             long v1 = b1.getLong(b1.getFirstValueIndex(p));
-     *             long v2 = b2.getLong(b2.getFirstValueIndex(p));
-     *             try {
-     *                 out.appendLong((v0 + v1) * v2);         // stitched kernel bodies, inline (Math.*Exact)
-     *             } catch (ArithmeticException e) {            // overflow -> null + warning (per overflowExceptionType)
-     *                 warnings.registerException(e);
-     *                 out.appendNull();
-     *             }
-     *         }
-     *         return out.build();
-     *     } finally {
-     *         out.close();                                    // no-op after build(); frees breaker bytes on throw
-     *     }
-     * }
-     * }</pre>
+     * input is a no-null single-valued {@code *ArrayVector}, and this block path otherwise.
      *
      * <p><b>Null / multi-value semantics.</b> This mirrors the generated unfused evaluator's {@code *Block}-path
      * exactly (e.g. {@code AddLongsEvaluator.eval(int, LongBlock, LongBlock)}): for each consumed input a position is
@@ -726,53 +650,15 @@ public final class Stitcher {
      *                            fails JVM verification/linking — the caller should fall back to the unfused path
      */
     public Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return defineOrThrow(caller, emitBlockLoop(caller, tree), "block-loop class");
-    }
-
-    /**
-     * Compiles the MULTI-VALUE MAPPING block loop for a unary {@code @ConvertEvaluator}-style kernel (e.g.
-     * {@code TO_LOWER}/{@code TO_UPPER}) — a kernel that maps over EVERY value of a multi-valued position rather than
-     * treating a multi-value as a single-value error. The tree must be a single {@link FusionNode.Kernel} root with
-     * exactly one reference (BytesRef) input operand and zero-or-more {@code @Fixed} reference constants, a BytesRef
-     * output, and a non-throwing straight-line body. This mirrors the unfused convert evaluator's {@code evalBlock}:
-     * an empty position appends null, a single-value position appends one converted value, and a multi-value position
-     * appends a converted value per input value inside a {@code beginPositionEntry}/{@code endPositionEntry} — so a
-     * multi-valued input yields a multi-valued (not null-with-warning) result, which the ordinary single-value block
-     * path cannot reproduce.
-     *
-     * @throws StitchingException on verification/link/access failure — the caller falls back to the unfused chain
-     */
-    public Class<?> compileMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return defineOrThrow(caller, emitMappingBlockLoop(caller, tree), "mapping block-loop class");
+        return defineOrThrow(caller, blocks.emitBlockLoop(caller, tree), "block-loop class");
     }
 
     /**
      * Fuses a <b>logical</b> tree — a three-valued-logic (3VL) {@code AND}/{@code OR} tree ({@link FusionNode.Logical})
      * or a Kleene 3VL {@link FusionNode.Not} — whose operands/child are boolean-producing comparison
-     * {@link FusionNode.Kernel}s (from S3.0), nested {@link FusionNode.Logical}s, or nested {@link FusionNode.Not}s —
-     * into a single nullable-boolean block loop, materialised as a hidden class (iter 20, S3.1). The emitted
-     * {@link #FUSED_METHOD_NAME} has the shape
-     * <pre>{@code
-     * static BooleanBlock fused(BlockFactory bf, Warnings warnings, int positionCount,
-     *                           LongBlock b0, LongBlock b1, LongBlock b2, LongBlock b3) {
-     *     BooleanBlock.Builder out = bf.newBooleanBlockBuilder(positionCount);
-     *     try {
-     *         for (int p = 0; p < positionCount; p++) {
-     *             int l = cmp0(warnings, p, b0, b1);       // a > b  -> 0 false / 1 true / 2 null
-     *             int t;
-     *             if (l == 0) { t = 0; }                    // AND short-circuit: left false -> false (skip right)
-     *             else {
-     *                 int r = cmp1(warnings, p, b2, b3);    // c < d
-     *                 if (r == 0)      t = 0;               // right false -> false
-     *                 else if (l == 2 || r == 2) t = 2;     // 3VL null
-     *                 else             t = 1;               // both true -> true
-     *             }
-     *             if (t == 2) out.appendNull(); else out.appendBoolean(t != 0);
-     *         }
-     *         return out.build();
-     *     } finally { out.close(); }
-     * }
-     * }</pre>
+     * {@link FusionNode.Kernel}s, nested {@link FusionNode.Logical}s, or nested {@link FusionNode.Not}s — into a
+     * single nullable-boolean block loop. Each comparison is a {@code private static cmpN} helper returning a
+     * tri-state ({@code 0}/{@code 1}/{@code 2}); the loop combines them with {@code BinaryLogicOperation} 3VL.
      *
      * <p><b>Nullable-boolean 3VL (matches {@code BinaryLogicOperation}).</b> Each operand yields a tri-state
      * {@code int} — {@code 0} false, {@code 1} true, {@code 2} null — from a {@code private static} helper
@@ -818,7 +704,7 @@ public final class Stitcher {
      *                            should fall back to the unfused path
      */
     public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return defineOrThrow(caller, emitLogicalBlockLoop(caller, tree), "logical block-loop class");
+        return defineOrThrow(caller, blocks.emitLogicalBlockLoop(caller, tree), "logical block-loop class");
     }
 
     /**
@@ -841,7 +727,7 @@ public final class Stitcher {
      *                            JVM verification/linking — the caller should keep the 3VL block path
      */
     public Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return defineOrThrow(caller, emitLogicalVectorLoop(caller, tree), "logical vector-loop class");
+        return defineOrThrow(caller, vectors.emitLogicalVectorLoop(caller, tree), "logical vector-loop class");
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -851,24 +737,7 @@ public final class Stitcher {
     /**
      * Fuses a WHERE {@code predicateTree} and a single EVAL {@code projectionTree} into ONE per-position block loop,
      * eliminating the intermediate full-width predicate {@code BooleanBlock} and the {@code Filter → Eval} operator
-     * boundary. The emitted {@link #FUSED_METHOD_NAME} method has the shape
-     * <pre>{@code
-     * static LongBlock fused(BlockFactory bf, Warnings[] warnings, int positionCount, int[] positions,
-     *                        <predicate input *Blocks...>, <projection input *Blocks...>,
-     *                        <predicate constants...>, <projection constants...>) {
-     *     LongBlock.Builder out = bf.newLongBlockBuilder(positionCount);   // COMPACT: one entry per surviving row
-     *     int rowCount = 0;
-     *     try {
-     *         for (int p = 0; p < positionCount; p++) {
-     *             int t = pred(warnings, p, <predBlocks>, <predConsts>);   // 3VL: 0 false / 1 true / 2 null
-     *             if (t != 1) continue;                                    // false OR null ⇒ row dropped (like Filter)
-     *             projAppend(out, warnings, p, <projBlocks>, <projConsts>);// evaluate + append projection (survivors only)
-     *             positions[rowCount++] = p;                               // record the surviving source position
-     *         }
-     *         return out.build();
-     *     } finally { out.close(); }
-     * }
-     * }</pre>
+     * boundary. {@code pred} returns the 3VL tri-state; {@code projAppend} evaluates + appends only surviving rows.
      *
      * <p>The surviving row SET, values and null positions are byte-for-byte those of the unfused
      * {@code FilterOperator(predicate) → EvalOperator(projection)} chain: a position survives iff the predicate is
@@ -882,7 +751,7 @@ public final class Stitcher {
      * standalone predicate paths use — {@link BlockLoopEmitter.LogicalDfsEmitter} (for a 3VL {@code AND}/{@code OR}/{@code NOT} tree,
      * with one {@code cmpN} helper per comparison) or {@link BlockDfsEmitter} (for a comparison
      * {@link FusionNode.Kernel}, including comparison-over-arithmetic). The projection is evaluated by the arithmetic
-     * {@link BlockDfsEmitter} kernel DFS that {@link #emitBlockLoop} uses. To keep the top-level {@code fused} loop
+     * {@link BlockDfsEmitter} kernel DFS that {@link BlockLoopEmitter#emitBlockLoop} uses. To keep the top-level {@code fused} loop
      * small and inlinable (criterion #6 budget
      * guard, ENFORCED here) the two per-position bodies are factored into {@code private static} helpers ({@code pred}
      * returning the tri-state, {@code projAppend} evaluating + appending the projection value-or-null), so the top-level
@@ -908,7 +777,11 @@ public final class Stitcher {
      */
     public Class<?> compileFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
         throws StitchingException {
-        return defineOrThrow(caller, emitFilterEvalBlockLoop(caller, predicateTree, projectionTree), "filter-eval block-loop class");
+        return defineOrThrow(
+            caller,
+            filterEval.emitFilterEvalBlockLoop(caller, predicateTree, projectionTree),
+            "filter-eval block-loop class"
+        );
     }
 
     /** Type-correct {@code xLOAD} of a constant argument (by its {@code J}/{@code I}/{@code D} element) from {@code slot}. */
@@ -1220,13 +1093,9 @@ public final class Stitcher {
      * measured against {@link #maxFusedMethodBytecodes} (HotSpot's default {@code -XX:HugeMethodLimit}, 8000).
      * A method above this limit is never JIT-compiled at all, which is strictly worse than the unfused chain.
      *
-     * <p><b>Every emit path is enforced, every method is measured.</b> Plain-vector, checked-vector, SIMD,
-     * logical-vector, block, mapping, logical-block, and filter-eval all refuse with a {@link StitchingException}
-     * when any method (the named {@code fused} loop, {@code fusedInterface}, {@code fusedRaw}/{@code fusedRawInterface},
-     * filter-eval {@code pred}/{@code projAppend}, or logical-block {@code cmpN} helpers) exceeds the limit, so the
-     * caller falls back to the unfused chain — or, when a previously-compiled in-budget block path already exists,
-     * degrades to block-only. An oversize body is logged at DEBUG here; the {@link StitchingException} message
-     * carries the measured bytecode size, and the single plan-time WARN is emitted once per shape by
+     * <p>Every emit path is enforced and every method is measured (named {@code fused}, {@code fusedInterface},
+     * {@code fusedRaw}/{@code fusedRawInterface}, filter-eval {@code pred}/{@code projAppend}, logical-block
+     * {@code cmpN}). An oversize body is logged at DEBUG; the single plan-time WARN is emitted once per shape by
      * {@code FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure}.
      */
     static byte[] serializeWithBudgetGuard(ClassNode classNode, ClassWriter writer, String pathName) throws StitchingException {
@@ -1248,203 +1117,51 @@ public final class Stitcher {
         return bytecode;
     }
 
-    private byte[] emitVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+    // Test seams: raw fused class bytes BEFORE defineHiddenClass. Tests measure Code length and run CheckClassAdapter.
+    // Each path throws StitchingException if any method exceeds the huge-method limit, matching compile*.
+
+    byte[] vectorLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         return vectors.emitVectorLoop(caller, tree);
     }
 
-    private byte[] emitVectorLoopSimd(MethodHandles.Lookup caller, FusionNode tree, String comparison) throws StitchingException {
-        return vectors.emitVectorLoopSimd(caller, tree, comparison);
-    }
-
-    private byte[] emitVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+    byte[] vectorLoopCheckedBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         return vectors.emitVectorLoopChecked(caller, tree);
     }
 
-    private byte[] emitLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return vectors.emitLogicalVectorLoop(caller, tree);
-    }
-
-    private byte[] emitBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+    byte[] blockLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         return blocks.emitBlockLoop(caller, tree);
     }
 
-    private byte[] emitMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return blocks.emitMappingBlockLoop(caller, tree);
-    }
-
-    private byte[] emitLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+    byte[] logicalBlockLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         return blocks.emitLogicalBlockLoop(caller, tree);
     }
 
-    private byte[] emitFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
-        throws StitchingException {
-        return filterEval.emitFilterEvalBlockLoop(caller, predicateTree, projectionTree);
-    }
-
-    // -----------------------------------------------------------------------------------------------------------------
-    // Test seams (package-private): the raw fused class bytes for each emit path, BEFORE defineHiddenClass verifies
-    // them. They let same-package tests (StitcherBudgetTests / StitcherHugeMethodGuardTests) measure every method's
-    // Code length against maxFusedMethodBytecodes (via maxMethodCodeLength) and run the bytes through CheckClassAdapter
-    // for a structural-validity check on top of the JVM's defineHiddenClass verifier. Every path throws a
-    // StitchingException here if any method exceeds the huge-method limit — exactly as the compile* entry points would.
-    // -----------------------------------------------------------------------------------------------------------------
-
-    byte[] vectorLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return emitVectorLoop(caller, tree);
-    }
-
-    byte[] vectorLoopCheckedBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return emitVectorLoopChecked(caller, tree);
-    }
-
-    byte[] blockLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return emitBlockLoop(caller, tree);
-    }
-
-    byte[] logicalBlockLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return emitLogicalBlockLoop(caller, tree);
-    }
-
     byte[] logicalVectorLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return emitLogicalVectorLoop(caller, tree);
+        return vectors.emitLogicalVectorLoop(caller, tree);
     }
 
     byte[] filterEvalBlockLoopBytecode(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
         throws StitchingException {
-        return emitFilterEvalBlockLoop(caller, predicateTree, projectionTree);
-    }
-
-    byte[] mappingBlockLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return emitMappingBlockLoop(caller, tree);
+        return filterEval.emitFilterEvalBlockLoop(caller, predicateTree, projectionTree);
     }
 
     byte[] simdVectorLoopBytecode(MethodHandles.Lookup caller, FusionNode tree, String comparison) throws StitchingException {
-        return emitVectorLoopSimd(caller, tree, comparison);
+        return vectors.emitVectorLoopSimd(caller, tree, comparison);
     }
 
-    /**
-     * Reads the {@code Code} attribute length (the bytecode count C2 measures against
-     * {@code HugeMethodLimit}) of the {@link #FUSED_METHOD_NAME} method in a just-emitted class. A
-     * minimal class-file walk over our own freshly written
-     * bytes (no external dependency, no class loading): parse the constant pool for the UTF-8 entries, then scan the
-     * method table for {@code fused}'s {@code Code} attribute and return its {@code code_length}. Returns 0 if the
-     * method or its {@code Code} attribute is absent (never expected for an emitted loop).
-     */
+    /** @see FusedMethodCodeLengths#fusedMethodCodeLength */
     static int fusedMethodCodeLength(byte[] classBytes) {
-        return methodCodeLength(classBytes, FUSED_METHOD_NAME);
+        return FusedMethodCodeLengths.fusedMethodCodeLength(classBytes);
     }
 
-    /**
-     * Largest {@code Code} attribute {@code code_length} over <em>every</em> method of {@code classBytes}.
-     * The huge-method guard refuses a class when this value exceeds {@link #maxFusedMethodBytecodes}: a method
-     * above HotSpot's {@code -XX:HugeMethodLimit} (8000) is never JIT-compiled, which is strictly worse than
-     * the unfused chain. Unlike {@link #methodCodeLength(byte[], String)} this does not stop at a name match —
-     * LOGICAL_VECTOR's {@code fusedInterface}, CHECKED's {@code fusedRaw}/{@code fusedRawInterface}, filter-eval
-     * {@code pred}/{@code projAppend}, and logical-block {@code cmpN} helpers are all measured.
-     */
+    /** @see FusedMethodCodeLengths#maxMethodCodeLength */
     static int maxMethodCodeLength(byte[] classBytes) {
-        int[] max = { 0 };
-        visitMethodCodeLengths(classBytes, (name, length) -> {
-            if (length > max[0]) {
-                max[0] = length;
-            }
-        });
-        return max[0];
+        return FusedMethodCodeLengths.maxMethodCodeLength(classBytes);
     }
 
-    /**
-     * Same class-file walk as {@link #fusedMethodCodeLength} for an arbitrary static method name — used to budget
-     * {@link #FUSED_RAW_METHOD_NAME} independently of the builder-based {@code fused} sibling on the same class.
-     */
+    /** @see FusedMethodCodeLengths#methodCodeLength */
     static int methodCodeLength(byte[] classBytes, String methodName) {
-        int[] found = { 0 };
-        visitMethodCodeLengths(classBytes, (name, length) -> {
-            if (methodName.equals(name)) {
-                found[0] = length;
-            }
-        });
-        return found[0];
-    }
-
-    @FunctionalInterface
-    private interface MethodCodeLengthVisitor {
-        void accept(String methodName, int codeLength);
-    }
-
-    /**
-     * Walks every method of {@code classBytes} and reports each {@code Code} attribute's {@code code_length}.
-     * Methods without a {@code Code} attribute are skipped. Shared by {@link #maxMethodCodeLength} (track the
-     * max) and {@link #methodCodeLength(byte[], String)} (name match).
-     */
-    private static void visitMethodCodeLengths(byte[] classBytes, MethodCodeLengthVisitor visitor) {
-        java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(classBytes); // class files are big-endian, ByteBuffer's default
-        buf.getInt();   // magic
-        buf.getShort(); // minor_version
-        buf.getShort(); // major_version
-        int cpCount = buf.getShort() & 0xFFFF;
-        String[] utf8 = new String[cpCount];
-        for (int i = 1; i < cpCount; i++) {
-            int tag = buf.get() & 0xFF;
-            switch (tag) {
-                case 1 -> { // CONSTANT_Utf8
-                    int len = buf.getShort() & 0xFFFF;
-                    byte[] b = new byte[len];
-                    buf.get(b);
-                    utf8[i] = new String(b, java.nio.charset.StandardCharsets.UTF_8);
-                }
-                case 7, 8, 16, 19, 20 -> buf.getShort();          // Class, String, MethodType, Module, Package
-                case 15 -> {
-                    buf.get();       // MethodHandle: reference_kind
-                    buf.getShort();  // reference_index
-                }
-                case 3, 4, 9, 10, 11, 12, 17, 18 -> buf.getInt(); // Integer/Float/Fieldref/Methodref/IMethodref/NameAndType/(Invoke)Dynamic
-                case 5, 6 -> {                                    // Long/Double occupy two constant-pool slots
-                    buf.getLong();
-                    i++;
-                }
-                default -> throw new IllegalStateException("unexpected constant-pool tag [" + tag + "] measuring fused method");
-            }
-        }
-        buf.getShort(); // access_flags
-        buf.getShort(); // this_class
-        buf.getShort(); // super_class
-        int interfaces = buf.getShort() & 0xFFFF;
-        buf.position(buf.position() + interfaces * 2);
-        int fields = buf.getShort() & 0xFFFF;
-        for (int f = 0; f < fields; f++) {
-            buf.getShort(); // access_flags
-            buf.getShort(); // name_index
-            buf.getShort(); // descriptor_index
-            skipAttributes(buf);
-        }
-        int methods = buf.getShort() & 0xFFFF;
-        for (int m = 0; m < methods; m++) {
-            buf.getShort(); // access_flags
-            int nameIndex = buf.getShort() & 0xFFFF;
-            buf.getShort(); // descriptor_index
-            int attributeCount = buf.getShort() & 0xFFFF;
-            String methodName = utf8[nameIndex];
-            for (int a = 0; a < attributeCount; a++) {
-                int attrNameIndex = buf.getShort() & 0xFFFF;
-                int attrLength = buf.getInt();
-                int attrStart = buf.position();
-                if ("Code".equals(utf8[attrNameIndex])) {
-                    buf.getShort(); // max_stack
-                    buf.getShort(); // max_locals
-                    visitor.accept(methodName, buf.getInt()); // code_length
-                }
-                buf.position(attrStart + attrLength);
-            }
-        }
-    }
-
-    private static void skipAttributes(java.nio.ByteBuffer buf) {
-        int attributeCount = buf.getShort() & 0xFFFF;
-        for (int a = 0; a < attributeCount; a++) {
-            buf.getShort(); // attribute_name_index
-            int attrLength = buf.getInt();
-            buf.position(buf.position() + attrLength);
-        }
+        return FusedMethodCodeLengths.methodCodeLength(classBytes, methodName);
     }
 
     /**

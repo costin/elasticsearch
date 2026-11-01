@@ -231,21 +231,6 @@ public final class FusionPlanner {
         ) throws Stitcher.StitchingException {
             return compileVectorLoopSimd(caller, tree, comparison);
         }
-
-        /**
-         * Compiles the multi-value mapping block loop for a unary convert kernel (TO_LOWER/TO_UPPER). Defaulted so
-         * existing test doubles need not implement it; {@link FusionCompilationService} provides the real, cache-backed
-         * implementation.
-         */
-        default Class<?> compileMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-            throw new UnsupportedOperationException("compileMappingBlockLoop not implemented by this compiler");
-        }
-
-        /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
-        default Class<?> compileMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-            throws Stitcher.StitchingException {
-            return compileMappingBlockLoop(caller, tree);
-        }
     }
 
     /**
@@ -364,7 +349,6 @@ public final class FusionPlanner {
             warningSources(signature.warningSourceIndices(), ctx),
             shapeOf(tree),
             vectorComparison,
-            ctx.mapping,
             encodingAware
         );
     }

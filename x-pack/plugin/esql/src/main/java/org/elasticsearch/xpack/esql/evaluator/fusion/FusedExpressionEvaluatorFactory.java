@@ -391,7 +391,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         // Stitcher's single canonical emit order — so one stitched class serves every constant value.
         Class<?>[] constantParamTypes = constantParamTypes(constants);
         // Tracks which compile path is in flight so the outer catch can name it. Starts as BLOCK (the common
-        // arithmetic entry); mapping / logical-block overwrite it before those compiles run.
+        // arithmetic entry); logical-block overwrites it before that compile runs.
         FusedClassCache.Path compilingPath = FusedClassCache.Path.BLOCK;
         List<byte[]> captured = null;
         if (FusionSettings.isVerifyEnabled()) {
@@ -399,27 +399,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             FusionDump.beginThreadCapture(captured);
         }
         try {
-            if (plan.mapping()) {
-                // Multi-value mapping convert kernel (TO_LOWER/TO_UPPER): block-only (it maps over multi-values, so no
-                // vector fast path). Its method signature is the ordinary block shape, so binding is identical.
-                compilingPath = FusedClassCache.Path.MAPPING_BLOCK;
-                MethodType mappingType = blockType(inputElements, outputElement, arity, constantParamTypes);
-                Class<?> mappingClass = compiler.compileMappingBlockLoop(LOOKUP, tree, mappingType, Stitcher.FUSED_METHOD_NAME);
-                MethodHandle mappingHandle = bindHandle(mappingClass, Stitcher.FUSED_METHOD_NAME, mappingType);
-                return new FusedExpressionEvaluatorFactory(
-                    warningSources,
-                    inputChannels,
-                    inputElements,
-                    mappingHandle,
-                    VectorHandles.none(),
-                    VectorStrategy.NONE,
-                    unfused,
-                    shape,
-                    constants,
-                    plan.encodingAware(),
-                    nestedMapping
-                );
-            }
             if (FusionNode.isBooleanLogic(tree)) {
                 // A 3VL AND/OR/NOT tree always compiles the nullable block path (nulls / multi-values). The dense 2VL
                 // vector loop is compiled alongside it; a stitch failure there degrades to block-only rather than

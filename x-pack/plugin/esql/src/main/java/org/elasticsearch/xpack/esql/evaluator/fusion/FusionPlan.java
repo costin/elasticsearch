@@ -42,13 +42,6 @@ record FusionPlan(
      */
     String vectorComparison,
     /**
-     * Whether the ROOT is a MULTI-VALUE MAPPING convert kernel (e.g. lone TO_LOWER/TO_UPPER). When {@code true} the
-     * factory compiles the tree via {@code Stitcher.compileMappingBlockLoop} (block-only, no vector fast path). A
-     * nested mapping under a single-value parent (D3: {@code LENGTH(TO_LOWER(k))}) leaves this {@code false} so the
-     * parent compiles via the ordinary block path; the nested mapping body is spliced as a unary kernel.
-     */
-    boolean mapping,
-    /**
      * When true, the fused evaluator may evaluate ordinal/constant {@code BYTES_REF} pages once over the dictionary
      * (or a single constant position) and rebuild the output encoding, instead of the per-row block loop. True iff
      * the tree has exactly one column input, that input is {@code BYTES_REF}, there is a single input leaf, and

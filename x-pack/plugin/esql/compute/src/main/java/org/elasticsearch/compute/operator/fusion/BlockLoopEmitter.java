@@ -19,7 +19,6 @@ import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
-import org.objectweb.asm.tree.TryCatchBlockNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
 import java.lang.invoke.MethodHandles;
@@ -27,13 +26,15 @@ import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Consumer;
 
 /**
- * Emits the nullable/multi-valued block-loop fused classes: the arithmetic block loop, the mapping block loop,
- * and the 3VL logical-block loop (with one {@code cmpN} helper per comparison operand). {@link Stitcher} owns
- * the public {@code compile*} façade and define boundary; this class is the block-path seam those entry points
- * delegate to. {@link BlockDfsEmitter} lives beside it for the arithmetic DFS walk.
+ * Emits the nullable/multi-valued block-loop fused classes: the arithmetic block loop and the 3VL logical-block
+ * loop (with one {@code cmpN} helper per comparison operand). {@link Stitcher} owns the public {@code compile*}
+ * façade and define boundary; this class is the block-path seam those entry points delegate to.
+ * {@link BlockDfsEmitter} lives beside it for the arithmetic DFS walk. A lone TO_LOWER/TO_UPPER does not use a
+ * dedicated mapping loop (D4 refused it); nested mapping kernels splice on this ordinary block path.
  */
 final class BlockLoopEmitter {
 
@@ -42,7 +43,7 @@ final class BlockLoopEmitter {
 
     BlockLoopEmitter(TemplateRegistry templates, Consumer<MethodNode> hostMethodInterceptor) {
         this.templates = templates;
-        this.hostMethodInterceptor = hostMethodInterceptor;
+        this.hostMethodInterceptor = Objects.requireNonNull(hostMethodInterceptor);
     }
 
     private Body extractKernelBody(FusionNode.Kernel kernel) {
@@ -133,18 +134,7 @@ final class BlockLoopEmitter {
         InsnList insns = host.instructions;
 
         // out = bf.new*BlockBuilder(positionCount); the builder is the OUTPUT element.
-        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                Stitcher.BLOCK_FACTORY,
-                outputElement.newBlockBuilderMethod(),
-                outputElement.newBlockBuilderDescriptor(),
-                false
-            )
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
+        FusedBuilderEmit.emitNewBlockBuilder(insns, pcSlot, builderSlot, outputElement);
 
         // Allocate one reusable BytesRef spare per reference column, before the loop. Plain locals (no breaker
         // accounting), so they live outside the builder's try region. No-op when the tree has no reference input.
@@ -243,283 +233,11 @@ final class BlockLoopEmitter {
 
         insns.add(loopEnd);
         // result = out.build(); build() transfers the builder's breaker accounting to the produced block.
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(Opcodes.INVOKEINTERFACE, outputElement.builderInternalName(), "build", outputElement.buildDescriptor(), true)
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
-        insns.add(tryEnd);
-        // Normal exit: close the builder (a no-op after build()) and return the block.
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
-        insns.add(new InsnNode(Opcodes.ARETURN));
-
-        // Catch-all: close the builder to release its breaker bytes, then rethrow.
-        insns.add(handler);
-        insns.add(new VarInsnNode(Opcodes.ASTORE, excSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
-        insns.add(new InsnNode(Opcodes.ATHROW));
-
-        host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
-
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-        }
+        FusedBuilderEmit.emitBuilderTryFinally(host, insns, tryStart, tryEnd, handler, builderSlot, resultSlot, excSlot, outputElement);
+        hostMethodInterceptor.accept(host);
 
         ClassNode classNode = Stitcher.newFusedClass(Stitcher.fusedClassName(caller, "Fused$$BlockLoop"), host, debug);
         return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "block loop");
-    }
-
-    byte[] emitMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-        if (tree instanceof FusionNode.Kernel == false) {
-            throw new Stitcher.StitchingException("mapping path requires a single convert kernel root", null);
-        }
-        FusionNode.Kernel root = (FusionNode.Kernel) tree;
-        FusionSignature signature = FusionSignature.of(tree);
-        int arity = signature.arity();
-        Element[] inputElements = Stitcher.inputElements(signature);
-        Element outputElement = Element.of(Stitcher.rootReturnType(tree));
-        // Shape guard: a unary reference (BytesRef) input, a reference output, a NON-throwing body. The planner only
-        // routes such convert kernels here; anything else is a planner bug — refuse rather than emit wrong code. The
-        // hasOverflowException() clause deliberately rejects any warn-exception convert kernel: this loop opens the
-        // multi-value positionEntry EAGERLY (before the value loop), which is only correct when no value can fail; a
-        // warn-exception kernel (where some values null out and an all-fail position must become null) would need the
-        // lazy open-on-first-append the generated evalBlock uses, so such kernels must not reach here.
-        if (arity != 1
-            || inputElements[0].reference() == false
-            || outputElement.reference() == false
-            || root.descriptor().hasOverflowException()) {
-            throw new Stitcher.StitchingException("mapping path requires a unary BytesRef->BytesRef non-throwing convert kernel", null);
-        }
-        List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
-        Type[] argTypes = Type.getMethodType(root.descriptor().kernelType()).getArgumentTypes();
-        List<FusionNode> children = root.children();
-        Body body = extractKernelBody(root);
-
-        // Frame: [0] BlockFactory, [1] Warnings[] (unused; kept so the signature matches the factory's blockType), [2]
-        // positionCount, [3] the single input BytesRefBlock, then one reference param per @Fixed constant, then scratch.
-        FrameLayout frame = new FrameLayout();
-        frame.slot();                                    // [0] BlockFactory
-        frame.slot();                                    // [1] Warnings[]
-        int pcSlot = frame.slot();                       // [2] int positionCount
-        int inputBase = frame.slots(arity);              // [3] input BytesRefBlock
-        Map<FusionNode.Constant, Integer> constantSlots = Stitcher.allocConstantSlots(constants, frame);
-        int builderSlot = frame.slot();
-        int pSlot = frame.slot();
-        int countSlot = frame.slot();
-        int fviSlot = frame.slot();
-        int iSlot = frame.slot();
-        int spareSlot = frame.slot();
-        int resultSlot = frame.slot();
-        int excSlot = frame.slot();
-        int bodyBase = frame.mark();
-        SlotRemapper.shift(body.computation(), bodyBase);
-
-        StringBuilder desc = new StringBuilder("(L").append(Stitcher.BLOCK_FACTORY)
-            .append(";")
-            .append(Stitcher.WARNINGS_ARRAY_DESCRIPTOR)
-            .append("I");
-        desc.append(inputElements[0].blockDescriptor());
-        Stitcher.appendConstantParamDescriptors(desc, constants);
-        desc.append(")").append(outputElement.blockDescriptor());
-
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            Stitcher.FUSED_METHOD_NAME,
-            desc.toString(),
-            null,
-            null
-        );
-        InsnList insns = host.instructions;
-
-        // builder = bf.new*BlockBuilder(positionCount); spare = new BytesRef();
-        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                Stitcher.BLOCK_FACTORY,
-                outputElement.newBlockBuilderMethod(),
-                outputElement.newBlockBuilderDescriptor(),
-                false
-            )
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
-        Stitcher.emitSpareBytesRefInit(insns, spareSlot);
-
-        LabelNode tryStart = new LabelNode();
-        LabelNode tryEnd = new LabelNode();
-        LabelNode handler = new LabelNode();
-        insns.add(tryStart);
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
-
-        LabelNode loopStart = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
-        LabelNode appendNull = new LabelNode();
-        LabelNode next = new LabelNode();
-        insns.add(loopStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
-        // count = in0.getValueCount(p)
-        insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.BLOCK, "getValueCount", "(I)I", true));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, countSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-        insns.add(new JumpInsnNode(Opcodes.IFEQ, appendNull)); // count == 0 -> appendNull
-
-        // if (count > 1) builder.beginPositionEntry();
-        LabelNode afterBegin = new LabelNode();
-        insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-        insns.add(new InsnNode(Opcodes.ICONST_1));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPLE, afterBegin));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                "beginPositionEntry",
-                "()" + outputElement.builderDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
-        insns.add(afterBegin);
-
-        // fvi = in0.getFirstValueIndex(p); i = 0;
-        insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.BLOCK, "getFirstValueIndex", "(I)I", true));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, fviSlot));
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, iSlot));
-
-        LabelNode valLoop = new LabelNode();
-        LabelNode valLoopEnd = new LabelNode();
-        insns.add(valLoop);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, valLoopEnd));
-        // Store each operand into the body's argument slot: the single Input reads value (fvi+i) into the reusable
-        // spare; each @Fixed reference constant is loaded from its parameter slot.
-        int off = 0;
-        for (int j = 0; j < children.size(); j++) {
-            Type argType = argTypes[j];
-            int argSlot = bodyBase + off;
-            FusionNode child = children.get(j);
-            if (child instanceof FusionNode.Input) {
-                insns.add(new VarInsnNode(Opcodes.ALOAD, inputBase));
-                insns.add(new VarInsnNode(Opcodes.ILOAD, fviSlot));
-                insns.add(new VarInsnNode(Opcodes.ILOAD, iSlot));
-                insns.add(new InsnNode(Opcodes.IADD));
-                insns.add(new VarInsnNode(Opcodes.ALOAD, spareSlot));
-                insns.add(
-                    new MethodInsnNode(
-                        Opcodes.INVOKEINTERFACE,
-                        inputElements[0].blockInternalName(),
-                        inputElements[0].getValueMethod(),
-                        inputElements[0].getValueDescriptor(),
-                        true
-                    )
-                );
-                insns.add(new VarInsnNode(Opcodes.ASTORE, argSlot));
-            } else {
-                FusionNode.Constant constant = (FusionNode.Constant) child;
-                Stitcher.loadConstantParam(
-                    insns,
-                    constant.isReference() ? null : Element.of(argType),
-                    constant,
-                    constantSlots.get(constant)
-                );
-                insns.add(new VarInsnNode(argType.getOpcode(Opcodes.ISTORE), argSlot));
-            }
-            off += argType.getSize();
-        }
-        // Run the (non-throwing) convert body; it leaves the converted value on the stack, then append it.
-        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$MappingBlockLoop", tree);
-        Stitcher.spliceKernelBody(insns, body.computation(), root, debug);
-        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                outputElement.appendMethod(),
-                outputElement.appendDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
-        insns.add(new IincInsnNode(iSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, valLoop));
-        insns.add(valLoopEnd);
-
-        // if (count > 1) builder.endPositionEntry();
-        insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-        insns.add(new InsnNode(Opcodes.ICONST_1));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPLE, next));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                "endPositionEntry",
-                "()" + outputElement.builderDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, next));
-
-        insns.add(appendNull);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                "appendNull",
-                outputElement.appendNullDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
-
-        insns.add(next);
-        insns.add(new IincInsnNode(pSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
-
-        insns.add(loopEnd);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(Opcodes.INVOKEINTERFACE, outputElement.builderInternalName(), "build", outputElement.buildDescriptor(), true)
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
-        insns.add(tryEnd);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
-        insns.add(new InsnNode(Opcodes.ARETURN));
-
-        insns.add(handler);
-        insns.add(new VarInsnNode(Opcodes.ASTORE, excSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
-        insns.add(new InsnNode(Opcodes.ATHROW));
-        host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
-
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-        }
-        ClassNode classNode = Stitcher.newFusedClass(Stitcher.fusedClassName(caller, "Fused$$MappingBlockLoop"), host, debug);
-        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "mapping block loop");
     }
 
     /**
@@ -591,18 +309,7 @@ final class BlockLoopEmitter {
         InsnList insns = host.instructions;
 
         // out = bf.newBooleanBlockBuilder(positionCount);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                Stitcher.BLOCK_FACTORY,
-                outputElement.newBlockBuilderMethod(),
-                outputElement.newBlockBuilderDescriptor(),
-                false
-            )
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
+        FusedBuilderEmit.emitNewBlockBuilder(insns, pcSlot, builderSlot, outputElement);
 
         LabelNode tryStart = new LabelNode();
         LabelNode tryEnd = new LabelNode();
@@ -672,29 +379,8 @@ final class BlockLoopEmitter {
         insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
 
         insns.add(loopEnd);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(Opcodes.INVOKEINTERFACE, outputElement.builderInternalName(), "build", outputElement.buildDescriptor(), true)
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
-        insns.add(tryEnd);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
-        insns.add(new InsnNode(Opcodes.ARETURN));
-
-        insns.add(handler);
-        insns.add(new VarInsnNode(Opcodes.ASTORE, excSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
-        insns.add(new InsnNode(Opcodes.ATHROW));
-
-        host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
-
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-        }
+        FusedBuilderEmit.emitBuilderTryFinally(host, insns, tryStart, tryEnd, handler, builderSlot, resultSlot, excSlot, outputElement);
+        hostMethodInterceptor.accept(host);
 
         ClassNode classNode = Stitcher.newFusedClass(internalName, host, debug);
         classNode.methods.addAll(helpers);

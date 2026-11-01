@@ -37,7 +37,7 @@ import static org.hamcrest.Matchers.not;
 /**
  * D4 + D3: a bare {@code TO_LOWER}/{@code TO_UPPER} ({@link ChangeCase} {@code @ConvertEvaluator}) stays unfused.
  * A converter fuses only as a nested mapping kernel inside a {@code depth >= 2} chain ({@code LENGTH(TO_LOWER(k))},
- * {@code TO_LOWER(k)=="x"}), compiling via the ordinary block path rather than {@code compileMappingBlockLoop}.
+ * {@code TO_LOWER(k)=="x"}), compiling via the ordinary block path. There is no dedicated mapping-block emit path.
  * Values still match the unfused {@code ChangeCaseEvaluator} position-by-position, including multi-valued
  * positions (mapped result, not warn+null).
  */

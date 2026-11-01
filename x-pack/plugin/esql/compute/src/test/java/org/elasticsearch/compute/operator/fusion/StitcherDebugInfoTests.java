@@ -7,7 +7,6 @@
 
 package org.elasticsearch.compute.operator.fusion;
 
-import org.elasticsearch.compute.operator.fusion.BodyExtractorTests.KernelFixtures;
 import org.elasticsearch.test.ESTestCase;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
@@ -215,29 +214,6 @@ public class StitcherDebugInfoTests extends ESTestCase {
         Class<?> defined = lookup.defineHiddenClass(bytecode, true).lookupClass();
         String kernelMap = (String) defined.getDeclaredField(Stitcher.KERNEL_MAP_FIELD_NAME).get(null);
         assertCappedUtf8("defined KERNEL_MAP", kernelMap);
-    }
-
-    /** Mapping-block unary convert: a single kernel at index {@code 0}, spliced in {@code fused}. */
-    public void testMappingBlockEmitsSourceFileLineNumbersAndKernelMap() throws Exception {
-        FusionDescriptor appendSuffix = new FusionDescriptor(
-            KernelFixtures.class,
-            "processAppendSuffix",
-            "(Lorg/apache/lucene/util/BytesRef;Ljava/lang/String;)Lorg/apache/lucene/util/BytesRef;",
-            false,
-            true
-        );
-        FusionNode tree = new FusionNode.Kernel(
-            appendSuffix,
-            List.of(new FusionNode.Input(0), FusionNode.Constant.reference("_x", String.class))
-        );
-        byte[] bytecode = stitcher.mappingBlockLoopBytecode(MethodHandles.lookup(), tree);
-        assertDebugInfo(
-            bytecode,
-            "Fused$$MappingBlockLoop",
-            List.of("processAppendSuffix"),
-            "0=" + KernelFixtures.class.getName() + "#processAppendSuffix",
-            Stitcher.FUSED_METHOD_NAME
-        );
     }
 
     private static FusionNode arithmeticTree() {

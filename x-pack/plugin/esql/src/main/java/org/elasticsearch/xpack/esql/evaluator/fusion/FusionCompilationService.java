@@ -190,22 +190,6 @@ final class FusionCompilationService {
             );
         }
 
-        @Override
-        public Class<?> compileMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-            return requireResolved();
-        }
-
-        @Override
-        public Class<?> compileMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-            throws Stitcher.StitchingException {
-            return cached(
-                shapeKey(tree, FusedClassCache.Path.MAPPING_BLOCK),
-                () -> stitcher.compileMappingBlockLoop(caller, tree),
-                caller,
-                type,
-                methods
-            );
-        }
     };
 
     /**

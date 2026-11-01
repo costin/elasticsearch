@@ -18,7 +18,6 @@ import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
-import org.objectweb.asm.tree.TryCatchBlockNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
 import java.lang.invoke.MethodHandles;
@@ -26,6 +25,7 @@ import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Consumer;
 
 /**
@@ -42,7 +42,7 @@ final class FilterEvalEmitter {
 
     FilterEvalEmitter(TemplateRegistry templates, Consumer<MethodNode> hostMethodInterceptor, BlockLoopEmitter blocks) {
         this.templates = templates;
-        this.hostMethodInterceptor = hostMethodInterceptor;
+        this.hostMethodInterceptor = Objects.requireNonNull(hostMethodInterceptor);
         this.blocks = blocks;
     }
 
@@ -173,18 +173,7 @@ final class FilterEvalEmitter {
         InsnList insns = host.instructions;
 
         // out = bf.new<Proj>BlockBuilder(positionCount) — a COMPACT builder that receives one entry per surviving row.
-        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                Stitcher.BLOCK_FACTORY,
-                projOutputElement.newBlockBuilderMethod(),
-                projOutputElement.newBlockBuilderDescriptor(),
-                false
-            )
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
+        FusedBuilderEmit.emitNewBlockBuilder(insns, pcSlot, builderSlot, projOutputElement);
 
         LabelNode tryStart = new LabelNode();
         LabelNode tryEnd = new LabelNode();
@@ -256,35 +245,8 @@ final class FilterEvalEmitter {
 
         insns.add(loopEnd);
         // result = out.build(); the compact projection block's positionCount is exactly the surviving row count.
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                projOutputElement.builderInternalName(),
-                "build",
-                projOutputElement.buildDescriptor(),
-                true
-            )
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
-        insns.add(tryEnd);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
-        insns.add(new InsnNode(Opcodes.ARETURN));
-
-        insns.add(handler);
-        insns.add(new VarInsnNode(Opcodes.ASTORE, excSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
-        insns.add(new InsnNode(Opcodes.ATHROW));
-
-        host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
-
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-        }
+        FusedBuilderEmit.emitBuilderTryFinally(host, insns, tryStart, tryEnd, handler, builderSlot, resultSlot, excSlot, projOutputElement);
+        hostMethodInterceptor.accept(host);
 
         ClassNode classNode = Stitcher.newFusedClass(internalName, host, debug);
         classNode.methods.addAll(methods);

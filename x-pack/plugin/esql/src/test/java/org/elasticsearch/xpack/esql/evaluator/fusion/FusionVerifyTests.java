@@ -557,11 +557,6 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
                     rewriteAddLongs(projectionTree, replacementMethod)
                 );
             }
-
-            @Override
-            public Class<?> compileMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-                return real.compileMappingBlockLoop(caller, rewriteAddLongs(tree, replacementMethod));
-            }
         };
     }
 

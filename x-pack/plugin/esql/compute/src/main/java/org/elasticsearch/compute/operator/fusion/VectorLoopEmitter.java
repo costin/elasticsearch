@@ -26,6 +26,7 @@ import org.objectweb.asm.tree.VarInsnNode;
 import java.lang.invoke.MethodHandles;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -43,7 +44,7 @@ final class VectorLoopEmitter {
 
     VectorLoopEmitter(TemplateRegistry templates, Consumer<MethodNode> hostMethodInterceptor) {
         this.templates = templates;
-        this.hostMethodInterceptor = hostMethodInterceptor;
+        this.hostMethodInterceptor = Objects.requireNonNull(hostMethodInterceptor);
     }
 
     private Body extractKernelBody(FusionNode.Kernel kernel) {
@@ -112,10 +113,8 @@ final class VectorLoopEmitter {
             Map.of(),
             debug
         );
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(raw);
-            hostMethodInterceptor.accept(iface);
-        }
+        hostMethodInterceptor.accept(raw);
+        hostMethodInterceptor.accept(iface);
         ClassNode classNode = Stitcher.newFusedClass(Stitcher.fusedClassName(caller, "Fused$$VectorLoop"), raw, debug);
         classNode.methods.add(iface);
         // The plain-vector fast path enforces the HugeMethodLimit huge-method guard on every method of the class.
@@ -513,9 +512,7 @@ final class VectorLoopEmitter {
         );
         insns.add(new InsnNode(Opcodes.ARETURN));
 
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-        }
+        hostMethodInterceptor.accept(host);
         ClassNode classNode = Stitcher.newFusedClass(Stitcher.fusedClassName(caller, "Fused$$SimdVectorLoop"), host, debug);
         return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "SIMD vector loop");
     }
@@ -581,12 +578,10 @@ final class VectorLoopEmitter {
             sourceIndices,
             debug
         );
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(host);
-            hostMethodInterceptor.accept(hostIface);
-            hostMethodInterceptor.accept(raw);
-            hostMethodInterceptor.accept(rawIface);
-        }
+        hostMethodInterceptor.accept(host);
+        hostMethodInterceptor.accept(hostIface);
+        hostMethodInterceptor.accept(raw);
+        hostMethodInterceptor.accept(rawIface);
 
         String internalName = Stitcher.fusedClassName(caller, "Fused$$CheckedVectorLoop");
         ClassNode classNode = Stitcher.newFusedClass(internalName, host, debug);
@@ -659,18 +654,7 @@ final class VectorLoopEmitter {
 
         // out = bf.new*BlockBuilder(positionCount); the builder is the OUTPUT element (BooleanBlock.Builder for a
         // comparison root).
-        insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEVIRTUAL,
-                Stitcher.BLOCK_FACTORY,
-                outputElement.newBlockBuilderMethod(),
-                outputElement.newBlockBuilderDescriptor(),
-                false
-            )
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
+        FusedBuilderEmit.emitNewBlockBuilder(insns, pcSlot, builderSlot, outputElement);
 
         LabelNode tryStart = new LabelNode();
         LabelNode tryEnd = new LabelNode();
@@ -779,25 +763,7 @@ final class VectorLoopEmitter {
         insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
 
         insns.add(loopEnd);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(Opcodes.INVOKEINTERFACE, outputElement.builderInternalName(), "build", outputElement.buildDescriptor(), true)
-        );
-        insns.add(new VarInsnNode(Opcodes.ASTORE, resultSlot));
-        insns.add(tryEnd);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, resultSlot));
-        insns.add(new InsnNode(Opcodes.ARETURN));
-
-        insns.add(handler);
-        insns.add(new VarInsnNode(Opcodes.ASTORE, excSlot));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.RELEASABLE, "close", "()V", true));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
-        insns.add(new InsnNode(Opcodes.ATHROW));
-
-        host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
+        FusedBuilderEmit.emitBuilderTryFinally(host, insns, tryStart, tryEnd, handler, builderSlot, resultSlot, excSlot, outputElement);
         return host;
     }
 
@@ -1039,9 +1005,7 @@ final class VectorLoopEmitter {
             Map.of(),
             debug
         );
-        if (hostMethodInterceptor != null) {
-            hostMethodInterceptor.accept(iface);
-        }
+        hostMethodInterceptor.accept(iface);
         ClassNode classNode = Stitcher.newFusedClass(internalName, iface, debug);
         return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "logical vector loop");
     }
