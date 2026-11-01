@@ -60,10 +60,12 @@ import static org.hamcrest.Matchers.is;
      *       {@link #testDenseLogicalVectorPicksInterfaceVsBlock()} pins INTERFACE vs BLOCK (INTERFACE-only after B2).</li>
  *   <li>GTE/LTE under AND/OR (F2a) — {@link #testGteLteUnderAndOrMatchesUnfused} on the dense 2VL vector path and the
  *       3VL block path (nulls / multi-values), plus {@link #testGteLteEqualOperandsDistinguishFromGtLt} so a silent
- *       GT↔GTE or LT↔LTE swap in fused emission cannot hide.</li>
+ *       GT↔GTE or LT↔LTE swap in fused emission cannot hide. F2/H10: the PromQL
+ *       {@code step >= t1 AND step <= t2} DATETIME (and same-type DATE_NANOS) shape is
+ *       {@link #testDatetimeGteLteRangeFuses}.</li>
  *   <li>F2b {@code Not} — Kleene 3VL negation of a fusable boolean subtree. Built by hand
  *       ({@code BooleanSimplification} does not rewrite {@code NOT(a>5)} to {@code a<=5}). {@code NOT(bool_col)}
- *       refuses.</li>
+ *       refuses. Dense-path pin: {@link #testNotDensePathPicksInterfaceVsBlock}.</li>
  * </ul>
  */
 public class LogicalFusionDifferentialTests extends FusionDifferentialTestCase {
@@ -414,6 +416,74 @@ public class LogicalFusionDifferentialTests extends FusionDifferentialTestCase {
         }
     }
 
+    /**
+     * F2/H10: the PromQL {@code withTimestampFilter} shape {@code step >= t1 AND step <= t2} over DATETIME (and
+     * same-type DATE_NANOS). Unfused same-type comparisons use the long kernels ({@code *LongsEvaluator} /
+     * {@code processLongs}); mixed DATETIME/DATE_NANOS uses non-{@code FusionAware} conversion evaluators and stays
+     * unfused.
+     */
+    public void testDatetimeGteLteRangeFuses() {
+        for (DataType type : new DataType[] { DataType.DATETIME, DataType.DATE_NANOS }) {
+            FieldAttribute step = field("step", type);
+            Layout layout = layout(step);
+            Literal t1 = new Literal(Source.EMPTY, 1000L, type);
+            Literal t2 = new Literal(Source.EMPTY, 5000L, type);
+            Expression expr = new And(
+                Source.EMPTY,
+                new GreaterThanOrEqual(Source.EMPTY, step, t1),
+                new LessThanOrEqual(Source.EMPTY, step, t2)
+            );
+            String ctx = type + " step>=t1 AND step<=t2";
+            FusionSettings.setCoverageReportEnabledForTests(true);
+            FusionTelemetry.resetForTests();
+            ExpressionEvaluator.Factory fused;
+            try {
+                fused = fusedFactory(expr, layout);
+            } finally {
+                FusionSettings.setCoverageReportEnabledForTests(false);
+            }
+            ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+            FusedExpressionEvaluatorFactory fusedFactory = assertFuses(fused, ctx);
+            assertThat(ctx + " must compile LOGICAL_VECTOR", fusedFactory.vectorStrategy(), is(VectorStrategy.LOGICAL_VECTOR));
+            assertThat(ctx + " coverage category is FUSED", FusionTelemetry.fused(), is(1L));
+            assertThat(ctx + " coverage counted once", FusionTelemetry.attempts(), is(1L));
+            assertDoesNotFuse(unfused, ctx + " kill switch OFF");
+
+            ExpressionEvaluator eval = fusedFactory.get(driverContext);
+            try {
+                // Values straddle [t1, t2] so fused==unfused is not vacuously all-false (longArrayVectorColumn
+                // is [-5,5], which is entirely below t1=1000). Mix of below / exact-t1 / inside / exact-t2 / above.
+                long[] straddling = { 0L, 999L, 1000L, 2500L, 3000L, 5000L, 5001L, 9000L };
+                int n = straddling.length;
+                Block[] dense = { blockFactory.newLongArrayVector(straddling, n).asBlock() };
+                runDifferential(fused, unfused, ElementKind.BOOLEAN, dense, n, ctx + " dense");
+                assertLastEvalPath(
+                    eval,
+                    LastEvalPath.INTERFACE,
+                    new Block[] { blockFactory.newLongArrayVector(straddling.clone(), n).asBlock() },
+                    ctx + " dense INTERFACE"
+                );
+                assertLastEvalPath(
+                    eval,
+                    LastEvalPath.BLOCK,
+                    new Block[] { longColumn(new Long[] { 1L, null, 3000L, 9000L }) },
+                    ctx + " nulls BLOCK"
+                );
+            } finally {
+                Releasables.closeExpectNoException(eval);
+            }
+        }
+
+        FieldAttribute dt = field("dt", DataType.DATETIME);
+        Literal nanos = new Literal(Source.EMPTY, 1_000_000L, DataType.DATE_NANOS);
+        Expression mixed = new And(
+            Source.EMPTY,
+            new GreaterThanOrEqual(Source.EMPTY, dt, nanos),
+            new LessThanOrEqual(Source.EMPTY, dt, nanos)
+        );
+        assertDoesNotFuse(fusedFactory(mixed, layout(dt)), "mixed DATETIME vs DATE_NANOS must not fuse as processLongs");
+    }
+
     private void assertEqualOperandTree(Expression inclusive, Expression exclusive, Layout layout, ElementKind kind, String ctx) {
         ExpressionEvaluator.Factory fusedInc = fusedFactory(inclusive, layout);
         ExpressionEvaluator.Factory unfusedInc = unfusedFactory(inclusive, layout);
@@ -626,6 +696,35 @@ public class LogicalFusionDifferentialTests extends FusionDifferentialTestCase {
         Expression expr = new Not(Source.EMPTY, flag);
         assertDoesNotFuse(fusedFactory(expr, layout(flag)), "NOT(bool_col) must refuse");
         assertDoesNotFuse(unfusedFactory(expr, layout(flag)), "NOT(bool_col) kill switch OFF");
+    }
+
+    /**
+     * H10 coverage: {@code NOT(a > 5)} on the dense logical path takes INTERFACE; a null-carrying page takes BLOCK.
+     * Missing before H10; expected to pass pre-DATETIME-mapping (Not of a LONG comparison already fuses).
+     */
+    public void testNotDensePathPicksInterfaceVsBlock() {
+        FieldAttribute a = field("a", DataType.LONG);
+        Expression expr = new Not(Source.EMPTY, new GreaterThan(Source.EMPTY, a, literalOf(ElementKind.LONG, 5)));
+        FusedExpressionEvaluatorFactory fused = assertFuses(fusedFactory(expr, layout(a)), "NOT(a>5) dense path");
+        assertThat(fused.vectorStrategy(), is(VectorStrategy.LOGICAL_VECTOR));
+        ExpressionEvaluator eval = fused.get(driverContext);
+        try {
+            int n = 8;
+            assertLastEvalPath(
+                eval,
+                LastEvalPath.INTERFACE,
+                new Block[] { longArrayVectorColumn(n, 0) },
+                "dense NOT(a>5) must take the 2VL INTERFACE path"
+            );
+            assertLastEvalPath(
+                eval,
+                LastEvalPath.BLOCK,
+                new Block[] { longColumn(new Long[] { 1L, null, 3L, 4L }) },
+                "null-carrying NOT(a>5) must take the 3VL BLOCK path"
+            );
+        } finally {
+            Releasables.closeExpectNoException(eval);
+        }
     }
 
     private void assertNotTree(Expression expr, Layout layout, ElementKind kind, int columns, String ctx) {

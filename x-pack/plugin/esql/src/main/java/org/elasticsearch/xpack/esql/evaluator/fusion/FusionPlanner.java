@@ -1366,6 +1366,13 @@ public final class FusionPlanner {
             return null;
         }
         ElementKind literalElement = elementOf(literal.dataType());
+        if (literalElement == null && expected == ElementKind.LONG && isLongKernelDate(literal.dataType())) {
+            // Comparison-only: the only caller that can reach here is buildComparisonOperand, which already required
+            // a same-type Longs FusionAware descriptor (mixed DATETIME/DATE_NANOS is not FusionAware). Date column
+            // leaves refuse via elementOf, so no arithmetic LONG arg ever receives a DATETIME/DATE_NANOS literal.
+            // The literal value is epoch millis / nanos as Long — the same processLongs kernel the unfused path uses.
+            literalElement = ElementKind.LONG;
+        }
         if (literalElement == null || (literalElement != expected && supportedWidening(literalElement, expected) == false)) {
             return null;
         }
@@ -1602,14 +1609,29 @@ public final class FusionPlanner {
         return returnChar == 'Z' ? ElementKind.BOOLEAN : elementOf(returnChar);
     }
 
+    /**
+     * True when a comparison operand's {@link DataType} can feed the fused kernel's {@code element}. {@code LONG}
+     * also matches {@link DataType#DATETIME} and {@link DataType#DATE_NANOS}: same-type unfused comparisons of those
+     * types bind {@code *LongsEvaluator} / {@code processLongs} (see {@code GreaterThanOrEqual} and siblings). Mixed
+     * DATETIME vs DATE_NANOS uses non-{@link FusionAware} conversion evaluators, so {@link #buildComparisonOperand}
+     * still refuses them. Arithmetic does not use {@code matches} — this mapping is comparison-only.
+     */
     private static boolean matches(DataType type, ElementKind element) {
         return switch (element) {
-            case LONG -> type == DataType.LONG;
+            case LONG -> type == DataType.LONG || isLongKernelDate(type);
             case INT -> type == DataType.INTEGER;
             case DOUBLE -> type == DataType.DOUBLE;
             case BOOLEAN -> type == DataType.BOOLEAN;
             case BYTES_REF -> type == DataType.KEYWORD || type == DataType.TEXT;
         };
+    }
+
+    /**
+     * Date types whose same-type unfused comparison kernels are the long kernels ({@code processLongs}). Stored as
+     * epoch millis (DATETIME) or nanos (DATE_NANOS) in a {@code LongBlock}.
+     */
+    private static boolean isLongKernelDate(DataType type) {
+        return type == DataType.DATETIME || type == DataType.DATE_NANOS;
     }
 
     /**
