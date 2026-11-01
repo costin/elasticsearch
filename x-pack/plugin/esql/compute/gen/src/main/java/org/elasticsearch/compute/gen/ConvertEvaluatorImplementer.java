@@ -63,16 +63,6 @@ public class ConvertEvaluatorImplementer {
         javax.lang.model.util.Types types,
         ExecutableElement processFunction,
         String extraName,
-        List<TypeMirror> warnExceptions
-    ) {
-        this(elements, types, processFunction, extraName, warnExceptions, false);
-    }
-
-    public ConvertEvaluatorImplementer(
-        Elements elements,
-        javax.lang.model.util.Types types,
-        ExecutableElement processFunction,
-        String extraName,
         List<TypeMirror> warnExceptions,
         boolean fusable
     ) {

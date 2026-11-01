@@ -8,6 +8,7 @@
 package org.elasticsearch.compute.gen;
 
 import com.squareup.javapoet.ClassName;
+import com.squareup.javapoet.CodeBlock;
 import com.squareup.javapoet.FieldSpec;
 import com.squareup.javapoet.MethodSpec;
 import com.squareup.javapoet.ParameterizedTypeName;
@@ -17,7 +18,6 @@ import org.elasticsearch.compute.gen.argument.FixedArgument;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
 
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
@@ -114,7 +114,14 @@ class FusionAwareGen {
         if (names.isEmpty()) {
             builder.addStatement("return $T.of()", List.class);
         } else {
-            builder.addStatement("return $T.of(" + names.stream().collect(Collectors.joining(", ")) + ")", List.class);
+            CodeBlock.Builder argList = CodeBlock.builder();
+            for (int i = 0; i < names.size(); i++) {
+                if (i > 0) {
+                    argList.add(", ");
+                }
+                argList.add("$N", names.get(i));
+            }
+            builder.addStatement("return $T.of($L)", List.class, argList.build());
         }
         return builder.build();
     }

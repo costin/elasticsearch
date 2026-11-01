@@ -141,6 +141,8 @@ final class VectorLoopEmitter {
         Map<FusionNode, Integer> sourceIndices,
         FusedClassDebugInfo debug
     ) {
+        assert spec.checked() == (overflowTypes.isEmpty() == false)
+            : "LoopSpec.checked [" + spec.checked() + "] must agree with overflowTypes " + overflowTypes;
         if (spec.output() == LoopSpec.Output.BUILDER) {
             return emitCheckedVectorBuilderMethod(
                 tree,

@@ -233,8 +233,10 @@ public class DriverContext {
 
     /**
      * A sibling context sharing this one's breaker and {@link BlockFactory} but {@link WarningsMode#IGNORE}ing
-     * warnings. Fusion verify-mode uses it to evaluate the unfused fallback on the same page without writing
-     * into the driver's warning collector (identical texts would otherwise union with fused warnings).
+     * warnings. For expression evaluators only: the sibling has its own working set and async-action tracker
+     * and no early-termination checker, so it must not drive operators. Fusion verify-mode uses it to evaluate
+     * the unfused fallback on the same page without writing into the driver's warning collector (identical
+     * texts would otherwise union with fused warnings).
      */
     public DriverContext ignoringWarnings() {
         if (warningsMode == WarningsMode.IGNORE) {

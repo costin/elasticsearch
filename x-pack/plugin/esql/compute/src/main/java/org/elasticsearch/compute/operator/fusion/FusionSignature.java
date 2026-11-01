@@ -240,6 +240,7 @@ public final class FusionSignature {
         // @Fixed constant loaded with ALOAD (element 'L', carrying its declared refType) — anything else would surface
         // as an opaque VerifyError downstream.
         for (FusionNode.Constant constant : constantsInEmitOrder) {
+            assert constant.isBaked() == false : "constantsInEmitOrder must exclude baked immediates";
             char element = constant.element();
             assert element == 'J' || element == 'I' || element == 'D' || (element == 'L' && constant.refType() != null)
                 : "constant has unexpected element [" + element + "]";

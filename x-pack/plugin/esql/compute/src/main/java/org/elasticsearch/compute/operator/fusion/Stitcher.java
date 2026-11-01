@@ -894,9 +894,9 @@ public final class Stitcher {
     }
 
     /**
-     * Reserves one trailing parameter slot per <em>non-baked</em> constant from {@code frame} (in
-     * {@link #constantsInEmitOrder canonical emit order}, each sized by its element width) and maps each constant
-     * (by identity) to its slot. Baked constants consume no slot — they are bytecode immediates. The frame
+     * Reserves one trailing parameter slot per constant from {@code frame} (in {@link #constantsInEmitOrder
+     * canonical emit order}, each sized by its element width) and maps each constant (by identity) to its slot.
+     * The list is already non-baked ({@link FusionSignature#constantsInEmitOrder} excludes immediates). The frame
      * guarantees a {@code long}/{@code double} constant gets its two slots without hand-rolled arithmetic. Distinct
      * {@link FusionNode.Constant} instances get distinct slots even when their values are equal (two equal-valued
      * literals are still separate leaves), so an {@link IdentityHashMap} keys on the node instance, not value-equality.
@@ -904,9 +904,6 @@ public final class Stitcher {
     static Map<FusionNode.Constant, Integer> allocConstantSlots(List<FusionNode.Constant> constants, FrameLayout frame) {
         Map<FusionNode.Constant, Integer> slots = new IdentityHashMap<>();
         for (FusionNode.Constant constant : constants) {
-            if (constant.isBaked()) {
-                continue;
-            }
             slots.put(constant, frame.reserve(constantSlotSize(constant)));
         }
         return slots;
@@ -917,16 +914,13 @@ public final class Stitcher {
     }
 
     /**
-     * Appends one JVM parameter descriptor per <em>non-baked</em> constant: for a primitive constant the element char
+     * Appends one JVM parameter descriptor per constant: for a primitive constant the element char
      * {@code J}/{@code I}/{@code D} is itself the descriptor; for a reference (object) {@code @Fixed} constant it is
-     * the full {@code L…;} descriptor of its declared type (e.g. {@code Ljava/util/Locale;}). Baked constants are
-     * immediates and must not appear in the method descriptor.
+     * the full {@code L…;} descriptor of its declared type (e.g. {@code Ljava/util/Locale;}). The list is already
+     * non-baked ({@link FusionSignature#constantsInEmitOrder} excludes immediates).
      */
     static void appendConstantParamDescriptors(StringBuilder desc, List<FusionNode.Constant> constants) {
         for (FusionNode.Constant constant : constants) {
-            if (constant.isBaked()) {
-                continue;
-            }
             if (constant.isReference()) {
                 desc.append(Type.getType(constant.refType()).getDescriptor());
             } else {

@@ -720,6 +720,24 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
         assertThat("WHERE n>0 EVAL TO_LOWER(k) must not fuse-filter-eval", factory, nullValue());
     }
 
+    /**
+     * A BytesRef literal whose {@link DataType} is not KEYWORD/TEXT must not be treated as a fusable keyword
+     * constant. {@code LENGTH(CONCAT(k, IP-literal))} refuses rather than hitching a ride on the keyword path.
+     */
+    public void testIpTypedBytesRefLiteralDoesNotFuseAsKeywordConstant() {
+        FieldAttribute k = field("k", DataType.KEYWORD);
+        Literal ipLit = new Literal(Source.EMPTY, new BytesRef("x"), DataType.IP);
+        Expression expr = new Length(Source.EMPTY, new Concat(Source.EMPTY, k, List.of(ipLit)));
+        assertDoesNotFuse(fusedFactory(expr, layout(k)), "LENGTH(CONCAT(k, IP-literal)) must not treat IP as a keyword constant");
+    }
+
+    public void testVersionTypedBytesRefLiteralDoesNotFuseAsKeywordConstant() {
+        FieldAttribute k = field("k", DataType.KEYWORD);
+        Literal versionLit = new Literal(Source.EMPTY, new BytesRef("1.2.3"), DataType.VERSION);
+        Expression expr = new Length(Source.EMPTY, new Concat(Source.EMPTY, k, List.of(versionLit)));
+        assertDoesNotFuse(fusedFactory(expr, layout(k)), "LENGTH(CONCAT(k, VERSION-literal)) must not treat VERSION as a keyword constant");
+    }
+
     private static Literal keywordLit(String value) {
         return new Literal(Source.EMPTY, new BytesRef(value), DataType.KEYWORD);
     }

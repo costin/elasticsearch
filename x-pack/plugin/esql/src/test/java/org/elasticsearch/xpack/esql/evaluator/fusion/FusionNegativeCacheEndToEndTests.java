@@ -72,15 +72,7 @@ public class FusionNegativeCacheEndToEndTests extends FusionDifferentialTestCase
 
         FusedExpressionEvaluatorFactory first;
         FusedExpressionEvaluatorFactory second;
-        try (var mockLog = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
-            mockLog.addExpectation(
-                new MockLog.UnseenEventExpectation(
-                    "vector-path degrade must not WARN at cache (both plans)",
-                    FusedClassCache.class.getCanonicalName(),
-                    Level.WARN,
-                    "*fusion stitch*"
-                )
-            );
+        try (var mockLog = MockLog.capture(FusedExpressionEvaluatorFactory.class)) {
             mockLog.addExpectation(
                 new MockLog.UnseenEventExpectation(
                     "vector-path degrade must not WARN at factory (both plans)",

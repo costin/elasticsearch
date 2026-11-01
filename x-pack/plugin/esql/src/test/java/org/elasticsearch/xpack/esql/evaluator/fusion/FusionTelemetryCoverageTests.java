@@ -80,6 +80,7 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
         FusionTelemetry.recordAttempt();
         FusionTelemetry.recordFused();
         FusionTelemetry.recordRuntimeFallback();
+        FusionTelemetry.recordNestedMappingMvFallback();
         assertCoverageZero();
 
         FieldAttribute a = field("a", DataType.LONG);
@@ -142,6 +143,7 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
         assertThat(report, containsString("NONE=1 (50.0%)"));
         assertThat(report, containsString("stitch-failures=0"));
         assertThat(report, containsString("runtime-fallbacks=0"));
+        assertThat(report, containsString("nested-mapping-mv-fallbacks=0"));
         assertThat(report, containsString("depth<2=1"));
         assertAccountingIdentity();
     }
@@ -154,6 +156,7 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
         assertThat(FusionTelemetry.attempts(), is(1L));
         assertThat(FusionTelemetry.fused(), is(1L));
         assertThat(FusionTelemetry.runtimeFallbacks(), is(0L));
+        assertThat(FusionTelemetry.nestedMappingMvFallbacks(), is(0L));
 
         int positionCount = 4;
         Block input;
@@ -175,10 +178,12 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
             drainWarnings();
             first = evaluator.eval(page);
             assertThat(FusedExpressionEvaluatorFactory.lastEvalPath(evaluator), is(LastEvalPath.UNFUSED_FALLBACK));
-            assertThat("first MV page records one runtime fallback", FusionTelemetry.runtimeFallbacks(), is(1L));
+            assertThat("first MV page records one nested-mapping MV fallback", FusionTelemetry.nestedMappingMvFallbacks(), is(1L));
+            assertThat("nested-mapping MV is not a LinkageError runtime fallback", FusionTelemetry.runtimeFallbacks(), is(0L));
             drainWarnings();
             second = evaluator.eval(page);
-            assertThat("a per-page MV fallback must not be counted per page", FusionTelemetry.runtimeFallbacks(), is(1L));
+            assertThat("a per-page MV fallback must not be counted per page", FusionTelemetry.nestedMappingMvFallbacks(), is(1L));
+            assertThat(FusionTelemetry.runtimeFallbacks(), is(0L));
             drainWarnings();
         } finally {
             Releasables.closeExpectNoException(first, second, evaluator);
@@ -188,7 +193,8 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
         String report = FusionTelemetry.coverageReport();
         assertThat(report, containsString("expressions=1"));
         assertThat(report, containsString("FUSED=1 (100.0%)"));
-        assertThat(report, containsString("runtime-fallbacks=1"));
+        assertThat(report, containsString("runtime-fallbacks=0"));
+        assertThat(report, containsString("nested-mapping-mv-fallbacks=1"));
         assertAccountingIdentity();
     }
 
@@ -437,6 +443,7 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
         assertThat(FusionTelemetry.fragment(), is(0L));
         assertThat(FusionTelemetry.none(), is(0L));
         assertThat(FusionTelemetry.runtimeFallbacks(), is(0L));
+        assertThat(FusionTelemetry.nestedMappingMvFallbacks(), is(0L));
         assertThat(FusionTelemetry.planTimeStitchFailures(), is(0L));
     }
 

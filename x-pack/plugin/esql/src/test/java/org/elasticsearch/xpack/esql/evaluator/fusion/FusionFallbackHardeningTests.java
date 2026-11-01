@@ -213,9 +213,8 @@ public class FusionFallbackHardeningTests extends ESTestCase {
                 throw new IllegalArgumentException("injected emit failure");
             });
 
-            try (var mockLog = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
+            try (var mockLog = MockLog.capture(FusedExpressionEvaluatorFactory.class)) {
                 mockLog.addExpectation(exactlyOneUnfusedWarn(FusedExpressionEvaluatorFactory.class));
-                mockLog.addExpectation(unseenCacheWarn());
                 mockLog.addExpectation(seenFactoryDebugRepeat(FusedExpressionEvaluatorFactory.class));
                 for (int i = 0; i < 3; i++) {
                     ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
@@ -276,9 +275,8 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             assertThat(secondFactory, instanceOf(AdaptiveFusionEvaluatorFactory.class));
             ExpressionEvaluator.Factory thirdFactory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
             assertThat(thirdFactory, instanceOf(AdaptiveFusionEvaluatorFactory.class));
-            try (var mockLog = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
+            try (var mockLog = MockLog.capture(FusedExpressionEvaluatorFactory.class)) {
                 mockLog.addExpectation(exactlyOneUnfusedWarn(FusedExpressionEvaluatorFactory.class));
-                mockLog.addExpectation(unseenCacheWarn());
                 mockLog.addExpectation(seenFactoryDebugRepeat(FusedExpressionEvaluatorFactory.class));
                 evalUntilAbandoned(firstFactory, 64);
                 evalUntilAbandoned(secondFactory, 64);
@@ -321,15 +319,7 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         );
 
         long degradedBefore = FusionTelemetry.vectorDegraded();
-        try (var mockLog = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
-            mockLog.addExpectation(
-                new MockLog.UnseenEventExpectation(
-                    "vector-path degrade must not WARN at cache",
-                    FusedClassCache.class.getCanonicalName(),
-                    Level.WARN,
-                    "*fusion stitch*"
-                )
-            );
+        try (var mockLog = MockLog.capture(FusedExpressionEvaluatorFactory.class)) {
             mockLog.addExpectation(
                 new MockLog.UnseenEventExpectation(
                     "vector-path degrade must not WARN at factory",
@@ -393,9 +383,8 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             throw new Stitcher.StitchingException("injected full-fallback stitch failure", null);
         });
 
-        try (var mockLog = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
+        try (var mockLog = MockLog.capture(FusedExpressionEvaluatorFactory.class)) {
             mockLog.addExpectation(exactlyOneUnfusedWarn(FusedExpressionEvaluatorFactory.class));
-            mockLog.addExpectation(unseenCacheWarn());
             mockLog.addExpectation(seenFactoryDebugRepeat(FusedExpressionEvaluatorFactory.class));
             for (int i = 0; i < 3; i++) {
                 ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
@@ -448,9 +437,8 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             // but the factory findStatics the block signature (BlockFactory, Warnings[], int, LongBlock…).
             FusionPlanner.compilation().compileBlockLoopForTests = (real, caller, tree) -> real.compileVectorLoop(caller, tree);
 
-            try (var mockLog = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
+            try (var mockLog = MockLog.capture(FusedExpressionEvaluatorFactory.class)) {
                 mockLog.addExpectation(exactlyOneUnfusedWarn(FusedExpressionEvaluatorFactory.class));
-                mockLog.addExpectation(unseenCacheWarn());
                 mockLog.addExpectation(seenFactoryDebugRepeat(FusedExpressionEvaluatorFactory.class));
                 for (int i = 0; i < 3; i++) {
                     ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
@@ -500,9 +488,8 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             throw new Stitcher.StitchingException("injected filter-eval stitch failure", null);
         });
 
-        try (var mockLog = MockLog.capture(FusedClassCache.class, FusedFilterEvalEvaluatorFactory.class)) {
+        try (var mockLog = MockLog.capture(FusedFilterEvalEvaluatorFactory.class)) {
             mockLog.addExpectation(exactlyOneUnfusedWarn(FusedFilterEvalEvaluatorFactory.class));
-            mockLog.addExpectation(unseenCacheWarn());
             mockLog.addExpectation(seenFactoryDebugRepeat(FusedFilterEvalEvaluatorFactory.class));
             for (int i = 0; i < 3; i++) {
                 FilterEvalEvaluator.Factory candidate = FusionPlanner.maybeFuseFilterEval(predicate, projection, layout, rawFactory);
@@ -872,15 +859,6 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             "exactly one unfused WARN at " + loggerClass.getSimpleName(),
             loggerClass.getCanonicalName(),
             "*unfused*"
-        );
-    }
-
-    private static MockLog.LoggingExpectation unseenCacheWarn() {
-        return new MockLog.UnseenEventExpectation(
-            "cache must not WARN (logging moved to factory)",
-            FusedClassCache.class.getCanonicalName(),
-            Level.WARN,
-            "*fusion stitch*"
         );
     }
 

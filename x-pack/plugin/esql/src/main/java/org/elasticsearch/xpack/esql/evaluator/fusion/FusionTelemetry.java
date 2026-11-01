@@ -110,10 +110,16 @@ public final class FusionTelemetry {
     private static final ConcurrentHashMap<String, LongAdder> REFUSALS = new ConcurrentHashMap<>();
 
     /**
-     * Eval-time unfused fallbacks (LinkageError latch, {@code fusionDisabled}, nested-mapping MV). Counted once per
-     * evaluator instance, not per page.
+     * Eval-time unfused fallbacks (LinkageError latch, {@code fusionDisabled}). Counted once per evaluator instance,
+     * not per page. Nested-mapping MV uses {@link #NESTED_MAPPING_MV_FALLBACK}.
      */
     private static final LongAdder RUNTIME_FALLBACK = new LongAdder();
+
+    /**
+     * Eval-time nested-mapping multi-value/null fallbacks (D3: a non-vector page keeps unfused MV semantics). Counted
+     * once per evaluator instance, not per page.
+     */
+    private static final LongAdder NESTED_MAPPING_MV_FALLBACK = new LongAdder();
 
     /**
      * Coverage-only: plan-time stitch failures that lost fusion (the {@code recordFailure(shape, path)} sites). Drives
@@ -263,14 +269,25 @@ public final class FusionTelemetry {
     }
 
     /**
-     * Records one eval-time unfused fallback (LinkageError latch, nested-mapping MV). Callers must invoke this at most
-     * once per evaluator instance. No-op when coverage is off.
+     * Records one eval-time unfused fallback (LinkageError latch). Callers must invoke this at most once per evaluator
+     * instance. No-op when coverage is off. Nested-mapping MV uses {@link #recordNestedMappingMvFallback()}.
      */
     public static void recordRuntimeFallback() {
         if (coverageEnabled == false) {
             return;
         }
         RUNTIME_FALLBACK.increment();
+    }
+
+    /**
+     * Records one nested-mapping MV/null fallback. Callers must invoke this at most once per evaluator instance.
+     * No-op when coverage is off.
+     */
+    public static void recordNestedMappingMvFallback() {
+        if (coverageEnabled == false) {
+            return;
+        }
+        NESTED_MAPPING_MV_FALLBACK.increment();
     }
 
     /** Coverage top-level expressions recorded while the probe was on. */
@@ -317,6 +334,11 @@ public final class FusionTelemetry {
         return RUNTIME_FALLBACK.sum();
     }
 
+    /** Coverage nested-mapping MV fallbacks recorded while the probe was on. */
+    public static long nestedMappingMvFallbacks() {
+        return NESTED_MAPPING_MV_FALLBACK.sum();
+    }
+
     /** Coverage plan-time stitch failures (the report's {@code stitch-failures=} line). Not eval-time LinkageError. */
     public static long planTimeStitchFailures() {
         return PLAN_TIME_STITCH.sum();
@@ -331,8 +353,9 @@ public final class FusionTelemetry {
     /**
      * Human-readable coverage summary: F0 category counts (FUSED/ISLAND/FRAGMENT/NONE) over top-level expressions,
      * top-10 first-refusal reasons, plan-time stitch-failures (plus per-{@link FusedClassCache.Path} breakdown and
-     * {@link #snapshot() top shapes}), and runtime-fallbacks. {@code stitch-failures=} is the coverage plan-time
-     * counter, not {@link #totalFailures()} — eval-time LinkageError after a successful fuse is a runtime-fallback.
+     * {@link #snapshot() top shapes}), runtime-fallbacks, and nested-mapping-mv-fallbacks. {@code stitch-failures=}
+     * is the coverage plan-time counter, not {@link #totalFailures()} — eval-time LinkageError after a successful fuse
+     * is a runtime-fallback. Nested-mapping MV pages are counted separately.
      * Safe to call with coverage off (all zeros).
      */
     public static String coverageReport() {
@@ -343,6 +366,7 @@ public final class FusionTelemetry {
         long none = NONE.sum();
         long stitch = PLAN_TIME_STITCH.sum();
         long runtime = RUNTIME_FALLBACK.sum();
+        long nestedMv = NESTED_MAPPING_MV_FALLBACK.sum();
         String fusedPct = percent(fused, attempts);
         String islandPct = percent(island, attempts);
         String fragmentPct = percent(fragment, attempts);
@@ -373,7 +397,9 @@ public final class FusionTelemetry {
             .append(" stitch-failures=")
             .append(stitch)
             .append(" runtime-fallbacks=")
-            .append(runtime);
+            .append(runtime)
+            .append(" nested-mapping-mv-fallbacks=")
+            .append(nestedMv);
         List<Map.Entry<String, Long>> refusals = new ArrayList<>();
         for (Map.Entry<String, LongAdder> e : REFUSALS.entrySet()) {
             refusals.add(Map.entry(e.getKey(), e.getValue().sum()));
@@ -436,6 +462,7 @@ public final class FusionTelemetry {
         FRAGMENT.reset();
         NONE.reset();
         RUNTIME_FALLBACK.reset();
+        NESTED_MAPPING_MV_FALLBACK.reset();
         PLAN_TIME_STITCH.reset();
     }
 }

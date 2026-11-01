@@ -281,6 +281,8 @@ public class EsqlPlugin extends Plugin implements ActionPlugin, ExtensiblePlugin
     @Override
     public void close() throws IOException {
         try {
+            // Coverage counters are process-wide statics: a multi-node JVM logs the same cumulative report
+            // once per node close, not a per-node split. Diagnostic-only.
             if (FusionSettings.isCoverageReportEnabled()) {
                 logger.info("{}", FusionTelemetry.coverageReport());
             }

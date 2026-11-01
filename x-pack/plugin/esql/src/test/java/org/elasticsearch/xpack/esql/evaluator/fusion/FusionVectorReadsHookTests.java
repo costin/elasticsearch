@@ -20,8 +20,6 @@ import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFac
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Abs;
 import org.elasticsearch.xpack.esql.planner.Layout;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
 import java.util.List;
 
 import static org.hamcrest.Matchers.containsString;
@@ -34,14 +32,6 @@ import static org.hamcrest.Matchers.is;
  * {@link FusedExpressionEvaluatorFactory#getForTests} rather than mutating global state.
  */
 public class FusionVectorReadsHookTests extends FusionDifferentialTestCase {
-
-    public void testVectorReadsFieldIsStaticFinal() throws Exception {
-        Field field = FusionSettings.class.getDeclaredField("VECTOR_READS_INTERFACE");
-        int modifiers = field.getModifiers();
-        assertThat("vector_reads must be static so class-init latches it once", Modifier.isStatic(modifiers), is(true));
-        assertThat("vector_reads must be final so C2 folds the production branch", Modifier.isFinal(modifiers), is(true));
-        assertThat("vector_reads must not be volatile (A9 per-page read)", Modifier.isVolatile(modifiers), is(false));
-    }
 
     public void testResolveVectorReadsInterfaceAutoAndUnset() {
         assertThat(FusionSettings.resolveVectorReadsInterface(null), is(false));

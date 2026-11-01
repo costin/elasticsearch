@@ -696,6 +696,8 @@ public final class FusionPlanner {
             // check, relying on excludeZeroRhs). Fusion must still splice process* with a baked divisor so
             // divide-by-zero / MIN/-1 semantics stay byte-identical to the unfused binary path. Recover the
             // process* descriptor from the expression's numeric element; unsigned_long / dense_vector yield null.
+            // The *ByConstant factory built here is memoised by EvalMapper's unfusedMemo and reused as the
+            // fusion fallback (maybeFuse's rawFactory.apply), so the constant-RHS fast path is not rebuilt.
             descriptor = bakedDivModDescriptor(exp.getClass(), elementOf(exp.dataType()));
             if (descriptor == null) {
                 return null;
@@ -1343,8 +1345,9 @@ public final class FusionPlanner {
                 // Baking is primitive-only (J/I/D); a keyword literal keeps the captured-reference path.
                 return null;
             }
-            if (value instanceof BytesRef bytesRef) {
-                // Keyword/text literal: captured reference constant, same trailing-arg path as a converter @Fixed.
+            if (value instanceof BytesRef bytesRef && DataType.isString(literal.dataType())) {
+                // Keyword/text literal only: captured reference constant, same trailing-arg path as a converter
+                // @Fixed. IP/VERSION/GEO BytesRef values must not hitch a ride on this path.
                 return FusionNode.Constant.reference(bytesRef, BytesRef.class);
             }
             return null;

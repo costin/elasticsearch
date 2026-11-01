@@ -20,6 +20,7 @@ import org.elasticsearch.compute.operator.fusion.FusedFrameInfo;
 import org.elasticsearch.compute.operator.fusion.FusionDump;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
+import org.elasticsearch.core.Releasables;
 import org.elasticsearch.logging.LogManager;
 import org.elasticsearch.logging.Logger;
 import org.elasticsearch.xpack.esql.core.tree.Source;
@@ -251,37 +252,17 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
     }
 
     private static Class<?>[] constantParamTypes(List<FusionNode.Constant> constants) {
-        int n = 0;
-        for (FusionNode.Constant constant : constants) {
-            if (constant.isBaked() == false) {
-                n++;
-            }
-        }
-        Class<?>[] types = new Class<?>[n];
-        int i = 0;
-        for (FusionNode.Constant constant : constants) {
-            if (constant.isBaked()) {
-                continue;
-            }
-            types[i++] = constantParamClass(constant.element());
+        Class<?>[] types = new Class<?>[constants.size()];
+        for (int i = 0; i < constants.size(); i++) {
+            types[i] = constantParamClass(constants.get(i).element());
         }
         return types;
     }
 
     private static Object[] constantValues(List<FusionNode.Constant> constants) {
-        int n = 0;
-        for (FusionNode.Constant constant : constants) {
-            if (constant.isBaked() == false) {
-                n++;
-            }
-        }
-        Object[] values = new Object[n];
-        int i = 0;
-        for (FusionNode.Constant constant : constants) {
-            if (constant.isBaked()) {
-                continue;
-            }
-            values[i++] = constant.value();
+        Object[] values = new Object[constants.size()];
+        for (int i = 0; i < constants.size(); i++) {
+            values[i] = constants.get(i).value();
         }
         return values;
     }
@@ -424,7 +405,7 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
                             // IGNORE context: unfused Filter→Eval must not union warnings into the real collector.
                             reference = unfusedProjection(page, positions, verifyUnfusedPredicate(), verifyUnfusedProjection());
                         } catch (Throwable t) {
-                            org.elasticsearch.core.Releasables.closeExpectNoException(fused);
+                            Releasables.closeExpectNoException(fused);
                             throw t;
                         }
                         // Survivor indices + projection block; restore + close-on-throw live in FusionVerify so a

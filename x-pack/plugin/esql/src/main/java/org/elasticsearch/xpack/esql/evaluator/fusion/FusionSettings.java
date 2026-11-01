@@ -187,11 +187,20 @@ public final class FusionSettings {
         return property == null ? true : Boolean.parseBoolean(property);
     }
 
+    /**
+     * Parses a {@code -Desql.fusion.*} long. A malformed value throws at class init
+     * ({@code ExceptionInInitializerError}) and fails every EVAL plan in this JVM — intended fail-fast so a typo
+     * cannot silently keep the fallback and make a bench/test cell look like production.
+     */
     private static long initialLongProperty(String name, long fallback) {
         String property = System.getProperty(name);
         return property == null ? fallback : Long.parseLong(property);
     }
 
+    /**
+     * Parses a {@code -Desql.fusion.*} double. Same fail-fast as {@link #initialLongProperty}: a bad {@code -D}
+     * becomes {@code ExceptionInInitializerError} rather than a silent default.
+     */
     private static double initialDoubleProperty(String name, double fallback) {
         String property = System.getProperty(name);
         return property == null ? fallback : Double.parseDouble(property);
@@ -242,7 +251,9 @@ public final class FusionSettings {
      * this into a {@code final} evaluator field at construction; JMH sets {@code -Desql.fusion.vector_reads} per
      * fork (this {@code static final} reads it at class init) and must not reach across packages to toggle a runtime
      * flag. WHY unknown values are rejected at {@link #resolveVectorReadsInterface}: a typo would silently keep RAW
-     * and an INTERFACE bench/test cell would look like {@code auto}.
+     * and an INTERFACE bench/test cell would look like {@code auto}. That throw happens at class init, so a bad
+     * {@code -Desql.fusion.vector_reads} becomes {@code ExceptionInInitializerError} and fails every EVAL plan —
+     * intended fail-fast, not a silent fallback.
      */
     static boolean isVectorReadsInterface() {
         return VECTOR_READS_INTERFACE;
@@ -250,7 +261,8 @@ public final class FusionSettings {
 
     /**
      * Resolves {@code esql.fusion.vector_reads}: unset/{@code auto} → {@code false} (RAW); {@code interface} →
-     * {@code true}. Anything else throws. Package-private so unit tests can pin the matrix without reloading this class.
+     * {@code true}. Anything else throws (and at class init that is {@code ExceptionInInitializerError} — intended
+     * fail-fast). Package-private so unit tests can pin the matrix without reloading this class.
      */
     static boolean resolveVectorReadsInterface(String property) {
         String value = property == null ? "auto" : property;

@@ -84,8 +84,8 @@ public class Mod extends EsqlArithmeticOperation {
         return new Mod(source(), left, right);
     }
 
-    // overflowChecked = true: this kernel throws ArithmeticException on divide-by-zero (and integer remainder can also
-    // overflow on MIN_VALUE % -1 on some paths), so the fused path must keep the per-kernel try/catch boundary. Keep
+    // overflowChecked = true: this kernel throws ArithmeticException on divide-by-zero, so the fused path must keep
+    // the per-kernel try/catch boundary. MIN_VALUE % -1 is 0 in Java and does not overflow (unlike division). Keep
     // the kernel = process* (NOT *ByConstant): *ByConstant omits the zero check.
     @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Ints", warnExceptions = { ArithmeticException.class })

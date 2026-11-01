@@ -628,33 +628,20 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
     @Override
     public ExpressionEvaluator get(DriverContext context) {
-        // Snapshot the class-init static-final into an instance field so getForTests can override the choice
-        // without mutating FusionSettings. C2 does not constant-fold an instance final field; the remaining
-        // ADD_MUL_SUB gap vs a static-final read is accepted.
-        return new FusedExpressionEvaluator(
-            warningSources,
-            inputChannels,
-            inputElements,
-            dispatch,
-            vectorStrategy,
-            unfused,
-            context,
-            shape,
-            kernelMap,
-            resolveConstantValues(constants, context),
-            encodingAware,
-            nestedMapping,
-            FusionSettings.isVectorReadsInterface()
-        );
+        return getForTests(context, FusionSettings.isVectorReadsInterface());
     }
 
     /**
      * Test-only: like {@link #get} but forces the vector_reads INTERFACE vs RAW choice. WHY this lives here:
      * {@code esql.fusion.vector_reads} is a {@code static final} resolved at class init, and a unit test cannot
      * flip it in-process without a mutable static. The instance field is a test seam, not a C2-foldable constant.
-     * Never called in production.
+     * Production {@link #get} delegates here so both paths share one constructor call. Never called in production
+     * with a value other than the class-init snapshot.
      */
     ExpressionEvaluator getForTests(DriverContext context, boolean vectorReadsInterface) {
+        // Snapshot the class-init static-final into an instance field so tests can override the choice
+        // without mutating FusionSettings. C2 does not constant-fold an instance final field; the remaining
+        // ADD_MUL_SUB gap vs a static-final read is accepted.
         return new FusedExpressionEvaluator(
             warningSources,
             inputChannels,
@@ -789,55 +776,42 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     }
 
     /**
-     * How many trailing invoke arguments a fused method takes for constants: non-baked only. Baked constants live
-     * in the bytecode. Shared by {@link #constantParamTypes}, {@link #resolveConstantValues}, and the factory-ctor
-     * spreader {@code argCount} so the three cannot drift.
+     * How many trailing invoke arguments a fused method takes for constants.
+     * {@link org.elasticsearch.compute.operator.fusion.FusionSignature#constantsInEmitOrder} already excludes baked
+     * immediates (asserted there); this list is the invoke-arg tail. Shared by
+     * {@link #constantParamTypes}, {@link #resolveConstantValues}, and the factory-ctor spreader {@code argCount}
+     * so the three cannot drift.
      */
     private static int invokeArgConstantCount(List<FusionNode.Constant> constants) {
-        int n = 0;
-        for (FusionNode.Constant constant : constants) {
-            if (constant.isBaked() == false) {
-                n++;
-            }
-        }
-        return n;
+        return constants.size();
     }
 
     /**
-     * The parameter type for each <em>non-baked</em> constant (in canonical emit order), for the resolved
-     * {@link MethodType}: the primitive class for a primitive constant, or the declared reference type for an object
-     * {@code @Fixed} constant (B3b) — matching the {@code L…;} descriptor the Stitcher emitted for it. Baked constants
-     * live in the bytecode and are not invoke arguments.
+     * The parameter type for each constant (in canonical emit order), for the resolved {@link MethodType}: the
+     * primitive class for a primitive constant, or the declared reference type for an object {@code @Fixed} constant
+     * (B3b) — matching the {@code L…;} descriptor the Stitcher emitted for it. Baked constants are not in this list.
      */
     private static Class<?>[] constantParamTypes(List<FusionNode.Constant> constants) {
-        int n = invokeArgConstantCount(constants);
-        Class<?>[] types = new Class<?>[n];
-        int i = 0;
-        for (FusionNode.Constant constant : constants) {
-            if (constant.isBaked()) {
-                continue;
-            }
-            types[i++] = constant.isReference() ? constant.refType() : constantParamClass(constant.element());
+        Class<?>[] types = new Class<?>[constants.size()];
+        for (int i = 0; i < constants.size(); i++) {
+            FusionNode.Constant constant = constants.get(i);
+            types[i] = constant.isReference() ? constant.refType() : constantParamClass(constant.element());
         }
         return types;
     }
 
     /**
-     * Resolves each <em>non-baked</em> constant operand (in canonical emit order) to the value marshalled into the
-     * invoke args for THIS driver: a primitive or captured-reference constant yields its plan-time value, while a
-     * per-driver SCRATCH operand (#8b) is built fresh from its supplier with {@code context} — so each driver owns its
-     * own mutable buffer (matching the {@code THREAD_LOCAL} {@code @Fixed} contract) and concurrent drivers never share
-     * one. Baked constants are bytecode immediates, not invoke arguments. Called once per {@code get(DriverContext)},
-     * never per row.
+     * Resolves each constant operand (in canonical emit order) to the value marshalled into the invoke args for THIS
+     * driver: a primitive or captured-reference constant yields its plan-time value, while a per-driver SCRATCH
+     * operand (#8b) is built fresh from its supplier with {@code context} — so each driver owns its own mutable buffer
+     * (matching the {@code THREAD_LOCAL} {@code @Fixed} contract) and concurrent drivers never share one. Baked
+     * constants are not in this list. Called once per {@code get(DriverContext)}, never per row.
      */
     private static Object[] resolveConstantValues(List<FusionNode.Constant> constants, DriverContext context) {
-        Object[] values = new Object[invokeArgConstantCount(constants)];
-        int i = 0;
-        for (FusionNode.Constant constant : constants) {
-            if (constant.isBaked()) {
-                continue;
-            }
-            values[i++] = constant.isScratch() ? constant.scratchSupplier().apply(context) : constant.value();
+        Object[] values = new Object[constants.size()];
+        for (int i = 0; i < constants.size(); i++) {
+            FusionNode.Constant constant = constants.get(i);
+            values[i] = constant.isScratch() ? constant.scratchSupplier().apply(context) : constant.value();
         }
         return values;
     }
@@ -956,9 +930,10 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         // Latched true after the first eval-time LinkageError so every later page routes straight to the unfused
         // fallback instead of re-attempting (and re-failing) the fused handle per page.
         private boolean fusionDisabled;
-        // Coverage: a runtime unfused fallback (nested-mapping MV, LinkageError latch) is recorded once per instance,
-        // not once per page. Always written on the fallback path; recordRuntimeFallback itself is a no-op when off.
+        // Coverage: a runtime unfused fallback (LinkageError latch) is recorded once per instance, not once per page.
+        // Nested-mapping MV uses {@link #nestedMappingMvFallbackRecorded}. record* itself is a no-op when coverage is off.
         private boolean runtimeFallbackRecorded;
+        private boolean nestedMappingMvFallbackRecorded;
         // Guards close() so a Releasable per-driver scratch buffer is released exactly once (a double close would
         // double-decrement its circuit-breaker reservation).
         private boolean closed;
@@ -1063,7 +1038,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 }
                 if (nonVector) {
                     assert recordPath(LastEvalPath.UNFUSED_FALLBACK);
-                    recordRuntimeFallbackOnce();
+                    recordNestedMappingMvFallbackOnce();
                     return unfusedFallback().eval(page);
                 }
             }
@@ -1326,11 +1301,17 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
          */
         private Block evalDenseVectorPage(Vector[] dense, BlockFactory blockFactory, int positionCount, int arity, int constCount)
             throws Throwable {
-            boolean exact = allExactArrayVectors(dense);
             return switch (vectorStrategy) {
                 case LOGICAL_VECTOR -> evalLogicalVector(dense, blockFactory, positionCount, arity, constCount);
-                case PLAIN_VECTOR -> evalPlainVector(dense, exact, blockFactory, positionCount, arity, constCount);
-                case CHECKED_VECTOR -> evalCheckedVector(dense, exact, blockFactory, positionCount, arity, constCount);
+                case PLAIN_VECTOR -> evalPlainVector(dense, allExactArrayVectors(dense), blockFactory, positionCount, arity, constCount);
+                case CHECKED_VECTOR -> evalCheckedVector(
+                    dense,
+                    allExactArrayVectors(dense),
+                    blockFactory,
+                    positionCount,
+                    arity,
+                    constCount
+                );
                 case NONE -> null;
             };
         }
@@ -1477,6 +1458,15 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             }
             runtimeFallbackRecorded = true;
             FusionTelemetry.recordRuntimeFallback();
+        }
+
+        /** Coverage: one nested-mapping MV fallback increment per evaluator instance, not per page. */
+        private void recordNestedMappingMvFallbackOnce() {
+            if (nestedMappingMvFallbackRecorded) {
+                return;
+            }
+            nestedMappingMvFallbackRecorded = true;
+            FusionTelemetry.recordNestedMappingMvFallback();
         }
 
         /**
