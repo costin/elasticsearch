@@ -70,22 +70,44 @@ public final class FusionTelemetry {
     private static final LongAdder VECTOR_DEGRADED = new LongAdder();
 
     /**
-     * Opt-in coverage probe (F4). Default {@code false}: every {@code recordAttempt}/{@code recordFused}/
-     * {@code recordRefusedAtPlan}/{@code recordRuntimeFallback} call early-returns, so production pays nothing.
-     * Latched from {@code esql.fusion.coverage_report} at node start (and honored from the matching system property
-     * so a CsvIT {@code -D} takes effect). {@link #recordFailure} stays unconditional — it is the criterion #5
-     * stitch-failure counter, not a coverage bucket.
+     * Opt-in coverage probe (F4/H9). Default {@code false}: every coverage {@code record*} call early-returns, so
+     * production pays nothing. Latched from the {@code esql.fusion.coverage_report} <em>system property</em> (not a
+     * node Setting — see {@link FusionSettings}); Gradle forwards only {@code tests.*}, so a CsvIT run uses
+     * {@code -Dtests.jvm.argline=-Desql.fusion.coverage_report=true}. {@link #recordFailure} stays unconditional — it
+     * is the criterion #5 stitch-failure counter, not a coverage bucket.
      */
     static volatile boolean coverageEnabled = false;
 
-    /** Fusion-build attempts that passed the kill-switch / A/B sample (one per {@code maybeFuse*} call that proceeded). */
+    /**
+     * F0-comparable coverage category of one top-level expression. See {@link FusionCoverage} for the definitions.
+     */
+    public enum Category {
+        FUSED,
+        ISLAND,
+        FRAGMENT,
+        NONE
+    }
+
+    /** Nesting of {@link org.elasticsearch.xpack.esql.evaluator.EvalMapper} entry points so a declined FilterEval counts once. */
+    private static final ThreadLocal<Integer> TOP_LEVEL_DEPTH = ThreadLocal.withInitial(() -> 0);
+
+    /** Top-level expressions classified while the probe was on (one per EVAL/WHERE/FilterEval pair). */
     private static final LongAdder ATTEMPTS = new LongAdder();
 
-    /** Attempts that produced a stitched fused factory (eager return, FilterEval {@code fused()==true}, or adaptive resolve). */
+    /** Top-level expressions whose factory is fused (eager, adaptive, or FilterEval {@code fused()==true}). */
     private static final LongAdder FUSED = new LongAdder();
 
-    /** Attempts that returned {@code null} at plan time after the attempt was counted (ineligible tree / depth / mapping). */
-    private static final LongAdder REFUSED_AT_PLAN = new LongAdder();
+    /** Top-level expressions that contain a fusable descendant island (partial codegen out of scope). */
+    private static final LongAdder ISLAND = new LongAdder();
+
+    /** Top-level expressions with a depth≥2 fusable-operator skeleton that still refused. */
+    private static final LongAdder FRAGMENT = new LongAdder();
+
+    /** Top-level expressions with nothing fusable at depth≥2 (lone kernel / unfusable root). */
+    private static final LongAdder NONE = new LongAdder();
+
+    /** First-refusal reasons (simple class name, or {@code depth<2}) for non-{@link Category#FUSED} top-level expressions. */
+    private static final ConcurrentHashMap<String, LongAdder> REFUSALS = new ConcurrentHashMap<>();
 
     /**
      * Eval-time unfused fallbacks (LinkageError latch, {@code fusionDisabled}, nested-mapping MV). Counted once per
@@ -184,7 +206,22 @@ public final class FusionTelemetry {
         return FAILURES_BY_SHAPE.entrySet().stream().collect(java.util.stream.Collectors.toMap(Map.Entry::getKey, e -> e.getValue().sum()));
     }
 
-    /** Records one fusion-build attempt. No-op when {@link #coverageEnabled} is false. */
+    /** Pushes one EvalMapper top-level entry. Coverage-only; must pair with {@link #exitTopLevel()}. */
+    public static void enterTopLevel() {
+        TOP_LEVEL_DEPTH.set(TOP_LEVEL_DEPTH.get() + 1);
+    }
+
+    /** Pops one EvalMapper top-level entry. */
+    public static void exitTopLevel() {
+        int depth = TOP_LEVEL_DEPTH.get() - 1;
+        if (depth <= 0) {
+            TOP_LEVEL_DEPTH.remove();
+        } else {
+            TOP_LEVEL_DEPTH.set(depth);
+        }
+    }
+
+    /** Records one fusion-build attempt. No-op when {@link #coverageEnabled} is false. Kept for unit-test direct calls. */
     public static void recordAttempt() {
         if (coverageEnabled == false) {
             return;
@@ -192,7 +229,11 @@ public final class FusionTelemetry {
         ATTEMPTS.increment();
     }
 
-    /** Records one attempt that produced a stitched fused factory. No-op when coverage is off. */
+    /**
+     * TEST-ONLY. Increments {@link Category#FUSED} without {@link #ATTEMPTS} — must never be used for real counting.
+     * {@link #recordTopLevel} is the sole real counting entry point. Calling this outside the coverage-off no-op test
+     * would break the {@code FUSED+ISLAND+FRAGMENT+NONE==ATTEMPTS} accounting identity. No-op when coverage is off.
+     */
     public static void recordFused() {
         if (coverageEnabled == false) {
             return;
@@ -200,12 +241,25 @@ public final class FusionTelemetry {
         FUSED.increment();
     }
 
-    /** Records one attempt refused at plan time after it was counted. No-op when coverage is off. */
-    public static void recordRefusedAtPlan() {
-        if (coverageEnabled == false) {
+    /**
+     * Records one top-level expression's F0 category. Nested {@link org.elasticsearch.xpack.esql.evaluator.EvalMapper}
+     * calls (the two {@code toEvaluator} fallbacks of a declined FilterEval) are ignored so the pair counts once.
+     * No-op when coverage is off.
+     */
+    public static void recordTopLevel(Category category, String refusalReason) {
+        if (coverageEnabled == false || TOP_LEVEL_DEPTH.get() != 1) {
             return;
         }
-        REFUSED_AT_PLAN.increment();
+        ATTEMPTS.increment();
+        switch (category) {
+            case FUSED -> FUSED.increment();
+            case ISLAND -> ISLAND.increment();
+            case FRAGMENT -> FRAGMENT.increment();
+            case NONE -> NONE.increment();
+        }
+        if (category != Category.FUSED && refusalReason != null && refusalReason.isEmpty() == false) {
+            REFUSALS.computeIfAbsent(refusalReason, unused -> new LongAdder()).increment();
+        }
     }
 
     /**
@@ -219,19 +273,43 @@ public final class FusionTelemetry {
         RUNTIME_FALLBACK.increment();
     }
 
-    /** Coverage attempts recorded while the probe was on. */
+    /** Coverage top-level expressions recorded while the probe was on. */
     public static long attempts() {
         return ATTEMPTS.sum();
     }
 
-    /** Coverage fused successes recorded while the probe was on. */
+    /** Coverage {@link Category#FUSED} top-level expressions. */
     public static long fused() {
         return FUSED.sum();
     }
 
-    /** Coverage plan-time refusals recorded while the probe was on. */
+    /** Coverage {@link Category#ISLAND} top-level expressions. */
+    public static long island() {
+        return ISLAND.sum();
+    }
+
+    /** Coverage {@link Category#FRAGMENT} top-level expressions. */
+    public static long fragment() {
+        return FRAGMENT.sum();
+    }
+
+    /** Coverage {@link Category#NONE} top-level expressions. */
+    public static long none() {
+        return NONE.sum();
+    }
+
+    /**
+     * Derived as island+fragment+none (every top-level attempt that did not FUSE); retained under this name for
+     * back-compat of existing assertions.
+     */
     public static long refusedAtPlan() {
-        return REFUSED_AT_PLAN.sum();
+        return ISLAND.sum() + FRAGMENT.sum() + NONE.sum();
+    }
+
+    /** First-refusal count for {@code reason}, or {@code 0}. */
+    public static long refusalsFor(String reason) {
+        LongAdder counter = REFUSALS.get(reason);
+        return counter == null ? 0L : counter.sum();
     }
 
     /** Coverage runtime fallbacks recorded while the probe was on. */
@@ -251,32 +329,67 @@ public final class FusionTelemetry {
     }
 
     /**
-     * Human-readable coverage summary: attempts, fused, refused-at-plan, plan-time stitch-failures (plus
-     * per-{@link FusedClassCache.Path} breakdown and {@link #snapshot() top shapes}), runtime-fallbacks, and the
-     * fused/attempt percentage. {@code stitch-failures=} is the coverage plan-time counter, not
-     * {@link #totalFailures()} — eval-time LinkageError after a successful fuse is a runtime-fallback. Safe to call
-     * with coverage off (all zeros).
+     * Human-readable coverage summary: F0 category counts (FUSED/ISLAND/FRAGMENT/NONE) over top-level expressions,
+     * top-10 first-refusal reasons, plan-time stitch-failures (plus per-{@link FusedClassCache.Path} breakdown and
+     * {@link #snapshot() top shapes}), and runtime-fallbacks. {@code stitch-failures=} is the coverage plan-time
+     * counter, not {@link #totalFailures()} — eval-time LinkageError after a successful fuse is a runtime-fallback.
+     * Safe to call with coverage off (all zeros).
      */
     public static String coverageReport() {
         long attempts = ATTEMPTS.sum();
         long fused = FUSED.sum();
-        long refused = REFUSED_AT_PLAN.sum();
+        long island = ISLAND.sum();
+        long fragment = FRAGMENT.sum();
+        long none = NONE.sum();
         long stitch = PLAN_TIME_STITCH.sum();
         long runtime = RUNTIME_FALLBACK.sum();
-        String percent = attempts == 0L ? "n/a" : String.format(Locale.ROOT, "%.1f%%", 100.0d * fused / attempts);
+        String fusedPct = percent(fused, attempts);
+        String islandPct = percent(island, attempts);
+        String fragmentPct = percent(fragment, attempts);
+        String nonePct = percent(none, attempts);
         StringBuilder out = new StringBuilder();
-        out.append("fusion coverage: attempts=")
+        out.append("fusion coverage: expressions=")
             .append(attempts)
-            .append(" fused=")
+            .append(" FUSED=")
             .append(fused)
-            .append(" refused-at-plan=")
-            .append(refused)
+            .append(" (")
+            .append(fusedPct)
+            .append(")")
+            .append(" ISLAND=")
+            .append(island)
+            .append(" (")
+            .append(islandPct)
+            .append(")")
+            .append(" FRAGMENT=")
+            .append(fragment)
+            .append(" (")
+            .append(fragmentPct)
+            .append(")")
+            .append(" NONE=")
+            .append(none)
+            .append(" (")
+            .append(nonePct)
+            .append(")")
             .append(" stitch-failures=")
             .append(stitch)
             .append(" runtime-fallbacks=")
-            .append(runtime)
-            .append(" fused/attempt=")
-            .append(percent);
+            .append(runtime);
+        List<Map.Entry<String, Long>> refusals = new ArrayList<>();
+        for (Map.Entry<String, LongAdder> e : REFUSALS.entrySet()) {
+            refusals.add(Map.entry(e.getKey(), e.getValue().sum()));
+        }
+        refusals.sort(Comparator.<Map.Entry<String, Long>>comparingLong(Map.Entry::getValue).reversed().thenComparing(Map.Entry::getKey));
+        int reasonLimit = Math.min(10, refusals.size());
+        if (reasonLimit > 0) {
+            out.append("\n  top refusal reasons: ");
+            for (int i = 0; i < reasonLimit; i++) {
+                if (i > 0) {
+                    out.append(", ");
+                }
+                Map.Entry<String, Long> e = refusals.get(i);
+                out.append(e.getKey()).append("=").append(e.getValue());
+            }
+        }
         List<String> byPath = new ArrayList<>();
         for (FusedClassCache.Path path : FusedClassCache.Path.values()) {
             long count = failuresForPath(path);
@@ -303,17 +416,25 @@ public final class FusionTelemetry {
         return out.toString();
     }
 
+    private static String percent(long count, long total) {
+        return total == 0L ? "n/a" : String.format(Locale.ROOT, "%.1f%%", 100.0d * count / total);
+    }
+
     /** Test-only: clears all counters so an assertion can observe a failure it triggered in isolation. */
     static void resetForTests() {
         FAILURES_BY_SHAPE.clear();
         FAILURES_BY_PATH.clear();
+        REFUSALS.clear();
+        TOP_LEVEL_DEPTH.remove();
         TOTAL_FAILURES.reset();
         ADAPTIVE_SWITCHES.reset();
         ADAPTIVE_ABANDONED.reset();
         VECTOR_DEGRADED.reset();
         ATTEMPTS.reset();
         FUSED.reset();
-        REFUSED_AT_PLAN.reset();
+        ISLAND.reset();
+        FRAGMENT.reset();
+        NONE.reset();
         RUNTIME_FALLBACK.reset();
         PLAN_TIME_STITCH.reset();
     }

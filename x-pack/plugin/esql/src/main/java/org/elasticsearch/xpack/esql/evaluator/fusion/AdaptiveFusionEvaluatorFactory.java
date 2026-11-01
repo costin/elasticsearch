@@ -73,10 +73,6 @@ final class AdaptiveFusionEvaluatorFactory implements ExpressionEvaluator.Factor
                 if (resolved == false) {
                     resolvedFused = fusedSupplier.get();
                     resolved = true;
-                    // Coverage: one attempt → at most one fused, even when many drivers cross minRows.
-                    if (resolvedFused != null) {
-                        FusionTelemetry.recordFused();
-                    }
                 }
             }
         }

@@ -52,6 +52,14 @@ import java.util.concurrent.ThreadLocalRandom;
  * exact {@code *ArrayVector}s; {@code interface} forces ALL-INTERFACE. Unknown values throw at class init. Production
  * / JMH (unset) pay zero cost — the dispatch branch is a constant the C2 JIT folds away. JMH sets the system property
  * per fork rather than calling the accessor.
+ *
+ * <p>{@code esql.fusion.coverage_report} is <b>not</b> a node {@link Setting} and is <b>not</b> registered in
+ * {@code EsqlPlugin} — same shape as {@code esql.fusion.verify}. It is a test/CI-only system property that latches
+ * into {@link FusionTelemetry#coverageEnabled} (default {@code false}). A registered Setting used to overwrite the
+ * sysprop at node start (default {@code false}), so {@code -Desql.fusion.coverage_report=true} was dead on a real
+ * node. Gradle forwards only {@code tests.*} into the test JVM, so a CsvIT coverage run must use
+ * {@code -Dtests.jvm.argline=-Desql.fusion.coverage_report=true}. {@code EsqlPlugin#close()} logs
+ * {@link FusionTelemetry#coverageReport()} when the probe is on.
  */
 public final class FusionSettings {
 
@@ -129,17 +137,6 @@ public final class FusionSettings {
     );
 
     /**
-     * {@code esql.fusion.coverage_report}: node-scoped, non-dynamic; default {@code false}. Opt-in fusion coverage
-     * probe: when on, {@link FusionTelemetry} counts fuse/refuse/fallback attempts and {@code EsqlPlugin#close} logs
-     * {@link FusionTelemetry#coverageReport()}. Off is a no-op (every coverage {@code record*} early-returns).
-     */
-    public static final Setting<Boolean> FUSION_COVERAGE_REPORT_SETTING = Setting.boolSetting(
-        "esql.fusion.coverage_report",
-        false,
-        Setting.Property.NodeScope
-    );
-
-    /**
      * The effective switch. Written once at node start (or by a test hook) and read on the cold plan-time path, so a
      * plain {@code volatile} is sufficient — there is no per-row cost and no need for stronger ordering.
      */
@@ -167,8 +164,10 @@ public final class FusionSettings {
     private static volatile double sampleFraction = initialDoubleProperty("esql.fusion.sample", 1.0);
 
     /**
-     * The effective coverage-report opt-in (default off). Cold-path read; also latches
-     * {@link FusionTelemetry#coverageEnabled} so the counters stay zero-cost when this is false.
+     * The effective coverage-report opt-in (default off). Sysprop-only (not a {@link Setting}); also latches
+     * {@link FusionTelemetry#coverageEnabled} so the counters stay zero-cost when this is false. Volatile rather
+     * than {@code static final} so unit tests can flip it in-process via {@link #setCoverageReportEnabledForTests};
+     * the probe is plan-time only, so a C2-foldable constant is not required.
      */
     private static volatile boolean coverageReportEnabled = initialCoverageReportDefault();
 
@@ -200,7 +199,8 @@ public final class FusionSettings {
 
     private static boolean initialCoverageReportDefault() {
         // Honor -Desql.fusion.coverage_report before any plugin wiring so CsvIT / unit tests that never build a node
-        // still flip the probe. Default false: production pays nothing.
+        // still flip the probe. Default false: production pays nothing. Not overwritten by initFromNodeSettings —
+        // a Setting used to clobber this to false at node start.
         boolean value = Boolean.parseBoolean(System.getProperty("esql.fusion.coverage_report", "false"));
         FusionTelemetry.coverageEnabled = value;
         return value;
@@ -213,8 +213,7 @@ public final class FusionSettings {
         sampleFraction = FUSION_SAMPLE_SETTING.get(settings);
         simdEnabled = FUSION_SIMD_SETTING.get(settings);
         stringDepth1Enabled = FUSION_STRING_DEPTH1_SETTING.get(settings);
-        coverageReportEnabled = FUSION_COVERAGE_REPORT_SETTING.get(settings);
-        FusionTelemetry.coverageEnabled = coverageReportEnabled;
+        // coverage_report is sysprop-only (like verify); do not clobber the class-init latch from a node Setting.
     }
 
     /** Whether opt-in SIMD (Vector-API) generation may be attempted (subject to a runtime availability check). */

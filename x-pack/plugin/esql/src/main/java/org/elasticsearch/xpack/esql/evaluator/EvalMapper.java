@@ -20,7 +20,10 @@ import org.elasticsearch.xpack.esql.core.QlIllegalArgumentException;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FoldContext;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusionCoverage;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusionPlanner;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusionTelemetry;
 import org.elasticsearch.xpack.esql.evaluator.mapper.EvaluatorMapper;
 import org.elasticsearch.xpack.esql.planner.EsPhysicalOperationProviders.ShardContext;
 import org.elasticsearch.xpack.esql.planner.Layout;
@@ -170,9 +173,22 @@ public final class EvalMapper {
          * are all served from the memo — never rebuilt — keeping fold-budget consumption additive.
          */
         ExpressionEvaluator.Factory toEvaluator(Expression exp) {
-            ExpressionEvaluator.Factory unfused = unfused(exp);
-            ExpressionEvaluator.Factory fused = FusionPlanner.maybeFuse(exp, layout, this::unfused);
-            return fused != null ? fused : unfused;
+            boolean probe = FusionSettings.isCoverageReportEnabled();
+            if (probe) {
+                FusionTelemetry.enterTopLevel();
+            }
+            try {
+                ExpressionEvaluator.Factory unfused = unfused(exp);
+                ExpressionEvaluator.Factory fused = FusionPlanner.maybeFuse(exp, layout, this::unfused);
+                if (probe) {
+                    recordCoverage(exp, fused);
+                }
+                return fused != null ? fused : unfused;
+            } finally {
+                if (probe) {
+                    FusionTelemetry.exitTopLevel();
+                }
+            }
         }
 
         /**
@@ -183,11 +199,24 @@ public final class EvalMapper {
          * reusing the shared memo so nothing folds twice.
          */
         FilterEvalMapping toFilterEvalEvaluator(Expression predicate, Expression projection) {
-            FilterEvalEvaluator.Factory fused = FusionPlanner.maybeFuseFilterEval(predicate, projection, layout, this::unfused);
-            if (fused != null) {
-                return new FilterEvalMapping(fused, null, null);
+            boolean probe = FusionSettings.isCoverageReportEnabled();
+            if (probe) {
+                FusionTelemetry.enterTopLevel();
             }
-            return new FilterEvalMapping(null, toEvaluator(predicate), toEvaluator(projection));
+            try {
+                FilterEvalEvaluator.Factory fused = FusionPlanner.maybeFuseFilterEval(predicate, projection, layout, this::unfused);
+                if (probe) {
+                    recordFilterEvalCoverage(predicate, projection, fused);
+                }
+                if (fused != null) {
+                    return new FilterEvalMapping(fused, null, null);
+                }
+                return new FilterEvalMapping(null, toEvaluator(predicate), toEvaluator(projection));
+            } finally {
+                if (probe) {
+                    FusionTelemetry.exitTopLevel();
+                }
+            }
         }
 
         /** Returns the memoized unfused factory for {@code exp}, building it (and its subtree) once on first request. */
@@ -243,6 +272,25 @@ public final class EvalMapper {
                 return new LoadFromPageEvaluator.Factory(layout.get(attr.id()).channel());
             }
             throw new QlIllegalArgumentException("Unsupported expression [{}]", exp);
+        }
+
+        /** Coverage is diagnostic-only: never fail a query because the classifier hit an unexpected node. */
+        private void recordCoverage(Expression exp, ExpressionEvaluator.Factory fused) {
+            try {
+                FusionCoverage.Result classified = FusionCoverage.classify(exp, layout, this::unfused, fused);
+                FusionTelemetry.recordTopLevel(classified.category(), classified.refusalReason());
+            } catch (Exception ignored) {
+                // probe must stay additive
+            }
+        }
+
+        private void recordFilterEvalCoverage(Expression predicate, Expression projection, FilterEvalEvaluator.Factory fused) {
+            try {
+                FusionCoverage.Result classified = FusionCoverage.classifyFilterEval(predicate, projection, layout, this::unfused, fused);
+                FusionTelemetry.recordTopLevel(classified.category(), classified.refusalReason());
+            } catch (Exception ignored) {
+                // probe must stay additive
+            }
         }
     }
 }

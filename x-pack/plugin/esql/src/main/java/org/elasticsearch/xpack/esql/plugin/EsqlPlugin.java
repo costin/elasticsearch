@@ -304,8 +304,8 @@ public class EsqlPlugin extends Plugin implements ActionPlugin, ExtensiblePlugin
         }
         Settings settings = services.clusterService().getSettings();
         // Latch the node-level expression-fusion dials (esql.fusion.enabled kill switch, adaptive.min_rows threshold,
-        // A/B sample fraction, and the opt-in coverage_report probe) once at node start; they are not dynamic cluster
-        // settings, so this single read fixes the node's fusion behavior for its lifetime.
+        // A/B sample fraction) once at node start; they are not dynamic cluster settings, so this single read fixes
+        // the node's fusion behavior for its lifetime. esql.fusion.coverage_report is sysprop-only (like verify).
         FusionSettings.initFromNodeSettings(settings);
         BigArrays bigArrays = services.indicesService().getBigArrays().withCircuitBreaking();
         var blockFactoryProvider = blockFactoryProvider(
@@ -529,8 +529,7 @@ public class EsqlPlugin extends Plugin implements ActionPlugin, ExtensiblePlugin
                 FusionSettings.FUSION_ADAPTIVE_MIN_ROWS_SETTING,
                 FusionSettings.FUSION_SAMPLE_SETTING,
                 FusionSettings.FUSION_SIMD_SETTING,
-                FusionSettings.FUSION_STRING_DEPTH1_SETTING,
-                FusionSettings.FUSION_COVERAGE_REPORT_SETTING
+                FusionSettings.FUSION_STRING_DEPTH1_SETTING
             )
         );
         settings.addAll(PlannerSettings.settings());

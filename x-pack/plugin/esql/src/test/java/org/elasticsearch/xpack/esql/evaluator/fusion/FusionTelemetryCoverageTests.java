@@ -9,14 +9,13 @@ package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.settings.Setting;
-import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BytesRefBlock;
 import org.elasticsearch.compute.data.LongBlock;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.compute.lucene.EmptyIndexedByShardId;
 import org.elasticsearch.compute.operator.DriverContext;
-import org.elasticsearch.compute.operator.FilterEvalEvaluator;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.core.Releasables;
@@ -24,13 +23,17 @@ import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
 import org.elasticsearch.xpack.esql.core.expression.FoldContext;
+import org.elasticsearch.xpack.esql.core.expression.Literal;
+import org.elasticsearch.xpack.esql.core.expression.MapExpression;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.EvalMapper;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache.Path;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.LastEvalPath;
+import org.elasticsearch.xpack.esql.expression.function.scalar.math.Round;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Length;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToLower;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToUpper;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
@@ -40,6 +43,7 @@ import org.junit.After;
 import org.junit.Before;
 
 import java.lang.invoke.MethodHandles;
+import java.util.List;
 import java.util.function.Function;
 
 import static org.hamcrest.Matchers.containsString;
@@ -48,21 +52,21 @@ import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 
 /**
- * F4: opt-in fusion coverage counters. With {@link FusionTelemetry#coverageEnabled} on, a fusing tree, a refused
- * lone kernel, a runtime nested-mapping MV fallback, and a stitch failure are each counted once and show up in
+ * F4/H9: opt-in fusion coverage counters. With {@link FusionTelemetry#coverageEnabled} on, each <em>top-level</em>
+ * expression is classified once as FUSED/ISLAND/FRAGMENT/NONE (F0 categories) and show up in
  * {@link FusionTelemetry#coverageReport()}. With coverage off the record* coverage buckets stay at zero (zero cost).
  */
 public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
 
     @Before
     public void enableCoverage() {
-        FusionTelemetry.coverageEnabled = true;
+        FusionSettings.setCoverageReportEnabledForTests(true);
         FusionTelemetry.resetForTests();
     }
 
     @After
     public void disableCoverage() {
-        FusionTelemetry.coverageEnabled = false;
+        FusionSettings.setCoverageReportEnabledForTests(false);
         FusionTelemetry.resetForTests();
         FusionPlanner.compilerForTests = null;
         FusedExpressionEvaluatorFactory.injectEvalLinkageErrorForTests = false;
@@ -70,12 +74,11 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
     }
 
     public void testCoverageDisabledRecordMethodsAreNoOps() {
-        FusionTelemetry.coverageEnabled = false;
+        FusionSettings.setCoverageReportEnabledForTests(false);
         FusionTelemetry.resetForTests();
 
         FusionTelemetry.recordAttempt();
         FusionTelemetry.recordFused();
-        FusionTelemetry.recordRefusedAtPlan();
         FusionTelemetry.recordRuntimeFallback();
         assertCoverageZero();
 
@@ -130,13 +133,16 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
         assertThat(FusionTelemetry.totalFailures(), is(0L));
         assertThat(FusionTelemetry.runtimeFallbacks(), is(0L));
 
+        assertThat(FusionTelemetry.none(), is(1L));
+        assertThat(FusionTelemetry.refusalsFor("depth<2"), is(1L));
+
         String report = FusionTelemetry.coverageReport();
-        assertThat(report, containsString("attempts=2"));
-        assertThat(report, containsString("fused=1"));
-        assertThat(report, containsString("refused-at-plan=1"));
+        assertThat(report, containsString("expressions=2"));
+        assertThat(report, containsString("FUSED=1 (50.0%)"));
+        assertThat(report, containsString("NONE=1 (50.0%)"));
         assertThat(report, containsString("stitch-failures=0"));
         assertThat(report, containsString("runtime-fallbacks=0"));
-        assertThat(report, containsString("fused/attempt=50.0%"));
+        assertThat(report, containsString("depth<2=1"));
         assertAccountingIdentity();
     }
 
@@ -180,10 +186,9 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
         }
 
         String report = FusionTelemetry.coverageReport();
-        assertThat(report, containsString("attempts=1"));
-        assertThat(report, containsString("fused=1"));
+        assertThat(report, containsString("expressions=1"));
+        assertThat(report, containsString("FUSED=1 (100.0%)"));
         assertThat(report, containsString("runtime-fallbacks=1"));
-        assertThat(report, containsString("fused/attempt=100.0%"));
         assertAccountingIdentity();
     }
 
@@ -200,18 +205,102 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
 
         assertThat(FusionTelemetry.attempts(), is(1L));
         assertThat(FusionTelemetry.fused(), is(0L));
-        assertThat(FusionTelemetry.refusedAtPlan(), is(0L));
+        assertThat(FusionTelemetry.fragment(), is(1L));
         assertThat(FusionTelemetry.totalFailures(), is(1L));
         assertThat(FusionTelemetry.failuresForPath(Path.BLOCK), is(1L));
         assertThat(FusionTelemetry.failuresForPath(Path.FILTER_EVAL_BLOCK), is(0L));
 
         String report = FusionTelemetry.coverageReport();
-        assertThat(report, containsString("attempts=1"));
-        assertThat(report, containsString("fused=0"));
+        assertThat(report, containsString("expressions=1"));
+        assertThat(report, containsString("FUSED=0 (0.0%)"));
+        assertThat(report, containsString("FRAGMENT=1 (100.0%)"));
         assertThat(report, containsString("stitch-failures=1"));
         assertThat(report, containsString("BLOCK=1"));
-        assertThat(report, containsString("fused/attempt=0.0%"));
         assertThat(FusionTelemetry.planTimeStitchFailures(), is(1L));
+        assertAccountingIdentity();
+    }
+
+    /**
+     * H9 guard: four top-level expressions, one per F0 category, produce FUSED=1 / ISLAND=1 / FRAGMENT=1 / NONE=1
+     * and record a first-refusal reason for the non-fused rows.
+     */
+    public void testFourCategoriesAndOneRefusalReason() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        FieldAttribute s = field("s", DataType.KEYWORD);
+        Layout numeric = layout(a, b, c);
+        Layout keyword = layout(s);
+
+        Expression fusedExpr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+        assertThat(EvalMapper.toEvaluator(FoldContext.small(), fusedExpr, numeric), instanceOf(FusedExpressionEvaluatorFactory.class));
+
+        Expression islandExpr = new Round(Source.EMPTY, fusedExpr, null);
+        assertThat(
+            EvalMapper.toEvaluator(FoldContext.small(), islandExpr, numeric),
+            not(instanceOf(FusedExpressionEvaluatorFactory.class))
+        );
+
+        Expression fragmentExpr = new ToLower(Source.EMPTY, new ToUpper(Source.EMPTY, s, EsqlTestUtils.TEST_CFG), EsqlTestUtils.TEST_CFG);
+        assertThat(
+            EvalMapper.toEvaluator(FoldContext.small(), fragmentExpr, keyword),
+            not(instanceOf(FusedExpressionEvaluatorFactory.class))
+        );
+
+        Expression noneExpr = new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG);
+        assertThat(EvalMapper.toEvaluator(FoldContext.small(), noneExpr, numeric), not(instanceOf(FusedExpressionEvaluatorFactory.class)));
+
+        assertThat(FusionTelemetry.attempts(), is(4L));
+        assertThat(FusionTelemetry.fused(), is(1L));
+        assertThat(FusionTelemetry.island(), is(1L));
+        assertThat(FusionTelemetry.fragment(), is(1L));
+        assertThat(FusionTelemetry.none(), is(1L));
+        assertThat("lone kernel first-refusal is depth<2", FusionTelemetry.refusalsFor("depth<2"), is(1L));
+        assertThat("island first-refusal is the unfusable parent", FusionTelemetry.refusalsFor("Round"), is(1L));
+        String report = FusionTelemetry.coverageReport();
+        assertThat(report, containsString("FUSED=1 (25.0%)"));
+        assertThat(report, containsString("ISLAND=1 (25.0%)"));
+        assertThat(report, containsString("FRAGMENT=1 (25.0%)"));
+        assertThat(report, containsString("NONE=1 (25.0%)"));
+        assertThat(report, containsString("depth<2=1"));
+        assertAccountingIdentity();
+    }
+
+    /**
+     * Named-option maps (DECAY/CHUNK/ST_BUFFER, …) are expression children but not {@code EvaluatorMapper}s.
+     * The classifier must not call {@code rawFactory} on them — that throws {@code Unsupported expression} and
+     * failed CsvIT when coverage was on.
+     */
+    public void testMapExpressionChildDoesNotInvokeRawFactory() {
+        MapExpression opts = new MapExpression(
+            Source.EMPTY,
+            List.of(Literal.keyword(Source.EMPTY, "offset"), Literal.integer(Source.EMPTY, 5))
+        );
+        Function<Expression, ExpressionEvaluator.Factory> raw = e -> {
+            throw new AssertionError("rawFactory must not be applied to [" + e + "]");
+        };
+        assertThat(FusionCoverage.isFusableOperator(opts, raw), is(false));
+        assertThat(FusionCoverage.firstRefusalReason(opts, raw), is("MapExpression"));
+        assertThat(FusionCoverage.kernelSkeletonDepth(opts, raw), is(0));
+    }
+
+    /**
+     * H9: a declined FilterEval is one top-level expression, not {@code maybeFuseFilterEval} plus two child
+     * {@code toEvaluator} calls (the pre-fix count was 3).
+     */
+    public void testDeclinedFilterEvalCountsAsOneTopLevel() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        Layout layout = layout(a, b);
+        // Predicate is a lone comparison (depth 1); projection is a bare column — FilterEval declines both sides.
+        Expression predicate = new GreaterThan(Source.EMPTY, a, b);
+        EvalMapper.toFilterEvalEvaluator(FoldContext.small(), predicate, a, layout, EmptyIndexedByShardId.instance(), null);
+        assertThat(
+            "declined FilterEval is one top-level expression, not maybeFuseFilterEval + two child toEvaluator calls",
+            FusionTelemetry.attempts(),
+            is(1L)
+        );
+        assertThat(FusionTelemetry.none(), is(1L));
         assertAccountingIdentity();
     }
 
@@ -222,23 +311,36 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
         Layout layout = layout(a, b, c);
         Expression predicate = new GreaterThan(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
         Expression projection = new Mul(Source.EMPTY, a, b);
-        Function<Expression, ExpressionEvaluator.Factory> rawFactory = e -> unfusedFactory(e, layout);
 
-        FilterEvalEvaluator.Factory fused = FusionPlanner.maybeFuseFilterEval(predicate, projection, layout, rawFactory);
-        assertThat(fused, instanceOf(FusedFilterEvalEvaluatorFactory.class));
-        assertThat(((FusedFilterEvalEvaluatorFactory) fused).fused(), is(true));
+        EvalMapper.FilterEvalMapping fused = EvalMapper.toFilterEvalEvaluator(
+            FoldContext.small(),
+            predicate,
+            projection,
+            layout,
+            EmptyIndexedByShardId.instance(),
+            null
+        );
+        assertThat(fused.fused(), instanceOf(FusedFilterEvalEvaluatorFactory.class));
+        assertThat(((FusedFilterEvalEvaluatorFactory) fused.fused()).fused(), is(true));
         assertThat(FusionTelemetry.attempts(), is(1L));
         assertThat(FusionTelemetry.fused(), is(1L));
         assertThat(FusionTelemetry.totalFailures(), is(0L));
 
         FusionTelemetry.resetForTests();
         FusionPlanner.compilerForTests = failingCompiler();
-        FilterEvalEvaluator.Factory fallback = FusionPlanner.maybeFuseFilterEval(predicate, projection, layout, rawFactory);
-        assertThat(fallback, instanceOf(FusedFilterEvalEvaluatorFactory.class));
-        assertThat(((FusedFilterEvalEvaluatorFactory) fallback).fused(), is(false));
+        EvalMapper.FilterEvalMapping fallback = EvalMapper.toFilterEvalEvaluator(
+            FoldContext.small(),
+            predicate,
+            projection,
+            layout,
+            EmptyIndexedByShardId.instance(),
+            null
+        );
+        assertThat(fallback.fused(), instanceOf(FusedFilterEvalEvaluatorFactory.class));
+        assertThat(((FusedFilterEvalEvaluatorFactory) fallback.fused()).fused(), is(false));
         assertThat(FusionTelemetry.attempts(), is(1L));
         assertThat(FusionTelemetry.fused(), is(0L));
-        assertThat(FusionTelemetry.refusedAtPlan(), is(0L));
+        assertThat(FusionTelemetry.fragment(), is(1L));
         assertThat(FusionTelemetry.totalFailures(), is(1L));
         assertThat(FusionTelemetry.failuresForPath(Path.FILTER_EVAL_BLOCK), is(1L));
 
@@ -249,20 +351,14 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
         assertAccountingIdentity();
     }
 
-    public void testCoverageReportSettingDefaultsFalseParsesTrueAndLatchesTelemetry() {
-        assertThat(FusionSettings.FUSION_COVERAGE_REPORT_SETTING.get(Settings.EMPTY), is(false));
-        assertThat(
-            FusionSettings.FUSION_COVERAGE_REPORT_SETTING.get(Settings.builder().put("esql.fusion.coverage_report", true).build()),
-            is(true)
-        );
-        boolean registered = false;
+    public void testCoverageReportIsSyspropNotANodeSetting() {
         for (Setting<?> setting : new EsqlPlugin().getSettings()) {
-            if (setting.getKey().equals("esql.fusion.coverage_report")) {
-                registered = true;
-                break;
-            }
+            assertThat(
+                "EsqlPlugin must not register esql.fusion.coverage_report (sysprop-only, like esql.fusion.verify)",
+                setting.getKey().equals("esql.fusion.coverage_report"),
+                is(false)
+            );
         }
-        assertThat("EsqlPlugin must register esql.fusion.coverage_report", registered, is(true));
 
         boolean originalCoverage = FusionSettings.isCoverageReportEnabled();
         try {
@@ -288,7 +384,7 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
         ExpressionEvaluator.Factory factory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
         assertThat(factory, instanceOf(AdaptiveFusionEvaluatorFactory.class));
         assertThat("attempt is counted at plan time", FusionTelemetry.attempts(), is(1L));
-        assertThat("deferred stitch has not fused yet", FusionTelemetry.fused(), is(0L));
+        assertThat("adaptive factory is FUSED at plan time (F0-comparable)", FusionTelemetry.fused(), is(1L));
 
         DriverContext other = new DriverContext(bigArrays, blockFactory, null);
         ExpressionEvaluator first = factory.get(driverContext);
@@ -326,7 +422,7 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
             String report = FusionTelemetry.coverageReport();
             assertThat(report, containsString("stitch-failures=0"));
             assertThat(report, containsString("runtime-fallbacks=1"));
-            assertThat(report, containsString("fused=1"));
+            assertThat(report, containsString("FUSED=1"));
             assertAccountingIdentity();
         } finally {
             FusedExpressionEvaluatorFactory.injectEvalLinkageErrorForTests = false;
@@ -337,15 +433,17 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
     private static void assertCoverageZero() {
         assertThat(FusionTelemetry.attempts(), is(0L));
         assertThat(FusionTelemetry.fused(), is(0L));
-        assertThat(FusionTelemetry.refusedAtPlan(), is(0L));
+        assertThat(FusionTelemetry.island(), is(0L));
+        assertThat(FusionTelemetry.fragment(), is(0L));
+        assertThat(FusionTelemetry.none(), is(0L));
         assertThat(FusionTelemetry.runtimeFallbacks(), is(0L));
         assertThat(FusionTelemetry.planTimeStitchFailures(), is(0L));
     }
 
     private static void assertAccountingIdentity() {
         assertThat(
-            "fused + refused-at-plan + plan-time stitch == attempts",
-            FusionTelemetry.fused() + FusionTelemetry.refusedAtPlan() + FusionTelemetry.planTimeStitchFailures(),
+            "FUSED + ISLAND + FRAGMENT + NONE == expressions",
+            FusionTelemetry.fused() + FusionTelemetry.island() + FusionTelemetry.fragment() + FusionTelemetry.none(),
             is(FusionTelemetry.attempts())
         );
     }

@@ -280,11 +280,46 @@ public final class FusionPlanner {
             // null keeps the fraction genuinely additive — the caller uses the ordinary unfused factory tree.
             return null;
         }
-        FusionTelemetry.recordAttempt();
+        FusionPlan plan = planOrNull(exp, layout, rawFactory);
+        if (plan == null) {
+            return null;
+        }
+        ExpressionEvaluator.Factory unfused = rawFactory.apply(exp);
+        FusedClassCompiler compiler = compilerForTests != null ? compilerForTests : COMPILATION.compiler();
+        long minRows = FusionSettings.adaptiveMinRows();
+        if (minRows > 0) {
+            // Adaptive path (Stage 6): defer the stitch. Serve the unfused chain until an evaluator has seen minRows
+            // rows, then stitch once (memoised) and switch. The supplier returns the fused factory or null on failure.
+            return new AdaptiveFusionEvaluatorFactory(
+                unfused,
+                () -> FusedExpressionEvaluatorFactory.tryCreateFusedOrNull(plan, unfused, compiler),
+                minRows,
+                plan.shape()
+            );
+        }
+        // Eager path (default, minRows == 0): stitch now at plan time, falling back to the unfused factory on failure.
+        return FusedExpressionEvaluatorFactory.tryCreate(plan, unfused, compiler);
+    }
+
+    /**
+     * True when {@code exp} would pass the plan-time fusion gates (build + depth / SIMD / stringDepth1 /
+     * encoding-aware exemptions) and would proceed to a stitch. Does not stitch. Used by the H9 coverage classifier
+     * to detect fusable islands without changing production factories.
+     */
+    static boolean isFusableAtPlan(Expression exp, Layout layout, Function<Expression, ExpressionEvaluator.Factory> rawFactory) {
+        return planOrNull(exp, layout, rawFactory) != null;
+    }
+
+    /**
+     * Builds a {@link FusionPlan} when {@code exp} is fusable at plan time, or {@code null} when the tree is
+     * ineligible (build failed, empty inputs, or a lone kernel with no depth-1 exemption). Does not stitch and does
+     * not consult the kill switch / sample — those stay in {@link #maybeFuse}.
+     */
+    private static FusionPlan planOrNull(Expression exp, Layout layout, Function<Expression, ExpressionEvaluator.Factory> rawFactory) {
         PlanContext ctx = new PlanContext(layout, rawFactory);
         FusionNode tree = build(exp, ctx, null, null, true);
         if (tree == null || ctx.outputElement == null || ctx.inputElements.isEmpty()) {
-            return refuseAtPlan();
+            return null;
         }
         // H3: after the tree exists, un-bake over-cap Div/Mod divisors so they share one runtime-param class.
         // Must run before FusionSignature.of: un-baking a constant adds a trailing parameter slot.
@@ -317,14 +352,9 @@ public final class FusionPlanner {
         if (depth(tree) < 2 && simdWorthwhile == false && stringDepth1 == false && bytesRefComparisonDepth1 == false) {
             // A lone kernel is not worth fusing on the scalar paths — leave it to the generated evaluator.
             // A lone mapping convert (ctx.mapping) is always depth-1, so this refuses it (D4).
-            return refuseAtPlan();
+            return null;
         }
-        ExpressionEvaluator.Factory unfused = rawFactory.apply(exp);
-        FusedClassCompiler compiler = compilerForTests != null ? compilerForTests : COMPILATION.compiler();
-        String shape = shapeOf(tree);
-        // One typed carrier bundles everything the factory needs (the signature is the single source for the constant
-        // emit order + warning-source slots); the esql-side bindings the tree can't carry travel alongside it.
-        FusionPlan plan = new FusionPlan(
+        return new FusionPlan(
             signature,
             tree,
             channels,
@@ -332,37 +362,11 @@ public final class FusionPlanner {
             ctx.outputElement,
             ctx.overflowChecked,
             warningSources(signature.warningSourceIndices(), ctx),
-            shape,
+            shapeOf(tree),
             vectorComparison,
             ctx.mapping,
             encodingAware
         );
-
-        long minRows = FusionSettings.adaptiveMinRows();
-        if (minRows > 0) {
-            // Adaptive path (Stage 6): defer the stitch. Serve the unfused chain until an evaluator has seen minRows
-            // rows, then stitch once (memoised) and switch. The supplier returns the fused factory or null on failure.
-            // recordFused happens once in AdaptiveFusionEvaluatorFactory.resolveFused when the memoized stitch
-            // returns non-null (or recordFailure on abandon); not here, and not per driver that crosses minRows.
-            return new AdaptiveFusionEvaluatorFactory(
-                unfused,
-                () -> FusedExpressionEvaluatorFactory.tryCreateFusedOrNull(plan, unfused, compiler),
-                minRows,
-                shape
-            );
-        }
-        // Eager path (default, minRows == 0): stitch now at plan time, falling back to the unfused factory on failure.
-        ExpressionEvaluator.Factory result = FusedExpressionEvaluatorFactory.tryCreate(plan, unfused, compiler);
-        if (FusionTelemetry.coverageEnabled && result instanceof FusedExpressionEvaluatorFactory) {
-            FusionTelemetry.recordFused();
-        }
-        return result;
-    }
-
-    /** Coverage: this attempt was counted and then refused before a stitch. Returns {@code null} for the caller. */
-    private static ExpressionEvaluator.Factory refuseAtPlan() {
-        FusionTelemetry.recordRefusedAtPlan();
-        return null;
     }
 
     /**
@@ -395,12 +399,10 @@ public final class FusionPlanner {
         if (FusionSettings.isEnabled() == false) {
             return null;
         }
-        FusionTelemetry.recordAttempt();
         // Build the predicate tree: must be a boolean-producing comparison/logical/Not subtree.
         PlanContext predCtx = new PlanContext(layout, rawFactory);
         FusionNode predicateTree = build(predicate, predCtx, null, null, true);
         if (predicateTree == null || predCtx.outputElement != ElementKind.BOOLEAN || predCtx.inputElements.isEmpty()) {
-            FusionTelemetry.recordRefusedAtPlan();
             return null;
         }
         // Build the projection tree: must be an arithmetic kernel root (numeric output); a bare column/constant EVAL or
@@ -412,14 +414,12 @@ public final class FusionPlanner {
             || projCtx.outputElement == ElementKind.BOOLEAN
             || projCtx.inputElements.isEmpty()
             || (projectionTree instanceof FusionNode.Kernel) == false) {
-            FusionTelemetry.recordRefusedAtPlan();
             return null;
         }
         // Nested mapping (D3) needs a per-page MV fallback that FilterEval does not have; a ROOT mapping projection
         // (EVAL TO_LOWER(k)) would be stitched single-value and warn+null on MV instead of mapping. Refuse both so
         // those shapes stay on the unfused Filter→Eval chain. The single-expression path handles them.
         if (containsNestedMapping(predicateTree) || containsNestedMapping(projectionTree) || predCtx.mapping || projCtx.mapping) {
-            FusionTelemetry.recordRefusedAtPlan();
             return null;
         }
         predicateTree = applyBakedDivisorCap(predicateTree, predCtx);
@@ -460,13 +460,7 @@ public final class FusionPlanner {
             warningSources,
             filterEvalShapeOf(predicateTree, projectionTree)
         );
-        FilterEvalEvaluator.Factory factory = FusedFilterEvalEvaluatorFactory.create(plan, unfusedPredicate, unfusedProjection, compiler);
-        if (FusionTelemetry.coverageEnabled
-            && factory instanceof FusedFilterEvalEvaluatorFactory
-            && ((FusedFilterEvalEvaluatorFactory) factory).fused()) {
-            FusionTelemetry.recordFused();
-        }
-        return factory;
+        return FusedFilterEvalEvaluatorFactory.create(plan, unfusedPredicate, unfusedProjection, compiler);
     }
 
     /**
