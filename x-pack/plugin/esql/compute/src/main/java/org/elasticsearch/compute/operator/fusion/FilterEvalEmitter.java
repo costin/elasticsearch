@@ -332,7 +332,7 @@ final class FilterEvalEmitter {
         int countSlot = frame.slot();
         int liveSlot = frame.slot();
         int overflowExcSlot = frame.slot();
-        int spareBytesRefSlot = frame.slot();
+        int[] spareByInput = Stitcher.allocBytesRefSpareSlots(frame, predInputElements);
         int workBase = frame.mark();
 
         if (FusionNode.isBooleanLogic(predicateTree)) {
@@ -357,9 +357,7 @@ final class FilterEvalEmitter {
             // map its present/value to a tri-state (present ? value(0/1) : null(2)).
             insns.add(new InsnNode(Opcodes.ICONST_1));
             insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
-            if (Stitcher.hasReferenceInput(predInputElements)) {
-                Stitcher.emitSpareBytesRefInit(insns, spareBytesRefSlot);
-            }
+            Stitcher.emitBytesRefSpareInits(insns, spareByInput);
             BlockDfsEmitter emitter = new BlockDfsEmitter(
                 templates,
                 insns,
@@ -372,7 +370,7 @@ final class FilterEvalEmitter {
                 predSources,
                 liveSlot,
                 overflowExcSlot,
-                spareBytesRefSlot,
+                spareByInput,
                 workBase,
                 constantSlots,
                 debug
@@ -429,14 +427,12 @@ final class FilterEvalEmitter {
         int countSlot = frame.slot();
         int liveSlot = frame.slot();
         int overflowExcSlot = frame.slot();
-        int spareBytesRefSlot = frame.slot();
+        int[] spareByInput = Stitcher.allocBytesRefSpareSlots(frame, projInputElements);
         int workBase = frame.mark();
 
         insns.add(new InsnNode(Opcodes.ICONST_1));
         insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
-        if (Stitcher.hasReferenceInput(projInputElements)) {
-            Stitcher.emitSpareBytesRefInit(insns, spareBytesRefSlot);
-        }
+        Stitcher.emitBytesRefSpareInits(insns, spareByInput);
         BlockDfsEmitter emitter = new BlockDfsEmitter(
             templates,
             insns,
@@ -449,7 +445,7 @@ final class FilterEvalEmitter {
             mergedProjSources,
             liveSlot,
             overflowExcSlot,
-            spareBytesRefSlot,
+            spareByInput,
             workBase,
             constantSlots,
             debug

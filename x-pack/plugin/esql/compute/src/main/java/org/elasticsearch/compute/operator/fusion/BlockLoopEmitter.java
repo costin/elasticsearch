@@ -100,12 +100,11 @@ final class BlockLoopEmitter {
         // multi-value warnings are NOT gated by {@code live}: each kernel emits them in its own operand order so they
         // match the unfused chain (which runs every kernel's loop fully), independent of ancestor short-circuits.
         int liveSlot = frame.slot();
-        // A reusable BytesRef spare for any Stitcher.BYTES_REF (keyword/text) leaf, allocated once below the DFS work region and
-        // initialised before the loop. Reserved unconditionally (a one-slot gap when the tree has no reference input,
-        // so the layout is uniform); only initialised + consulted when a reference input is present.
-        int spareBytesRefSlot = frame.slot();
+        // One reusable BytesRef spare per BYTES_REF (keyword/text) column, allocated below the DFS work region and
+        // initialised before the loop. The allocator always reserves the historical one-slot gap (so 0- and
+        // 1-reference trees stay byte-identical); a 2nd+ reference input gets a new slot just below workBase.
+        int[] spareByInput = Stitcher.allocBytesRefSpareSlots(frame, inputElements);
         int workBase = frame.mark();
-        boolean needsSpare = Stitcher.hasReferenceInput(inputElements);
 
         // Each kernel's warning-source slot into the runtime Warnings[]: its overflow warning and its direct leaf
         // operands' multi-value warnings register on warnings[its slot], matching the unfused per-node evaluator source.
@@ -147,11 +146,9 @@ final class BlockLoopEmitter {
         );
         insns.add(new VarInsnNode(Opcodes.ASTORE, builderSlot));
 
-        // Allocate the reusable BytesRef spare once, before the loop, when any leaf reads a reference (Stitcher.BYTES_REF)
-        // column. It is a plain local (no breaker accounting), so it lives outside the builder's try region.
-        if (needsSpare) {
-            Stitcher.emitSpareBytesRefInit(insns, spareBytesRefSlot);
-        }
+        // Allocate one reusable BytesRef spare per reference column, before the loop. Plain locals (no breaker
+        // accounting), so they live outside the builder's try region. No-op when the tree has no reference input.
+        Stitcher.emitBytesRefSpareInits(insns, spareByInput);
 
         // The builder is a resource: everything up to and including build() runs inside a try whose catch-all
         // handler closes it before rethrowing, so a break part-way through does not leak breaker bytes.
@@ -202,7 +199,7 @@ final class BlockLoopEmitter {
             sourceIndices,
             liveSlot,
             overflowExcSlot,
-            spareBytesRefSlot,
+            spareByInput,
             workBase,
             constantSlots,
             debug

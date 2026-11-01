@@ -1148,26 +1148,56 @@ public final class Stitcher {
         return elements;
     }
 
-    /** Whether any input leaf reads a reference element (a {@code BYTES_REF}), i.e. the host must allocate a spare. */
-    static boolean hasReferenceInput(Element[] inputElements) {
-        for (Element e : inputElements) {
-            if (e != null && e.reference()) {
-                return true;
+    /**
+     * Reserves BytesRef spare slots on {@code frame} for each reference input. Always claims the historical
+     * one-slot gap first (even when there are no reference inputs) so 0- and 1-reference trees keep a
+     * byte-identical frame layout: the first reference input occupies that gap slot, and only a 2nd+
+     * reference input gets a new slot just below {@code workBase}. Call before {@link FrameLayout#mark()}.
+     * Entries are {@code -1} for non-reference inputs.
+     */
+    static int[] allocBytesRefSpareSlots(FrameLayout frame, Element[] inputElements) {
+        int[] spareByInput = new int[inputElements.length];
+        int firstSpare = frame.slot();
+        boolean assignedFirst = false;
+        for (int i = 0; i < inputElements.length; i++) {
+            if (inputElements[i] != null && inputElements[i].reference()) {
+                if (assignedFirst == false) {
+                    spareByInput[i] = firstSpare;
+                    assignedFirst = true;
+                } else {
+                    spareByInput[i] = frame.slot();
+                }
+            } else {
+                spareByInput[i] = -1;
             }
         }
-        return false;
+        return spareByInput;
     }
 
     /**
      * Emits {@code slot = new BytesRef();} — the reusable spare a {@code BYTES_REF} leaf reads into. Called once by a
      * host BEFORE its per-position loop so all positions reuse one spare (matching the generated evaluator's per-eval
-     * {@code valScratch}).
+     * {@code valScratch}). The mapping path still uses this single-slot helper; the arithmetic block loop uses
+     * {@link #emitBytesRefSpareInits} for the per-column array.
      */
     static void emitSpareBytesRefInit(InsnList insns, int slot) {
         insns.add(new TypeInsnNode(Opcodes.NEW, BYTES_REF));
         insns.add(new InsnNode(Opcodes.DUP));
         insns.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, BYTES_REF, "<init>", "()V", false));
         insns.add(new VarInsnNode(Opcodes.ASTORE, slot));
+    }
+
+    /**
+     * Emits {@code new BytesRef()} into each distinct per-column spare slot in {@code spareByInput}. No-op when the
+     * tree has no reference input (every entry {@code -1}), matching the historical "reserve the gap, skip the init"
+     * layout. Call at the host's existing spare-init point, before the per-position loop.
+     */
+    static void emitBytesRefSpareInits(InsnList insns, int[] spareByInput) {
+        for (int slot : spareByInput) {
+            if (slot >= 0) {
+                emitSpareBytesRefInit(insns, slot);
+            }
+        }
     }
 
     /** The tree's output element type — the return type of the root kernel, or boolean for a Logical/Not root. */

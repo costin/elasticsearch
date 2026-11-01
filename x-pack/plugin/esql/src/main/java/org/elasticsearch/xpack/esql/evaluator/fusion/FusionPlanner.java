@@ -285,11 +285,6 @@ public final class FusionPlanner {
         // the encoding-aware dictionary gather evaluates once per distinct value — the same depth-1 exemption as
         // SIMD / stringDepth1.
         boolean bytesRefComparisonDepth1 = encodingAware && ctx.outputElement == ElementKind.BOOLEAN;
-        // D3 nested mapping is a one-column encoding-aware chain. Two BytesRef columns (e.g. k1 == TO_LOWER(k2))
-        // share one spare and would overwrite the lhs; refuse so they stay unfused.
-        if (containsNestedMapping(tree) && inputElements.length > 1) {
-            return refuseAtPlan();
-        }
         if (depth(tree) < 2 && simdWorthwhile == false && stringDepth1 == false && bytesRefComparisonDepth1 == false) {
             // A lone kernel is not worth fusing on the scalar paths — leave it to the generated evaluator.
             // A lone mapping convert (ctx.mapping) is always depth-1, so this refuses it (D4).

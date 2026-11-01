@@ -57,13 +57,14 @@ final class BlockDfsEmitter {
     private final int liveSlot;
     private final int overflowExcSlot;
     /**
-     * Slot of the reusable {@code BytesRef} "spare" a {@code BYTES_REF} leaf reads into via
-     * {@code getBytesRef(int, BytesRef)}. Allocated once by the host BEFORE the loop and passed in here; {@code -1}
-     * when the tree has no reference input (then no leaf ever consults it). Reusing one spare across positions is
-     * safe: the returned {@code BytesRef} is consumed by its kernel within the same position, exactly as the
-     * generated unfused evaluator's per-eval {@code valScratch} does.
+     * Per-input spare slots a {@code BYTES_REF} leaf reads into via {@code getBytesRef(int, BytesRef)}. Length equals
+     * the tree arity; {@code spareByInput[i]} is the frame slot for input {@code i}, or {@code -1} when that input is
+     * not a reference. The host allocates one distinct spare per reference column BEFORE the loop (and still reserves
+     * the historical one-slot gap when there are none, so 0-/1-reference layouts stay byte-identical). Sharing a
+     * single spare across two BytesRef columns is not safe: {@code getBytesRef} mutates the spare in place, so a
+     * later leaf would overwrite an earlier operand still held as a kernel argument.
      */
-    private final int spareBytesRefSlot;
+    private final int[] spareByInput;
     private final Map<FusionNode.Constant, Integer> constantSlots;
     private final FusedClassDebugInfo debug;
     private int next;
@@ -80,7 +81,7 @@ final class BlockDfsEmitter {
         Map<FusionNode, Integer> sourceIndices,
         int liveSlot,
         int overflowExcSlot,
-        int spareBytesRefSlot,
+        int[] spareByInput,
         int workBase,
         Map<FusionNode.Constant, Integer> constantSlots,
         FusedClassDebugInfo debug
@@ -96,7 +97,7 @@ final class BlockDfsEmitter {
         this.sourceIndices = sourceIndices;
         this.liveSlot = liveSlot;
         this.overflowExcSlot = overflowExcSlot;
-        this.spareBytesRefSlot = spareBytesRefSlot;
+        this.spareByInput = spareByInput;
         this.constantSlots = constantSlots;
         this.debug = debug;
         this.next = workBase;
@@ -298,7 +299,7 @@ final class BlockDfsEmitter {
         insns.add(new JumpInsnNode(Opcodes.GOTO, afterOperand));
         insns.add(leafSingle);
         // Primitive: v = block.get*(block.getFirstValueIndex(p)). Reference (BytesRef): v =
-        // block.getBytesRef(block.getFirstValueIndex(p), spare) — the reusable spare is pushed as the extra arg
+        // block.getBytesRef(block.getFirstValueIndex(p), spare) — this column's own spare is pushed as the extra arg
         // before the call. Either way the value is stored into this kernel's argument slot (ASTORE for a reference,
         // derived by Type#getOpcode).
         insns.add(new VarInsnNode(Opcodes.ALOAD, block));
@@ -306,8 +307,9 @@ final class BlockDfsEmitter {
         insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
         insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.BLOCK, "getFirstValueIndex", "(I)I", true));
         if (inputElement.reference()) {
-            assert spareBytesRefSlot >= 0 : "a BytesRef leaf requires a spare slot allocated by the host";
-            insns.add(new VarInsnNode(Opcodes.ALOAD, spareBytesRefSlot));
+            int spare = spareByInput[input.index()];
+            assert spare >= 0 : "a BytesRef leaf requires a spare slot allocated by the host";
+            insns.add(new VarInsnNode(Opcodes.ALOAD, spare));
         }
         insns.add(
             new MethodInsnNode(

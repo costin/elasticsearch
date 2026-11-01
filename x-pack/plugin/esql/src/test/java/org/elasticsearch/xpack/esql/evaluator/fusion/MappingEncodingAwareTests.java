@@ -247,17 +247,17 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
     }
 
     /**
-     * Two BytesRef columns with a nested mapping ({@code k1 == TO_LOWER(k2)}) must not fuse. D3 is a one-column
-     * encoding-aware chain: a shared BytesRef spare would overwrite {@code k1} with {@code k2} on a dense page
-     * (comparing {@code k2} vs {@code TO_LOWER(k2)}), and an arity==1 MV fallback would miss a 2-column non-vector
-     * page. Values over a plain vector page and an MV block must still match the unfused chain (via refusal).
+     * Two BytesRef columns with a nested mapping ({@code k1 == TO_LOWER(k2)}) fuse now that each column has its own
+     * BytesRef spare. A dense page chosen so a shared-spare overwrite would flip the boolean ({@code k1==TO_LOWER(k2)}
+     * is true, {@code k2==TO_LOWER(k2)} is false) must match the unfused chain. An MV page takes the nested-mapping
+     * non-vector fallback (unfused MV semantics) and still matches.
      */
-    public void testEqualsColumnToLowerOtherColumnDoesNotFuse() {
+    public void testEqualsColumnToLowerOtherColumnFuses() {
         FieldAttribute k1 = field("k1", DataType.KEYWORD);
         FieldAttribute k2 = field("k2", DataType.KEYWORD);
         Expression expr = new Equals(Source.EMPTY, k1, new ToLower(Source.EMPTY, k2, CFG));
         Layout layout = layout(k1, k2);
-        // Dense page chosen so a spare-overwrite would flip the boolean: k1==TO_LOWER(k2) is true, k2==TO_LOWER(k2) is false.
+        assertFuses(fusedFactory(expr, layout), "k1==TO_LOWER(k2)");
         Block plainK1 = keyword("world", "hello");
         Block plainK2 = keyword("WORLD", "HELLO");
         evalTwoColumnsWithoutRequiringFusion(expr, layout, plainK1, plainK2, 2, "k1==TO_LOWER(k2) plain");
@@ -281,19 +281,18 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
             mvK2 = b2.build();
         }
         evalTwoColumnsWithoutRequiringFusion(expr, layout, mvK1, mvK2, 2, "k1==TO_LOWER(k2) mv");
-        assertDoesNotFuse(fusedFactory(expr, layout), "k1==TO_LOWER(k2)");
     }
 
-    /** Same two-column nested-mapping refusal for {@code k1 != TO_LOWER(k2)}. */
-    public void testNotEqualsColumnToLowerOtherColumnDoesNotFuse() {
+    /** Same two-column nested-mapping fusion for {@code k1 != TO_LOWER(k2)}. */
+    public void testNotEqualsColumnToLowerOtherColumnFuses() {
         FieldAttribute k1 = field("k1", DataType.KEYWORD);
         FieldAttribute k2 = field("k2", DataType.KEYWORD);
         Expression expr = new NotEquals(Source.EMPTY, k1, new ToLower(Source.EMPTY, k2, CFG));
         Layout layout = layout(k1, k2);
+        assertFuses(fusedFactory(expr, layout), "k1!=TO_LOWER(k2)");
         Block plainK1 = keyword("world", "hello");
         Block plainK2 = keyword("WORLD", "HELLO");
         evalTwoColumnsWithoutRequiringFusion(expr, layout, plainK1, plainK2, 2, "k1!=TO_LOWER(k2) plain");
-        assertDoesNotFuse(fusedFactory(expr, layout), "k1!=TO_LOWER(k2)");
     }
 
     // ---------------------------------------------------------------------------------------------------------------

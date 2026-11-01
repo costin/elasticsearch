@@ -22,8 +22,10 @@ import org.elasticsearch.xpack.esql.core.expression.Literal;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.VectorStrategy;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.Left;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Length;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.Equals;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
 import org.elasticsearch.xpack.esql.planner.Layout;
 
@@ -98,6 +100,26 @@ public class BytesRefInputFusionDifferentialTests extends FusionDifferentialTest
         assertThat("a BytesRef-input tree must be block-only", fusedFactory.vectorStrategy(), is(VectorStrategy.NONE));
 
         sweepColumns(fused, unfused, 2, ElementKind.INT, "LENGTH(x)+LENGTH(y)");
+    }
+
+    /**
+     * Two BytesRef columns into one BytesRef-consuming kernel ({@code x == LEFT(y, 2)}). A shared spare would
+     * overwrite {@code x} with {@code y} and compute {@code y == LEFT(y, 2)}; per-column spares keep the operands
+     * distinct. Coverage-only companion to {@link FusionBytesRefAliasingTests}.
+     */
+    public void testEqualsLeftOfOtherColumnFuses() {
+        FieldAttribute x = field("x", DataType.KEYWORD);
+        FieldAttribute y = field("y", DataType.KEYWORD);
+        Layout layout = layout(x, y);
+        Expression expr = new Equals(Source.EMPTY, x, new Left(Source.EMPTY, y, new Literal(Source.EMPTY, 2, DataType.INTEGER)));
+
+        ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+        FusedExpressionEvaluatorFactory fusedFactory = assertFuses(fused, "x == LEFT(y, 2)");
+        assertDoesNotFuse(unfused, "x == LEFT(y, 2)");
+        assertThat("a BytesRef-input tree must be block-only", fusedFactory.vectorStrategy(), is(VectorStrategy.NONE));
+
+        sweepColumns(fused, unfused, 2, ElementKind.BOOLEAN, "x==LEFT(y,2)");
     }
 
     /** {@code LENGTH(x) > LENGTH(y)} fuses (block-only) with two BytesRef leaves feeding a comparison kernel. */
