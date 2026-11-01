@@ -71,3 +71,19 @@ Fails-before-fix (commit body):
 - testVerifyPageNullPathLabelsQuestionMark: expected "path=?" but was "...path=BLOCK...".
 - testCacheHitDoesNotCallFindStatic: expected findStatic count 10 but was 15.
 - G5 through-production (skip stitchAndResolve probe): expected exactly 1 WARN, was 3.
+
+## H9 — F0-comparable coverage probe (commit 3e6d6d8dd9c)
+Full fusion gate (implementer): BUILD SUCCESSFUL 5m12s (FusionTelemetryCoverageTests 11/0). Comment-only reviewer nits applied after (recordFused hazard javadoc, refusedAtPlan derived note); spotless re-run green. Orchestrator confirming full gate at HEAD 3e6d6d8dd9c: BUILD SUCCESSFUL in 5m13s, GATE_EXIT=0.
+Reviewer GO (no blockers; zero-production-impact-when-off, ThreadLocal nest, categorization exhaustiveness, Setting removal all verified). 3 nits; applied 2 doc, skipped perf.
+Coverage mechanism: sysprop-only esql.fusion.coverage_report; registered Setting removed. Counted once per top-level expr.
+Full CsvIT (ALL csv-spec, coverage on): 7657 tests, 252 skipped, 0 failures, 4m50s. 34523 top-level exprs: FUSED 2.9% (1008), ISLAND 0.6% (222), FRAGMENT 2.3% (806), NONE 94.1% (32487); identity holds; stitch-failures=0, runtime-fallbacks=0. FUSED did NOT rise vs F0 18.7% (pre-H9 probe not comparable). Raw: T4/h9-coverage.txt.
+Top refusals: depth<2=12585, Div=5858, MvSlice=4558, Case=1758, PackDimension=878, ToLong=802, UnpackDimension=756, IsNotNull=652, ToDouble=574, Bucket=505.
+Fails-before-fix (commit body): testDeclinedFilterEvalCountsAsOneTopLevel expected <1L> but was <3L>.
+
+## H9 — F4 coverage probe comparable to F0 (uncommitted)
+Once per top-level expression; FUSED/ISLAND/FRAGMENT/NONE; first-refusal reason;
+sysprop-only `esql.fusion.coverage_report` (Setting removed). Gradle:
+`-Dtests.jvm.argline=-Desql.fusion.coverage_report=true`.
+Fails-before-fix: `testDeclinedFilterEvalCountsAsOneTopLevel` Expected: is <1L> but: was <3L>.
+Full CsvIT (7657 tests, 0 failures): FUSED=1008 (2.9%) ISLAND=222 (0.6%) FRAGMENT=806 (2.3%) NONE=32487 (94.1%).
+**FUSED did not rise** vs F0 18.7%. Table: `FINAL_ITER4.md`, raw: `T4/h9-coverage.txt`.

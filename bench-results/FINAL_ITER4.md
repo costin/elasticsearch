@@ -1,5 +1,5 @@
 # Iteration 4 report
-Code HEAD: 6e3e4a8f5fe (through H8)   Evidence HEAD: (pending)
+Code HEAD: 3e6d6d8dd9c (through H9)   Evidence HEAD: (pending)
 
 Delivery: direct push to `esql/fix/compute-codegen-followup`, no PR (operator directive).
 Driven by the orchestrator; each production change implemented test-first by a subagent,
@@ -16,7 +16,7 @@ reviewed by a fresh subagent, nits applied, then committed by the orchestrator.
 | H6 | done | c01679591fd | FusionVerifyTests#{testNonUtf8BytesRefMismatchReportsHexAndClosesBlocks,testDumpFailureStillClosesBothBlocksAndSaysDumpFailed,testNumericConstantLostEncodingAndConstantBeatsOrdinal}; FusionSettingsVerifyTests + FusionVerifyTests assumeTrue(isVerifyEnabled); FusionDumpTests dual-sink delivery; FusionSpecDifferentialTests ordinal-BytesRef shapes; FusionDifferentialTestCase once-per-page encoding | y | BytesRef printed as hex (BytesRef.toString) so non-UTF-8 output no longer trips Lucene utf8 assert; both blocks closed in finally, dump failure folded into message; encoding check covers numeric Constant*Vector and accepts constant-vs-ordinal; BYTES_BY_SHAPE LRU<=256; FusionDump delivers to thread capture AND external sink; verify-on tests skip (not fail) under -Desql.fusion.verify=false. 4 reviewer nits applied (prod-tolerance unit assertion, 2-arg describeMismatch javadoc, survivor-never-throws invariant comment, NULLS_AND_MULTIVALUE note). |
 | H7 | done | 89a065fdb7c | FusionVerifyTests#testThrownKernelExceptionCarriesFusedFrameInfo; StitcherDebugInfoTests#testOversizedSourceFileAndKernelMapAreCappedAndStillDefine | y | Suppressed FusedFrameInfo(shape, KERNEL_MAP) attached at both fused factories' per-page catch/rethrow (RuntimeException with writableStackTrace=false, suppression off; cold-path only), so default traces (no -XX:+ShowHiddenFrames) name shape+kernel class#method. KERNEL_MAP resolved once per factory via revealDirect on block handle. SourceFile+KERNEL_MAP capped at 4KB on UTF-8 boundary so oversized signatures can't make ASM throw. Stale comments in FusedClassDebugInfo + Stitcher corrected. 2 reviewer nits applied (dead keep<0 clamp -> assert; trailing catch(Throwable) also attaches frame info). |
 | H8 | done | 6e3e4a8f5fe | FusionFallbackHardeningTests (ExactlyOnceWarnExpectation x5); FusedClassCacheTests#testCacheHitDoesNotCallFindStatic + through-production stitch-fail test; FusionVerifyTests#testVerifyPageNullPathLabelsQuestionMark | y | G7 count WARN == 1 over 3 plans (was at-least-once); G5 drive FusionCompilationService.cached (deleted type=null 2-arg compile* overloads); G5/E7 resolve MethodHandle+asSpreader once, store on CachedFused so cache hit skips findStatic/asSpreader (PENDING_RESOLVED thread-local, cleared in wrapStitchFailures finally); E7 18-arg ctor -> FusedDispatch record (hot-path fields copied in ctor, no per-page indirection); verify label ? when -ea off; VectorHandles renamed primary/primaryInterface/raw/rawInterface; G9 javadoc corrected (no C2 fold of instance final). planCachedThenGet benchmark deferred to H13. 1 reviewer doc nit applied, 2 refactor nits skipped. |
-| H9 | pending | | | | |
+| H9 | done | 3e6d6d8dd9c | FusionTelemetryCoverageTests (four-category + testDeclinedFilterEvalCountsAsOneTopLevel + sysprop-not-setting + testMapExpressionChildDoesNotInvokeRawFactory; 11 tests) | y | Coverage counted once per top-level expr (EVAL/WHERE/FilterEval pair) via FusionCoverage; FUSED/ISLAND/FRAGMENT/NONE + first-refusal reason; sysprop-only esql.fusion.coverage_report (registered Setting removed); zero production impact when off (plan-time volatile read short-circuit, ThreadLocal cleared in finally, classify wrapped in catch). Full CsvIT: FUSED 2.9% (down from F0 18.7%) \u2014 stated plainly; pre-H9 probe was not comparable. See Coverage section. 2 reviewer doc nits applied (recordFused test-only hazard, refusedAtPlan derived note); perf nit skipped. |
 | H10 | pending | | | | |
 | H11 | pending | | | | |
 | H12 | pending | | | | |
@@ -34,12 +34,25 @@ reviewed by a fresh subagent, nits applied, then committed by the orchestrator.
 - Suite with -Desql.fusion.verify=false: 251 tests, 0 failures, 5 skipped (H6; verify-on hard-asserts now assumeTrue-skip). Full fusion gate at H6 HEAD c01679591fd: BUILD SUCCESSFUL 4m20s, exit 0.
 
 ## Coverage (H9) vs F0
-| Category | F0 | Now |
-| FUSED | 18.7 % | (pending H9) |
-| ISLAND | 2.9 % | |
-| FRAGMENT | ~1.3 % | |
-| NONE | 68 % | |
-Top 10 first-refusal reasons: (pending H9)
+Full CsvIT (ALL csv-spec: 7657 tests, 252 skipped, 0 failures, 4m50s) with
+-Dtests.jvm.argline=-Desql.fusion.coverage_report=true. 34523 top-level expressions.
+Counted ONCE per top-level expression (EVAL/WHERE/FilterEval pair; declined FilterEval = 1, not 3).
+Category defs (addendum X3 not in tree; implemented in FusionCoverage.java):
+FUSED=top-level produced a fused factory; ISLAND=not fused but a proper descendant would fuse under the same planner gates; FRAGMENT=not fused, no island, depth>=2 fusable-operator skeleton that still refused; NONE=nothing fusable at depth>=2.
+Mechanism: sysprop-only esql.fusion.coverage_report (Setting removed; it clobbered the sysprop at node start). Raw: T4/h9-coverage.txt.
+
+| Category | F0 | H9 (now) |
+|---|---|---|
+| FUSED | 18.7 % | **2.9 % (1008)** |
+| ISLAND | 2.9 % | 0.6 % (222) |
+| FRAGMENT | ~1.3 % | 2.3 % (806) |
+| NONE | 68 % | 94.1 % (32487) |
+
+Identity: 1008+222+806+32487 = 34523. stitch-failures=0, runtime-fallbacks=0.
+
+**FUSED did not rise (2.9% vs F0 18.7%).** The pre-H9 probe was not comparable (counted every toEvaluator call: declined FilterEval=3, lone kernels counted; single aggregate); its 10.8% subset / 3.7% reviewer-full-run were not F0 buckets. H9 uses F0's four categories on the full corpus, once per top-level.
+
+Top 10 first-refusal reasons: depth<2=12585, Div=5858, MvSlice=4558, Case=1758, PackDimension=878, ToLong=802, UnpackDimension=756, IsNotNull=652, ToDouble=574, Bucket=505.
 
 ## Converters (H12)
 | Converter | Admitted? | Reason |
