@@ -1,0 +1,76 @@
+# Iteration 4 report
+Code HEAD: c01679591fd (through H6)   Evidence HEAD: (pending)
+
+Delivery: direct push to `esql/fix/compute-codegen-followup`, no PR (operator directive).
+Driven by the orchestrator; each production change implemented test-first by a subagent,
+reviewed by a fresh subagent, nits applied, then committed by the orchestrator.
+
+## Items
+| Item | Status (done/partial/deviated) | Commits | Tests added (class#method) | Fails-before-fix shown (y/n) | Notes / deviation |
+|---|---|---|---|---|---|
+| H1 | done | 2a7e47987f9 | FusionBytesRefAliasingTests#{testEqualsLeftOfOtherColumn,testNotEqualsRightOfOtherColumn,testEqualsLeftLeftOfTwoColumns(coverage),testEqualsTwoColumnsFilterEval,testNotEqualsTwoColumnsFilterEval,testEqualsTrimOfOtherColumnFilterEval,testFusedClassHasDistinctSparePerBytesRefColumn}; BytesRefInputFusionDifferentialTests#testEqualsLeftOfOtherColumnFuses; MappingEncodingAwareTests flipped to fuse+match | y | Per-column BytesRef spare (one per input index) in BlockDfsEmitter + both FilterEvalEmitter helpers; varargs gather unchanged. Deleted nested-mapping-only planner refusal (now redundant). Deviations: FilterEval cannot stitch LEFT/RIGHT (@Fixed scratch const), so filter-eval guards use k1==k2 / k1!=k2 / k1==TRIM(k2) analogs; LEFT(k1)==LEFT(k2) kept coverage-only (does not alias pre-fix). |
+| H2 | done | 25fd1cabcaf | StitcherHugeMethodGuardTests#{testMaxMethodCodeLengthReturnsLargestOfThreeMethods,testTinyLimitRefuses*(8 paths),testLogicalVectorMaxMethodCodeLengthSeesFusedInterface,testCheckedVectorMaxMethodCodeLengthIsLargestOfFour,testDeepLogicalVectorLargestMethodBetween325And8000,testDeepFilterEvalLargestMethodBetween325And8000}; FusionHugeMethodGuardTests#{testTinyLimit*FallsBackUnfused*,testDeepInBudget*Fuses*} | y | maxMethodCodeLength = max Code len over all methods; serializeWithBudgetGuard enforces on all 8 paths (enforce flag deleted); block compiles before vector try so block-too-big -> outer catch -> unfused. Rename prose DontCompileHugeMethods->HugeMethodLimit. No differential retunes. Added @After budget-reset net (reviewer nit). |
+| H3 | done | 9622eed87db | FusionSpecDifferentialTests#{testBakedDivisorCapBoundsClassesPerShape,testDoubleDivisorIsTrailingParameterNotImmediate,testDoubleNonFiniteWithNonZeroDivisorMatchesUnfused}; StitcherVectorFusionTests#{testBakedIntDivisorIsImmediateOnCheckedPath,testBakedLongDivisorIsImmediateOnBlockPath,testBakedIntDivisorIsImmediateOnBlockPath}; ArithmeticFactoryFusionAwareTests#testBakedDivModDescriptorEqualsGeneratedFactories (replaced Longs-only tautology) | y | Bake int/long only (double -> trailing runtime param); cap 8 distinct baked values per un-baked shape via post-build un-bake rewrite + planner-static registry (bounded by MAX_ENTRIES, synchronized admission, resetForTests). Hot-path early-out: boolean flag, allocation-free when no baked divisor. All 6 process* descriptors == generated. |
+| H4 | done | a9b5e13ad09 | MappingEncodingAwareTests#{testKeywordEqualsLiteralSparseDictionaryDoesNotTakeEncodingAwarePath,testKeywordEqualsLiteralOrdinalBlockWithNullsMatchesUnfused,testTrimToLowerDenseOrdinalPreservesOrdinalEncoding} | y | Dictionary path only when isDense() || dictSize<=positionCount; else per-row block fall-through. -ea seam lastEncodingAwareDictPositions. KEYWORD_EQ_PLAIN cell added to FusionFollowupBenchmark (smoke batched into H13). Ordinal-output rewrap (TRIM(TO_LOWER(k))) keeps OrdinalBytesRefVector. |
+| H5 | done | 1e87238ec71 | FusionAwareGenerationTests#testFusableOverflowUncheckedWarnExceptionsEmitsWarns; MappingEncodingAwareTests#{testLengthConcatIsNotEncodingAware,testLengthConcatUnusedHugeDictionaryEntryDoesNotThrow}; FusionDescriptorTests#testConvenienceConstructorsDeriveWarnsAndDefaultDictionarySafe | y | Added descriptor fields warns (generator from warnExceptions regardless of overflowChecked) + dictionarySafe (false for CONCAT/SPACE); encodingAware requires !warns && dictionarySafe reading only flags; hasWarningKernel keys on warns. Regenerated 69 FUSION_DESCRIPTOR literals. Accepted deviation: enabled CONCAT(col,literal) fusion (fresh array slot, no shared spare) so the behaviour test is non-vacuous; >1MB row propagates same exception as unfused. Follow-ups (open qs): compile-time guard for overflowChecked=false+warnExceptions; dictionarySafe classification test. |
+| H6 | done | c01679591fd | FusionVerifyTests#{testNonUtf8BytesRefMismatchReportsHexAndClosesBlocks,testDumpFailureStillClosesBothBlocksAndSaysDumpFailed,testNumericConstantLostEncodingAndConstantBeatsOrdinal}; FusionSettingsVerifyTests + FusionVerifyTests assumeTrue(isVerifyEnabled); FusionDumpTests dual-sink delivery; FusionSpecDifferentialTests ordinal-BytesRef shapes; FusionDifferentialTestCase once-per-page encoding | y | BytesRef printed as hex (BytesRef.toString) so non-UTF-8 output no longer trips Lucene utf8 assert; both blocks closed in finally, dump failure folded into message; encoding check covers numeric Constant*Vector and accepts constant-vs-ordinal; BYTES_BY_SHAPE LRU<=256; FusionDump delivers to thread capture AND external sink; verify-on tests skip (not fail) under -Desql.fusion.verify=false. 4 reviewer nits applied (prod-tolerance unit assertion, 2-arg describeMismatch javadoc, survivor-never-throws invariant comment, NULLS_AND_MULTIVALUE note). |
+| H7 | pending | | | | |
+| H8 | pending | | | | |
+| H9 | pending | | | | |
+| H10 | pending | | | | |
+| H11 | pending | | | | |
+| H12 | pending | | | | |
+| H13 | pending | | | | |
+| H14 | pending | | | | |
+| H15 | pending | | | | |
+| H16 | pending | | | | |
+
+## Gates
+- Final *fusion* gate: (pending final run)
+- CsvIT verify on (after H1, H2, H5, final):
+  - after H1: BUILD SUCCESSFUL (4m47s), exit 0, verify on (-ea default). Log: T4/csvit-h1.log
+  - after H2: BUILD SUCCESSFUL (2m44s), exit 0, verify on. Log: T4/csvit-h2.log
+  - after H5: BUILD SUCCESSFUL (2m52s), exit 0, verify on. Log: T4/csvit-h5.log
+- Suite with -Desql.fusion.verify=false: 251 tests, 0 failures, 5 skipped (H6; verify-on hard-asserts now assumeTrue-skip). Full fusion gate at H6 HEAD c01679591fd: BUILD SUCCESSFUL 4m20s, exit 0.
+
+## Coverage (H9) vs F0
+| Category | F0 | Now |
+| FUSED | 18.7 % | (pending H9) |
+| ISLAND | 2.9 % | |
+| FRAGMENT | ~1.3 % | |
+| NONE | 68 % | |
+Top 10 first-refusal reasons: (pending H9)
+
+## Converters (H12)
+| Converter | Admitted? | Reason |
+| (pending H12) | | |
+
+## E1 (H11)
+| Step | Changed shapes (or "byte-identical") | Hash list file |
+| pre-H1 baseline | n/a | T4/e1/pre-h1.txt (pending) |
+| H1 | 2+-BytesRef-column shapes (extra per-column spare slot + init) | T4/e1/h1.txt (pending) |
+
+## Line counts (H11)
+| File | before | after |
+| (pending H11) | | |
+
+## Benchmark cells added or moved (smoke tables in T4/smoke/)
+(pending H13/H16/H4/H8)
+
+## Measured by the reviewer (round C)
+Measured 2026-11-01 on a c7i.metal-24xl. tip / stabilize-final control / round-B HEAD.
+- E3-logical accepted: AND_CMP 1.04 (NONE) / 0.99 (TYPES) ns/row vs <=1.10.
+- D3 accepted: EQ_TO_LOWER_ORDINAL 1.98, LENGTH_TO_LOWER_ORDINAL 2.37 ns/row (unfused 8.12 / 18.28); <=1.5 target was reviewer error (TO_LOWER ~115 ns/dict entry). Plain cell 109 fused vs 119 unfused.
+- F1 accepted: LONG_DIV_CONST 2.00 fused vs 4.14 unfused.
+- E4' accepted on perf: DEEP_LOGICAL 0.52x unfused; DEEP_ARITH matches old split. Correctness gaps -> H2.
+- E6/E7 perf-neutral: all 11 shared slow-path shapes within +/-1% of round B.
+- C4 closed, no sampling: warm CsvIT 211s verify-on vs 206s off (~2%).
+- G9: ADD_MUL_SUB 4% slower than control (target 3%) -> H8.
+- Plan time warm cache: +30% on checked-arith shapes (17.3 vs 13.2 us) -> H8 + H16.
+- G8 stays out: full CsvIT shows zero stitch failures across 26,113 attempts.
+
+## Deviations
+H1: FilterEval LEFT/RIGHT shapes unstitchable (@Fixed scratch const "unsupported fused constant element [L]"); used k1==k2/k1!=k2/k1==TRIM(k2) two-column analogs for the filter-eval guards. LEFT(k1)==LEFT(k2) retained as coverage-only (each LEFT writes its own scratch, so it does not reproduce the aliasing pre-fix).
+
+## Open questions
+(tracked per item; see H10 for DATETIME GTE/LTE)
