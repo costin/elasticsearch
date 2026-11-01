@@ -214,6 +214,37 @@ public class FusionFollowupBenchmark {
             boolean fusesToday() {
                 return true;
             }
+        },
+        /**
+         * Lone {@code k == "x"} over a plain (non-ordinal) {@code BytesRefArrayVector} with the same distinct values.
+         * Fuses via F3 depth-1 keyword Equals ({@code bytesRefComparisonDepth1}).
+         */
+        KEYWORD_EQ_PLAIN {
+            @Override
+            Built build() {
+                FieldAttribute k = SlowPathFusionBenchmark.field("k", DataType.KEYWORD);
+                Expression expr = new Equals(
+                    Source.EMPTY,
+                    k,
+                    new Literal(Source.EMPTY, new BytesRef("x"), DataType.KEYWORD)
+                );
+                return new Built(expr, SlowPathFusionBenchmark.layout(k));
+            }
+
+            @Override
+            Page page(int size) {
+                try (var builder = SlowPathFusionBenchmark.blockFactory.newBytesRefVectorBuilder(size)) {
+                    for (int i = 0; i < size; i++) {
+                        builder.appendBytesRef(SlowPathFusionBenchmark.dictEntry(i % DICT));
+                    }
+                    return new Page(builder.build().asBlock());
+                }
+            }
+
+            @Override
+            boolean fusesToday() {
+                return true;
+            }
         };
 
         abstract Built build();

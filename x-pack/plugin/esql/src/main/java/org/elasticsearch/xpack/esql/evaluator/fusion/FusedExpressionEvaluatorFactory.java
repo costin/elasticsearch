@@ -681,6 +681,14 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         return ((FusedExpressionEvaluator) evaluator).lastEvalPath;
     }
 
+    /**
+     * Test-only: dictionary {@code positionCount} last passed to {@code invokeBlockHandle} from the encoding-aware
+     * ordinal path. {@code 0} when that path was not taken. Written under {@code assert} like {@link #lastEvalPath}.
+     */
+    static int lastEncodingAwareDictPositions(ExpressionEvaluator evaluator) {
+        return ((FusedExpressionEvaluator) evaluator).lastEncodingAwareDictPositions;
+    }
+
     /** Test hook (package-private): the unfused factory chain this fused factory falls back to, for differential checks. */
     ExpressionEvaluator.Factory unfusedFactory() {
         return unfused;
@@ -943,6 +951,13 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         private LastEvalPath lastEvalPath;
 
         /**
+         * Test-only: dictionary size last evaluated by {@link #evalEncodingAwareOrdinals}. Written via
+         * {@link #recordEncodingAwareDictPositions} under {@code assert}; {@code 0} when the ordinal dictionary
+         * path was not taken. See {@link #lastEncodingAwareDictPositions(ExpressionEvaluator)}.
+         */
+        private int lastEncodingAwareDictPositions;
+
+        /**
          * Test/verify side effect: records {@code p} and returns {@code true} so {@code assert recordPath(p)} compiles.
          * Because the write is under {@code assert}, verify ON with assertions OFF ({@code -Desql.fusion.verify=true}
          * without {@code -ea}) leaves {@link #lastEvalPath} unset and {@link FusionVerify} dump filenames fall back
@@ -951,6 +966,11 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
          */
         private boolean recordPath(LastEvalPath p) {
             this.lastEvalPath = p;
+            return true;
+        }
+
+        private boolean recordEncodingAwareDictPositions(int n) {
+            this.lastEncodingAwareDictPositions = n;
             return true;
         }
 
@@ -1047,9 +1067,12 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 // handled by invokeWithArguments against the primitive parameter types of the resolved MethodType.
                 int constCount = constantValues.length;
                 fused = null;
-                // Encoding-aware (D1): a single BYTES_REF column with no warning-capable kernel. Ordinal vectors are
-                // evaluated once over the dictionary; constants once; anything else falls through to the normal path.
+                // Encoding-aware (D1): a single BYTES_REF column with no warning-capable kernel. Dense ordinal
+                // vectors (and ordinals whose dictionary is no larger than the page) are evaluated once over the
+                // dictionary; constants once; sparse ordinals (dictionary larger than the page) and anything else
+                // fall through to the normal per-row path.
                 if (encodingAware && arity == 1 && inputs[0] instanceof BytesRefBlock bytesRefInput) {
+                    assert recordEncodingAwareDictPositions(0);
                     fused = evalEncodingAware(bytesRefInput, blockFactory, positionCount);
                 }
                 if (fused == null && vectorSpreader != null) {
@@ -1107,6 +1130,11 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
          * vector, else {@code null} so the caller falls through to the normal fused path. Detection order matches the
          * unfused convert evaluator: ordinals first, then constant. Ordinal <em>blocks</em> (nulls in the ordinals)
          * have {@code asVector() == null} and stay on the block path.
+         *
+         * <p>The ordinal dictionary path is taken only when the ordinals are
+         * {@link OrdinalBytesRefVector#isDense() dense} or the dictionary is no larger than the page. After
+         * filter/{@code keepMask} the dictionary stays full while the page may have few rows; evaluating the whole
+         * dictionary would be {@code O(dictionary)} versus unfused {@code O(rows)}.
          */
         private Block evalEncodingAware(BytesRefBlock input, BlockFactory blockFactory, int positionCount) throws Throwable {
             BytesRefVector vector = input.asVector();
@@ -1115,7 +1143,12 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             }
             OrdinalBytesRefVector ordinals = vector.asOrdinals();
             if (ordinals != null) {
-                return evalEncodingAwareOrdinals(ordinals, blockFactory, positionCount);
+                // isDense() is a redundant fast-path signal: dense implies dict <= positionCount/2 <= positionCount,
+                // so the size clause alone admits every dense page. Kept because it matches the plan wording.
+                if (ordinals.isDense() || ordinals.getDictionaryVector().getPositionCount() <= positionCount) {
+                    return evalEncodingAwareOrdinals(ordinals, blockFactory, positionCount);
+                }
+                return null;
             }
             if (vector.isConstant()) {
                 return evalEncodingAwareConstant(vector, blockFactory, positionCount);
@@ -1135,6 +1168,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             Block dictBlock = dict.asBlock();
             Block dictResult = null;
             try {
+                assert recordEncodingAwareDictPositions(dict.getPositionCount());
                 dictResult = invokeBlockHandle(dictBlock, dict.getPositionCount());
                 Block wrapped = wrapOrGatherEncodingAware(dictResult, ordinals.getOrdinalsVector(), positionCount, blockFactory);
                 if (wrapped != null) {

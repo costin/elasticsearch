@@ -11,7 +11,9 @@ import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BytesRefBlock;
 import org.elasticsearch.compute.data.BytesRefVector;
+import org.elasticsearch.compute.data.IntBlock;
 import org.elasticsearch.compute.data.IntVector;
+import org.elasticsearch.compute.data.OrdinalBytesRefBlock;
 import org.elasticsearch.compute.data.OrdinalBytesRefVector;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
@@ -27,6 +29,7 @@ import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFac
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Length;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToLower;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToUpper;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.Trim;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.Equals;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
@@ -36,7 +39,10 @@ import org.elasticsearch.xpack.esql.session.Configuration;
 
 import java.util.List;
 
+import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.lessThanOrEqualTo;
+import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 
@@ -476,6 +482,124 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
         );
     }
 
+    /**
+     * H4: a sparse ordinal page (dictionary much larger than the row count) must not take the dictionary path.
+     * {@link OrdinalBytesRefVector#filter} rebuilds a plain vector and is not the source of a sparse ordinal page;
+     * {@code slice}/{@code keepMask} retain the full dictionary. This test builds 10 ordinals over a 10_000-entry
+     * dictionary directly to model that layout.
+     */
+    public void testKeywordEqualsLiteralSparseDictionaryDoesNotTakeEncodingAwarePath() {
+        FieldAttribute k = field("k", DataType.KEYWORD);
+        Expression expr = new Equals(Source.EMPTY, k, keywordLit("x"));
+        int dictSize = 10_000;
+        int rows = 10;
+        String[] dictionary = new String[dictSize];
+        dictionary[0] = "x";
+        for (int i = 1; i < dictSize; i++) {
+            dictionary[i] = "v" + i;
+        }
+        int[] ordinals = new int[rows];
+        for (int i = 0; i < rows; i++) {
+            ordinals[i] = i;
+        }
+        Block input = ordinalKeyword(dictionary, ordinals);
+        BytesRefVector vector = ((BytesRefBlock) input).asVector();
+        assertThat("test setup: sparse page must be a vector", vector, notNullValue());
+        OrdinalBytesRefVector ordinalVector = vector.asOrdinals();
+        assertThat("test setup: sparse page must stay ordinal-encoded", ordinalVector, notNullValue());
+        assertThat("test setup: 10 rows / 10_000 dict is not dense", ordinalVector.isDense(), is(false));
+        assertThat(ordinalVector.getDictionaryVector().getPositionCount(), is(dictSize));
+        assertThat(ordinalVector.getPositionCount(), is(rows));
+
+        ExpressionEvaluator.Factory fusedFactory = fusedFactory(expr, layout(k));
+        ExpressionEvaluator.Factory unfusedFactory = unfusedFactory(expr, layout(k));
+        assertFuses(fusedFactory, "k==\"x\" sparse ordinal");
+        assertDoesNotFuse(unfusedFactory, "k==\"x\" sparse ordinal");
+
+        ExpressionEvaluator fused = fusedFactory.get(driverContext);
+        ExpressionEvaluator reference = unfusedFactory.get(driverContext);
+        Page page = null;
+        Block fusedResult = null;
+        Block referenceResult = null;
+        try {
+            page = new Page(rows, input);
+            drainWarnings();
+            fusedResult = fused.eval(page);
+            LastEvalPath path = FusedExpressionEvaluatorFactory.lastEvalPath(fused);
+            int dictPositions = FusedExpressionEvaluatorFactory.lastEncodingAwareDictPositions(fused);
+            List<String> fusedWarnings = drainWarnings();
+            referenceResult = reference.eval(page);
+            List<String> referenceWarnings = drainWarnings();
+            assertThat("sparse k==\"x\" must not evaluate the whole dictionary", dictPositions, lessThanOrEqualTo(rows));
+            assertThat("sparse k==\"x\" must not take the encoding-aware dictionary path", path, not(is(LastEvalPath.ENCODING_AWARE)));
+            assertThat("sparse k==\"x\" falls through to the fused block path", path, is(LastEvalPath.BLOCK));
+            assertResultsEqual(ElementKind.BOOLEAN, fusedResult, referenceResult, rows, "k==\"x\" sparse ordinal");
+            assertWarningsSubset(fusedWarnings, referenceWarnings, "k==\"x\" sparse ordinal");
+        } finally {
+            Releasables.closeExpectNoException(fusedResult, referenceResult, fused, reference);
+            if (page != null) {
+                page.releaseBlocks();
+            }
+        }
+    }
+
+    /** H4: an ordinal BLOCK with nulls under {@code k == "x"} matches unfused on the fused block path. */
+    public void testKeywordEqualsLiteralOrdinalBlockWithNullsMatchesUnfused() {
+        FieldAttribute k = field("k", DataType.KEYWORD);
+        Expression expr = new Equals(Source.EMPTY, k, keywordLit("x"));
+        String[] dictionary = { "x", "y", "z" };
+        Integer[] ordinals = { 0, null, 1, 0, null, 2, 1 };
+        Block input = ordinalKeywordWithNulls(dictionary, ordinals);
+        BytesRefBlock bytes = (BytesRefBlock) input;
+        assertThat("test setup: null ordinals are not a dense vector", bytes.asVector(), nullValue());
+        assertThat("test setup: null ordinals stay ordinal-encoded", bytes.asOrdinals(), notNullValue());
+        evalExpr(
+            expr,
+            layout(k),
+            input,
+            ordinals.length,
+            ElementKind.BOOLEAN,
+            "k==\"x\" ordinal block with nulls",
+            (fused, unfused, path) -> {
+                assertThat("ordinal block with nulls stays on the fused block path", path, is(LastEvalPath.BLOCK));
+            }
+        );
+    }
+
+    /**
+     * H4: a fused encoding-aware BytesRef-output shape over a DENSE ordinal page rewraps as
+     * {@link OrdinalBytesRefVector}. Lone {@code TO_LOWER} does not fuse (D4); {@code TRIM(TO_LOWER(k))} is a nested
+     * mapping under a unary string parent, fuses, and is encoding-aware-eligible (single BYTES_REF column, no warn).
+     */
+    public void testTrimToLowerDenseOrdinalPreservesOrdinalEncoding() {
+        FieldAttribute k = field("k", DataType.KEYWORD);
+        Expression expr = new Trim(Source.EMPTY, new ToLower(Source.EMPTY, k, CFG));
+        String[] dictionary = { " Hello ", "WORLD", "MiXeD", " already lower ", "Grüße" };
+        int[] ordinals = { 0, 1, 2, 0, 3, 1, 2, 4, 0, 1, 3, 4, 2, 0, 1, 4, 3, 2, 1, 0 };
+        Block input = ordinalKeyword(dictionary, ordinals);
+        BytesRefVector vector = ((BytesRefBlock) input).asVector();
+        assertThat("test setup: dense page must be a vector", vector, notNullValue());
+        OrdinalBytesRefVector ordinalVector = vector.asOrdinals();
+        assertThat("test setup: dense page must be ordinal-encoded", ordinalVector, notNullValue());
+        assertThat("test setup: 20 rows / 5 dict is dense", ordinalVector.isDense(), is(true));
+        evalExpr(
+            expr,
+            layout(k),
+            input,
+            ordinals.length,
+            ElementKind.BYTES_REF,
+            "TRIM(TO_LOWER(k)) dense ordinal",
+            (fused, unfused, path) -> {
+                assertThat("TRIM(TO_LOWER) dense ordinal must take encoding-aware rewrap", path, is(LastEvalPath.ENCODING_AWARE));
+                assertThat(
+                    "TRIM(TO_LOWER) dense ordinal must rewrap as OrdinalBytesRefVector",
+                    fused.asVector(),
+                    instanceOf(OrdinalBytesRefVector.class)
+                );
+            }
+        );
+    }
+
     /** Literal on the left ({@code "instance-0" == instance}) is the same depth-1 encoding-aware comparison. */
     public void testLiteralEqualsKeywordOrdinalTakesEncodingAwarePath() {
         FieldAttribute instance = field("instance", DataType.KEYWORD);
@@ -624,6 +748,34 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
             dict = dictBuilder.build();
             ords = blockFactory.newIntArrayVector(ordinals, ordinals.length);
             Block block = new OrdinalBytesRefVector(ords, dict).asBlock();
+            dict = null;
+            ords = null;
+            return block;
+        } finally {
+            Releasables.closeExpectNoException(dict, ords);
+        }
+    }
+
+    private Block ordinalKeywordWithNulls(String[] dictionary, Integer[] ordinals) {
+        BytesRefVector dict = null;
+        IntBlock ords = null;
+        try (
+            BytesRefVector.Builder dictBuilder = blockFactory.newBytesRefVectorBuilder(dictionary.length);
+            IntBlock.Builder ordBuilder = blockFactory.newIntBlockBuilder(ordinals.length)
+        ) {
+            for (String entry : dictionary) {
+                dictBuilder.appendBytesRef(new BytesRef(entry));
+            }
+            dict = dictBuilder.build();
+            for (Integer ordinal : ordinals) {
+                if (ordinal == null) {
+                    ordBuilder.appendNull();
+                } else {
+                    ordBuilder.appendInt(ordinal);
+                }
+            }
+            ords = ordBuilder.build();
+            Block block = new OrdinalBytesRefBlock(ords, dict);
             dict = null;
             ords = null;
             return block;
