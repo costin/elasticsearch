@@ -26,8 +26,10 @@ import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFac
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
 import java.util.function.IntFunction;
 
 /**
@@ -47,11 +49,13 @@ import java.util.function.IntFunction;
  *
  * <h2>Encoding</h2>
  * If the unfused block is ordinal-encoded ({@link BytesRefBlock#asOrdinals()} / {@link BytesRefVector#asOrdinals()} /
- * {@link OrdinalBytesRefVector}) or a <b>BytesRef</b> constant ({@link Vector#isConstant()} on a {@link BytesRefBlock})
- * and the fused block is not, that is the 448× lost-fast-path class of bug (dictionary / constant mapping) and is a
- * test failure even when values match. Numeric {@code Constant*Vector} outputs (the unfused evaluator's constant-input
- * short-circuit, common on 1-row pages) are <b>not</b> this check — fused arithmetic always writes an array vector
- * with identical values, which is not the dictionary fast path.
+ * {@link OrdinalBytesRefVector}) or a constant ({@link Vector#isConstant()} on any typed {@code Constant*Vector},
+ * including numeric) and the fused block is not, {@link #describeMismatch} reports lost encoding even when values
+ * match. A constant fused output is a <b>stronger</b> encoding than ordinal, so constant-fused vs ordinal-unfused is
+ * accepted (not a mismatch). The verify hot path ({@link #compareAndReturn}) still fails BytesRef ordinal/constant
+ * loss (the 448× dictionary fast path) but does <b>not</b> fail numeric {@code Constant*Vector} vs a value-equal
+ * array: fused arithmetic always writes an array vector (see
+ * {@code FusionDifferentialTests#testCheckedVectorNoOverflowPageReturnsLongArrayVector}).
  *
  * <h2>Warnings</h2>
  * {@link org.elasticsearch.common.logging.HeaderWarning#addWarning} stores headers via
@@ -67,7 +71,8 @@ import java.util.function.IntFunction;
  * <h2>Mismatch dump</h2>
  * Hidden-class bytes captured at stitch time (via
  * {@link org.elasticsearch.compute.operator.fusion.FusionDump#beginThreadCapture}) are written to
- * {@code ${java.io.tmpdir}/esql-fusion-dumps/<shape-hash>.class} for {@code javap -c -p}.
+ * {@code ${java.io.tmpdir}/esql-fusion-dumps/<shape-hash>.class} for {@code javap -c -p} when class bytes were
+ * captured, or {@code .txt} explaining the miss when they were not.
  */
 final class FusionVerify {
 
@@ -78,8 +83,28 @@ final class FusionVerify {
      */
     static volatile boolean skipForTests;
 
-    /** Shape → class bytes captured at stitch (block then vector, in compile order). */
-    private static final ConcurrentHashMap<String, byte[][]> BYTES_BY_SHAPE = new ConcurrentHashMap<>();
+    /**
+     * Shape → class bytes captured at stitch (block then vector, in compile order). Bounded LRU so a long verify-mode
+     * JVM cannot retain every stitched shape unbounded; {@link #classBytesForTests} / {@link #bytesFor} still see the
+     * most recently recorded shapes.
+     */
+    private static final int MAX_CAPTURED_SHAPES = 256;
+
+    @SuppressWarnings("serial")
+    private static final Map<String, byte[][]> BYTES_BY_SHAPE = Collections.synchronizedMap(
+        new LinkedHashMap<>(MAX_CAPTURED_SHAPES, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, byte[][]> eldest) {
+                return size() > MAX_CAPTURED_SHAPES;
+            }
+        }
+    );
+
+    /**
+     * Test-only override of the mismatch-dump directory. Production never sets this; tests point it at an unwritable
+     * path (e.g. a regular file) so dump failure is deterministic.
+     */
+    static volatile Path dumpDirectoryForTests;
 
     private FusionVerify() {}
 
@@ -106,7 +131,16 @@ final class FusionVerify {
      * and on mismatch dumps bytes, closes both, and throws.
      */
     static Block compareAndReturn(Block fused, Block unfused, String shape, String strategy, String path) {
-        String mismatch = describeMismatch(fused, unfused);
+        String mismatch;
+        try {
+            // Numeric Constant*Vector vs array is reported by describeMismatch (unit tests) but is not a verify
+            // failure: fused arithmetic writes arrays by design. BytesRef ordinal/constant loss still fails here.
+            mismatch = describeMismatch(fused, unfused, false);
+        } catch (Throwable t) {
+            // describeMismatch / valueAt must not leak either block (e.g. utf8ToString AssertionError on IP/VERSION).
+            Releasables.closeExpectNoException(fused, unfused);
+            throw t;
+        }
         if (mismatch == null) {
             // Values/encoding match: release the comparison block and return the fused result as the real output.
             Releasables.closeExpectNoException(unfused);
@@ -133,16 +167,17 @@ final class FusionVerify {
             if (survivorMismatch != null) {
                 return failMismatch(fused, unfused, shape, "FILTER_EVAL", "BLOCK", survivorMismatch);
             }
-            return compareAndReturn(fused, unfused, shape, "FILTER_EVAL", "BLOCK");
-        } catch (AssertionError e) {
-            // failMismatch / compareAndReturn already closed both (or unfused on success — not this path).
-            throw e;
         } catch (Throwable t) {
-            Releasables.closeExpectNoException(fused, unfused);
+            // describeSurvivorMismatch never throws AssertionError; the only AE out of this try is the already-released
+            // one from failMismatch, so the double-close guard (`t instanceof AssertionError == false`) relies on that.
+            if (t instanceof AssertionError == false) {
+                Releasables.closeExpectNoException(fused, unfused);
+            }
             throw t;
         } finally {
             restoreSurvivors(fusedSurvivors, fusedCount, positions);
         }
+        return compareAndReturn(fused, unfused, shape, "FILTER_EVAL", "BLOCK");
     }
 
     /**
@@ -150,22 +185,23 @@ final class FusionVerify {
      * so the breaker-to-zero contract is identical.
      */
     static Block failMismatch(Block fused, Block unfused, String shape, String strategy, String path, String mismatch) {
-        Path dump = dumpOnMismatch(shape, path);
-        // Mismatch: release both so the breaker returns to zero even though eval throws (the operator never sees
-        // a result to close). Do not double-release on the success path — fused is handed to the caller.
-        Releasables.closeExpectNoException(fused, unfused);
+        String dumpNote;
+        Throwable dumpFailure = null;
+        try {
+            Path dump = dumpOnMismatch(shape, path);
+            dumpNote = "dumped to " + dump + " (javap -c -p)";
+        } catch (Throwable t) {
+            dumpFailure = t;
+            dumpNote = "dump failed: " + t;
+        } finally {
+            // Mismatch: release both so the breaker returns to zero even though eval throws (the operator never sees
+            // a result to close), including when the dump itself throws. Do not double-release on the success path —
+            // fused is handed to the caller.
+            Releasables.closeExpectNoException(fused, unfused);
+        }
         throw new AssertionError(
-            "fused vs unfused mismatch: shape="
-                + shape
-                + ", strategy="
-                + strategy
-                + ", path="
-                + path
-                + ", "
-                + mismatch
-                + "; dumped to "
-                + dump
-                + " (javap -c -p)"
+            "fused vs unfused mismatch: shape=" + shape + ", strategy=" + strategy + ", path=" + path + ", " + mismatch + "; " + dumpNote,
+            dumpFailure
         );
     }
 
@@ -180,7 +216,20 @@ final class FusionVerify {
         }
     }
 
+    /**
+     * Test-only reporting variant ({@code numericConstantEncoding=true}) for unit coverage. Not on any production
+     * path — production uses the 3-arg {@code false} form in {@link #compareAndReturn}.
+     */
     static String describeMismatch(Block fused, Block unfused) {
+        return describeMismatch(fused, unfused, true);
+    }
+
+    /**
+     * @param numericConstantEncoding {@code true} to report numeric {@code Constant*Vector} vs array as lost encoding
+     *                                ({@link #describeMismatch(Block, Block)}); {@code false} for the verify hot path,
+     *                                which still flags BytesRef constant/ordinal loss.
+     */
+    static String describeMismatch(Block fused, Block unfused, boolean numericConstantEncoding) {
         if (fused == unfused) {
             return null;
         }
@@ -190,11 +239,15 @@ final class FusionVerify {
         boolean unfusedConstant = isConstantEncoded(unfused);
         boolean fusedOrdinal = isOrdinalEncoded(fused);
         boolean fusedConstant = isConstantEncoded(fused);
-        if (unfusedOrdinal && fusedOrdinal == false) {
+        // A constant fused output is stronger than ordinal, so do not flag constant-fused vs ordinal-unfused as lost.
+        if (unfusedOrdinal && fusedOrdinal == false && fusedConstant == false) {
             return encodingMismatch("ordinal", fusedCount, fused, unfused);
         }
         if (unfusedConstant && fusedConstant == false) {
-            return encodingMismatch("constant", fusedCount, fused, unfused);
+            boolean bytesRef = fused instanceof BytesRefBlock || unfused instanceof BytesRefBlock;
+            if (numericConstantEncoding || bytesRef) {
+                return encodingMismatch("constant", fusedCount, fused, unfused);
+            }
         }
         if (fusedCount != unfusedCount) {
             int p = firstDiffPosition(fused, unfused);
@@ -284,13 +337,10 @@ final class FusionVerify {
     }
 
     /**
-     * BytesRef constant-encoding predicate ({@code ConstantBytesRefVector}): the unfused mapping short-circuit.
-     * Numeric {@code Constant*Vector} outputs are ignored here (see class Javadoc).
+     * Constant-encoding predicate ({@link Vector#isConstant()}): the unfused mapping / constant-input short-circuit,
+     * covering numeric {@code Constant*Vector} as well as {@code ConstantBytesRefVector}.
      */
     static boolean isConstantEncoded(Block block) {
-        if (block instanceof BytesRefBlock == false) {
-            return false;
-        }
         Vector vector = block.asVector();
         return vector != null && vector.isConstant();
     }
@@ -453,7 +503,9 @@ final class FusionVerify {
         }
         if (block instanceof BytesRefBlock bytes) {
             BytesRef scratch = new BytesRef();
-            return formatValues(count, v -> bytes.getBytesRef(first + v, scratch).utf8ToString());
+            // Hex form ([ff fe]): utf8ToString() asserts on IP/VERSION / other non-UTF-8 payloads and would hide the
+            // real mismatch while leaking both blocks.
+            return formatValues(count, v -> bytes.getBytesRef(first + v, scratch).toString());
         }
         return block.getClass().getSimpleName();
     }
@@ -488,22 +540,31 @@ final class FusionVerify {
     }
 
     static Path dumpPath(String shape) {
-        String hash = Integer.toUnsignedString(shape.hashCode(), 16);
-        return Path.of(System.getProperty("java.io.tmpdir"), "esql-fusion-dumps", hash + ".class");
+        return dumpFile(shape, ".class");
     }
 
-    static Path dumpOnMismatch(String shape, String path) {
-        Path file = dumpPath(shape);
+    private static Path dumpDirectory() {
+        Path override = dumpDirectoryForTests;
+        if (override != null) {
+            return override;
+        }
+        return Path.of(System.getProperty("java.io.tmpdir"), "esql-fusion-dumps");
+    }
+
+    private static Path dumpFile(String shape, String extension) {
+        String hash = Integer.toUnsignedString(shape.hashCode(), 16);
+        return dumpDirectory().resolve(hash + extension);
+    }
+
+    static Path dumpOnMismatch(String shape, String path) throws IOException {
         byte[] bytes = bytesFor(shape, path);
-        try {
-            Files.createDirectories(file.getParent());
-            if (bytes != null && bytes.length > 0) {
-                Files.write(file, bytes);
-            } else {
-                Files.writeString(file, "no fused class bytes captured for shape hash " + file.getFileName());
-            }
-        } catch (IOException e) {
-            return file;
+        boolean hasBytes = bytes != null && bytes.length > 0;
+        Path file = dumpFile(shape, hasBytes ? ".class" : ".txt");
+        Files.createDirectories(file.getParent());
+        if (hasBytes) {
+            Files.write(file, bytes);
+        } else {
+            Files.writeString(file, "no fused class bytes captured for shape hash " + file.getFileName());
         }
         return file;
     }

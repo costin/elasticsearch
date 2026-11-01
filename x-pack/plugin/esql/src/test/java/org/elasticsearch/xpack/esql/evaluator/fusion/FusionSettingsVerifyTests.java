@@ -42,6 +42,7 @@ public class FusionSettingsVerifyTests extends ESTestCase {
     }
 
     public void testIsVerifyEnabledMatchesAssertionsInThisTestJvm() {
+        assumeTrue("skip when -Desql.fusion.verify=false (this test pins the -ea default)", FusionSettings.isVerifyEnabled());
         // Test JVMs run with -ea and do not set -Desql.fusion.verify, so the latched flag equals Assertions.ENABLED.
         assertThat(FusionSettings.isVerifyEnabled(), is(Assertions.ENABLED));
         assertThat("ES tests run with -ea, so verify is on by default", FusionSettings.isVerifyEnabled(), is(true));

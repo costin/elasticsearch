@@ -1304,6 +1304,7 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
      * Pre-H3 doubles bake as {@code LDC2_W} and the shape carries {@code #C:D:<value>}.
      */
     public void testDoubleDivisorIsTrailingParameterNotImmediate() {
+        assumeTrue("class-byte capture is verify-mode only; skip when -Desql.fusion.verify=false", FusionSettings.isVerifyEnabled());
         FieldAttribute a = field("a", DataType.DOUBLE);
         FieldAttribute b = field("b", DataType.DOUBLE);
         Layout layout = layout(a, b);
@@ -1853,9 +1854,10 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
     private Block[] buildMixedPage(ElementKind[] kinds, int positionCount, Profile profile, int[] referenced) {
         boolean abnormal = profile == Profile.NULLS || profile == Profile.MULTIVALUE || profile == Profile.NULLS_AND_MULTIVALUE;
         int forced = abnormal && referenced.length > 0 ? referenced[randomInt(referenced.length - 1)] : -1;
+        Structure pageStructure = structureFor(profile, positionCount, false);
         Block[] blocks = new Block[kinds.length];
         for (int c = 0; c < kinds.length; c++) {
-            Structure structure = structureFor(profile, positionCount, c == forced);
+            Structure structure = c == forced ? structureFor(profile, positionCount, true) : pageStructure;
             blocks[c] = buildColumn(kinds[c], positionCount, structure, profile, false);
         }
         return blocks;

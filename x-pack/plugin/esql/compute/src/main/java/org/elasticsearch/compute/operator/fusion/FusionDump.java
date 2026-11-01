@@ -30,8 +30,8 @@ import java.util.function.BiConsumer;
  *       {@code (internalName, classBytes)} consumer to capture the bytes in-process — e.g. to attach the generated
  *       source of a hot fused kernel to a query profile, or to assert on the emitted class in a test.</li>
  *   <li><b>Thread-local capture.</b> {@link #beginThreadCapture} / {@link #endThreadCapture} collect a private copy
- *       of every class this thread defines, used by verify-mode mismatch dumps without racing the process-wide
- *       sink.</li>
+ *       of every class this thread defines, used by verify-mode mismatch dumps. Capture and the process-wide
+ *       {@link #setSink sink} are independent: both receive a private clone when both are active.</li>
  * </ul>
  *
  * <p>All channels run only on the cold plan-time stitch path (once per fused class), never per row, so they add
@@ -110,14 +110,13 @@ public final class FusionDump {
             );
         }
         if (capture != null) {
-            // Thread-local capture is exclusive of the process-wide sink so verify-mode dumps cannot race a
-            // profiler/test sink (beginThreadCapture does not replace the sink; emit simply does not invoke it).
             try {
                 capture.add(bytecode.clone());
             } catch (RuntimeException e) {
                 logger.warn("fusion dump capture threw for [{}]; ignoring (debug tooling must not break a stitch)", name, e);
             }
-        } else if (currentSink != null) {
+        }
+        if (currentSink != null) {
             try {
                 currentSink.accept(name, bytecode.clone());
             } catch (RuntimeException e) {

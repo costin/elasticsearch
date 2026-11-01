@@ -73,10 +73,11 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
     @After
     public void resetVerifySkip() {
         FusionVerify.skipForTests = false;
+        FusionVerify.dumpDirectoryForTests = null;
     }
 
     public void testDeliberatelyWrongFusedClassThrowsAssertionErrorUnderVerify() throws Exception {
-        assertThat("verify is on by default in test JVMs (-ea)", FusionSettings.isVerifyEnabled(), is(true));
+        assumeTrue("verify is on by default in test JVMs (-ea); skip when -Desql.fusion.verify=false", FusionSettings.isVerifyEnabled());
         FieldAttribute a = field("a", DataType.LONG);
         FieldAttribute b = field("b", DataType.LONG);
         FieldAttribute c = field("c", DataType.LONG);
@@ -148,7 +149,7 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
     }
 
     public void testEvalOperatorBreakerReturnsToZeroWithVerifyOn() {
-        assertThat(FusionSettings.isVerifyEnabled(), is(true));
+        assumeTrue("verify is on by default in test JVMs (-ea); skip when -Desql.fusion.verify=false", FusionSettings.isVerifyEnabled());
         FieldAttribute a = field("a", DataType.LONG);
         FieldAttribute b = field("b", DataType.LONG);
         FieldAttribute c = field("c", DataType.LONG);
@@ -173,7 +174,7 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
     }
 
     public void testFilterEvalOperatorBreakerReturnsToZeroWithVerifyOn() {
-        assertThat(FusionSettings.isVerifyEnabled(), is(true));
+        assumeTrue("verify is on by default in test JVMs (-ea); skip when -Desql.fusion.verify=false", FusionSettings.isVerifyEnabled());
         FieldAttribute a = field("a", DataType.LONG);
         FieldAttribute b = field("b", DataType.LONG);
         FieldAttribute c = field("c", DataType.LONG);
@@ -202,7 +203,7 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
     }
 
     /**
-     * Direct {@link FusionVerify#describeMismatch} coverage: encoding fast-path, numeric constant false-positive,
+     * Direct {@link FusionVerify#describeMismatch} coverage: encoding fast-path, numeric constant lost encoding,
      * NaN vs finite, sign-of-zero, identical blocks, and firstDiff for count/value divergence.
      */
     public void testDescribeMismatchTable() {
@@ -228,12 +229,14 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
             assertThat(constantMismatch, containsString("lost encoding fast path"));
             assertThat(constantMismatch, containsString("values equal"));
 
-            // (c) numeric Constant*Vector vs array with equal values -> NOT a mismatch
+            // (c) numeric Constant*Vector unfused vs array fused with equal values -> lost encoding
             Block constLong = blockFactory.newConstantLongVector(7L, 3).asBlock();
             toClose.add(constLong);
             Block arrayLong = blockFactory.newLongArrayVector(new long[] { 7, 7, 7 }, 3).asBlock();
             toClose.add(arrayLong);
-            assertThat(FusionVerify.describeMismatch(arrayLong, constLong), nullValue());
+            String numericConstantMismatch = FusionVerify.describeMismatch(arrayLong, constLong);
+            assertThat(numericConstantMismatch, containsString("constant-encoded"));
+            assertThat(numericConstantMismatch, containsString("lost encoding fast path"));
 
             // (d) NaN vs finite
             Block nan = blockFactory.newDoubleArrayVector(new double[] { Double.NaN }, 1).asBlock();
@@ -280,6 +283,110 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
         } finally {
             Releasables.closeExpectNoException(toClose.toArray(Block[]::new));
         }
+    }
+
+    /**
+     * Non-UTF-8 BytesRef values (IP/VERSION bytes, 0xFF 0xFE) must stringify as Lucene hex ({@code [ff fe]}) so a
+     * mismatch reports the real values. {@code BytesRef#utf8ToString} asserts on invalid UTF-8, which would hide the
+     * mismatch and leak both blocks (breaker not back to zero).
+     */
+    public void testNonUtf8BytesRefMismatchReportsHexAndClosesBlocks() {
+        Block fused = bytesFrom(new byte[] { (byte) 0xFF, (byte) 0xFE });
+        Block unfused = bytesFrom(new byte[] { 0x00 });
+        try {
+            AssertionError error = expectThrows(
+                AssertionError.class,
+                () -> FusionVerify.compareAndReturn(fused, unfused, "non-utf8-bytesref", "NONE", "BLOCK")
+            );
+            String message = error.getMessage();
+            assertThat("mismatch (not Lucene utf8 assert) must be the thrown error", message, containsString("fused vs unfused mismatch"));
+            assertThat(message, containsString("[ff fe]"));
+            assertThat(message, containsString("[0]"));
+            assertThat("Lucene utf8ToString must not hide the mismatch", message.contains("invalid UTF"), is(false));
+            assertThat("both blocks released even on a BytesRef stringify path", breaker.getUsed(), is(0L));
+        } finally {
+            if (breaker.getUsed() != 0L) {
+                Releasables.closeExpectNoException(fused, unfused);
+            }
+        }
+    }
+
+    /**
+     * A dump that cannot write (directory path is a regular file) must still close both blocks, and the mismatch
+     * {@link AssertionError} must say {@code dump failed} rather than propagating the dump exception.
+     */
+    public void testDumpFailureStillClosesBothBlocksAndSaysDumpFailed() throws Exception {
+        Path notADirectory = createTempFile();
+        FusionVerify.dumpDirectoryForTests = notADirectory;
+        Block fused = blockFactory.newLongArrayVector(new long[] { 1L }, 1).asBlock();
+        Block unfused = blockFactory.newLongArrayVector(new long[] { 2L }, 1).asBlock();
+        try {
+            AssertionError error = expectThrows(
+                AssertionError.class,
+                () -> FusionVerify.compareAndReturn(fused, unfused, "dump-throws", "NONE", "BLOCK")
+            );
+            String message = error.getMessage();
+            assertThat(message, containsString("fused vs unfused mismatch"));
+            assertThat(message, containsString("dump failed"));
+            assertThat("dump exception must not replace the mismatch AssertionError", error.getClass(), is(AssertionError.class));
+            assertThat("both blocks released even when the dump throws", breaker.getUsed(), is(0L));
+        } finally {
+            FusionVerify.dumpDirectoryForTests = null;
+            if (breaker.getUsed() != 0L) {
+                Releasables.closeExpectNoException(fused, unfused);
+            }
+        }
+    }
+
+    /**
+     * Encoding: a numeric {@code Constant*Vector} unfused output vs a plain array fused output is lost encoding (the
+     * unfused constant-input short-circuit). A constant fused output vs an ordinal unfused output is accepted —
+     * constant is a stronger encoding than ordinal.
+     */
+    public void testNumericConstantLostEncodingAndConstantBeatsOrdinal() {
+        List<Block> toClose = new ArrayList<>();
+        try {
+            Block constLong = blockFactory.newConstantLongVector(7L, 3).asBlock();
+            toClose.add(constLong);
+            Block arrayLong = blockFactory.newLongArrayVector(new long[] { 7, 7, 7 }, 3).asBlock();
+            toClose.add(arrayLong);
+            String lost = FusionVerify.describeMismatch(arrayLong, constLong);
+            assertThat(lost, containsString("constant-encoded"));
+            assertThat(lost, containsString("lost encoding fast path"));
+            assertThat(
+                "production verify arm tolerates numeric-constant-vs-array (fused arithmetic writes arrays)",
+                FusionVerify.describeMismatch(arrayLong, constLong, false),
+                nullValue()
+            );
+
+            Block constantBytes = blockFactory.newConstantBytesRefBlockWith(new BytesRef("Hi"), 3);
+            toClose.add(constantBytes);
+            Block ordinal = ordinalBytes(new String[] { "Hi" }, new int[] { 0, 0, 0 });
+            toClose.add(ordinal);
+            assertThat(
+                "constant fused vs ordinal unfused is a stronger encoding, not a mismatch",
+                FusionVerify.describeMismatch(constantBytes, ordinal),
+                nullValue()
+            );
+        } finally {
+            Releasables.closeExpectNoException(toClose.toArray(Block[]::new));
+        }
+    }
+
+    private Block bytesFrom(byte[] raw) {
+        try (BytesRefBlock.Builder builder = blockFactory.newBytesRefBlockBuilder(1)) {
+            builder.appendBytesRef(new BytesRef(raw));
+            return builder.build();
+        }
+    }
+
+    public void testDumpWithoutCapturedBytesWritesTxtNotClass() throws Exception {
+        FusionVerify.dumpDirectoryForTests = createTempDir();
+        Path dumped = FusionVerify.dumpOnMismatch("no-bytes-captured-shape", "BLOCK");
+        assertThat(dumped.toString(), containsString(".txt"));
+        assertThat(dumped.toString().endsWith(".class"), is(false));
+        assertThat(Files.isRegularFile(dumped), is(true));
+        assertThat(Files.readString(dumped), containsString("no fused class bytes captured"));
     }
 
     public void testDescribeSurvivorMismatch() {

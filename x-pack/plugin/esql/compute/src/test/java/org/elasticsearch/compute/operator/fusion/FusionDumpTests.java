@@ -74,11 +74,12 @@ public class FusionDumpTests extends ESTestCase {
         assertNotNull(new Stitcher(new TemplateRegistry()).compileVectorLoop(MethodHandles.lookup(), greaterThanTree()));
     }
 
-    public void testThreadCaptureCollectsPrivateCopyWithoutTouchingSink() throws Exception {
+    public void testThreadCaptureAndSinkBothReceivePrivateCopies() throws Exception {
         AtomicInteger sinkInvocations = new AtomicInteger();
+        byte[][] sinkBytes = new byte[1][];
         FusionDump.setSink((name, bytes) -> {
             sinkInvocations.incrementAndGet();
-            fail("thread-local capture must not invoke the process-wide sink");
+            sinkBytes[0] = bytes;
         });
         List<byte[]> captured = new ArrayList<>();
         FusionDump.beginThreadCapture(captured);
@@ -88,7 +89,9 @@ public class FusionDumpTests extends ESTestCase {
             assertThat(captured, hasSize(1));
             assertThat(captured.get(0).length, greaterThan(0));
             assertThat(new ClassReader(captured.get(0)).getClassName(), containsString("Fused"));
-            assertThat("thread-local capture must not invoke the process-wide sink", sinkInvocations.get(), equalTo(0));
+            assertThat("thread-local capture and the process-wide sink both receive the bytes", sinkInvocations.get(), equalTo(1));
+            assertNotNull(sinkBytes[0]);
+            assertNotSame("capture and sink must each get a private clone", captured.get(0), sinkBytes[0]);
         } finally {
             FusionDump.endThreadCapture();
             FusionDump.clearSink();

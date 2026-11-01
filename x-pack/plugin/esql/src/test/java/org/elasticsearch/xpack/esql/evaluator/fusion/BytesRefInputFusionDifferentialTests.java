@@ -157,9 +157,10 @@ public class BytesRefInputFusionDifferentialTests extends FusionDifferentialTest
         for (int i = 0; i < 40; i++) {
             int positions = positionCountFor(i);
             Block[] inputs = new Block[columns];
+            // Once per page, DENSE weighted at 1/2, remaining mix still includes ORDINAL.
+            BytesRefStructure structure = densePreferredBytesRefStructure();
             StringBuilder shapes = new StringBuilder();
             for (int c = 0; c < columns; c++) {
-                BytesRefStructure structure = randomFrom(BytesRefStructure.values());
                 inputs[c] = buildBytesRefColumn(positions, structure);
                 shapes.append(c == 0 ? "" : ",").append(structure);
             }
@@ -174,6 +175,14 @@ public class BytesRefInputFusionDifferentialTests extends FusionDifferentialTest
         ORDINAL,
         NULLABLE,
         MULTIVALUE
+    }
+
+    /** {@code P(DENSE) = 1/2}; CONSTANT / ORDINAL / NULLABLE / MULTIVALUE share the other half. */
+    private BytesRefStructure densePreferredBytesRefStructure() {
+        if (randomBoolean()) {
+            return BytesRefStructure.DENSE;
+        }
+        return randomFrom(BytesRefStructure.CONSTANT, BytesRefStructure.ORDINAL, BytesRefStructure.NULLABLE, BytesRefStructure.MULTIVALUE);
     }
 
     private Block buildBytesRefColumn(int positions, BytesRefStructure structure) {
