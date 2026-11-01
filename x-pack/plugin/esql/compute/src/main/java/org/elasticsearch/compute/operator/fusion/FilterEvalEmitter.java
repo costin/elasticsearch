@@ -289,8 +289,8 @@ final class FilterEvalEmitter {
         ClassNode classNode = Stitcher.newFusedClass(internalName, host, debug);
         classNode.methods.addAll(methods);
         // The two per-position bodies are factored into the pred/projAppend (and cmpN) helpers, so the top-level fused
-        // loop stays small; enforce the huge-method limit on it (→ unfused fallback if a pathological shape exceeds).
-        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "filter-eval block loop", true);
+        // loop stays small; the huge-method guard measures every method (→ unfused fallback if any exceeds the limit).
+        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "filter-eval block loop");
     }
 
     /**

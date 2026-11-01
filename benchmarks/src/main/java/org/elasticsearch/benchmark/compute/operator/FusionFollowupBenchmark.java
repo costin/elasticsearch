@@ -59,7 +59,7 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Helpers ({@code driverContext}, {@code longs}, {@code dictEntry}, {@code assertSameOutput}, ...) are reused from
  * {@link SlowPathFusionBenchmark}. Nested {@code TO_LOWER} cases fuse via D3/F3. {@link Case#DEEP_ARITH} is a deep
- * arithmetic chain that fuses INLINE under the 8000-bytecode {@code DontCompileHugeMethods} huge-method guard.
+ * arithmetic chain that fuses INLINE under the 8000-bytecode {@code HugeMethodLimit} huge-method guard.
  * {@link Case#DEEP_LOGICAL} is a deep balanced AND/OR nest of long comparisons that also fuses INLINE (comfortably
  * under the same guard). Both are correctness-checked in {@link #setup} via {@code assertSameOutput}.
  */
@@ -96,7 +96,7 @@ public class FusionFollowupBenchmark {
 
     public enum Case {
         /**
-         * A long arithmetic chain that fuses INLINE under the 8000-bytecode {@code DontCompileHugeMethods}
+         * A long arithmetic chain that fuses INLINE under the 8000-bytecode {@code HugeMethodLimit}
          * huge-method guard (no longer split into {@code compute()}). Fuses today.
          */
         DEEP_ARITH {

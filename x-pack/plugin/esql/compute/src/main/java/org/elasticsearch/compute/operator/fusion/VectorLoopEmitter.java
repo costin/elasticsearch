@@ -118,10 +118,10 @@ final class VectorLoopEmitter {
         }
         ClassNode classNode = Stitcher.newFusedClass(Stitcher.fusedClassName(caller, "Fused$$VectorLoop"), raw, debug);
         classNode.methods.add(iface);
-        // The plain-vector fast path enforces the DontCompileHugeMethods huge-method guard on the inline body.
+        // The plain-vector fast path enforces the HugeMethodLimit huge-method guard on every method of the class.
         // An over-limit body is refused (→ unfused fallback) rather than split: 8000 is the size at which HotSpot
         // will not JIT-compile the method at all, which is strictly worse than the unfused chain.
-        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "plain-vector loop", true);
+        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "plain-vector loop");
     }
 
     /**
@@ -517,9 +517,7 @@ final class VectorLoopEmitter {
             hostMethodInterceptor.accept(host);
         }
         ClassNode classNode = Stitcher.newFusedClass(Stitcher.fusedClassName(caller, "Fused$$SimdVectorLoop"), host, debug);
-        // Not budget-enforced: the SIMD body is a fixed small sequence, but it is only used for the eligible
-        // single-comparison shape, so it never approaches the limit; measure/log only.
-        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "SIMD vector loop", false);
+        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "SIMD vector loop");
     }
 
     /**
@@ -595,10 +593,7 @@ final class VectorLoopEmitter {
         classNode.methods.add(hostIface);
         classNode.methods.add(raw);
         classNode.methods.add(rawIface);
-        // Checked-vector stays enforce=false: size is measured and DEBUG-logged, never refused. Deep arithmetic
-        // over the huge-method limit is astronomically deep and must not regress the differential suite; this
-        // path is a MethodHandle correctness fallback rather than a JIT-inline hot body.
-        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "checked-vector loop", false);
+        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "checked-vector loop");
     }
 
     /**
@@ -1048,11 +1043,7 @@ final class VectorLoopEmitter {
             hostMethodInterceptor.accept(iface);
         }
         ClassNode classNode = Stitcher.newFusedClass(internalName, iface, debug);
-        // Not budget-enforced: a representative AND of two comparisons is a handful of bytecodes, and refusing a
-        // deep tree would drop the dense path (the whole point of this emit) back to the 3VL builder loop. Measure
-        // via the test seam; log-only like the checked-vector / block fallbacks. serializeWithBudgetGuard looks up
-        // fused (absent here); size 0 skips the log — the INTERFACE body is the only method and is not refused.
-        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "logical vector loop", false);
+        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "logical vector loop");
     }
 
 }

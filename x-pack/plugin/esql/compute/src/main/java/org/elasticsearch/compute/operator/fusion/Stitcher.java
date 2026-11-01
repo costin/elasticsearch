@@ -69,7 +69,7 @@ import java.util.function.Consumer;
  * <p><b>JIT discipline (criterion #6).</b> The emitted {@code fused} method is primitive-only: host inputs are
  * moved into the kernel's argument slots with type-correct {@code xLOAD}/{@code xSTORE} and the kernel body is
  * spliced verbatim, so there is no autoboxing and no per-position {@code checkcast}. For a depth-1 binary kernel
- * the whole method is a handful of instructions — far below HotSpot's default {@code DontCompileHugeMethods}
+ * the whole method is a handful of instructions — far below HotSpot's default {@code HugeMethodLimit}
  * (8000 bytecodes).
  *
  * <p><b>Trusted-generation contract (verification is test-time, not runtime).</b> The emitted per-position loop
@@ -128,22 +128,23 @@ public final class Stitcher {
     public static final String FUSED_RAW_INTERFACE_METHOD_NAME = "fusedRawInterface";
 
     /**
-     * HotSpot's default {@code DontCompileHugeMethods} (criterion #6). A fused method above this many bytecodes
+     * HotSpot's default {@code HugeMethodLimit} (criterion #6). A fused method above this many bytecodes
      * is never JIT-compiled at all, which is strictly worse than the unfused chain of small per-expression
      * methods. Public so tests and diagnostics can name the default rather than hardcoding 8000.
      */
     public static final int DEFAULT_MAX_FUSED_METHOD_BYTECODES = 8000;
 
     /**
-     * HotSpot's default {@code DontCompileHugeMethods} huge-method guard (criterion #6). Mutable — not a
+     * HotSpot's default {@code HugeMethodLimit} huge-method guard (criterion #6). Mutable — not a
      * constant — so it is not SCREAMING_CASE: production reads {@code -Desql.fusion.max_method_bytecodes}
      * (default {@link #DEFAULT_MAX_FUSED_METHOD_BYTECODES}) once at class init; tests flip it via
      * {@link #maxFusedMethodBytecodesForTests}. A method above this many bytecodes is never JIT-compiled.
      *
-     * <p>This value governs only the {@code enforce=true} refusals: the plain-vector loop, the logical block
-     * loop, and the filter-eval block loop. Over-limit trees throw {@link StitchingException} so the caller
-     * falls back unfused. Other emit paths measure and DEBUG-log the size but never refuse. Values {@code <= 0}
-     * are rejected: a non-positive limit would refuse every enforced stitch. Not a node setting.
+     * <p>Every emit path is enforced: {@link #serializeWithBudgetGuard} measures the largest {@code Code}
+     * length over <em>all</em> methods of the class via {@link #maxMethodCodeLength} and throws
+     * {@link StitchingException} when it exceeds this limit, so the caller falls back unfused (or degrades
+     * to a previously-compiled in-budget block path). Values {@code <= 0} are rejected: a non-positive
+     * limit would refuse every stitch. Not a node setting.
      */
     static volatile int maxFusedMethodBytecodes = resolveMaxFusedMethodBytecodes(
         Integer.getInteger("esql.fusion.max_method_bytecodes", DEFAULT_MAX_FUSED_METHOD_BYTECODES)
@@ -160,14 +161,14 @@ public final class Stitcher {
 
     /**
      * Test-only: sets the fused-method bytecode budget; restore in a finally. Rejects {@code <= 0}. Production reads
-     * the system property once into {@link #maxFusedMethodBytecodes}; this setter exists solely for the unit test.
+     * the system property once into {@link #maxFusedMethodBytecodes}; this setter exists solely for tests.
      */
-    static void maxFusedMethodBytecodesForTests(int value) {
+    public static void maxFusedMethodBytecodesForTests(int value) {
         maxFusedMethodBytecodes = resolveMaxFusedMethodBytecodes(value);
     }
 
     /**
-     * WHY reject {@code <= 0}: a non-positive limit would refuse every {@code enforce=true} stitch. Shared by
+     * WHY reject {@code <= 0}: a non-positive limit would refuse every stitch. Shared by
      * the class-init property and the test setter.
      */
     private static int resolveMaxFusedMethodBytecodes(int value) {
@@ -799,8 +800,8 @@ public final class Stitcher {
      * null/multi-value guards (with their multi-value-warning construction) into the loop body inflates the
      * top-level {@code fused} method. Splitting each comparison operand into a tiny {@code private static} helper
      * keeps the top-level loop small even for deeply nested {@code AND}/{@code OR} trees; each helper is itself well
-     * under the huge-method limit. The top-level method is still measured against {@link #maxFusedMethodBytecodes}
-     * and refuses to fuse (→ unfused fallback) if it ever exceeds it.
+     * under the huge-method limit. Every method is measured against {@link #maxFusedMethodBytecodes} and the class
+     * is refused (→ unfused fallback) if any exceeds it.
      *
      * <p><b>Block path for nulls / multi-values.</b> A 3VL result is nullable, so — like {@link #compileBlockLoop} —
      * this defines the hidden class into the caller's own module (only public exported {@code compute} API and the
@@ -1212,50 +1213,34 @@ public final class Stitcher {
     }
 
     /**
-     * Serializes {@code classNode} through {@code writer} and applies the DontCompileHugeMethods huge-method
-     * guard (criterion #6) to the emitted {@code fused} loop method's {@code Code} length, measured against
-     * {@link #maxFusedMethodBytecodes} (HotSpot's default {@code -XX:DontCompileHugeMethods}, 8000). A method
-     * above this limit is never JIT-compiled at all, which is strictly worse than the unfused chain.
+     * Serializes {@code classNode} through {@code writer} and applies the HugeMethodLimit huge-method
+     * guard (criterion #6) to the <em>largest</em> {@code Code} length over every method of the class,
+     * measured against {@link #maxFusedMethodBytecodes} (HotSpot's default {@code -XX:HugeMethodLimit}, 8000).
+     * A method above this limit is never JIT-compiled at all, which is strictly worse than the unfused chain.
      *
-     * <p><b>Enforcement scope.</b> {@code enforce} is {@code true} for the <b>plain-vector loop</b>, the
-     * <b>logical block loop</b>, and the <b>filter-eval block loop</b>: an over-limit body is refused with a
-     * {@link StitchingException} so the caller falls back to the unfused chain. It is {@code false} for the
-     * <b>checked-vector</b>, <b>block</b>, <b>SIMD</b>, <b>mapping</b>, and <b>logical-vector</b> paths — those
-     * sizes are measured and DEBUG-logged but never refused, because they are correctness fallbacks invoked via
-     * {@code MethodHandle} (not a normal inlinable call site). Deep arithmetic over 8000 must not regress the
-     * differential suite. An enforced oversize body is logged at DEBUG here; the {@link StitchingException}
-     * message carries the measured bytecode size, and the single plan-time WARN is emitted once per shape by
+     * <p><b>Every emit path is enforced, every method is measured.</b> Plain-vector, checked-vector, SIMD,
+     * logical-vector, block, mapping, logical-block, and filter-eval all refuse with a {@link StitchingException}
+     * when any method (the named {@code fused} loop, {@code fusedInterface}, {@code fusedRaw}/{@code fusedRawInterface},
+     * filter-eval {@code pred}/{@code projAppend}, or logical-block {@code cmpN} helpers) exceeds the limit, so the
+     * caller falls back to the unfused chain — or, when a previously-compiled in-budget block path already exists,
+     * degrades to block-only. An oversize body is logged at DEBUG here; the {@link StitchingException} message
+     * carries the measured bytecode size, and the single plan-time WARN is emitted once per shape by
      * {@code FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure}.
      */
-    static byte[] serializeWithBudgetGuard(ClassNode classNode, ClassWriter writer, String pathName, boolean enforce)
-        throws StitchingException {
+    static byte[] serializeWithBudgetGuard(ClassNode classNode, ClassWriter writer, String pathName) throws StitchingException {
         classNode.accept(writer);
         byte[] bytecode = writer.toByteArray();
-        int size = fusedMethodCodeLength(bytecode);
+        int size = maxMethodCodeLength(bytecode);
         if (size > maxFusedMethodBytecodes) {
-            if (enforce) {
-                logger.debug(
-                    "fused {} method is [{}] bytecodes, over the huge-method limit of [{}]; refusing to fuse (falling back to unfused)",
-                    pathName,
-                    size,
-                    maxFusedMethodBytecodes
-                );
-                throw new StitchingException(
-                    "fused "
-                        + pathName
-                        + " method ["
-                        + size
-                        + " bytecodes] exceeds the huge-method limit ["
-                        + maxFusedMethodBytecodes
-                        + "]",
-                    null
-                );
-            }
             logger.debug(
-                "fused {} method is [{}] bytecodes, over the huge-method limit of [{}] (fallback path — not enforced)",
+                "fused {} method is [{}] bytecodes, over the huge-method limit of [{}]; refusing to fuse (falling back to unfused)",
                 pathName,
                 size,
                 maxFusedMethodBytecodes
+            );
+            throw new StitchingException(
+                "fused " + pathName + " method [" + size + " bytecodes] exceeds the huge-method limit [" + maxFusedMethodBytecodes + "]",
+                null
             );
         }
         return bytecode;
@@ -1296,10 +1281,10 @@ public final class Stitcher {
 
     // -----------------------------------------------------------------------------------------------------------------
     // Test seams (package-private): the raw fused class bytes for each emit path, BEFORE defineHiddenClass verifies
-    // them. They let same-package tests (StitcherBudgetTests) measure the emitted fused method's Code length against
-    // maxFusedMethodBytecodes and run the bytes through CheckClassAdapter for a structural-validity check on top of
-    // the JVM's defineHiddenClass verifier. The enforced paths (plain-vector, logical block, filter-eval) still throw
-    // a StitchingException here if they exceed the huge-method limit — exactly as the compile* entry points would.
+    // them. They let same-package tests (StitcherBudgetTests / StitcherHugeMethodGuardTests) measure every method's
+    // Code length against maxFusedMethodBytecodes (via maxMethodCodeLength) and run the bytes through CheckClassAdapter
+    // for a structural-validity check on top of the JVM's defineHiddenClass verifier. Every path throws a
+    // StitchingException here if any method exceeds the huge-method limit — exactly as the compile* entry points would.
     // -----------------------------------------------------------------------------------------------------------------
 
     byte[] vectorLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
@@ -1337,7 +1322,7 @@ public final class Stitcher {
 
     /**
      * Reads the {@code Code} attribute length (the bytecode count C2 measures against
-     * {@code DontCompileHugeMethods}) of the {@link #FUSED_METHOD_NAME} method in a just-emitted class. A
+     * {@code HugeMethodLimit}) of the {@link #FUSED_METHOD_NAME} method in a just-emitted class. A
      * minimal class-file walk over our own freshly written
      * bytes (no external dependency, no class loading): parse the constant pool for the UTF-8 entries, then scan the
      * method table for {@code fused}'s {@code Code} attribute and return its {@code code_length}. Returns 0 if the
@@ -1348,10 +1333,48 @@ public final class Stitcher {
     }
 
     /**
+     * Largest {@code Code} attribute {@code code_length} over <em>every</em> method of {@code classBytes}.
+     * The huge-method guard refuses a class when this value exceeds {@link #maxFusedMethodBytecodes}: a method
+     * above HotSpot's {@code -XX:HugeMethodLimit} (8000) is never JIT-compiled, which is strictly worse than
+     * the unfused chain. Unlike {@link #methodCodeLength(byte[], String)} this does not stop at a name match —
+     * LOGICAL_VECTOR's {@code fusedInterface}, CHECKED's {@code fusedRaw}/{@code fusedRawInterface}, filter-eval
+     * {@code pred}/{@code projAppend}, and logical-block {@code cmpN} helpers are all measured.
+     */
+    static int maxMethodCodeLength(byte[] classBytes) {
+        int[] max = { 0 };
+        visitMethodCodeLengths(classBytes, (name, length) -> {
+            if (length > max[0]) {
+                max[0] = length;
+            }
+        });
+        return max[0];
+    }
+
+    /**
      * Same class-file walk as {@link #fusedMethodCodeLength} for an arbitrary static method name — used to budget
      * {@link #FUSED_RAW_METHOD_NAME} independently of the builder-based {@code fused} sibling on the same class.
      */
     static int methodCodeLength(byte[] classBytes, String methodName) {
+        int[] found = { 0 };
+        visitMethodCodeLengths(classBytes, (name, length) -> {
+            if (methodName.equals(name)) {
+                found[0] = length;
+            }
+        });
+        return found[0];
+    }
+
+    @FunctionalInterface
+    private interface MethodCodeLengthVisitor {
+        void accept(String methodName, int codeLength);
+    }
+
+    /**
+     * Walks every method of {@code classBytes} and reports each {@code Code} attribute's {@code code_length}.
+     * Methods without a {@code Code} attribute are skipped. Shared by {@link #maxMethodCodeLength} (track the
+     * max) and {@link #methodCodeLength(byte[], String)} (name match).
+     */
+    private static void visitMethodCodeLengths(byte[] classBytes, MethodCodeLengthVisitor visitor) {
         java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(classBytes); // class files are big-endian, ByteBuffer's default
         buf.getInt();   // magic
         buf.getShort(); // minor_version
@@ -1398,20 +1421,19 @@ public final class Stitcher {
             int nameIndex = buf.getShort() & 0xFFFF;
             buf.getShort(); // descriptor_index
             int attributeCount = buf.getShort() & 0xFFFF;
-            boolean isFused = methodName.equals(utf8[nameIndex]);
+            String methodName = utf8[nameIndex];
             for (int a = 0; a < attributeCount; a++) {
                 int attrNameIndex = buf.getShort() & 0xFFFF;
                 int attrLength = buf.getInt();
                 int attrStart = buf.position();
-                if (isFused && "Code".equals(utf8[attrNameIndex])) {
+                if ("Code".equals(utf8[attrNameIndex])) {
                     buf.getShort(); // max_stack
                     buf.getShort(); // max_locals
-                    return buf.getInt(); // code_length
+                    visitor.accept(methodName, buf.getInt()); // code_length
                 }
                 buf.position(attrStart + attrLength);
             }
         }
-        return 0;
     }
 
     private static void skipAttributes(java.nio.ByteBuffer buf) {

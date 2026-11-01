@@ -38,13 +38,11 @@ import static org.hamcrest.Matchers.lessThanOrEqualTo;
  * 25). These are the deterministic guards behind criterion #6 ("large expressions still inline, or fall back"):
  *
  * <ul>
- *   <li><b>Budget.</b> On the three ENFORCED emit paths — the tight <b>plain-vector fast path</b>, the
- *       <b>logical block loop</b>, and the <b>filter-eval block loop</b> — the emitted {@code fused} method's
- *       {@code Code} length ({@link Stitcher#fusedMethodCodeLength}) must stay {@code <=}
- *       {@link Stitcher#maxFusedMethodBytecodes} (HotSpot's default {@code DontCompileHugeMethods}, 8000) for
- *       representative <em>and</em> deep trees. A method above that limit is never JIT-compiled at all, which is
+ *   <li><b>Budget.</b> On every emit path the largest method {@code Code} length ({@link Stitcher#maxMethodCodeLength})
+ *       must stay {@code <=} {@link Stitcher#maxFusedMethodBytecodes} (HotSpot's default {@code HugeMethodLimit}, 8000)
+ *       for representative <em>and</em> deep trees. A method above that limit is never JIT-compiled at all, which is
  *       strictly worse than the unfused chain.</li>
- *   <li><b>Refuse-to-fuse.</b> A tree whose enforced-path body would exceed the huge-method guard must be
+ *   <li><b>Refuse-to-fuse.</b> A tree whose any-method body would exceed the huge-method guard must be
  *       <em>refused</em> with a {@link Stitcher.StitchingException} (→ the caller falls back to the unfused chain)
  *       rather than emitted as a method HotSpot will not compile. Walking increasing chain depth proves both
  *       directions at once: every tree that emits is within budget, and a deep enough tree eventually refuses.</li>
@@ -169,7 +167,7 @@ public class StitcherBudgetTests extends ESTestCase {
     /**
      * On the plain-vector path an over-limit expression is refused (→ unfused fallback) rather than split: walking
      * increasing left-{@code ADD} chain depth, every tree the stitcher <em>emits</em> stays within
-     * {@link Stitcher#maxFusedMethodBytecodes} (HotSpot's {@code DontCompileHugeMethods} default), and a deep enough
+     * {@link Stitcher#maxFusedMethodBytecodes} (HotSpot's {@code HugeMethodLimit} default), and a deep enough
      * chain is <em>refused</em> with a {@link Stitcher.StitchingException}. Cap 4000 is well above the empirical
      * crossing for a left ADD chain; the loop breaks on the first refusal.
      */
@@ -246,7 +244,7 @@ public class StitcherBudgetTests extends ESTestCase {
                 maxFusedDepth = depth;
             } catch (Stitcher.StitchingException refused) {
                 // As above: the refusal must be the huge-method guard specifically (message identifies it and the
-                // measured size exceeds the limit), proving the top-level 3VL combining alone crossed DontCompileHugeMethods.
+                // measured size exceeds the limit), proving the top-level 3VL combining alone crossed HugeMethodLimit.
                 assertBudgetRefusal(refused, "logical block loop");
                 logger.info(
                     "balanced AND nest fused through depth {} (limit {}), refused next: {}",
@@ -336,11 +334,10 @@ public class StitcherBudgetTests extends ESTestCase {
      * routed away from the vector fast paths because a keyword/text column may be ordinal-encoded). This covers the
      * {@code getBytesRef}-into-a-spare leaf read and the reference ASTORE/ALOAD slots the seam introduces.
      *
-     * <p><b>Budget.</b> The block loop is deliberately the UN-enforced general/fallback path
-     * ({@code serializeWithBudgetGuard(..., enforce=false)}), so — unlike the tight vector and logical paths — it is
-     * not refused when over {@link Stitcher#maxFusedMethodBytecodes}. The size is asserted positive (a method was
-     * emitted) and logged so a regression in the seam's per-leaf emit cost is visible; the single-leaf shape below
-     * additionally proves the common {@code LENGTH(x) > k} tree stays inlinable.
+     * <p><b>Budget.</b> The block loop is enforced like every other path: an over-limit body is refused. These
+     * two-leaf trees stay well under the limit; the size is asserted positive (a method was emitted) and logged so a
+     * regression in the seam's per-leaf emit cost is visible; the single-leaf shape below additionally proves the
+     * common {@code LENGTH(x) > k} tree stays inlinable.
      */
     public void testBytesRefInputBlockLoopStructurallyValidAndBoxingFree() throws Exception {
         FusionNode booleanRoot = new FusionNode.Kernel(
@@ -363,7 +360,7 @@ public class StitcherBudgetTests extends ESTestCase {
             assertNoBoxingOrIndy(bytecode, "bytes-ref block");
             int size = Stitcher.fusedMethodCodeLength(bytecode);
             assertThat("emitted a fused BytesRef block method", size, greaterThan(0));
-            logger.info("BytesRef two-leaf block loop fused method size = {} bytecodes (block path is budget-unenforced)", size);
+            logger.info("BytesRef two-leaf block loop fused method size = {} bytecodes", size);
         }
     }
 
@@ -407,10 +404,10 @@ public class StitcherBudgetTests extends ESTestCase {
             MUL,
             List.of(new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
         );
-        int size = Stitcher.fusedMethodCodeLength(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection));
+        int size = Stitcher.maxMethodCodeLength(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection));
         assertThat("emitted a fused filter-eval method", size, greaterThan(0));
         assertThat(
-            "filter-eval top-level loop must stay within the huge-method limit",
+            "filter-eval largest method must stay within the huge-method limit",
             size,
             lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes)
         );
@@ -424,10 +421,10 @@ public class StitcherBudgetTests extends ESTestCase {
             new FusionNode.Kernel(LT, List.of(new FusionNode.Input(2), new FusionNode.Input(3)))
         );
         FusionNode projection = new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
-        int size = Stitcher.fusedMethodCodeLength(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection));
+        int size = Stitcher.maxMethodCodeLength(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection));
         assertThat("emitted a fused filter-eval (logical predicate) method", size, greaterThan(0));
         assertThat(
-            "filter-eval top-level loop must stay within the huge-method limit",
+            "filter-eval largest method must stay within the huge-method limit",
             size,
             lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes)
         );

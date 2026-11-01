@@ -523,11 +523,13 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     strategy = VectorStrategy.CHECKED_VECTOR;
                 }
             } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError vectorFailure) {
-                // The block path already stitched, verified and linked; a vector-fast-path failure must NOT drop the
-                // whole fusion back to the unfused chain. The most common cause is the plain-vector huge-method
-                // guard refusing a deep tree (StitchingException) — the block path is budget-unenforced and still fuses
-                // it correctly. Degrade to BLOCK-ONLY (VectorStrategy.NONE, no vector handle) rather than losing all
-                // fusion: values/nulls/warnings are identical to the block path, we just forgo the vector fast path.
+                // The block path already stitched, verified and linked under the same huge-method guard, so its
+                // largest method is known to be <= the limit. A vector-fast-path failure (most commonly the huge-method
+                // guard refusing a deep tree whose vector body exceeds 8000 while the block body does not) must NOT
+                // drop the whole fusion back to the unfused chain. Degrade to BLOCK-ONLY (VectorStrategy.NONE, no
+                // vector handle) rather than losing all fusion: values/nulls/warnings are identical to the block path,
+                // we just forgo the vector fast path. A block-too-big StitchingException never reaches this catch —
+                // compileBlockLoop runs before this try, and that throw lands in the outer catch → unfused.
                 logPlanTimeStitchFailure(logger, shape, vectorPath, false, vectorFailure);
                 FusionTelemetry.recordVectorDegraded(shape);
                 return new FusedExpressionEvaluatorFactory(

@@ -270,7 +270,7 @@ final class BlockLoopEmitter {
         }
 
         ClassNode classNode = Stitcher.newFusedClass(Stitcher.fusedClassName(caller, "Fused$$BlockLoop"), host, debug);
-        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "block loop", false);
+        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "block loop");
     }
 
     byte[] emitMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
@@ -519,7 +519,7 @@ final class BlockLoopEmitter {
             hostMethodInterceptor.accept(host);
         }
         ClassNode classNode = Stitcher.newFusedClass(Stitcher.fusedClassName(caller, "Fused$$MappingBlockLoop"), host, debug);
-        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "mapping block loop", false);
+        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "mapping block loop");
     }
 
     /**
@@ -698,10 +698,10 @@ final class BlockLoopEmitter {
 
         ClassNode classNode = Stitcher.newFusedClass(internalName, host, debug);
         classNode.methods.addAll(helpers);
-        // Enforce the huge-method limit on the top-level loop method (criterion #6). The helpers keep it small even
-        // for nested trees; if it somehow exceeds the limit we refuse to fuse (→ unfused fallback) rather than emit
+        // Enforce the huge-method limit on every method (criterion #6). The helpers keep the top-level loop small even
+        // for nested trees; if any method exceeds the limit we refuse to fuse (→ unfused fallback) rather than emit
         // a method HotSpot will not JIT-compile.
-        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "logical block loop", true);
+        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "logical block loop");
     }
 
     /**
