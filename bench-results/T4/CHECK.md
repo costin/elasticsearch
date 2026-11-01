@@ -112,6 +112,18 @@ Smoke G3 (-f1 -wi1 -w1s -i1 -r1s -foe true, all params), no timings read:
 - slowpath-h13.txt: PASS (28 cells, 4 moved names absent)
 Covers H13, H16 (planMiss), and the H8-deferred planCachedThenGet cell.
 
+## H14 — fusion cleanups and correctness nits (commit c1474931f0e)
+16 small fixes batched. Orchestrator confirming gate at HEAD c1474931f0e (incl :compute:gen:spotlessJavaCheck): BUILD SUCCESSFUL 5m6s, GATE_EXIT=0.
+Reviewer GO (no blockers; items 2/8/13 confirmed byte/behavior-safe). 3 nits not applied (item-10 deletion is plan-mandated; 15/6 acceptable as-is).
+Behavioral: item 13 buildConstant requires DataType.isString so IP/VERSION BytesRef literals stop fusing as keyword constants; item 1 Mod MIN%-1 clause was comment-only (kernel already lhs%rhs).
+Cleanups: dropped isBaked filters; nested-mapping MV own counter; allExactArrayVectors only PLAIN/CHECKED; get delegates to getForTests; dropped unfalsifiable FusedClassCache WARN expectations + reflection test + unused ctor; CodeBlock in FusionAwareGen; Releasables import; LoopSpec.checked assert; comments.
+Fails-before-fix (commit body): item 13 IP/VERSION literal fuse guard (red lines captured); ModTests Int/Long MIN_VALUE % -1 == 0 no-warning.
+No CsvIT (not an H1/H2/H5/final gate).
+
+## FINAL gate (at HEAD c1474931f0e)
+Fusion gate: BUILD SUCCESSFUL 4m37s, FUSION_GATE_EXIT=0 (gen:test + gen:spotless + compute:test + esql:test --tests *fusion* + compute/esql spotlessJavaCheck). Log: /tmp/final-fusion-gate.log.
+Full CsvIT (org.elasticsearch.xpack.esql.CsvIT, fusion default-on, verify-on): BUILD SUCCESSFUL 3m2s, CSVIT_EXIT=0, 0 failures. Log: /tmp/final-csvit.log.
+
 ## H9 — F4 coverage probe comparable to F0 (uncommitted)
 Once per top-level expression; FUSED/ISLAND/FRAGMENT/NONE; first-refusal reason;
 sysprop-only `esql.fusion.coverage_report` (Setting removed). Gradle:

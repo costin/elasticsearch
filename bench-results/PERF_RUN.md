@@ -1,3 +1,5 @@
+> **SUPERSEDED** by iteration-4 round C numbers in `bench-results/FINAL_ITER4.md` (§ Measured by the reviewer). Kept for history only.
+
 # ES|QL fusion stabilization — performance hand-off (§9)
 
 Performance was **deliberately not gated** in the stabilization loop: it ran on a shared,

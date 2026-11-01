@@ -1,3 +1,5 @@
+> **SUPERSEDED** by `bench-results/FINAL_ITER4.md` (iteration 4). Kept for history only.
+
 # ES|QL expression fusion — stabilization: final report
 
 - **Branch:** `esql/fix/compute-codegen-stabilize-bf28`

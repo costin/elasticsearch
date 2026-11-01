@@ -58,6 +58,7 @@ Each item below is a measurement the operator runs on the dedicated host, with t
 ## Open questions / follow-ups
 
 - **All perf numbers (M-series + the deferred thresholds above) are pending the dedicated-host benchmark round.** None were produced here by design.
-- A2: a post-stitch `findStatic` signature miss (ReflectiveOperationException) is not negative-cached, so it WARNs on every plan rather than once — a should-never-happen generated-code contract bug, deferred rather than caching lookup failures.
-- E6: `Stitcher.java` remains 1442 lines (javadoc-dominated façade) — above the ~1200 soft target but logic-light; a further javadoc/constant extraction could shrink it if desired.
-- E7: verify ON without `-ea` (`-Desql.fusion.verify=true` alone) leaves `lastEvalPath` unset so `FusionVerify` dump filenames fall back to the "BLOCK" label — documented, accepted (CI always runs with `-ea`).
+- A2: ~~a post-stitch `findStatic` signature miss WARNs on every plan rather than once~~ — RESOLVED in iteration 4 (H8/G5): the resolved handle is cached on the class-cache unit and the test drives through `FusionCompilationService.cached`; the fallback now WARNs exactly once (`FusionFallbackHardeningTests` ExactlyOnceWarnExpectation).
+- E6: ~~`Stitcher.java` remains 1442 lines~~ — RESOLVED in iteration 4 (H11): Stitcher is 1199 lines, four-file emitter total 3363 (dedup via FusedBuilderEmit, dead mapping path deleted). E1 byte-identical.
+- E7: ~~verify ON without `-ea` falls back to the "BLOCK" label~~ — RESOLVED in iteration 4 (H8): the verify-path label reads `?` when the path is unknown, not `BLOCK`.
+- NOTE (iteration 4 correction): earlier phase-A notes implying "WARN-once / G7 done" were inaccurate — G7 was only at-least-once until H8 made it exactly-once over three plans. See FINAL_ITER4.md H8.
