@@ -60,3 +60,14 @@ FusedFrameInfo = RuntimeException super(msg,null,false,false) (no stack trace, s
 Fails-before-fix (commit body):
 - testThrownKernelExceptionCarriesFusedFrameInfo: suppressed count expected >0 but was 0.
 - testOversizedSourceFileAndKernelMapAreCappedAndStillDefine: SourceFile UTF-8 bytes expected <=4096 but was 102503.
+
+## H8 — cache fused handles + tighten diagnostics (commit 6e3e4a8f5fe)
+Full fusion gate (implementer): BUILD SUCCESSFUL in 5m23s. Comment-only reviewer nit applied after (stitchAndResolve/PENDING_RESOLVED side-channel javadoc); spotless re-run green. Orchestrator confirming full gate at committed HEAD 6e3e4a8f5fe: BUILD SUCCESSFUL in 4m11s, GATE_EXIT=0.
+Reviewer GO (no blockers; highest-risk handle-caching + ctor-record refactor scrutinized correct). 3 optional nits; applied 1 (doc), skipped 2 refactors.
+No CsvIT (not an H1/H2/H5/final gate).
+Sub-deliverables: G7 exactly-once WARN (ExactlyOnceWarnExpectation, 3 plans, true equality); G5 through-production (FusionCompilationService.cached, 2-arg type=null overloads deleted->UOE); G5/E7 resolve-once cache (MethodHandle+asSpreader on CachedFused, cache hit skips findStatic/asSpreader via PENDING_RESOLVED thread-local); E7 18-arg ctor -> FusedDispatch record (hot path unchanged); labels path==null?"?":BLOCK; VectorHandles renamed primary/primaryInterface/raw/rawInterface; G9 javadoc fixed.
+Fails-before-fix (commit body):
+- G7 double-WARN probe: expected exactly 1 WARN, was 2.
+- testVerifyPageNullPathLabelsQuestionMark: expected "path=?" but was "...path=BLOCK...".
+- testCacheHitDoesNotCallFindStatic: expected findStatic count 10 but was 15.
+- G5 through-production (skip stitchAndResolve probe): expected exactly 1 WARN, was 3.
