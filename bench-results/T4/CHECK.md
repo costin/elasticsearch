@@ -50,3 +50,13 @@ Fails-before-fix (commit body, red seed 9EA5B429838878A5):
 - testNonUtf8BytesRefMismatchReportsHexAndClosesBlocks: expected "fused vs unfused mismatch" but was "b = 0xff" (Lucene utf8 assert hid mismatch).
 - testDumpFailureStillClosesBothBlocksAndSaysDumpFailed: expected "dump failed" but got normal mismatch+dumped-to message.
 - testNumericConstantLostEncodingAndConstantBeatsOrdinal: expected "constant-encoded" but was null.
+
+## H7 — name fused shape+kernels in stack traces (commit 89a065fdb7c)
+Full fusion gate (orchestrator): BUILD SUCCESSFUL in 4m30s, GATE_EXIT=0
+- :compute:gen:test, :compute:test, :esql:test --tests '*fusion*', both spotlessJavaCheck — all green.
+Reviewer GO (no blockers, GO with 3 optional nits); applied 2: dropped dead capUtf8 keep<0 clamp (assert), trailing catch(Throwable) now also attaches FusedFrameInfo for symmetry. Skipped optional kernelMapOf TRACE-log nit.
+No CsvIT (H7 is cold-path diagnostic/test only; not an H1/H2/H5/final gate).
+FusedFrameInfo = RuntimeException super(msg,null,false,false) (no stack trace, suppression off); attached via addSuppressed at both factories' per-page catch/rethrow. KERNEL_MAP resolved once per factory via revealDirect on block handle. SourceFile+KERNEL_MAP capped at 4KB on UTF-8 boundary.
+Fails-before-fix (commit body):
+- testThrownKernelExceptionCarriesFusedFrameInfo: suppressed count expected >0 but was 0.
+- testOversizedSourceFileAndKernelMapAreCappedAndStillDefine: SourceFile UTF-8 bytes expected <=4096 but was 102503.
