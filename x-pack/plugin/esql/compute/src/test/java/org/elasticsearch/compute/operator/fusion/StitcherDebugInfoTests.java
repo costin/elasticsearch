@@ -15,21 +15,25 @@ import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldNode;
+import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.LineNumberNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.util.CheckClassAdapter;
 
 import java.lang.invoke.MethodHandles;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.emptyString;
+import static org.hamcrest.Matchers.endsWith;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThan;
+import static org.hamcrest.Matchers.lessThanOrEqualTo;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 
@@ -188,6 +192,31 @@ public class StitcherDebugInfoTests extends ESTestCase {
         assertLineNumbers(method(classNode, "projAppend"), List.of(2));
     }
 
+    /**
+     * H7: SourceFile and KERNEL_MAP ConstantValue strings are capped at 4 KB so a huge shape cannot make ASM
+     * throw ({@code UTF8 string too large}, 64 KB class-file limit) and lose fusion. The cap must engage, and the
+     * truncated class must still {@code defineHiddenClass}.
+     */
+    public void testOversizedSourceFileAndKernelMapAreCappedAndStillDefine() throws Exception {
+        FusionNode hugeTree = nestedAdds(100);
+        FusedClassDebugInfo debug = FusedClassDebugInfo.of("x".repeat(100_000), hugeTree);
+        assertCappedUtf8("SourceFile", debug.sourceFile());
+        assertCappedUtf8("KERNEL_MAP", debug.kernelMap());
+
+        MethodNode host = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "fused", "()V", null, null);
+        host.instructions.add(new InsnNode(Opcodes.RETURN));
+        host.maxStack = 0;
+        host.maxLocals = 0;
+        MethodHandles.Lookup lookup = MethodHandles.lookup();
+        ClassNode classNode = Stitcher.newFusedClass(Stitcher.fusedClassName(lookup, "Fused$$Utf8Cap"), host, debug);
+        ClassWriter writer = new ClassWriter(0);
+        classNode.accept(writer);
+        byte[] bytecode = writer.toByteArray();
+        Class<?> defined = lookup.defineHiddenClass(bytecode, true).lookupClass();
+        String kernelMap = (String) defined.getDeclaredField(Stitcher.KERNEL_MAP_FIELD_NAME).get(null);
+        assertCappedUtf8("defined KERNEL_MAP", kernelMap);
+    }
+
     /** Mapping-block unary convert: a single kernel at index {@code 0}, spliced in {@code fused}. */
     public void testMappingBlockEmitsSourceFileLineNumbersAndKernelMap() throws Exception {
         FusionDescriptor appendSuffix = new FusionDescriptor(
@@ -224,6 +253,22 @@ public class StitcherDebugInfoTests extends ESTestCase {
             new FusionNode.Kernel(GT, List.of(new FusionNode.Input(0), new FusionNode.Input(1))),
             new FusionNode.Kernel(LT, List.of(new FusionNode.Input(2), new FusionNode.Input(3)))
         );
+    }
+
+    /** Left-deep chain of {@code kernelCount} {@code Add} nodes so KERNEL_MAP exceeds 4 KB. */
+    private static FusionNode nestedAdds(int kernelCount) {
+        FusionNode tree = new FusionNode.Input(0);
+        for (int i = 0; i < kernelCount; i++) {
+            tree = new FusionNode.Kernel(ADD, List.of(tree, new FusionNode.Input(0)));
+        }
+        return tree;
+    }
+
+    private static void assertCappedUtf8(String label, String value) {
+        assertThat(label + " must be present", value, notNullValue());
+        int utf8Bytes = value.getBytes(StandardCharsets.UTF_8).length;
+        assertThat(label + " UTF-8 bytes must be capped at 4 KB (was " + utf8Bytes + ")", utf8Bytes, lessThanOrEqualTo(4096));
+        assertThat(label + " must carry the truncation marker", value, endsWith("...[truncated]"));
     }
 
     private static void assertDebugInfo(

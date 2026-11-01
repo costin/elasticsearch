@@ -70,6 +70,20 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
         return Math.addExact(Math.addExact(lhs, rhs), 1L);
     }
 
+    /**
+     * Kernel body that throws; spliced in place of {@link Add#processLongs} so the exception escapes fused code.
+     * The throw is a public callee (not a body-level {@code ATHROW}) so {@code BodyExtractor} still sees a single
+     * terminal {@code LRETURN} and the hidden class can invoke the helper.
+     */
+    public static long throwingProcessLongs(long lhs, long rhs) {
+        throwDeliberateFusedKernelException();
+        return Math.addExact(lhs, rhs);
+    }
+
+    public static void throwDeliberateFusedKernelException() {
+        throw new IllegalStateException("deliberate fused kernel throw");
+    }
+
     @After
     public void resetVerifySkip() {
         FusionVerify.skipForTests = false;
@@ -380,6 +394,42 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
         }
     }
 
+    /**
+     * H7: an exception escaping fused code carries a suppressed {@code FusedFrameInfo} naming the shape and kernels
+     * on the default stack (no {@code -XX:+ShowHiddenFrames}).
+     */
+    public void testThrownKernelExceptionCarriesFusedFrameInfo() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression expr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+
+        FusionPlanner.compilerForTests = throwingAddCompiler();
+        ExpressionEvaluator.Factory factory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+        assertThat(factory, instanceOf(FusedExpressionEvaluatorFactory.class));
+        FusedExpressionEvaluatorFactory fusedFactory = (FusedExpressionEvaluatorFactory) factory;
+
+        Page page = longPage(2, new long[] { 1, 2 }, new long[] { 10, 20 }, new long[] { 2, 2 });
+        ExpressionEvaluator evaluator = fusedFactory.get(driverContext);
+        Block leaked = null;
+        try {
+            leaked = evaluator.eval(page);
+            fail("fused kernel must throw IllegalStateException, got " + leaked);
+        } catch (IllegalStateException thrown) {
+            assertThat(thrown.getMessage(), containsString("deliberate fused kernel throw"));
+            Throwable[] suppressed = thrown.getSuppressed();
+            assertThat("fused exception must carry a suppressed FusedFrameInfo (no ShowHiddenFrames)", suppressed.length, greaterThan(0));
+            Throwable frame = suppressed[0];
+            assertThat(frame.getClass().getSimpleName(), is("FusedFrameInfo"));
+            assertThat(frame.getMessage(), containsString(fusedFactory.shape()));
+            assertThat(frame.getMessage(), containsString(FusionVerifyTests.class.getName() + "#throwingProcessLongs"));
+        } finally {
+            Releasables.closeExpectNoException(leaked, evaluator);
+            page.releaseBlocks();
+        }
+    }
+
     public void testDumpWithoutCapturedBytesWritesTxtNotClass() throws Exception {
         FusionVerify.dumpDirectoryForTests = createTempDir();
         Path dumped = FusionVerify.dumpOnMismatch("no-bytes-captured-shape", "BLOCK");
@@ -421,79 +471,95 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
     }
 
     // ---------------------------------------------------------------------------------------------------------------
-    // compilerForTests: Stitcher-generated fused class whose Add.longs kernel returns lhs+rhs+1
+    // compilerForTests: Stitcher-generated fused class whose Add.longs kernel is swapped for a same-signature body
     // ---------------------------------------------------------------------------------------------------------------
 
+    private static FusionPlanner.FusedClassCompiler throwingAddCompiler() {
+        return rewritingAddCompiler("throwingProcessLongs");
+    }
+
     private static FusionPlanner.FusedClassCompiler plusOneAddCompiler() {
+        return rewritingAddCompiler("processLongs");
+    }
+
+    private static FusionPlanner.FusedClassCompiler rewritingAddCompiler(String replacementMethod) {
         Stitcher real = new Stitcher(new TemplateRegistry());
         return new FusionPlanner.FusedClassCompiler() {
             @Override
             public Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-                return real.compileBlockLoop(caller, bumpAddLongs(tree));
+                return real.compileBlockLoop(caller, rewriteAddLongs(tree, replacementMethod));
             }
 
             @Override
             public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-                return real.compileVectorLoop(caller, bumpAddLongs(tree));
+                return real.compileVectorLoop(caller, rewriteAddLongs(tree, replacementMethod));
             }
 
             @Override
             public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-                return real.compileVectorLoopChecked(caller, bumpAddLongs(tree));
+                return real.compileVectorLoopChecked(caller, rewriteAddLongs(tree, replacementMethod));
             }
 
             @Override
             public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-                return real.compileLogicalBlockLoop(caller, bumpAddLongs(tree));
+                return real.compileLogicalBlockLoop(caller, rewriteAddLongs(tree, replacementMethod));
             }
 
             @Override
             public Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-                return real.compileLogicalVectorLoop(caller, bumpAddLongs(tree));
+                return real.compileLogicalVectorLoop(caller, rewriteAddLongs(tree, replacementMethod));
             }
 
             @Override
             public Class<?> compileFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
                 throws Stitcher.StitchingException {
-                return real.compileFilterEvalBlockLoop(caller, bumpAddLongs(predicateTree), bumpAddLongs(projectionTree));
+                return real.compileFilterEvalBlockLoop(
+                    caller,
+                    rewriteAddLongs(predicateTree, replacementMethod),
+                    rewriteAddLongs(projectionTree, replacementMethod)
+                );
             }
 
             @Override
             public Class<?> compileMappingBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
-                return real.compileMappingBlockLoop(caller, bumpAddLongs(tree));
+                return real.compileMappingBlockLoop(caller, rewriteAddLongs(tree, replacementMethod));
             }
         };
     }
 
     /**
-     * Replaces every {@link Add#processLongs} kernel with {@link #processLongs} (same {@code (JJ)J} signature, result
-     * plus one). Children, constants and the fused method's trailing-parameter list are unchanged, so {@code findStatic}
-     * against the original plan's MethodType still binds.
+     * Replaces every {@link Add#processLongs} kernel with {@code FusionVerifyTests#replacementMethod} (same
+     * {@code (JJ)J} signature). Children, constants and the fused method's trailing-parameter list are unchanged, so
+     * {@code findStatic} against the original plan's MethodType still binds.
      */
-    private static FusionNode bumpAddLongs(FusionNode node) {
+    private static FusionNode rewriteAddLongs(FusionNode node, String replacementMethod) {
         if (node instanceof FusionNode.Kernel kernel) {
-            List<FusionNode> children = kernel.children().stream().map(FusionVerifyTests::bumpAddLongs).toList();
+            List<FusionNode> children = kernel.children().stream().map(child -> rewriteAddLongs(child, replacementMethod)).toList();
             FusionDescriptor descriptor = kernel.descriptor();
             if (descriptor.kernelClass() == Add.class
                 && "processLongs".equals(descriptor.kernelMethod())
                 && "(JJ)J".equals(descriptor.kernelType())) {
-                FusionDescriptor wrong = new FusionDescriptor(
+                FusionDescriptor swapped = new FusionDescriptor(
                     FusionVerifyTests.class,
-                    "processLongs",
+                    replacementMethod,
                     "(JJ)J",
                     true,
                     true,
                     "java.lang.ArithmeticException"
                 );
-                return new FusionNode.Kernel(wrong, children);
+                return new FusionNode.Kernel(swapped, children);
             }
             return new FusionNode.Kernel(descriptor, children);
         }
         if (node instanceof FusionNode.Logical logical) {
-            return new FusionNode.Logical(logical.op(), bumpAddLongs(logical.left()), bumpAddLongs(logical.right()));
+            return new FusionNode.Logical(
+                logical.op(),
+                rewriteAddLongs(logical.left(), replacementMethod),
+                rewriteAddLongs(logical.right(), replacementMethod)
+            );
         }
         if (node instanceof FusionNode.Not not) {
-            return new FusionNode.Not(bumpAddLongs(not.child()));
+            return new FusionNode.Not(rewriteAddLongs(not.child(), replacementMethod));
         }
         return node;
     }

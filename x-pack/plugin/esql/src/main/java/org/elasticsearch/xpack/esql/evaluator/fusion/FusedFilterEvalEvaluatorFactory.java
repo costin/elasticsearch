@@ -16,6 +16,7 @@ import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.FilterEvalEvaluator;
 import org.elasticsearch.compute.operator.Warnings;
+import org.elasticsearch.compute.operator.fusion.FusedFrameInfo;
 import org.elasticsearch.compute.operator.fusion.FusionDump;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
@@ -86,6 +87,8 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
     private final ExpressionEvaluator.Factory unfusedPredicate;
     private final ExpressionEvaluator.Factory unfusedProjection;
     private final String shape;
+    /** {@link Stitcher#KERNEL_MAP_FIELD_NAME} of the fused hidden class; attached to escaping exceptions. */
+    private final String kernelMap;
 
     private FusedFilterEvalEvaluatorFactory(
         Source[] warningSources,
@@ -111,6 +114,7 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
         this.unfusedPredicate = unfusedPredicate;
         this.unfusedProjection = unfusedProjection;
         this.shape = shape;
+        this.kernelMap = FusedFrameInfo.kernelMapOf(LOOKUP, fusedHandle);
     }
 
     /**
@@ -203,7 +207,8 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
             unfusedPredicate,
             unfusedProjection,
             context,
-            shape
+            shape,
+            kernelMap
         );
     }
 
@@ -310,6 +315,7 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
         private final ExpressionEvaluator.Factory unfusedProjectionFactory;
         private final DriverContext driverContext;
         private final String shape;
+        private final String kernelMap;
 
         // Spreader bound ONCE (fusedHandle.asSpreader(Object[].class, argCount)) plus a reusable per-page scratch
         // Object[]: removes the per-page Invokers.spreadInvoker MethodType map lookup that invokeWithArguments does
@@ -342,7 +348,8 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
             ExpressionEvaluator.Factory unfusedPredicateFactory,
             ExpressionEvaluator.Factory unfusedProjectionFactory,
             DriverContext driverContext,
-            String shape
+            String shape,
+            String kernelMap
         ) {
             this.warningSources = warningSources;
             this.predicateChannels = predicateChannels;
@@ -354,6 +361,7 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
             this.unfusedProjectionFactory = unfusedProjectionFactory;
             this.driverContext = driverContext;
             this.shape = shape;
+            this.kernelMap = kernelMap;
 
             if (fusedHandle == null) {
                 // Plan-time stitch failed: this evaluator always uses the unfused pair, so no spreader/scratch.
@@ -432,9 +440,12 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
                 recordRuntimeFallbackOnce();
                 return unfusedProjection(page, positions);
             } catch (RuntimeException | Error e) {
+                e.addSuppressed(new FusedFrameInfo(shape, kernelMap));
                 throw e;
             } catch (Throwable t) {
-                throw new RuntimeException(t);
+                RuntimeException wrapped = new RuntimeException(t);
+                wrapped.addSuppressed(new FusedFrameInfo(shape, kernelMap));
+                throw wrapped;
             }
         }
 

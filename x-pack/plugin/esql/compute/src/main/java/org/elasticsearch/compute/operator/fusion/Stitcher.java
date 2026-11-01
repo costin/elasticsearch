@@ -359,8 +359,10 @@ public final class Stitcher {
      * add their {@code cmpN}/{@code pred}/{@code projAppend} helper methods afterwards.
      *
      * <p>{@code debug} supplies diagnostic-only class metadata: a {@code SourceFile} naming the fused shape
-     * (stack traces render as {@code (SourceFile:kernelIndex)}) and a {@link #KERNEL_MAP_FIELD_NAME}
-     * ConstantValue field. Neither adds instructions to the per-row body.
+     * and a {@link #KERNEL_MAP_FIELD_NAME} ConstantValue field. Neither adds instructions to the per-row
+     * body. Hidden-class frames are omitted from default {@code Throwable} traces unless
+     * {@code -XX:+ShowHiddenFrames}; production traces name the shape and kernels via a suppressed
+     * {@link FusedFrameInfo}.
      */
     static ClassNode newFusedClass(String internalName, MethodNode host, FusedClassDebugInfo debug) {
         ClassNode classNode = new ClassNode(Opcodes.ASM9);

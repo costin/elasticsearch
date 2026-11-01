@@ -10,6 +10,7 @@ package org.elasticsearch.compute.operator.fusion;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.FieldNode;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -23,19 +24,48 @@ import java.util.Map;
  * <p>These are class-file attributes and a {@code public static final String} ConstantValue — they add
  * no instructions to the per-row loop, do not change fused method signatures, and are not a cache key.
  * The shape rendering is Stitcher-local (compute module) and is deliberately not
- * {@code FusionPlanner.shapeOf}: it only needs to be human-meaningful and deterministic. Stack traces
- * from fused code render as {@code (SourceFileValue:kernelIndex)}.
+ * {@code FusionPlanner.shapeOf}: it only needs to be human-meaningful and deterministic.
+ * Hidden-class frames are omitted from {@code Throwable} stack traces unless
+ * {@code -XX:+ShowHiddenFrames}, so {@code SourceFile} and {@code LineNumberTable} do not appear in
+ * default production traces. Default traces name the fused shape and kernels via a suppressed
+ * {@link FusedFrameInfo} attached at the per-page catch.
  */
 final class FusedClassDebugInfo {
+
+    /** Cap for {@code SourceFile} and {@code KERNEL_MAP}: a UTF-8 constant-pool entry over 64 KB makes ASM throw. */
+    static final int MAX_UTF8_BYTES = 4096;
+    static final String TRUNCATION_MARKER = "...[truncated]";
 
     private final String sourceFile;
     private final String kernelMap;
     private final Map<FusionNode.Kernel, Integer> indices;
 
     private FusedClassDebugInfo(String sourceFile, String kernelMap, Map<FusionNode.Kernel, Integer> indices) {
-        this.sourceFile = sourceFile;
-        this.kernelMap = kernelMap;
+        this.sourceFile = capUtf8(sourceFile);
+        this.kernelMap = capUtf8(kernelMap);
         this.indices = indices;
+    }
+
+    /**
+     * Truncates {@code value} to {@link #MAX_UTF8_BYTES} UTF-8 bytes, appending {@link #TRUNCATION_MARKER}.
+     * Walks back over UTF-8 continuation bytes so a multi-byte character is never split.
+     */
+    static String capUtf8(String value) {
+        if (value == null) {
+            return "";
+        }
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length <= MAX_UTF8_BYTES) {
+            return value;
+        }
+        byte[] marker = TRUNCATION_MARKER.getBytes(StandardCharsets.UTF_8);
+        int keep = MAX_UTF8_BYTES - marker.length;
+        while (keep > 0 && (bytes[keep] & 0xC0) == 0x80) {
+            keep--;
+        }
+        // keep starts at MAX_UTF8_BYTES - marker.length (4082) and the loop stops at 0, so it stays >= 0.
+        assert keep >= 0;
+        return new String(bytes, 0, keep, StandardCharsets.UTF_8) + TRUNCATION_MARKER;
     }
 
     /** Debug info for a single fused tree, named after the emit path's {@code Fused$$…} class token. */
@@ -151,7 +181,10 @@ final class FusedClassDebugInfo {
         sb.append('#');
     }
 
-    /** {@code SourceFile} attribute value. Diagnostic only; stack traces render {@code (this:line)}. */
+    /**
+     * {@code SourceFile} attribute value. Diagnostic only; hidden-class frames are omitted from default
+     * traces (see {@link FusedFrameInfo}).
+     */
     String sourceFile() {
         return sourceFile;
     }

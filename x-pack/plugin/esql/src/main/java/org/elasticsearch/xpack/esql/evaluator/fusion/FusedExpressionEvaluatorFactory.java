@@ -31,6 +31,7 @@ import org.elasticsearch.compute.data.Vector;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.Warnings;
+import org.elasticsearch.compute.operator.fusion.FusedFrameInfo;
 import org.elasticsearch.compute.operator.fusion.FusionDump;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.FusionSimd;
@@ -235,6 +236,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     private final VectorStrategy vectorStrategy;
     private final ExpressionEvaluator.Factory unfused;
     private final String shape;
+    /** {@link Stitcher#KERNEL_MAP_FIELD_NAME} of the fused hidden class; attached to escaping exceptions. */
+    private final String kernelMap;
     /**
      * The fused method's trailing constant operands in the {@link Stitcher#constantsInEmitOrder canonical emit order},
      * one per trailing parameter. Each {@code get(DriverContext)} resolves them to values (see
@@ -275,6 +278,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         this.vectorStrategy = vectorStrategy;
         this.unfused = unfused;
         this.shape = shape;
+        this.kernelMap = FusedFrameInfo.kernelMapOf(LOOKUP, blockHandle);
         this.constants = constants;
         this.encodingAware = encodingAware;
         this.nestedMapping = nestedMapping;
@@ -627,6 +631,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             unfused,
             context,
             shape,
+            kernelMap,
             resolveConstantValues(constants, context),
             encodingAware,
             nestedMapping,
@@ -656,6 +661,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             unfused,
             context,
             shape,
+            kernelMap,
             resolveConstantValues(constants, context),
             encodingAware,
             nestedMapping,
@@ -897,6 +903,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         private final ExpressionEvaluator.Factory unfusedFactory;
         private final DriverContext driverContext;
         private final String shape;
+        private final String kernelMap;
         // The embedded constants' values, appended (after the input vectors/blocks) to the fused method's invoke args.
         private final Object[] constantValues;
         /**
@@ -1006,6 +1013,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             ExpressionEvaluator.Factory unfusedFactory,
             DriverContext driverContext,
             String shape,
+            String kernelMap,
             Object[] constantValues,
             boolean encodingAware,
             boolean nestedMapping,
@@ -1018,6 +1026,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             this.unfusedFactory = unfusedFactory;
             this.driverContext = driverContext;
             this.shape = shape;
+            this.kernelMap = kernelMap;
             this.constantValues = constantValues;
             this.encodingAware = encodingAware;
             this.nestedMapping = nestedMapping;
@@ -1115,10 +1124,13 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 recordRuntimeFallbackOnce();
                 return unfusedFallback().eval(page);
             } catch (RuntimeException | Error e) {
+                e.addSuppressed(new FusedFrameInfo(shape, kernelMap));
                 throw e;
             } catch (Throwable t) {
                 // Fusable arithmetic kernels declare no checked exceptions; this is unreachable in practice.
-                throw new RuntimeException(t);
+                RuntimeException wrapped = new RuntimeException(t);
+                wrapped.addSuppressed(new FusedFrameInfo(shape, kernelMap));
+                throw wrapped;
             }
             // Verify-mode A/B: a single static-final read that the JIT folds away in production (no -ea). Input page
             // blocks are not consumed by eval, so the unfused chain can read them again. The comparison block is
