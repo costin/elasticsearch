@@ -50,6 +50,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 
@@ -449,6 +450,43 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
         String countMismatch = FusionVerify.describeSurvivorMismatch(new int[] { 0, 1 }, 2, new int[] { 0 }, 1);
         assertThat(countMismatch, containsString("survivorCount=2 vs 1"));
         assertThat(countMismatch, containsString("firstDiff@1"));
+    }
+
+    /**
+     * Without {@code -ea}, {@code lastEvalPath} is unset and {@link FusionVerify#verifyPage} must label the path
+     * {@code ?} rather than pretending the block path ran.
+     */
+    public void testVerifyPageNullPathLabelsQuestionMark() {
+        Block fused = blockFactory.newLongArrayVector(new long[] { 1L, 2L }, 2).asBlock();
+        Block reference = blockFactory.newLongArrayVector(new long[] { 9L, 9L }, 2).asBlock();
+        Block pageBlock = blockFactory.newLongArrayVector(new long[] { 0L, 0L }, 2).asBlock();
+        Page page = new Page(pageBlock);
+        ExpressionEvaluator unfused = new ExpressionEvaluator() {
+            @Override
+            public Block eval(Page p) {
+                return reference;
+            }
+
+            @Override
+            public long baseRamBytesUsed() {
+                return 0;
+            }
+
+            @Override
+            public void close() {}
+        };
+        try {
+            AssertionError error = expectThrows(
+                AssertionError.class,
+                () -> FusionVerify.verifyPage(unfused, page, fused, "null-path-label", VectorStrategy.CHECKED_VECTOR, null)
+            );
+            assertThat(error.getMessage(), containsString("path=?"));
+            assertThat(error.getMessage(), not(containsString("path=BLOCK")));
+        } finally {
+            page.releaseBlocks();
+            unfused.close();
+        }
+        assertThat(breaker.getUsed(), is(0L));
     }
 
     public void testCompareFilterEvalSurvivorMismatchClosesBothAndRestoresPositions() {

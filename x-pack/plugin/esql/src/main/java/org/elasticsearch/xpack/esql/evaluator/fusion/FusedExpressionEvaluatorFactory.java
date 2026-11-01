@@ -144,23 +144,24 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     }
 
     /**
-     * The four VECTOR {@link MethodHandle}s bound at plan time. {@code blockHandle} is always present and stays a
-     * separate factory parameter. Null components mean that variant was not compiled (block-only, SIMD without
-     * INTERFACE, LOGICAL_VECTOR INTERFACE-only). MethodHandles are immutable; the factory spreads them once and
-     * shares the spreaders across drivers.
+     * The four VECTOR {@link MethodHandle}s bound at plan time, named by role. {@code primary} is the first vector
+     * dispatch handle: ALL-RAW {@code fused} on PLAIN_VECTOR/SIMD, builder {@code fused} on CHECKED_VECTOR, and
+     * INTERFACE {@code fusedInterface} on LOGICAL_VECTOR (there is no RAW sibling). {@code blockHandle} stays a
+     * separate factory parameter. Null components mean that variant was not compiled. MethodHandles are immutable;
+     * the factory spreads them once and shares the spreaders across drivers.
      */
-    private record VectorHandles(MethodHandle plain, MethodHandle plainInterface, MethodHandle raw, MethodHandle rawInterface) {
+    private record VectorHandles(MethodHandle primary, MethodHandle primaryInterface, MethodHandle raw, MethodHandle rawInterface) {
         static VectorHandles none() {
             return new VectorHandles(null, null, null, null);
         }
 
-        /** One VECTOR handle (SIMD ALL-RAW, or LOGICAL_VECTOR INTERFACE-only stored as {@code plain}). */
-        static VectorHandles plain(MethodHandle handle) {
+        /** One VECTOR handle (SIMD ALL-RAW, or LOGICAL_VECTOR INTERFACE-only stored as {@code primary}). */
+        static VectorHandles primary(MethodHandle handle) {
             return new VectorHandles(handle, null, null, null);
         }
 
         /** Scalar PLAIN_VECTOR: ALL-RAW {@code fused} plus ALL-INTERFACE {@code fusedInterface}. */
-        static VectorHandles plainInterface(MethodHandle handle, MethodHandle iface) {
+        static VectorHandles primaryInterface(MethodHandle handle, MethodHandle iface) {
             return new VectorHandles(handle, iface, null, null);
         }
 
@@ -172,6 +173,21 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             return new VectorHandles(builder, builderInterface, raw, rawInterface);
         }
     }
+
+    /**
+     * Immutable plan-time dispatch payload for {@link FusedExpressionEvaluator}: spreaders and argument counts.
+     * Built once in the factory so the evaluator constructor takes this record plus the remaining per-driver state
+     * instead of telescoping ~18 arguments.
+     */
+    private record FusedDispatch(
+        MethodHandle blockSpreader,
+        MethodHandle vectorSpreader,
+        MethodHandle vectorInterfaceSpreader,
+        MethodHandle vectorRawSpreader,
+        MethodHandle vectorRawInterfaceSpreader,
+        int blockArgCount,
+        int vectorArgCount
+    ) {}
 
     /**
      * Test-only: which fused path the last {@link FusedExpressionEvaluator#eval} used. Production dispatch does not
@@ -222,17 +238,11 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      */
     private final ElementKind[] inputElements;
     /**
-     * Spreaders bound ONCE per factory ({@code handle.asSpreader} is immutable and safe to share across drivers).
-     * Each evaluator still allocates its own per-instance scratch {@code Object[]} — a Driver reuses that buffer
-     * single-threaded across pages; two drivers must never share one mutable array.
+     * Spreaders and argument counts bound ONCE per factory ({@code handle.asSpreader} is immutable and safe to share
+     * across drivers). Each evaluator still allocates its own per-instance scratch {@code Object[]} — a Driver reuses
+     * that buffer single-threaded across pages; two drivers must never share one mutable array.
      */
-    private final MethodHandle blockSpreader;
-    private final MethodHandle vectorSpreader;
-    private final MethodHandle vectorInterfaceSpreader;
-    private final MethodHandle vectorRawSpreader;
-    private final MethodHandle vectorRawInterfaceSpreader;
-    private final int blockArgCount;
-    private final int vectorArgCount;
+    private final FusedDispatch dispatch;
     private final VectorStrategy vectorStrategy;
     private final ExpressionEvaluator.Factory unfused;
     private final String shape;
@@ -287,25 +297,49 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         // Same skip-baked count as resolveConstantValues(...).length / constantParamTypes(...).length: baked
         // constants live in the bytecode and are not invoke arguments.
         int constCount = invokeArgConstantCount(constants);
-        this.blockArgCount = 3 + arity + constCount;
-        this.blockSpreader = blockHandle.asSpreader(Object[].class, blockArgCount);
-        if (vectorHandles.plain() == null) {
-            this.vectorArgCount = 0;
-            this.vectorSpreader = null;
-            this.vectorInterfaceSpreader = null;
-            this.vectorRawSpreader = null;
-            this.vectorRawInterfaceSpreader = null;
+        int blockArgCount = 3 + arity + constCount;
+        if (vectorHandles.primary() == null) {
+            this.dispatch = new FusedDispatch(bindSpreader(blockHandle, blockArgCount), null, null, null, null, blockArgCount, 0);
         } else {
-            this.vectorArgCount = (vectorStrategy == VectorStrategy.CHECKED_VECTOR ? 3 : 2) + arity + constCount;
-            this.vectorSpreader = vectorHandles.plain().asSpreader(Object[].class, vectorArgCount);
-            this.vectorInterfaceSpreader = vectorHandles.plainInterface() == null
-                ? null
-                : vectorHandles.plainInterface().asSpreader(Object[].class, vectorArgCount);
-            this.vectorRawSpreader = vectorHandles.raw() == null ? null : vectorHandles.raw().asSpreader(Object[].class, vectorArgCount);
-            this.vectorRawInterfaceSpreader = vectorHandles.rawInterface() == null
-                ? null
-                : vectorHandles.rawInterface().asSpreader(Object[].class, vectorArgCount);
+            int vectorArgCount = (vectorStrategy == VectorStrategy.CHECKED_VECTOR ? 3 : 2) + arity + constCount;
+            this.dispatch = new FusedDispatch(
+                bindSpreader(blockHandle, blockArgCount),
+                bindSpreader(vectorHandles.primary(), vectorArgCount),
+                bindSpreader(vectorHandles.primaryInterface(), vectorArgCount),
+                bindSpreader(vectorHandles.raw(), vectorArgCount),
+                bindSpreader(vectorHandles.rawInterface(), vectorArgCount),
+                blockArgCount,
+                vectorArgCount
+            );
         }
+    }
+
+    /**
+     * Prefers a spreader already built inside the cached unit so a cache HIT pays neither {@code findStatic} nor
+     * {@code asSpreader}. Falls back to spreading {@code handle} when the cache has no resolved methods (test
+     * compilers that skip resolution).
+     */
+    private static MethodHandle bindSpreader(MethodHandle handle, int arity) {
+        if (handle == null) {
+            return null;
+        }
+        MethodHandle cached = FusionPlanner.classCache().resolvedSpreader(handle);
+        if (cached != null) {
+            return cached;
+        }
+        return handle.asSpreader(Object[].class, arity);
+    }
+
+    /**
+     * Prefers a {@code findStatic} already performed inside the cached unit. Falls back to the counting seam so a
+     * cache miss still resolves (and a cache-hit test can prove the fallback is not taken).
+     */
+    static MethodHandle bindHandle(Class<?> fused, String name, MethodType type) throws NoSuchMethodException, IllegalAccessException {
+        MethodHandle cached = FusionPlanner.classCache().resolvedHandle(fused, name);
+        if (cached != null) {
+            return cached;
+        }
+        return FusedClassCache.findStaticCounted(LOOKUP, fused, name, type);
     }
 
     /**
@@ -371,7 +405,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 compilingPath = FusedClassCache.Path.MAPPING_BLOCK;
                 MethodType mappingType = blockType(inputElements, outputElement, arity, constantParamTypes);
                 Class<?> mappingClass = compiler.compileMappingBlockLoop(LOOKUP, tree, mappingType, Stitcher.FUSED_METHOD_NAME);
-                MethodHandle mappingHandle = LOOKUP.findStatic(mappingClass, Stitcher.FUSED_METHOD_NAME, mappingType);
+                MethodHandle mappingHandle = bindHandle(mappingClass, Stitcher.FUSED_METHOD_NAME, mappingType);
                 return new FusedExpressionEvaluatorFactory(
                     warningSources,
                     inputChannels,
@@ -393,7 +427,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 compilingPath = FusedClassCache.Path.LOGICAL_BLOCK;
                 MethodType logicalType = blockType(inputElements, outputElement, arity, constantParamTypes);
                 Class<?> logicalClass = compiler.compileLogicalBlockLoop(LOOKUP, tree, logicalType, Stitcher.FUSED_METHOD_NAME);
-                MethodHandle logicalHandle = LOOKUP.findStatic(logicalClass, Stitcher.FUSED_METHOD_NAME, logicalType);
+                MethodHandle logicalHandle = bindHandle(logicalClass, Stitcher.FUSED_METHOD_NAME, logicalType);
                 try {
                     MethodType vectorType = logicalVectorType(arity, constantParamTypes);
                     // B2: INTERFACE-only — resolve fusedInterface, not fused. A stitch/findStatic miss still
@@ -404,13 +438,13 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                         vectorType,
                         Stitcher.FUSED_INTERFACE_METHOD_NAME
                     );
-                    MethodHandle interfaceHandle = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_INTERFACE_METHOD_NAME, vectorType);
+                    MethodHandle interfaceHandle = bindHandle(vectorClass, Stitcher.FUSED_INTERFACE_METHOD_NAME, vectorType);
                     return new FusedExpressionEvaluatorFactory(
                         warningSources,
                         inputChannels,
                         inputElements,
                         logicalHandle,
-                        VectorHandles.plain(interfaceHandle),
+                        VectorHandles.primary(interfaceHandle),
                         VectorStrategy.LOGICAL_VECTOR,
                         unfused,
                         shape,
@@ -439,7 +473,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
             MethodType blockMethodType = blockType(inputElements, outputElement, arity, constantParamTypes);
             Class<?> blockClass = compiler.compileBlockLoop(LOOKUP, tree, blockMethodType, Stitcher.FUSED_METHOD_NAME);
-            MethodHandle blockHandle = LOOKUP.findStatic(blockClass, Stitcher.FUSED_METHOD_NAME, blockMethodType);
+            MethodHandle blockHandle = bindHandle(blockClass, Stitcher.FUSED_METHOD_NAME, blockMethodType);
 
             if (hasBytesRefInput(inputElements) || outputElement == ElementKind.BYTES_REF) {
                 // A BytesRef (keyword/text) column may be ordinal-encoded rather than a plain ArrayVector, and a
@@ -487,7 +521,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                             plainType,
                             Stitcher.FUSED_METHOD_NAME
                         );
-                        vectorHandles = VectorHandles.plain(LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, plainType));
+                        vectorHandles = VectorHandles.primary(bindHandle(vectorClass, Stitcher.FUSED_METHOD_NAME, plainType));
                     } else {
                         vectorClass = compiler.compileVectorLoop(
                             LOOKUP,
@@ -496,9 +530,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                             Stitcher.FUSED_METHOD_NAME,
                             Stitcher.FUSED_INTERFACE_METHOD_NAME
                         );
-                        vectorHandles = VectorHandles.plainInterface(
-                            LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, plainType),
-                            LOOKUP.findStatic(vectorClass, Stitcher.FUSED_INTERFACE_METHOD_NAME, plainType)
+                        vectorHandles = VectorHandles.primaryInterface(
+                            bindHandle(vectorClass, Stitcher.FUSED_METHOD_NAME, plainType),
+                            bindHandle(vectorClass, Stitcher.FUSED_INTERFACE_METHOD_NAME, plainType)
                         );
                     }
                     strategy = VectorStrategy.PLAIN_VECTOR;
@@ -519,10 +553,10 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                         Stitcher.FUSED_RAW_METHOD_NAME,
                         Stitcher.FUSED_RAW_INTERFACE_METHOD_NAME
                     );
-                    MethodHandle builder = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_METHOD_NAME, checkedType);
-                    MethodHandle builderInterface = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_INTERFACE_METHOD_NAME, checkedType);
-                    MethodHandle raw = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_RAW_METHOD_NAME, checkedType);
-                    MethodHandle rawInterface = LOOKUP.findStatic(vectorClass, Stitcher.FUSED_RAW_INTERFACE_METHOD_NAME, checkedType);
+                    MethodHandle builder = bindHandle(vectorClass, Stitcher.FUSED_METHOD_NAME, checkedType);
+                    MethodHandle builderInterface = bindHandle(vectorClass, Stitcher.FUSED_INTERFACE_METHOD_NAME, checkedType);
+                    MethodHandle raw = bindHandle(vectorClass, Stitcher.FUSED_RAW_METHOD_NAME, checkedType);
+                    MethodHandle rawInterface = bindHandle(vectorClass, Stitcher.FUSED_RAW_INTERFACE_METHOD_NAME, checkedType);
                     vectorHandles = VectorHandles.checked(raw, rawInterface, builder, builderInterface);
                     strategy = VectorStrategy.CHECKED_VECTOR;
                 }
@@ -591,7 +625,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * exactly once per shape; vector/SIMD/logical-vector degrades, and every repeat, stay at DEBUG. Production
      * {@code findStatic} runs inside the cached unit ({@link FusedClassCache#stitchAndResolve}), so a resolution miss
      * is a {@link Stitcher.StitchingException} carrying the cache's first-failure flag. Remaining first-failure
-     * defaults are test compilers that bypass the cache, or a 2-arg compile that did not resolve.
+     * defaults are test compilers that bypass the cache. Production 2-arg compile entry points throw rather than
+     * skip resolution.
      */
     static void logPlanTimeStitchFailure(Logger log, String shape, FusedClassCache.Path path, boolean unfusedFallback, Throwable failure) {
         boolean firstFailure = true;
@@ -614,19 +649,14 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
     @Override
     public ExpressionEvaluator get(DriverContext context) {
-        // Production snapshots the class-init static-final so the per-page branch reads a final instance field
-        // assigned from a C2-foldable constant (false unless -Desql.fusion.vector_reads=interface).
+        // Snapshot the class-init static-final into an instance field so getForTests can override the choice
+        // without mutating FusionSettings. C2 does not constant-fold an instance final field; the remaining
+        // ADD_MUL_SUB gap vs a static-final read is accepted.
         return new FusedExpressionEvaluator(
             warningSources,
             inputChannels,
             inputElements,
-            blockSpreader,
-            vectorSpreader,
-            vectorInterfaceSpreader,
-            vectorRawSpreader,
-            vectorRawInterfaceSpreader,
-            blockArgCount,
-            vectorArgCount,
+            dispatch,
             vectorStrategy,
             unfused,
             context,
@@ -641,22 +671,16 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
     /**
      * Test-only: like {@link #get} but forces the vector_reads INTERFACE vs RAW choice. WHY this lives here:
-     * {@code esql.fusion.vector_reads} is a {@code static final} resolved at class init (so production dispatch is
-     * C2-foldable), and a unit test cannot flip it in-process without a mutable static. This constructs an evaluator
-     * with the chosen boolean and leaves {@link FusionSettings} untouched. Never called in production.
+     * {@code esql.fusion.vector_reads} is a {@code static final} resolved at class init, and a unit test cannot
+     * flip it in-process without a mutable static. The instance field is a test seam, not a C2-foldable constant.
+     * Never called in production.
      */
     ExpressionEvaluator getForTests(DriverContext context, boolean vectorReadsInterface) {
         return new FusedExpressionEvaluator(
             warningSources,
             inputChannels,
             inputElements,
-            blockSpreader,
-            vectorSpreader,
-            vectorInterfaceSpreader,
-            vectorRawSpreader,
-            vectorRawInterfaceSpreader,
-            blockArgCount,
-            vectorArgCount,
+            dispatch,
             vectorStrategy,
             unfused,
             context,
@@ -975,9 +999,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         /**
          * Test/verify side effect: records {@code p} and returns {@code true} so {@code assert recordPath(p)} compiles.
          * Because the write is under {@code assert}, verify ON with assertions OFF ({@code -Desql.fusion.verify=true}
-         * without {@code -ea}) leaves {@link #lastEvalPath} unset and {@link FusionVerify} dump filenames fall back
-         * to the {@code BLOCK} label — a documented cosmetic limitation of that non-CI combo (CI always runs with
-         * {@code -ea}).
+         * without {@code -ea}) leaves {@link #lastEvalPath} unset and {@link FusionVerify} labels the path {@code ?}
+         * — a documented cosmetic limitation of that non-CI combo (CI always runs with {@code -ea}).
          */
         private boolean recordPath(LastEvalPath p) {
             this.lastEvalPath = p;
@@ -991,10 +1014,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
         /**
          * Snapshot of {@link FusionSettings#isVectorReadsInterface()} (a class-init {@code static final}). WHY an
-         * instance {@code final} rather than a per-page static/volatile read: production {@link #get} stores the
-         * compile-time constant (false unless {@code -Desql.fusion.vector_reads=interface}), so C2 sees a monomorphic
-         * evaluator whose field is constant-false and eliminates the {@link #allExactArrayVectors} branch; tests pass
-         * the other value through {@link #getForTests} without mutating global state. A9's per-page volatile is gone.
+         * instance {@code final}: {@link #getForTests} must pass a different value without mutating global state.
+         * C2 does not constant-fold an instance final field, so this is a test seam rather than a JIT-time constant;
+         * the remaining ADD_MUL_SUB gap vs a static-final read is accepted. A9's per-page volatile is gone.
          */
         private final boolean vectorReadsInterface;
 
@@ -1002,13 +1024,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             Source[] warningSources,
             int[] inputChannels,
             ElementKind[] inputElements,
-            MethodHandle blockSpreader,
-            MethodHandle vectorSpreader,
-            MethodHandle vectorInterfaceSpreader,
-            MethodHandle vectorRawSpreader,
-            MethodHandle vectorRawInterfaceSpreader,
-            int blockArgCount,
-            int vectorArgCount,
+            FusedDispatch dispatch,
             VectorStrategy vectorStrategy,
             ExpressionEvaluator.Factory unfusedFactory,
             DriverContext driverContext,
@@ -1031,13 +1047,13 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             this.encodingAware = encodingAware;
             this.nestedMapping = nestedMapping;
             this.vectorReadsInterface = vectorReadsInterface;
-            this.blockSpreader = blockSpreader;
-            this.blockScratch = new Object[blockArgCount];
-            this.vectorSpreader = vectorSpreader;
-            this.vectorInterfaceSpreader = vectorInterfaceSpreader;
-            this.vectorRawSpreader = vectorRawSpreader;
-            this.vectorRawInterfaceSpreader = vectorRawInterfaceSpreader;
-            this.vectorScratch = vectorSpreader == null ? null : new Object[vectorArgCount];
+            this.blockSpreader = dispatch.blockSpreader();
+            this.blockScratch = new Object[dispatch.blockArgCount()];
+            this.vectorSpreader = dispatch.vectorSpreader();
+            this.vectorInterfaceSpreader = dispatch.vectorInterfaceSpreader();
+            this.vectorRawSpreader = dispatch.vectorRawSpreader();
+            this.vectorRawInterfaceSpreader = dispatch.vectorRawInterfaceSpreader();
+            this.vectorScratch = this.vectorSpreader == null ? null : new Object[dispatch.vectorArgCount()];
         }
 
         @Override

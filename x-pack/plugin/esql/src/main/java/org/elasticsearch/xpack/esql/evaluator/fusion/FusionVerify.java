@@ -123,7 +123,7 @@ final class FusionVerify {
             Releasables.closeExpectNoException(fused);
             throw t;
         }
-        return compareAndReturn(fused, reference, shape, strategy == null ? "?" : strategy.name(), path == null ? "BLOCK" : path.name());
+        return compareAndReturn(fused, reference, shape, strategy == null ? "?" : strategy.name(), path == null ? "?" : path.name());
     }
 
     /**

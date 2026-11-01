@@ -8,7 +8,9 @@
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.core.LogEvent;
 import org.elasticsearch.common.breaker.CircuitBreaker;
+import org.elasticsearch.common.regex.Regex;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.MockBigArrays;
 import org.elasticsearch.common.util.PageCacheRecycler;
@@ -61,6 +63,7 @@ import java.util.function.Function;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.nullValue;
 
 /**
  * Iter-18 catch-and-fallback hardening (GOAL criterion #5): proves that <b>every</b> stitching/linkage failure mode
@@ -121,6 +124,7 @@ public class FusionFallbackHardeningTests extends ESTestCase {
     @After
     public void tearDownFusion() {
         FusionPlanner.compilerForTests = null;
+        FusionPlanner.compilation().compileBlockLoopForTests = null;
         FusedExpressionEvaluatorFactory.injectEvalLinkageErrorForTests = false;
         FusionSettings.setEnabledForTests(true);
         FusionSettings.setAdaptiveMinRowsForTests(0);
@@ -209,67 +213,24 @@ public class FusionFallbackHardeningTests extends ESTestCase {
                 throw new IllegalArgumentException("injected emit failure");
             });
 
-            try (var first = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
-                first.addExpectation(
-                    new MockLog.SeenEventExpectation(
-                        "first-failure WARN at factory",
-                        FusedExpressionEvaluatorFactory.class.getCanonicalName(),
-                        Level.WARN,
-                        "*unfused*"
-                    )
-                );
-                first.addExpectation(
-                    new MockLog.UnseenEventExpectation(
-                        "cache must not WARN (logging moved to factory)",
-                        FusedClassCache.class.getCanonicalName(),
-                        Level.WARN,
-                        "*fusion stitch*"
-                    )
-                );
-                ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
-                assertThat(
-                    "eager minRows=0 must not produce an adaptive factory",
-                    candidate,
-                    not(instanceOf(AdaptiveFusionEvaluatorFactory.class))
-                );
-                assertThat(
-                    "IAE from the stitcher must fall back to the unfused factory",
-                    candidate,
-                    not(instanceOf(FusedExpressionEvaluatorFactory.class))
-                );
-                first.assertAllExpectationsMatched();
-            }
-            try (var repeats = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
-                repeats.addExpectation(
-                    new MockLog.UnseenEventExpectation(
-                        "repeat must not WARN at factory",
-                        FusedExpressionEvaluatorFactory.class.getCanonicalName(),
-                        Level.WARN,
-                        "*fusion stitch*"
-                    )
-                );
-                repeats.addExpectation(
-                    new MockLog.UnseenEventExpectation(
-                        "repeat must not WARN at cache",
-                        FusedClassCache.class.getCanonicalName(),
-                        Level.WARN,
-                        "*fusion stitch*"
-                    )
-                );
-                repeats.addExpectation(
-                    new MockLog.SeenEventExpectation(
-                        "repeat DEBUG at factory",
-                        FusedExpressionEvaluatorFactory.class.getCanonicalName(),
-                        Level.DEBUG,
-                        "*previously failed for shape*"
-                    )
-                );
-                for (int i = 0; i < 2; i++) {
+            try (var mockLog = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
+                mockLog.addExpectation(exactlyOneUnfusedWarn(FusedExpressionEvaluatorFactory.class));
+                mockLog.addExpectation(unseenCacheWarn());
+                mockLog.addExpectation(seenFactoryDebugRepeat(FusedExpressionEvaluatorFactory.class));
+                for (int i = 0; i < 3; i++) {
                     ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
-                    assertThat(candidate, not(instanceOf(AdaptiveFusionEvaluatorFactory.class)));
-                    assertThat(candidate, not(instanceOf(FusedExpressionEvaluatorFactory.class)));
+                    assertThat(
+                        "eager minRows=0 must not produce an adaptive factory",
+                        candidate,
+                        not(instanceOf(AdaptiveFusionEvaluatorFactory.class))
+                    );
+                    assertThat(
+                        "IAE from the stitcher must fall back to the unfused factory",
+                        candidate,
+                        not(instanceOf(FusedExpressionEvaluatorFactory.class))
+                    );
                 }
-                repeats.assertAllExpectationsMatched();
+                mockLog.assertAllExpectationsMatched();
             }
             assertThat("planning the shape 3× must stitch once", invocations.get(), is(1));
             assertThat(cache.failures(), is(1L));
@@ -281,8 +242,8 @@ public class FusionFallbackHardeningTests extends ESTestCase {
 
     /**
      * A1: the wrap covers the adaptive switch, not just eager plan-time. With {@code minRows > 0} the stitch is
-     * deferred until the row threshold is crossed; crossing it twice (two factories) stitches once and the factory
-     * WARNs once (fusion is lost). The cache itself does not WARN.
+     * deferred until the row threshold is crossed; crossing it three times (three factories) stitches once and the
+     * factory WARNs exactly once (fusion is lost). The cache itself does not WARN.
      */
     @TestLogging(
         value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG,"
@@ -311,62 +272,22 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             assertThat("no eager stitch at plan time", invocations.get(), is(0));
             assertThat(cache.failures(), is(0L));
 
-            try (var first = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
-                first.addExpectation(
-                    new MockLog.SeenEventExpectation(
-                        "first-failure WARN at factory",
-                        FusedExpressionEvaluatorFactory.class.getCanonicalName(),
-                        Level.WARN,
-                        "*unfused*"
-                    )
-                );
-                first.addExpectation(
-                    new MockLog.UnseenEventExpectation(
-                        "cache must not WARN (logging moved to factory)",
-                        FusedClassCache.class.getCanonicalName(),
-                        Level.WARN,
-                        "*fusion stitch*"
-                    )
-                );
-                evalUntilAbandoned(firstFactory, 64);
-                first.assertAllExpectationsMatched();
-            }
-            assertThat("the first threshold crossing must stitch once", invocations.get(), is(1));
-            assertThat(cache.failures(), is(1L));
-
             ExpressionEvaluator.Factory secondFactory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
             assertThat(secondFactory, instanceOf(AdaptiveFusionEvaluatorFactory.class));
-            try (var repeats = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
-                repeats.addExpectation(
-                    new MockLog.UnseenEventExpectation(
-                        "second threshold crossing must not WARN at factory",
-                        FusedExpressionEvaluatorFactory.class.getCanonicalName(),
-                        Level.WARN,
-                        "*fusion stitch*"
-                    )
-                );
-                repeats.addExpectation(
-                    new MockLog.UnseenEventExpectation(
-                        "second threshold crossing must not WARN at cache",
-                        FusedClassCache.class.getCanonicalName(),
-                        Level.WARN,
-                        "*fusion stitch*"
-                    )
-                );
-                repeats.addExpectation(
-                    new MockLog.SeenEventExpectation(
-                        "second threshold crossing DEBUG at factory",
-                        FusedExpressionEvaluatorFactory.class.getCanonicalName(),
-                        Level.DEBUG,
-                        "*previously failed for shape*"
-                    )
-                );
+            ExpressionEvaluator.Factory thirdFactory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+            assertThat(thirdFactory, instanceOf(AdaptiveFusionEvaluatorFactory.class));
+            try (var mockLog = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
+                mockLog.addExpectation(exactlyOneUnfusedWarn(FusedExpressionEvaluatorFactory.class));
+                mockLog.addExpectation(unseenCacheWarn());
+                mockLog.addExpectation(seenFactoryDebugRepeat(FusedExpressionEvaluatorFactory.class));
+                evalUntilAbandoned(firstFactory, 64);
                 evalUntilAbandoned(secondFactory, 64);
-                repeats.assertAllExpectationsMatched();
+                evalUntilAbandoned(thirdFactory, 64);
+                mockLog.assertAllExpectationsMatched();
             }
-            assertThat("two adaptive threshold crossings must stitch once", invocations.get(), is(1));
+            assertThat("three adaptive threshold crossings must stitch once", invocations.get(), is(1));
             assertThat(cache.failures(), is(1L));
-            assertThat(cache.negativeHits(), is(1L));
+            assertThat(cache.negativeHits(), is(2L));
         } finally {
             FusionSettings.setAdaptiveMinRowsForTests(0);
         }
@@ -472,67 +393,24 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             throw new Stitcher.StitchingException("injected full-fallback stitch failure", null);
         });
 
-        try (var first = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
-            first.addExpectation(
-                new MockLog.SeenEventExpectation(
-                    "first-failure WARN at factory",
-                    FusedExpressionEvaluatorFactory.class.getCanonicalName(),
-                    Level.WARN,
-                    "*on path [BLOCK]*unfused*"
-                )
-            );
-            first.addExpectation(
-                new MockLog.UnseenEventExpectation(
-                    "cache must not WARN (logging moved to factory)",
-                    FusedClassCache.class.getCanonicalName(),
-                    Level.WARN,
-                    "*fusion stitch*"
-                )
-            );
-            ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
-            assertThat(
-                "eager minRows=0 must not produce an adaptive factory",
-                candidate,
-                not(instanceOf(AdaptiveFusionEvaluatorFactory.class))
-            );
-            assertThat(
-                "a failed plan-time stitch must fall back to the unfused factory",
-                candidate,
-                not(instanceOf(FusedExpressionEvaluatorFactory.class))
-            );
-            first.assertAllExpectationsMatched();
-        }
-        try (var repeats = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
-            repeats.addExpectation(
-                new MockLog.UnseenEventExpectation(
-                    "repeat must not WARN at factory",
-                    FusedExpressionEvaluatorFactory.class.getCanonicalName(),
-                    Level.WARN,
-                    "*fusion stitch*"
-                )
-            );
-            repeats.addExpectation(
-                new MockLog.UnseenEventExpectation(
-                    "repeat must not WARN at cache",
-                    FusedClassCache.class.getCanonicalName(),
-                    Level.WARN,
-                    "*fusion stitch*"
-                )
-            );
-            repeats.addExpectation(
-                new MockLog.SeenEventExpectation(
-                    "repeat DEBUG at factory",
-                    FusedExpressionEvaluatorFactory.class.getCanonicalName(),
-                    Level.DEBUG,
-                    "*previously failed for shape*"
-                )
-            );
-            for (int i = 0; i < 2; i++) {
+        try (var mockLog = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
+            mockLog.addExpectation(exactlyOneUnfusedWarn(FusedExpressionEvaluatorFactory.class));
+            mockLog.addExpectation(unseenCacheWarn());
+            mockLog.addExpectation(seenFactoryDebugRepeat(FusedExpressionEvaluatorFactory.class));
+            for (int i = 0; i < 3; i++) {
                 ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
-                assertThat(candidate, not(instanceOf(AdaptiveFusionEvaluatorFactory.class)));
-                assertThat(candidate, not(instanceOf(FusedExpressionEvaluatorFactory.class)));
+                assertThat(
+                    "eager minRows=0 must not produce an adaptive factory",
+                    candidate,
+                    not(instanceOf(AdaptiveFusionEvaluatorFactory.class))
+                );
+                assertThat(
+                    "a failed plan-time stitch must fall back to the unfused factory",
+                    candidate,
+                    not(instanceOf(FusedExpressionEvaluatorFactory.class))
+                );
             }
-            repeats.assertAllExpectationsMatched();
+            mockLog.assertAllExpectationsMatched();
         }
         assertThat("planning the shape 3× must stitch once", invocations.get(), is(1));
         assertThat(cache.failures(), is(1L));
@@ -540,11 +418,10 @@ public class FusionFallbackHardeningTests extends ESTestCase {
     }
 
     /**
-     * G5: a cache-backed compiler returns a <em>real</em> stitched class that is missing the method the factory
-     * {@code findStatic}s (a vector class served on the block path). The factory's own resolution throws
-     * {@link NoSuchMethodException}. That miss must be negatively cached like any other stitch failure: plan 1 WARNs
-     * once, plans 2 and 3 DEBUG, {@code cache.failures()==1}. The existing cache-level ROE test cannot catch this
-     * because it never exercises the factory's post-{@code cache.get} {@code findStatic}.
+     * G5: the <em>production</em> {@link FusionCompilationService} stitches a real class that is missing the method
+     * the factory resolves (a vector class served on the block path, via an injected {@link Stitcher}). Resolution
+     * runs inside {@link FusionCompilationService#cached}, so the miss is negatively cached: plan 1 WARNs once,
+     * plans 2 and 3 DEBUG, {@code cache.failures()==1}.
      */
     @TestLogging(
         value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG,"
@@ -562,80 +439,34 @@ public class FusionFallbackHardeningTests extends ESTestCase {
 
             FusedClassCache cache = FusionPlanner.classCache();
             cache.resetForTests();
-            AtomicInteger invocations = new AtomicInteger();
-            Stitcher real = new Stitcher(new TemplateRegistry());
-            FusionPlanner.compilerForTests = cacheBackedCompiler(cache, (caller, tree, path) -> {
-                invocations.incrementAndGet();
-                // Real stitched bytecode, wrong method: the vector class has fused(BlockFactory, int, Vector…)
-                // but the factory findStatics the block signature (BlockFactory, Warnings[], int, LongBlock…).
-                if (path == Path.BLOCK) {
-                    return real.compileVectorLoop(caller, tree);
-                }
-                throw new Stitcher.StitchingException("G5 test should fail on BLOCK findStatic before other paths", null);
-            });
+            assertThat(
+                "G5 must use the production compiler (compilerForTests bypasses FusionCompilationService.cached)",
+                FusionPlanner.compilerForTests,
+                nullValue()
+            );
+            // Real stitched bytecode, wrong method: the vector class has fused(BlockFactory, int, Vector…)
+            // but the factory findStatics the block signature (BlockFactory, Warnings[], int, LongBlock…).
+            FusionPlanner.compilation().compileBlockLoopForTests = (real, caller, tree) -> real.compileVectorLoop(caller, tree);
 
-            try (var first = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
-                first.addExpectation(
-                    new MockLog.SeenEventExpectation(
-                        "first-failure WARN at factory",
-                        FusedExpressionEvaluatorFactory.class.getCanonicalName(),
-                        Level.WARN,
-                        "*unfused*"
-                    )
-                );
-                first.addExpectation(
-                    new MockLog.UnseenEventExpectation(
-                        "cache must not WARN",
-                        FusedClassCache.class.getCanonicalName(),
-                        Level.WARN,
-                        "*fusion stitch*"
-                    )
-                );
-                ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
-                assertThat(candidate, not(instanceOf(AdaptiveFusionEvaluatorFactory.class)));
-                assertThat(
-                    "a findStatic miss must fall back to the unfused factory",
-                    candidate,
-                    not(instanceOf(FusedExpressionEvaluatorFactory.class))
-                );
-                first.assertAllExpectationsMatched();
-            }
-            try (var repeats = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
-                repeats.addExpectation(
-                    new MockLog.UnseenEventExpectation(
-                        "repeat must not WARN at factory",
-                        FusedExpressionEvaluatorFactory.class.getCanonicalName(),
-                        Level.WARN,
-                        "*fusion stitch*"
-                    )
-                );
-                repeats.addExpectation(
-                    new MockLog.UnseenEventExpectation(
-                        "repeat must not WARN at cache",
-                        FusedClassCache.class.getCanonicalName(),
-                        Level.WARN,
-                        "*fusion stitch*"
-                    )
-                );
-                repeats.addExpectation(
-                    new MockLog.SeenEventExpectation(
-                        "repeat DEBUG at factory",
-                        FusedExpressionEvaluatorFactory.class.getCanonicalName(),
-                        Level.DEBUG,
-                        "*previously failed for shape*"
-                    )
-                );
-                for (int i = 0; i < 2; i++) {
+            try (var mockLog = MockLog.capture(FusedClassCache.class, FusedExpressionEvaluatorFactory.class)) {
+                mockLog.addExpectation(exactlyOneUnfusedWarn(FusedExpressionEvaluatorFactory.class));
+                mockLog.addExpectation(unseenCacheWarn());
+                mockLog.addExpectation(seenFactoryDebugRepeat(FusedExpressionEvaluatorFactory.class));
+                for (int i = 0; i < 3; i++) {
                     ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
                     assertThat(candidate, not(instanceOf(AdaptiveFusionEvaluatorFactory.class)));
-                    assertThat(candidate, not(instanceOf(FusedExpressionEvaluatorFactory.class)));
+                    assertThat(
+                        "a findStatic miss must fall back to the unfused factory",
+                        candidate,
+                        not(instanceOf(FusedExpressionEvaluatorFactory.class))
+                    );
                 }
-                repeats.assertAllExpectationsMatched();
+                mockLog.assertAllExpectationsMatched();
             }
-            assertThat("planning the shape 3× must stitch once", invocations.get(), is(1));
-            assertThat(cache.failures(), is(1L));
+            assertThat("planning the shape 3× must stitch once", cache.failures(), is(1L));
             assertThat(cache.negativeHits(), is(2L));
         } finally {
+            FusionPlanner.compilation().compileBlockLoopForTests = null;
             FusionSettings.setAdaptiveMinRowsForTests(0);
         }
     }
@@ -669,65 +500,24 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             throw new Stitcher.StitchingException("injected filter-eval stitch failure", null);
         });
 
-        try (var first = MockLog.capture(FusedClassCache.class, FusedFilterEvalEvaluatorFactory.class)) {
-            first.addExpectation(
-                new MockLog.SeenEventExpectation(
-                    "first-failure WARN at filter-eval factory",
-                    FusedFilterEvalEvaluatorFactory.class.getCanonicalName(),
-                    Level.WARN,
-                    "*on path [FILTER_EVAL_BLOCK]*unfused*"
-                )
-            );
-            first.addExpectation(
-                new MockLog.UnseenEventExpectation(
-                    "cache must not WARN (logging moved to factory)",
-                    FusedClassCache.class.getCanonicalName(),
-                    Level.WARN,
-                    "*fusion stitch*"
-                )
-            );
-            FilterEvalEvaluator.Factory candidate = FusionPlanner.maybeFuseFilterEval(predicate, projection, layout, rawFactory);
-            assertThat(candidate, instanceOf(FusedFilterEvalEvaluatorFactory.class));
-            assertThat(
-                "a failed filter-eval stitch must fall back to the unfused pair",
-                ((FusedFilterEvalEvaluatorFactory) candidate).fused(),
-                is(false)
-            );
-            first.assertAllExpectationsMatched();
+        try (var mockLog = MockLog.capture(FusedClassCache.class, FusedFilterEvalEvaluatorFactory.class)) {
+            mockLog.addExpectation(exactlyOneUnfusedWarn(FusedFilterEvalEvaluatorFactory.class));
+            mockLog.addExpectation(unseenCacheWarn());
+            mockLog.addExpectation(seenFactoryDebugRepeat(FusedFilterEvalEvaluatorFactory.class));
+            for (int i = 0; i < 3; i++) {
+                FilterEvalEvaluator.Factory candidate = FusionPlanner.maybeFuseFilterEval(predicate, projection, layout, rawFactory);
+                assertThat(candidate, instanceOf(FusedFilterEvalEvaluatorFactory.class));
+                assertThat(
+                    "a failed filter-eval stitch must fall back to the unfused pair",
+                    ((FusedFilterEvalEvaluatorFactory) candidate).fused(),
+                    is(false)
+                );
+            }
+            mockLog.assertAllExpectationsMatched();
         }
-        try (var repeats = MockLog.capture(FusedClassCache.class, FusedFilterEvalEvaluatorFactory.class)) {
-            repeats.addExpectation(
-                new MockLog.UnseenEventExpectation(
-                    "repeat must not WARN at filter-eval factory",
-                    FusedFilterEvalEvaluatorFactory.class.getCanonicalName(),
-                    Level.WARN,
-                    "*fusion stitch*"
-                )
-            );
-            repeats.addExpectation(
-                new MockLog.UnseenEventExpectation(
-                    "repeat must not WARN at cache",
-                    FusedClassCache.class.getCanonicalName(),
-                    Level.WARN,
-                    "*fusion stitch*"
-                )
-            );
-            repeats.addExpectation(
-                new MockLog.SeenEventExpectation(
-                    "repeat DEBUG at filter-eval factory",
-                    FusedFilterEvalEvaluatorFactory.class.getCanonicalName(),
-                    Level.DEBUG,
-                    "*previously failed for shape*"
-                )
-            );
-            FilterEvalEvaluator.Factory candidate = FusionPlanner.maybeFuseFilterEval(predicate, projection, layout, rawFactory);
-            assertThat(candidate, instanceOf(FusedFilterEvalEvaluatorFactory.class));
-            assertThat(((FusedFilterEvalEvaluatorFactory) candidate).fused(), is(false));
-            repeats.assertAllExpectationsMatched();
-        }
-        assertThat("planning the filter-eval shape 2× must stitch once", invocations.get(), is(1));
+        assertThat("planning the filter-eval shape 3× must stitch once", invocations.get(), is(1));
         assertThat(cache.failures(), is(1L));
-        assertThat(cache.negativeHits(), is(1L));
+        assertThat(cache.negativeHits(), is(2L));
     }
 
     // Case 3: a stitch that verified at plan time but throws a LinkageError at the FIRST evaluation must be caught,
@@ -1075,6 +865,65 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             case 1 -> 1;
             default -> shape % 20 == 0 ? 1024 + randomIntBetween(0, 512) : randomIntBetween(2, 256);
         };
+    }
+
+    private static MockLog.LoggingExpectation exactlyOneUnfusedWarn(Class<?> loggerClass) {
+        return new ExactlyOnceWarnExpectation(
+            "exactly one unfused WARN at " + loggerClass.getSimpleName(),
+            loggerClass.getCanonicalName(),
+            "*unfused*"
+        );
+    }
+
+    private static MockLog.LoggingExpectation unseenCacheWarn() {
+        return new MockLog.UnseenEventExpectation(
+            "cache must not WARN (logging moved to factory)",
+            FusedClassCache.class.getCanonicalName(),
+            Level.WARN,
+            "*fusion stitch*"
+        );
+    }
+
+    private static MockLog.LoggingExpectation seenFactoryDebugRepeat(Class<?> loggerClass) {
+        return new MockLog.SeenEventExpectation(
+            "repeat DEBUG at factory",
+            loggerClass.getCanonicalName(),
+            Level.DEBUG,
+            "*previously failed for shape*"
+        );
+    }
+
+    /**
+     * Counts WARN events matching {@code message} on {@code logger} and asserts the count is exactly 1.
+     * {@link MockLog.SeenEventExpectation} is at-least-once (a CountDownLatch); this is the G7 exact-once seam.
+     */
+    private static final class ExactlyOnceWarnExpectation implements MockLog.LoggingExpectation {
+        private final String name;
+        private final String logger;
+        private final String message;
+        private final AtomicInteger count = new AtomicInteger();
+
+        ExactlyOnceWarnExpectation(String name, String logger, String message) {
+            this.name = name;
+            this.logger = logger;
+            this.message = message;
+        }
+
+        @Override
+        public void match(LogEvent event) {
+            if (event.getLevel() == Level.WARN && event.getLoggerName().equals(logger)) {
+                String formatted = event.getMessage().getFormattedMessage();
+                boolean matched = Regex.isSimpleMatchPattern(message) ? Regex.simpleMatch(message, formatted) : formatted.contains(message);
+                if (matched) {
+                    count.incrementAndGet();
+                }
+            }
+        }
+
+        @Override
+        public void assertMatched() {
+            assertThat(name + ": expected exactly 1 WARN", count.get(), is(1));
+        }
     }
 
     /**

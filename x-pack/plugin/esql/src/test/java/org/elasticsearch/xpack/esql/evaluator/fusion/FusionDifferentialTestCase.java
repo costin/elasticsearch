@@ -126,6 +126,7 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
     @After
     public void tearDownFusion() {
         FusionPlanner.compilerForTests = null;
+        FusionPlanner.compilation().compileBlockLoopForTests = null;
         FusionPlanner.classCache().resetForTests();
         FusionSettings.setEnabledForTests(true);
         FusionSettings.setAdaptiveMinRowsForTests(0);

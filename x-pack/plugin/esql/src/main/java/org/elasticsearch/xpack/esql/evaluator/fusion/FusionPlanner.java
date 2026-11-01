@@ -109,6 +109,11 @@ public final class FusionPlanner {
         return COMPILATION.cache();
     }
 
+    /** Package-private accessor so tests can inject a {@link Stitcher} into the production compilation service. */
+    static FusionCompilationService compilation() {
+        return COMPILATION;
+    }
+
     /**
      * Maximum distinct baked Div/Mod divisor values admitted per un-baked shape. Further values of the same shape
      * share one runtime-parameter class, bounding classes-per-shape at {@code BAKED_DIVISOR_CAP + 1}.

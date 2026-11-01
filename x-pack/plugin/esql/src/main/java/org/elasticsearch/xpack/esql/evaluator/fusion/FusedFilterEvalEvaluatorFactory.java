@@ -163,7 +163,7 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
                 type,
                 Stitcher.FUSED_METHOD_NAME
             );
-            handle = LOOKUP.findStatic(fusedClass, Stitcher.FUSED_METHOD_NAME, type);
+            handle = FusedExpressionEvaluatorFactory.bindHandle(fusedClass, Stitcher.FUSED_METHOD_NAME, type);
         } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError e) {
             // Filter-eval is block-only: a stitch failure loses fusion entirely, so WARN once per shape.
             FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure(logger, shape, FusedClassCache.Path.FILTER_EVAL_BLOCK, true, e);

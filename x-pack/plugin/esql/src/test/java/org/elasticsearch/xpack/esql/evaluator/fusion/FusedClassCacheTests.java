@@ -761,6 +761,30 @@ public class FusedClassCacheTests extends ESTestCase {
         assertThat("the second build must hit the cache for every path", cache.hits(), greaterThanOrEqualTo(hitsBeforeSecondBuild + 2));
     }
 
+    /**
+     * G5/E7: a cache HIT must not call {@code findStatic}. The first plan resolves inside the cached unit; the
+     * second plan reuses those handles. Fails before handles are stored on the cached unit because the factory
+     * re-resolves on every plan.
+     */
+    public void testCacheHitDoesNotCallFindStatic() {
+        FusedClassCache cache = FusionPlanner.classCache();
+        cache.resetForTests();
+        assertThat(FusionPlanner.compilerForTests, nullValue());
+
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression expr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+
+        EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+        int afterFirst = FusedClassCache.findStaticCallsForTests.get();
+        assertThat("first plan must resolve fused methods", afterFirst, greaterThan(0));
+
+        EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+        assertThat("cache hit must not call findStatic", FusedClassCache.findStaticCallsForTests.get(), is(afterFirst));
+    }
+
     private static Class<?> getUnchecked(FusedClassCache cache, Shape shape, Class<?> result) {
         try {
             return cache.get(shape, () -> {
