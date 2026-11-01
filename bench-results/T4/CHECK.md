@@ -96,6 +96,13 @@ Dead mapping path deleted (compileMappingBlockLoop/Path.MAPPING_BLOCK/FusionPlan
 E1: all six dumps (pre-H1/H1/H2/H3/pre-H11/H11) md5 7cbf6fa3520c30dd271ded1ca9b0dd8a, byte-identical. Files T4/e1/{pre-h1,h1,h2,h3,pre-h11,h11}.txt.
 No CsvIT (not an H1/H2/H5/final gate).
 
+## H12 — reject unfusable converters at generation time (commit b157ced1448)
+Full gate (implementer): BUILD SUCCESSFUL 5m41s. NOTE: standard gate omitted :compute:gen:spotlessJavaCheck; the doc-nit step found the gen test file needed reformatting (assertHasError wrapping), spotlessApply fixed it, both gen+compute spotless now pass. Orchestrator confirming gate (now INCLUDING :compute:gen:spotlessJavaCheck) at HEAD b157ced1448: BUILD SUCCESSFUL in 4m28s, GATE_EXIT=0.
+Reviewer GO (no blockers; TO_VERSION refusal definitively justified by independent trace; non-BytesRef-return rejection breaks no real kernel \u2014 only ChangeCase is @Fusable and returns BytesRef). 1 doc nit applied (dictionarySafe proxy caveat).
+DEVIATION: TO_VERSION refused (plan said "eligible"); recorded with reason. Converter table in FINAL_ITER4.md.
+No CsvIT (not an H1/H2/H5/final gate).
+Fails-before-fix (commit body): testFusableConvertNonBytesRefReturnIsCompileError (got none); testFusableConvertJitConstantFixedIsCompileError (got generic "fixed function args supported after the first").
+
 ## H9 — F4 coverage probe comparable to F0 (uncommitted)
 Once per top-level expression; FUSED/ISLAND/FRAGMENT/NONE; first-refusal reason;
 sysprop-only `esql.fusion.coverage_report` (Setting removed). Gradle:

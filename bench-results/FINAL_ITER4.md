@@ -1,5 +1,5 @@
 # Iteration 4 report
-Code HEAD: 5879c12a57e (through H11)   Evidence HEAD: (pending)
+Code HEAD: b157ced1448 (through H12)   Evidence HEAD: (pending)
 
 Delivery: direct push to `esql/fix/compute-codegen-followup`, no PR (operator directive).
 Driven by the orchestrator; each production change implemented test-first by a subagent,
@@ -19,7 +19,7 @@ reviewed by a fresh subagent, nits applied, then committed by the orchestrator.
 | H9 | done | 3e6d6d8dd9c | FusionTelemetryCoverageTests (four-category + testDeclinedFilterEvalCountsAsOneTopLevel + sysprop-not-setting + testMapExpressionChildDoesNotInvokeRawFactory; 11 tests) | y | Coverage counted once per top-level expr (EVAL/WHERE/FilterEval pair) via FusionCoverage; FUSED/ISLAND/FRAGMENT/NONE + first-refusal reason; sysprop-only esql.fusion.coverage_report (registered Setting removed); zero production impact when off (plan-time volatile read short-circuit, ThreadLocal cleared in finally, classify wrapped in catch). Full CsvIT: FUSED 2.9% (down from F0 18.7%) \u2014 stated plainly; pre-H9 probe was not comparable. See Coverage section. 2 reviewer doc nits applied (recordFused test-only hazard, refusedAtPlan derived note); perf nit skipped. |
 | H10 | done (MAP) | 333f1202b3f | LogicalFusionDifferentialTests#{testDatetimeGteLteRangeFuses, testNotDensePathPicksInterfaceVsBlock} | y (map test); Not test is coverage (passed pre-change) | DECISION: MAP DATETIME+DATE_NANOS to LONG for comparisons ONLY (not an open question). Same-type unfused GTE/LTE/GT/LT/EQ/NEQ bind *LongsEvaluator / @Fusable processLongs(JJ) (GreaterThanOrEqual.evaluatorMap + siblings), so fused==unfused byte-identical. Scope: matches()/buildConstant comparison path only (single caller buildComparisonOperand); elementOf unchanged so arithmetic over dates still refuses. Mixed DATETIME-vs-DATE_NANOS uses non-FusionAware NanosMillis/MillisNanos kernels -> still refuses. H9 evidence: GTE/DATETIME absent from top-10 because first-refusal of And(GTE,LTE) is "And" (GTE is FusionAware); ~386 of that shape sits just under Bucket=505; shape is in csv-spec (PromQL withTimestampFilter). Dense parity test straddles [t1,t2] incl boundaries. |
 | H11 | done | 5879c12a57e | FusionClassDumpTests (E1 dump, 33 shapes); removed dead-path tests (testMappingBlockLoop*, testTinyLimitRefusesMapping) | n/a (pure refactor; E1 byte-identical is the proof) | Dedup: FusedBuilderEmit (prologue/epilogue), single this::intercept, test seams call emitters directly (8 forwarders removed), FusedMethodCodeLengths extracted. Deleted dead mapping path (compileMappingBlockLoop, Path.MAPPING_BLOCK, FusionPlan.mapping, factory/cache/planner branches) \u2014 reviewer verified unreachable in production (lone TO_LOWER stays unfused per D4; mapping_append_suffix was a test-only fixture). Stitcher 1482->1199 (<=1200); four-file total 4034->3363 (target <=3846). E1 byte-identical across pre-H1/H1/H2/H3/pre-H11/H11 (md5 7cbf6fa..., 33 shapes), reviewer independently reproduced. 2 reviewer nits (param count, redundant null guard) skipped as non-blocking. |
-| H12 | pending | | | | |
+| H12 | done (TO_VERSION deviated->refused) | b157ced1448 | FusionAwareGenerationTests#{testFusableConvertNonBytesRefInputIsCompileError, testFusableConvertThreadLocalFixedIsCompileError, testFusableConvertJitConstantFixedIsCompileError, testFusableConvertNonBytesRefReturnIsCompileError} | y | Generator rejects non-BytesRef return (was silently generated), non-BytesRef input, and THREAD_LOCAL/jitConstant @Fixed \u2014 each asserts the specific message. Fusable admission runs before the generic trailing-arg check. mappingFixedArgTypes uses kernel class loader. TO_VERSION refused (deviation from plan's 'eligible'): encodeVersion throws IAE on a legal >=128-digit keyword with no warnExceptions, and generated converters hardcode dictionarySafe=true, so encoding-aware fusion would throw on an unreferenced dict entry; reviewer confirmed refusal justified + no real kernel regressed (only ChangeCase is @Fusable, returns BytesRef). 1 doc nit applied (dictionarySafe proxy caveat). Converter table below. |
 | H13 | pending | | | | |
 | H14 | pending | | | | |
 | H15 | pending | | | | |
@@ -55,8 +55,27 @@ Identity: 1008+222+806+32487 = 34523. stitch-failures=0, runtime-fallbacks=0.
 Top 10 first-refusal reasons: depth<2=12585, Div=5858, MvSlice=4558, Case=1758, PackDimension=878, ToLong=802, UnpackDimension=756, IsNotNull=652, ToDouble=574, Bucket=505.
 
 ## Converters (H12)
-| Converter | Admitted? | Reason |
-| (pending H12) | | |
+Every @ConvertEvaluator whose first process arg is BytesRef. Admitted = @Fusable today and planner can type it. Only ChangeCase is currently @Fusable.
+| Converter | In -> Out | Admitted? | Reason |
+|---|---|---|---|
+| ChangeCase.process (TO_LOWER/TO_UPPER) | KEYWORD/TEXT -> BytesRef | admitted | No warn, never throws, SINGLETON @Fixed (Locale, Case). Nested only (D4). |
+| ToVersion.FromString | KEYWORD/TEXT -> VERSION | refused | encodeVersion throws IAE on >=128-digit group of a legal keyword (throw-not-warn over dict); elementOf has no VERSION. |
+| ToString.FromIP | IP -> KEYWORD | refused | elementOf/matches have no IP; input not KEYWORD/TEXT. |
+| ToString.FromVersion | VERSION -> KEYWORD | refused | elementOf/matches have no VERSION. |
+| ToString.From{Geo,Cartesian}{Point,Shape} | geo -> KEYWORD | refused | input not KEYWORD/TEXT; no spatial in elementOf. |
+| ToString.FromHistogram | histogram -> KEYWORD | refused | warnExceptions=IAE. |
+| UrlEncode / UrlEncodeComponent | KEYWORD/TEXT -> KEYWORD | refused | THREAD_LOCAL @Fixed scratch (generator rejects). |
+| UrlDecode | KEYWORD/TEXT -> KEYWORD | refused | warnExceptions=IAE. |
+| ParseIp / TO_IP | KEYWORD/TEXT -> IP | refused | warnExceptions=IAE + THREAD_LOCAL scratch; IP not in elementOf. |
+| ToBoolean.FromString | KEYWORD/TEXT -> boolean | refused | non-BytesRef return (now a generator error). |
+| To{Double,Integer,Long,UnsignedLong}.FromString | KEYWORD/TEXT -> numeric | refused | warnExceptions + non-BytesRef return. |
+| To{Datetime,DateNanos}.FromString | KEYWORD/TEXT -> long | refused | warnExceptions + non-BytesRef return. |
+| ToDateRange.FromString | KEYWORD/TEXT -> LongRange | refused | warnExceptions + non-BytesRef return. |
+| To{Geo,Cartesian}{Point,Shape}.FromString | KEYWORD/TEXT -> geo | refused | warnExceptions=IAE; not in elementOf. |
+| To{Geohash,Geohex,Geotile}.FromString | KEYWORD/TEXT -> long | refused | warnExceptions + non-BytesRef return. |
+| StX/StY From{Cartesian,Geo}WKB | WKB -> double | refused | warnExceptions + non-BytesRef return + spatial not in elementOf. |
+| ToTDigest.FromHistogram | histogram -> TDigest | refused | warnExceptions + THREAD_LOCAL @Fixed + non-BytesRef return. |
+(ToBase64/FromBase64 are @Evaluator, not @ConvertEvaluator.)
 
 ## E1 (H11)
 Corpus: FusionClassDumpTests, 33 shapes (TE structural corpus minus the dead-path-only
@@ -97,6 +116,7 @@ Measured 2026-11-01 on a c7i.metal-24xl. tip / stabilize-final control / round-B
 - G8 stays out: full CsvIT shows zero stitch failures across 26,113 attempts.
 
 ## Deviations
+H12: plan said "Try TO_VERSION from string (eligible per the review)"; implemented the closest safe version = REFUSE. Why: ToVersion.fromKeyword -> VersionEncoder.encodeVersion throws IllegalArgumentException on a legal keyword with a >=128-digit group, with NO warnExceptions; generated @ConvertEvaluator+@Fusable descriptors hardcode dictionarySafe=true, so the encoding-aware path would run encodeVersion over an unreferenced dictionary entry and throw where the unfused chain would not. elementOf/matches also have no VERSION type. Evidence: reviewer independently traced the chain and confirmed the refusal is correct and unmitigated by the H5 dictionary-safety guard (which reads only the descriptor flag). Recorded as refused with reason in the converter table.
 H1: FilterEval LEFT/RIGHT shapes unstitchable (@Fixed scratch const "unsupported fused constant element [L]"); used k1==k2/k1!=k2/k1==TRIM(k2) two-column analogs for the filter-eval guards. LEFT(k1)==LEFT(k2) retained as coverage-only (each LEFT writes its own scratch, so it does not reproduce the aliasing pre-fix).
 
 ## Open questions
