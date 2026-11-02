@@ -325,7 +325,8 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
 
         // Spreader bound ONCE (fusedHandle.asSpreader(Object[].class, argCount)) plus a reusable per-page scratch
         // Object[]: removes the per-page Invokers.spreadInvoker MethodType map lookup that invokeWithArguments does
-        // and the per-page array allocation. Both null when the plan-time stitch failed (fusedHandle == null); that
+        // and the per-page array allocation. The spreader is also return-erased to Block so the per-page call is
+        // invokeExact (no asType return-cast). Both null when the plan-time stitch failed (fusedHandle == null); that
         // path never touches them. Safe because each Factory.get(DriverContext) yields a fresh evaluator run
         // single-threaded per Driver — no concurrent eval on one instance (see ExpressionEvaluator's contract).
         private final MethodHandle fusedSpreader;
@@ -377,7 +378,8 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
                 // (BlockFactory, Warnings[], int, int[]) + predicate inputs + projection inputs + both constant tails.
                 int argCount = 4 + predicateChannels.length + projectionChannels.length + predicateConstants.length
                     + projectionConstants.length;
-                this.fusedSpreader = fusedHandle.asSpreader(Object[].class, argCount);
+                this.fusedSpreader = fusedHandle.asSpreader(Object[].class, argCount)
+                    .asType(MethodType.methodType(Block.class, Object[].class));
                 this.scratch = new Object[argCount];
             }
         }
@@ -417,7 +419,7 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
                 System.arraycopy(predicateConstants, 0, args, i, predConst);
                 i += predConst;
                 System.arraycopy(projectionConstants, 0, args, i, projConst);
-                Block fused = (Block) fusedSpreader.invoke(args);
+                Block fused = (Block) fusedSpreader.invokeExact(args);
                 // Verify-mode A/B: a single static-final read that the JIT folds away in production. The fused
                 // handle fills positions[0..count); the unfused pair overwrites that array, so save/restore the
                 // fused survivors before returning (the operator filters the input page with them).

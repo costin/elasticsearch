@@ -143,9 +143,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     }
 
     /**
-     * One fused method bound from a {@link FusedClassCache.CachedFused} unit: the {@code findStatic} handle and its
-     * cached {@code asSpreader} form. Carried together so the constructor can install spreaders without a second
-     * cache scan.
+     * One fused method bound from a {@link FusedClassCache.CachedFused} unit: the {@code findStatic} handle (concrete
+     * return type) and its {@code asSpreader} form, return-erased to {@link Block} or {@link Vector} so eval can
+     * {@code invokeExact}. Carried together so the constructor can install spreaders without a second cache scan.
      */
     record Bound(MethodHandle handle, MethodHandle spreader) {}
 
@@ -154,16 +154,37 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * type that unit was resolved against. Falls back to {@code findStatic} on type mismatch (or a missing name)
      * so a future shape/type drift fails at plan time rather than as {@code WrongMethodTypeException} at eval.
      * {@code type} is non-null; {@code unit.type()==null} for unresolved test units, which also take the fallback.
+     * The spreader is return-erased in both branches (see {@link #eraseSpreaderReturn}).
      */
     static Bound bind(FusedClassCache.CachedFused unit, String name, MethodType type) throws NoSuchMethodException, IllegalAccessException {
         if (type.equals(unit.type())) {
             FusedClassCache.ResolvedMethod resolved = unit.resolved().get(name);
             if (resolved != null) {
-                return new Bound(resolved.handle(), resolved.spreader());
+                return new Bound(resolved.handle(), eraseSpreaderReturn(resolved.spreader(), type.returnType()));
             }
         }
         MethodHandle handle = FusedClassCache.findStaticCounted(LOOKUP, unit.fusedClass(), name, type);
-        return new Bound(handle, handle.asSpreader(Object[].class, type.parameterCount()));
+        return new Bound(handle, eraseSpreaderReturn(handle.asSpreader(Object[].class, type.parameterCount()), type.returnType()));
+    }
+
+    /**
+     * Erases a spreader's return type to {@link Block} or {@link Vector} so the eval hot path can
+     * {@code invokeExact} against a call-site descriptor of {@code (Object[])Block} / {@code (Object[])Vector}.
+     * Leaving the concrete subtype ({@code LongBlock}, {@code BooleanVector}, ...) would force every call
+     * through generic {@code invoke}'s per-call {@code asType} return-cast. {@code findStatic} stays on the
+     * concrete {@link MethodType}; only the cached spreader is erased, once at bind time. Non-Block/Vector
+     * returns (the {@link #bind} findStatic fallback used by tests) are left unchanged.
+     */
+    private static MethodHandle eraseSpreaderReturn(MethodHandle spreader, Class<?> declaredReturn) {
+        Class<?> erased;
+        if (Block.class.isAssignableFrom(declaredReturn)) {
+            erased = Block.class;
+        } else if (Vector.class.isAssignableFrom(declaredReturn)) {
+            erased = Vector.class;
+        } else {
+            return spreader;
+        }
+        return spreader.asType(spreader.type().changeReturnType(erased));
     }
 
     /**
@@ -1064,8 +1085,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     // Test seam: simulate a stitch that verified at plan time but fails to link at first eval.
                     throw new LinkageError("injected eval-time linkage failure for shape [" + shape + "]");
                 }
-                // Trailing constant arguments follow the input vectors/blocks in the fused method's signature; unbox is
-                // handled by invokeWithArguments against the primitive parameter types of the resolved MethodType.
+                // Trailing constant arguments are marshaled into the reusable Object[] scratch and dispatched through
+                // the pre-bound spreader; the spreader unboxes primitives per the fused method's parameter types.
                 int constCount = constantValues.length;
                 fused = null;
                 // Encoding-aware (D1): a single BYTES_REF column whose every kernel is !warns && dictionarySafe.
@@ -1095,7 +1116,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     args[2] = positionCount;
                     System.arraycopy(inputs, 0, args, 3, arity);
                     System.arraycopy(constantValues, 0, args, 3 + arity, constCount);
-                    fused = (Block) blockSpreader.invoke(args);
+                    fused = (Block) blockSpreader.invokeExact(args);
                 }
             } catch (LinkageError e) {
                 // Defensive (criterion #5): a stitch that verified at plan time should never fail to link at eval, but
@@ -1216,7 +1237,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             args[2] = positionCount;
             args[3] = input;
             System.arraycopy(constantValues, 0, args, 3 + arity, constantValues.length);
-            return (Block) blockSpreader.invoke(args);
+            return (Block) blockSpreader.invokeExact(args);
         }
 
         /**
@@ -1340,7 +1361,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             args[1] = positionCount;
             System.arraycopy(dense, 0, args, 2, arity);
             System.arraycopy(constantValues, 0, args, 2 + arity, constCount);
-            return (Block) vectorSpreader.invoke(args);
+            return (Block) vectorSpreader.invokeExact(args);
         }
 
         private Block evalPlainVector(
@@ -1362,7 +1383,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             args[1] = positionCount;
             System.arraycopy(dense, 0, args, 2, arity);
             System.arraycopy(constantValues, 0, args, 2 + arity, constCount);
-            Vector out = (Vector) spreader.invoke(args);
+            Vector out = (Vector) spreader.invokeExact(args);
             return out.asBlock();
         }
 
@@ -1390,7 +1411,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             System.arraycopy(dense, 0, args, 3, arity);
             System.arraycopy(constantValues, 0, args, 3 + arity, constCount);
             if (rawSpreader != null) {
-                Block raw = (Block) rawSpreader.invoke(args);
+                Block raw = (Block) rawSpreader.invokeExact(args);
                 if (raw != null) {
                     return raw;
                 }
@@ -1400,7 +1421,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 // Returning null lets eval fall through to the block path.
                 return null;
             }
-            return (Block) builderSpreader.invoke(args);
+            return (Block) builderSpreader.invokeExact(args);
         }
 
         /**
