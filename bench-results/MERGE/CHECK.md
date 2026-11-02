@@ -13,3 +13,10 @@ Reviewer (fresh): GO, no blockers. Verified descriptor flag positions (WARN_ONLY
 E1: 33 pre-existing shapes byte-identical vs pre-dd.txt; D0a.txt is the new baseline (md5 76d44677b9bf6c8be8530809327630f2).
 Gate: fusion gate BUILD SUCCESSFUL 4m52s, GATE_D0A_EXIT=0. Emitter dup scan unchanged at 23 regions (test-only).
 Additive corpus (coverage-only) - no fails-before-fix.
+
+## D.1 — delete fusion SIMD path (commit 68bf1e55cab)
+Pure deletion. Deleted FusionSimd.java + StitcherSimdFusionTests.java; edited 20 files (VectorLoopEmitter -208, Stitcher, FusionSettings drop FUSION_SIMD_SETTING+simdEnabled+accessors, EsqlPlugin unregister, CsvIT drop sysprop, FusionPlanner never emits SIMD plan, FusionPlan drop vectorComparison, FusedClassCache drop Path.SIMD_VECTOR, FEEF always PLAIN_VECTOR interface+raw, FusionCompilationService drop SIMD overloads, FusionDescriptor/Fusable/Add/Mul/Sub javadoc-only, pruned SIMD cases from StitcherHugeMethodGuardTests/ComparisonFusionDifferentialTests/FusionFallbackHardeningTests/BodyExtractorTests). No unrelated SIMD touched (vector scorers, WildcardLike, ByteMatchers, LongIntAdaptiveBlockHash untouched).
+Reviewer (fresh): GO, no blockers. Verified scope (only fusion SIMD), completeness (0 matches repo-wide for FusionSimd/useSimd/vectorComparison/SIMD_VECTOR/esql.fusion.simd/etc.), collapse correctness (non-checked path == old non-SIMD else branch, FusionPlan 9-arg ctor updated), switch/enum hygiene (Path switch exhaustive, no default), test deletions sound. 2 nits = confirmations (no fusion-SIMD benchmark cell existed; javadoc accurate).
+E1: 43 survivors byte-identical to D0a.txt; D1.txt baseline. Emitter dup scan 23 regions (dupscan-d1.txt). Eight-file total 4142->3843.
+Gate: fusion gate BUILD SUCCESSFUL 5m31s, GATE_D1_EXIT=0.
+Pure deletion with byte-identity net - no fails-before-fix.

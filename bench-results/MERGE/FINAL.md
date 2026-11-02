@@ -35,7 +35,7 @@ removed) and D.5a (declared reorder). Fusion gate green per commit; full CsvIT v
 | # | Commit | Hash | E1 | Scan | Gate |
 |---|---|---|---|---|---|
 | D.0a extend E1 corpus | done | 42a1e77a6be | new baseline: 46 shapes, `e1/D0a.txt` md5 76d44677b9bf6c8be8530809327630f2 (33 pre-existing byte-identical, 13 new) | 23 regions (test-only; emitters untouched) | fusion gate BUILD SUCCESSFUL 4m52s exit 0 |
-| D.1 delete SIMD | pending | | SIMD shapes removed | | |
+| D.1 delete SIMD | done | 68bf1e55cab | `e1/D1.txt` 43 shapes; all byte-identical to D0a (only simd_long/double/int_gt removed) | 23 regions (SIMD-tail pair gone; line shifts net same count; raw `dupscan-d1.txt`) | fusion gate BUILD SUCCESSFUL 5m31s exit 0 |
 | D.2 delete Stitcher forwarders | pending | | identical | | |
 | D.3 one FusionDescriptor ctor (I7) | pending | | identical | | |
 | D.4 helpers | pending | | identical | | |
