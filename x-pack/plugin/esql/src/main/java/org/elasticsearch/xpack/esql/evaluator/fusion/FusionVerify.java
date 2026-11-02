@@ -19,7 +19,9 @@ import org.elasticsearch.compute.data.OrdinalBytesRefVector;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.data.Vector;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.core.PathUtils;
 import org.elasticsearch.core.Releasables;
+import org.elasticsearch.core.SuppressForbidden;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.LastEvalPath;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.VectorStrategy;
 
@@ -555,12 +557,13 @@ final class FusionVerify {
         return dumpFile(shape, ".class");
     }
 
+    @SuppressForbidden(reason = "verify-mode dump into the JVM temp dir; same PathUtils.get(java.io.tmpdir) as Environment")
     private static Path dumpDirectory() {
         Path override = dumpDirectoryForTests;
         if (override != null) {
             return override;
         }
-        return Path.of(System.getProperty("java.io.tmpdir"), "esql-fusion-dumps");
+        return PathUtils.get(System.getProperty("java.io.tmpdir"), "esql-fusion-dumps");
     }
 
     private static Path dumpFile(String shape, String extension) {

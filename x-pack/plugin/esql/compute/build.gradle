@@ -57,6 +57,10 @@ tasks.named('checkstyleMain').configure {
   excludes = ["**/*.java.st"]
 }
 
+tasks.named("dependencyLicenses").configure {
+  mapping from: /asm-.*/, to: 'asm'
+}
+
 tasks.named("test").configure {
   // Needed for Arrow tests
   jvmArgs('--add-opens=java.base/java.nio=ALL-UNNAMED')

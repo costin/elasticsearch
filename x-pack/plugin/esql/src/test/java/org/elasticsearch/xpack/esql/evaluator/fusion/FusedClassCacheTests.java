@@ -75,7 +75,9 @@ import static org.hamcrest.Matchers.sameInstance;
  *       returned), for both the {@link RefType#SOFT} default and the {@link RefType#WEAK} toggle.</li>
  *   <li><b>Admission</b>: no admission filter was adopted (D3), so a first-sight shape stitches immediately.</li>
  *   <li><b>Negative stitch cache</b>: a failing shape is attempted once and retained as a marker (bounded by
- *       {@link FusedClassCache#MAX_ENTRIES} + eviction); the first thrown exception has {@code isFirstFailure()==true}, repeats have {@code false}. The cache does not log (the factory is the single WARN site).</li>
+ *       {@link FusedClassCache#MAX_ENTRIES} + eviction); the first thrown exception has
+ *       {@code isFirstFailure()==true}, repeats have {@code false}. The cache does not log
+ *       (the factory is the single WARN site).</li>
  * </ol>
  * A final smoke test proves the cache is wired into the plan-time path: two identical {@link EvalMapper} builds of the
  * same fusable shape stitch once and then hit the cache.

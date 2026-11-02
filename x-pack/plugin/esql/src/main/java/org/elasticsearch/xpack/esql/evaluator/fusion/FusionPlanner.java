@@ -972,7 +972,10 @@ public final class FusionPlanner {
         return kernel;
     }
 
-    /** The manually-built descriptor for {@code Right#process(@Fixed BytesRef out, @Fixed UTF8CodePoint cp, BytesRef str, int length)} — LEFT's shape. */
+    /**
+     * The manually-built descriptor for
+     * {@code Right#process(@Fixed BytesRef out, @Fixed UTF8CodePoint cp, BytesRef str, int length)} — LEFT's shape.
+     */
     static final FusionDescriptor RIGHT_DESCRIPTOR = new FusionDescriptor(
         Right.class,
         "process",
