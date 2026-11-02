@@ -196,9 +196,13 @@ final class FusedClassCache {
 
     /**
      * The cached unit for one shape: the stitched class plus every method resolved inside {@link #stitchAndResolve}.
-     * Held through a {@link SoftReference} so handles do not pin the class after GC reclaim.
+     * Held through a {@link SoftReference} so handles do not pin the class after GC reclaim. {@code type} is the
+     * {@link MethodType} those methods were resolved against (one per unit; {@link #stitchAndResolve} resolves all
+     * methods against the same type), or {@code null} when none were resolved. The factory's bindHandle type-check
+     * compares a requested signature against this field and falls back to {@code findStatic} on mismatch, so a
+     * future shape/type drift fails at plan time rather than as {@code WrongMethodTypeException} at eval.
      */
-    record CachedFused(Class<?> fusedClass, Map<String, ResolvedMethod> resolved) {}
+    record CachedFused(Class<?> fusedClass, MethodType type, Map<String, ResolvedMethod> resolved) {}
 
     /**
      * Side channel from {@link #stitchAndResolve} to {@link #wrapStitchFailures}: the {@link Class} return of
@@ -233,7 +237,7 @@ final class FusedClassCache {
             }
             resolved = Map.copyOf(map);
         }
-        PENDING_RESOLVED.set(new CachedFused(fused, resolved));
+        PENDING_RESOLVED.set(new CachedFused(fused, type, resolved));
         return fused;
     }
 
@@ -271,7 +275,7 @@ final class FusedClassCache {
             if (pending != null && pending.fusedClass() == fused) {
                 return pending;
             }
-            return new CachedFused(fused, Map.of());
+            return new CachedFused(fused, null, Map.of());
         } catch (Stitcher.StitchingException e) {
             throw e;
         } catch (StackOverflowError e) {
@@ -399,7 +403,15 @@ final class FusedClassCache {
     }
 
     /**
-     * Returns the cached class for {@code shape}, stitching it (exactly once across concurrent callers) via
+     * Returns the cached class for {@code shape}. Thin wrapper over {@link #getResolved}; existing callers that only
+     * need the {@link Class} keep compiling.
+     */
+    Class<?> get(Shape shape, ClassStitcher stitcher) throws Stitcher.StitchingException {
+        return getResolved(shape, stitcher).fusedClass();
+    }
+
+    /**
+     * Returns the cached unit for {@code shape}, stitching it (exactly once across concurrent callers) via
      * {@code stitcher} on a miss or after a cleared reference. A {@link Stitcher.StitchingException} (including a
      * {@link RuntimeException} / {@link ReflectiveOperationException} / {@link LinkageError} / {@link StackOverflowError}
      * wrapped by {@link #wrapStitchFailures}) is negatively cached as a lightweight {@link Failure} marker so a failing
@@ -409,10 +421,14 @@ final class FusedClassCache {
      * fusion is lost. Other {@link Error}s (including {@link OutOfMemoryError} and {@link InternalError}) are treated
      * as transient: they propagate and the empty slot is dropped so a later attempt can succeed.
      *
+     * <p>The returned {@link CachedFused} is the cache entry's referent. A factory that holds it strongly pins the
+     * entry against {@link RefType#WEAK} (and soft-reclaim) GC, so a live query cannot lose the unit and re-stitch a
+     * duplicate hidden class.
+     *
      * <p>Caveat: eviction near {@link #MAX_ENTRIES} can drop an {@link Entry} another thread is still resolving, so a
      * failing shape can in theory produce two first-failure WARNs. Rare; not worth extra machinery.
      */
-    Class<?> get(Shape shape, ClassStitcher stitcher) throws Stitcher.StitchingException {
+    CachedFused getResolved(Shape shape, ClassStitcher stitcher) throws Stitcher.StitchingException {
         // Test hook: replace the caller-supplied stitch lambda for one Path so a vector-path-only failure still
         // goes through this cache (single-flight + negative marker + failures()/negativeHits()). Production never
         // sets injectFailureForPathForTests; the extra volatile read is plan-time only.
@@ -423,7 +439,7 @@ final class FusedClassCache {
         }
         Entry entry = classes.computeIfAbsent(shape, unused -> new Entry());
         try {
-            Class<?> stitched = entry.resolve(toRun).fusedClass();
+            CachedFused stitched = entry.resolve(toRun);
             evictIfOverCapacity(shape);
             return stitched;
         } catch (Stitcher.StitchingException e) {
@@ -471,47 +487,8 @@ final class FusedClassCache {
         return refType == RefType.WEAK ? new WeakReference<>(stitched) : new SoftReference<>(stitched);
     }
 
-    /**
-     * The {@code findStatic} handle resolved inside the cached unit for {@code fused}/{@code name}, or {@code null}
-     * on a miss (test compilers that skip resolution, or a class not in this cache). Plan-time only; scans live
-     * entries rather than keying a strong {@code Class} map that would pin hidden classes against GC.
-     */
-    MethodHandle resolvedHandle(Class<?> fused, String name) {
-        ResolvedMethod method = resolvedMethod(fused, name);
-        return method == null ? null : method.handle();
-    }
-
-    /**
-     * The {@code asSpreader} form cached alongside {@code handle}, or {@code null} if this handle was not resolved
-     * inside the cached unit.
-     */
-    MethodHandle resolvedSpreader(MethodHandle handle) {
-        if (handle == null) {
-            return null;
-        }
-        for (Entry entry : classes.values()) {
-            CachedFused cached = entry.peek();
-            if (cached == null) {
-                continue;
-            }
-            for (ResolvedMethod method : cached.resolved().values()) {
-                if (method.handle() == handle) {
-                    return method.spreader();
-                }
-            }
-        }
-        return null;
-    }
-
-    private ResolvedMethod resolvedMethod(Class<?> fused, String name) {
-        for (Entry entry : classes.values()) {
-            CachedFused cached = entry.peek();
-            if (cached != null && cached.fusedClass() == fused) {
-                return cached.resolved().get(name);
-            }
-        }
-        return null;
-    }
+    // I2: resolvedHandle / resolvedSpreader / resolvedMethod scans deleted. The factory now receives the CachedFused
+    // unit from getResolved and reads resolved().get(name) directly (zero table walks, no LRU clock refresh).
 
     /** Switches the reference strategy for classes wrapped after this call; existing entries keep their current type. */
     void setReferenceType(RefType type) {

@@ -29,8 +29,14 @@ import org.elasticsearch.xpack.esql.planner.Layout;
 import org.junit.After;
 import org.junit.Before;
 
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
+import java.lang.ref.Reference;
+import java.lang.ref.WeakReference;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
@@ -54,7 +60,9 @@ import static org.hamcrest.Matchers.sameInstance;
  * Unit coverage for iter 15's {@link FusedClassCache}: the shape-keyed, single-flight, {@link java.lang.ref.Reference}
  * -held cache of stitched hidden classes. Every test uses <b>real</b> {@link Class} objects (a counting stitcher hands
  * back real JDK classes as stand-in stitched classes) and is deterministic — the cleared-reference path is exercised by
- * clearing the reference programmatically ({@link FusedClassCache#clearReferentForTests}), never by relying on GC.
+ * clearing the reference programmatically ({@link FusedClassCache#clearReferentForTests}), never by relying on GC,
+ * except {@link #testWeakReferenceSurvivesGcWhileHeldByUnit} which proves a held unit pins a WEAK entry across a real
+ * GC.
  *
  * <p>Scenarios (per the iter brief):
  * <ol>
@@ -704,6 +712,65 @@ public class FusedClassCacheTests extends ESTestCase {
 
         EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
         assertThat("cache hit must not call findStatic", FusedClassCache.findStaticCallsForTests.get(), is(afterFirst));
+    }
+
+    /**
+     * iter5 I2: a {@link RefType#WEAK} cache entry must survive GC while the {@code CachedFused} unit is held
+     * (this models the factory pinning the unit). Fails on the pre-fix code ({@code c1474931f0e6}) because
+     * {@code get} returned a bare {@code Class<?>} — holding it did not pin the {@code CachedFused}, so GC
+     * cleared the entry and the second lookup re-stitched a different class ({@code spins()==2}).
+     *
+     * <p>The {@code resolvedHandle}/{@code resolvedSpreader}/{@code resolvedMethod} scans are deleted by I2;
+     * a cache HIT therefore cannot refresh the soft-ref LRU clock by walking the table. Zero-{@code findStatic}
+     * on a HIT remains covered by {@link #testCacheHitDoesNotCallFindStatic}.
+     */
+    public void testWeakReferenceSurvivesGcWhileHeldByUnit() throws Exception {
+        FusedClassCache cache = new FusedClassCache(RefType.WEAK);
+        AtomicInteger n = new AtomicInteger();
+        Class<?>[] fresh = { CLASS_1, CLASS_2, CLASS_3 };
+        FusedClassCache.CachedFused held = cache.getResolved(SHAPE_A, () -> fresh[n.getAndIncrement() % fresh.length]);
+        assertThat(cache.spins(), is(1L));
+        Class<?> first = held.fusedClass();
+
+        WeakReference<Object> canary = new WeakReference<>(new Object());
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (canary.get() != null && System.nanoTime() < deadline) {
+            System.gc();
+            Thread.sleep(50);
+        }
+        assertThat("GC must have run (canary collected)", canary.get(), nullValue());
+
+        FusedClassCache.CachedFused again = cache.getResolved(SHAPE_A, () -> { throw new AssertionError("stitcher must not be invoked"); });
+        assertThat("holding the unit must pin the WEAK entry (no re-stitch)", cache.spins(), is(1L));
+        assertThat(again.fusedClass(), sameInstance(first));
+        assertThat(cache.softRefClearedCount(), is(0L));
+        Reference.reachabilityFence(held);
+    }
+
+    /**
+     * I2: {@code bindHandle} must not return a cached handle whose resolved {@link MethodType} differs from the
+     * requested one. A mismatch falls back to {@code findStaticCounted} so shape/type drift fails at plan time,
+     * not as {@code WrongMethodTypeException} at eval. The deleted {@code resolvedHandle} scan keyed only by
+     * {@code Class}+name and would have returned the cached (wrong-typed) handle.
+     */
+    public void testBindFallsBackToFindStaticOnTypeMismatch() throws Exception {
+        MethodType typeA = MethodType.methodType(int.class, int.class);
+        MethodType typeB = MethodType.methodType(long.class, long.class);
+        MethodHandle cached = FusedClassCache.findStaticCounted(MethodHandles.lookup(), Math.class, "abs", typeA);
+        int afterSetup = FusedClassCache.findStaticCallsForTests.get();
+        FusedClassCache.CachedFused unit = new FusedClassCache.CachedFused(
+            Math.class,
+            typeA,
+            Map.of("abs", new FusedClassCache.ResolvedMethod(cached, cached.asSpreader(Object[].class, 1)))
+        );
+
+        FusedExpressionEvaluatorFactory.Bound bound = FusedExpressionEvaluatorFactory.bind(unit, "abs", typeB);
+        assertThat(
+            "type mismatch must fall back to findStatic rather than returning the cached handle",
+            FusedClassCache.findStaticCallsForTests.get(),
+            is(afterSetup + 1)
+        );
+        assertThat(bound.handle().type(), is(typeB));
     }
 
     private static Class<?> getUnchecked(FusedClassCache cache, Shape shape, Class<?> result) {

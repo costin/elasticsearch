@@ -143,24 +143,48 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     }
 
     /**
-     * The four VECTOR {@link MethodHandle}s bound at plan time, named by role. {@code primary} is the first vector
-     * dispatch handle: ALL-RAW {@code fused} on PLAIN_VECTOR, builder {@code fused} on CHECKED_VECTOR, and
-     * INTERFACE {@code fusedInterface} on LOGICAL_VECTOR (there is no RAW sibling). {@code blockHandle} stays a
-     * separate factory parameter. Null components mean that variant was not compiled. MethodHandles are immutable;
-     * the factory spreads them once and shares the spreaders across drivers.
+     * One fused method bound from a {@link FusedClassCache.CachedFused} unit: the {@code findStatic} handle and its
+     * cached {@code asSpreader} form. Carried together so the constructor can install spreaders without a second
+     * cache scan.
      */
-    private record VectorHandles(MethodHandle primary, MethodHandle primaryInterface, MethodHandle raw, MethodHandle rawInterface) {
+    record Bound(MethodHandle handle, MethodHandle spreader) {}
+
+    /**
+     * Prefers a handle+spreader already resolved inside {@code unit} when the requested {@code type} matches the
+     * type that unit was resolved against. Falls back to {@code findStatic} on type mismatch (or a missing name)
+     * so a future shape/type drift fails at plan time rather than as {@code WrongMethodTypeException} at eval.
+     * {@code type} is non-null; {@code unit.type()==null} for unresolved test units, which also take the fallback.
+     */
+    static Bound bind(FusedClassCache.CachedFused unit, String name, MethodType type) throws NoSuchMethodException, IllegalAccessException {
+        if (type.equals(unit.type())) {
+            FusedClassCache.ResolvedMethod resolved = unit.resolved().get(name);
+            if (resolved != null) {
+                return new Bound(resolved.handle(), resolved.spreader());
+            }
+        }
+        MethodHandle handle = FusedClassCache.findStaticCounted(LOOKUP, unit.fusedClass(), name, type);
+        return new Bound(handle, handle.asSpreader(Object[].class, type.parameterCount()));
+    }
+
+    /**
+     * The four VECTOR roles bound at plan time. {@code primary} is the first vector dispatch handle: ALL-RAW
+     * {@code fused} on PLAIN_VECTOR, builder {@code fused} on CHECKED_VECTOR, and INTERFACE {@code fusedInterface}
+     * on LOGICAL_VECTOR (there is no RAW sibling). {@code blockHandle} stays a separate factory parameter. Null
+     * components mean that variant was not compiled. MethodHandles are immutable; the factory shares the cached
+     * spreaders across drivers.
+     */
+    private record VectorHandles(Bound primary, Bound primaryInterface, Bound raw, Bound rawInterface) {
         static VectorHandles none() {
             return new VectorHandles(null, null, null, null);
         }
 
         /** One VECTOR handle (LOGICAL_VECTOR INTERFACE-only stored as {@code primary}). */
-        static VectorHandles primary(MethodHandle handle) {
+        static VectorHandles primary(Bound handle) {
             return new VectorHandles(handle, null, null, null);
         }
 
         /** Scalar PLAIN_VECTOR: ALL-RAW {@code fused} plus ALL-INTERFACE {@code fusedInterface}. */
-        static VectorHandles primaryInterface(MethodHandle handle, MethodHandle iface) {
+        static VectorHandles primaryInterface(Bound handle, Bound iface) {
             return new VectorHandles(handle, iface, null, null);
         }
 
@@ -168,7 +192,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
          * CHECKED_VECTOR: overflow-abandoning {@code fusedRaw}/{@code fusedRawInterface} plus builder
          * {@code fused}/{@code fusedInterface}.
          */
-        static VectorHandles checked(MethodHandle raw, MethodHandle rawInterface, MethodHandle builder, MethodHandle builderInterface) {
+        static VectorHandles checked(Bound raw, Bound rawInterface, Bound builder, Bound builderInterface) {
             return new VectorHandles(builder, builderInterface, raw, rawInterface);
         }
     }
@@ -267,19 +291,31 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * vector pages take the fused + encoding-aware paths.
      */
     private final boolean nestedMapping;
+    /**
+     * Strong hold on the block-path cached unit. I2: pins the {@link FusedClassCache} entry so a WEAK / soft-reclaimed
+     * referent cannot be GC'd mid-query and re-stitched as a duplicate hidden class.
+     */
+    private final FusedClassCache.CachedFused blockUnit;
+    /**
+     * Strong hold on the vector-path cached unit, or {@code null} when {@link VectorStrategy#NONE} / block-only.
+     * Same pinning rationale as {@link #blockUnit}.
+     */
+    private final FusedClassCache.CachedFused vectorUnit;
 
     private FusedExpressionEvaluatorFactory(
         Source[] warningSources,
         int[] inputChannels,
         ElementKind[] inputElements,
-        MethodHandle blockHandle,
+        Bound blockHandle,
         VectorHandles vectorHandles,
         VectorStrategy vectorStrategy,
         ExpressionEvaluator.Factory unfused,
         String shape,
         List<FusionNode.Constant> constants,
         boolean encodingAware,
-        boolean nestedMapping
+        boolean nestedMapping,
+        FusedClassCache.CachedFused blockUnit,
+        FusedClassCache.CachedFused vectorUnit
     ) {
         this.warningSources = warningSources;
         this.inputChannels = inputChannels;
@@ -287,10 +323,14 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         this.vectorStrategy = vectorStrategy;
         this.unfused = unfused;
         this.shape = shape;
-        this.kernelMap = FusedFrameInfo.kernelMapOf(LOOKUP, blockHandle);
+        this.kernelMap = FusedFrameInfo.kernelMapOf(LOOKUP, blockHandle.handle());
         this.constants = constants;
         this.encodingAware = encodingAware;
         this.nestedMapping = nestedMapping;
+        this.blockUnit = blockUnit;
+        this.vectorUnit = vectorUnit;
+        assert this.blockUnit != null;
+        assert this.vectorUnit != null || vectorHandles.primary() == null;
 
         int arity = inputChannels.length;
         // Same skip-baked count as resolveConstantValues(...).length / constantParamTypes(...).length: baked
@@ -298,15 +338,15 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         int constCount = invokeArgConstantCount(constants);
         int blockArgCount = 3 + arity + constCount;
         if (vectorHandles.primary() == null) {
-            this.dispatch = new FusedDispatch(bindSpreader(blockHandle, blockArgCount), null, null, null, null, blockArgCount, 0);
+            this.dispatch = new FusedDispatch(blockHandle.spreader(), null, null, null, null, blockArgCount, 0);
         } else {
             int vectorArgCount = (vectorStrategy == VectorStrategy.CHECKED_VECTOR ? 3 : 2) + arity + constCount;
             this.dispatch = new FusedDispatch(
-                bindSpreader(blockHandle, blockArgCount),
-                bindSpreader(vectorHandles.primary(), vectorArgCount),
-                bindSpreader(vectorHandles.primaryInterface(), vectorArgCount),
-                bindSpreader(vectorHandles.raw(), vectorArgCount),
-                bindSpreader(vectorHandles.rawInterface(), vectorArgCount),
+                blockHandle.spreader(),
+                vectorHandles.primary().spreader(),
+                vectorHandles.primaryInterface() == null ? null : vectorHandles.primaryInterface().spreader(),
+                vectorHandles.raw() == null ? null : vectorHandles.raw().spreader(),
+                vectorHandles.rawInterface() == null ? null : vectorHandles.rawInterface().spreader(),
                 blockArgCount,
                 vectorArgCount
             );
@@ -314,31 +354,12 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     }
 
     /**
-     * Prefers a spreader already built inside the cached unit so a cache HIT pays neither {@code findStatic} nor
-     * {@code asSpreader}. Falls back to spreading {@code handle} when the cache has no resolved methods (test
-     * compilers that skip resolution).
-     */
-    private static MethodHandle bindSpreader(MethodHandle handle, int arity) {
-        if (handle == null) {
-            return null;
-        }
-        MethodHandle cached = FusionPlanner.classCache().resolvedSpreader(handle);
-        if (cached != null) {
-            return cached;
-        }
-        return handle.asSpreader(Object[].class, arity);
-    }
-
-    /**
      * Prefers a {@code findStatic} already performed inside the cached unit. Falls back to the counting seam so a
      * cache miss still resolves (and a cache-hit test can prove the fallback is not taken).
      */
-    static MethodHandle bindHandle(Class<?> fused, String name, MethodType type) throws NoSuchMethodException, IllegalAccessException {
-        MethodHandle cached = FusionPlanner.classCache().resolvedHandle(fused, name);
-        if (cached != null) {
-            return cached;
-        }
-        return FusedClassCache.findStaticCounted(LOOKUP, fused, name, type);
+    static MethodHandle bindHandle(FusedClassCache.CachedFused unit, String name, MethodType type) throws NoSuchMethodException,
+        IllegalAccessException {
+        return bind(unit, name, type).handle();
     }
 
     /**
@@ -401,19 +422,24 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 // dropping fusion entirely (same policy as the arithmetic vector-path degrade).
                 compilingPath = FusedClassCache.Path.LOGICAL_BLOCK;
                 MethodType logicalType = blockType(inputElements, outputElement, arity, constantParamTypes);
-                Class<?> logicalClass = compiler.compileLogicalBlockLoop(LOOKUP, tree, logicalType, Stitcher.FUSED_METHOD_NAME);
-                MethodHandle logicalHandle = bindHandle(logicalClass, Stitcher.FUSED_METHOD_NAME, logicalType);
+                FusedClassCache.CachedFused logicalUnit = compiler.compileLogicalBlockLoop(
+                    LOOKUP,
+                    tree,
+                    logicalType,
+                    Stitcher.FUSED_METHOD_NAME
+                );
+                Bound logicalHandle = bind(logicalUnit, Stitcher.FUSED_METHOD_NAME, logicalType);
                 try {
                     MethodType vectorType = logicalVectorType(arity, constantParamTypes);
                     // B2: INTERFACE-only — resolve fusedInterface, not fused. A stitch/findStatic miss still
                     // degrades to LOGICAL_BLOCK (the block handle already succeeded), not full unfused.
-                    Class<?> vectorClass = compiler.compileLogicalVectorLoop(
+                    FusedClassCache.CachedFused vectorUnit = compiler.compileLogicalVectorLoop(
                         LOOKUP,
                         tree,
                         vectorType,
                         Stitcher.FUSED_INTERFACE_METHOD_NAME
                     );
-                    MethodHandle interfaceHandle = bindHandle(vectorClass, Stitcher.FUSED_INTERFACE_METHOD_NAME, vectorType);
+                    Bound interfaceHandle = bind(vectorUnit, Stitcher.FUSED_INTERFACE_METHOD_NAME, vectorType);
                     return new FusedExpressionEvaluatorFactory(
                         warningSources,
                         inputChannels,
@@ -425,7 +451,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                         shape,
                         constants,
                         plan.encodingAware(),
-                        nestedMapping
+                        nestedMapping,
+                        logicalUnit,
+                        vectorUnit
                     );
                 } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError vectorFailure) {
                     logPlanTimeStitchFailure(logger, shape, FusedClassCache.Path.LOGICAL_VECTOR, false, vectorFailure);
@@ -441,14 +469,16 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                         shape,
                         constants,
                         plan.encodingAware(),
-                        nestedMapping
+                        nestedMapping,
+                        logicalUnit,
+                        null
                     );
                 }
             }
 
             MethodType blockMethodType = blockType(inputElements, outputElement, arity, constantParamTypes);
-            Class<?> blockClass = compiler.compileBlockLoop(LOOKUP, tree, blockMethodType, Stitcher.FUSED_METHOD_NAME);
-            MethodHandle blockHandle = bindHandle(blockClass, Stitcher.FUSED_METHOD_NAME, blockMethodType);
+            FusedClassCache.CachedFused blockUnit = compiler.compileBlockLoop(LOOKUP, tree, blockMethodType, Stitcher.FUSED_METHOD_NAME);
+            Bound blockHandle = bind(blockUnit, Stitcher.FUSED_METHOD_NAME, blockMethodType);
 
             if (hasBytesRefInput(inputElements) || outputElement == ElementKind.BYTES_REF) {
                 // A BytesRef (keyword/text) column may be ordinal-encoded rather than a plain ArrayVector, and a
@@ -467,12 +497,15 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     shape,
                     constants,
                     plan.encodingAware(),
-                    nestedMapping
+                    nestedMapping,
+                    blockUnit,
+                    null
                 );
             }
 
             VectorHandles vectorHandles;
             VectorStrategy strategy;
+            FusedClassCache.CachedFused vectorUnit;
             // Named before the try so the catch can report which vector path failed (the cache cannot know the
             // consequence, so this factory is the single site that distinguishes degrade-to-block from unfused).
             FusedClassCache.Path vectorPath = overflowChecked == false
@@ -481,7 +514,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             try {
                 if (overflowChecked == false) {
                     MethodType plainType = plainVectorType(outputElement, arity, constantParamTypes);
-                    Class<?> vectorClass = compiler.compileVectorLoop(
+                    vectorUnit = compiler.compileVectorLoop(
                         LOOKUP,
                         tree,
                         plainType,
@@ -489,8 +522,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                         Stitcher.FUSED_INTERFACE_METHOD_NAME
                     );
                     vectorHandles = VectorHandles.primaryInterface(
-                        bindHandle(vectorClass, Stitcher.FUSED_METHOD_NAME, plainType),
-                        bindHandle(vectorClass, Stitcher.FUSED_INTERFACE_METHOD_NAME, plainType)
+                        bind(vectorUnit, Stitcher.FUSED_METHOD_NAME, plainType),
+                        bind(vectorUnit, Stitcher.FUSED_INTERFACE_METHOD_NAME, plainType)
                     );
                     strategy = VectorStrategy.PLAIN_VECTOR;
                 } else {
@@ -501,7 +534,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     // double+overflow hard gate (VectorStrategy.NONE) is gone. One class carries fused/fusedInterface
                     // (builder) and fusedRaw/fusedRawInterface (dense ArrayVector, abandon on overflow).
                     MethodType checkedType = checkedVectorType(outputElement, arity, constantParamTypes);
-                    Class<?> vectorClass = compiler.compileVectorLoopChecked(
+                    vectorUnit = compiler.compileVectorLoopChecked(
                         LOOKUP,
                         tree,
                         checkedType,
@@ -510,10 +543,10 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                         Stitcher.FUSED_RAW_METHOD_NAME,
                         Stitcher.FUSED_RAW_INTERFACE_METHOD_NAME
                     );
-                    MethodHandle builder = bindHandle(vectorClass, Stitcher.FUSED_METHOD_NAME, checkedType);
-                    MethodHandle builderInterface = bindHandle(vectorClass, Stitcher.FUSED_INTERFACE_METHOD_NAME, checkedType);
-                    MethodHandle raw = bindHandle(vectorClass, Stitcher.FUSED_RAW_METHOD_NAME, checkedType);
-                    MethodHandle rawInterface = bindHandle(vectorClass, Stitcher.FUSED_RAW_INTERFACE_METHOD_NAME, checkedType);
+                    Bound builder = bind(vectorUnit, Stitcher.FUSED_METHOD_NAME, checkedType);
+                    Bound builderInterface = bind(vectorUnit, Stitcher.FUSED_INTERFACE_METHOD_NAME, checkedType);
+                    Bound raw = bind(vectorUnit, Stitcher.FUSED_RAW_METHOD_NAME, checkedType);
+                    Bound rawInterface = bind(vectorUnit, Stitcher.FUSED_RAW_INTERFACE_METHOD_NAME, checkedType);
                     vectorHandles = VectorHandles.checked(raw, rawInterface, builder, builderInterface);
                     strategy = VectorStrategy.CHECKED_VECTOR;
                 }
@@ -538,7 +571,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     shape,
                     constants,
                     plan.encodingAware(),
-                    nestedMapping
+                    nestedMapping,
+                    blockUnit,
+                    null
                 );
             }
 
@@ -553,7 +588,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 shape,
                 constants,
                 plan.encodingAware(),
-                nestedMapping
+                nestedMapping,
+                blockUnit,
+                vectorUnit
             );
         } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError e) {
             // Any plan-time stitch failure must fall back to the unfused chain and record the shape (criterion #5):

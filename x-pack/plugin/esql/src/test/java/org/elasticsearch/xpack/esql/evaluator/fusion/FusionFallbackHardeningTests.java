@@ -962,20 +962,28 @@ public class FusionFallbackHardeningTests extends ESTestCase {
     private static FusionPlanner.FusedClassCompiler cacheBackedCompiler(FusedClassCache cache, PathStitch stitch) {
         return new FusionPlanner.FusedClassCompiler() {
             private Class<?> cached(MethodHandles.Lookup caller, FusionNode tree, Path path) throws Stitcher.StitchingException {
-                return cached(caller, tree, path, null);
-            }
-
-            /**
-             * WHY resolve inside {@code cache.get}: the factory's MethodType overloads pass the expected
-             * {@code fused*} MethodTypes here so a {@code findStatic} miss is a negatively-cached
-             * {@link Stitcher.StitchingException}, matching production {@link FusionCompilationService}.
-             */
-            private Class<?> cached(MethodHandles.Lookup caller, FusionNode tree, Path path, MethodType type, String... methods)
-                throws Stitcher.StitchingException {
                 // Long-arithmetic-only: non-Logical trees are keyed as LONG, unlike production rootElement().
                 ElementKind element = FusionNode.isBooleanLogic(tree) ? ElementKind.BOOLEAN : ElementKind.LONG;
                 Shape shape = new Shape(FusionPlanner.shapeOf(tree), element, path);
-                return cache.get(
+                return cache.get(shape, () -> FusedClassCache.stitchAndResolve(() -> stitch.stitch(caller, tree, path), caller, null));
+            }
+
+            /**
+             * WHY resolve inside {@code cache.getResolved}: the factory's MethodType overloads pass the expected
+             * {@code fused*} MethodTypes here so a {@code findStatic} miss is a negatively-cached
+             * {@link Stitcher.StitchingException}, matching production {@link FusionCompilationService}.
+             */
+            private FusedClassCache.CachedFused cachedResolved(
+                MethodHandles.Lookup caller,
+                FusionNode tree,
+                Path path,
+                MethodType type,
+                String... methods
+            ) throws Stitcher.StitchingException {
+                // Long-arithmetic-only: non-Logical trees are keyed as LONG, unlike production rootElement().
+                ElementKind element = FusionNode.isBooleanLogic(tree) ? ElementKind.BOOLEAN : ElementKind.LONG;
+                Shape shape = new Shape(FusionPlanner.shapeOf(tree), element, path);
+                return cache.getResolved(
                     shape,
                     () -> FusedClassCache.stitchAndResolve(() -> stitch.stitch(caller, tree, path), caller, type, methods)
                 );
@@ -987,9 +995,13 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             }
 
             @Override
-            public Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-                throws Stitcher.StitchingException {
-                return cached(caller, tree, Path.BLOCK, type, methods);
+            public FusedClassCache.CachedFused compileBlockLoop(
+                MethodHandles.Lookup caller,
+                FusionNode tree,
+                MethodType type,
+                String... methods
+            ) throws Stitcher.StitchingException {
+                return cachedResolved(caller, tree, Path.BLOCK, type, methods);
             }
 
             @Override
@@ -998,9 +1010,13 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             }
 
             @Override
-            public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-                throws Stitcher.StitchingException {
-                return cached(caller, tree, Path.PLAIN_VECTOR, type, methods);
+            public FusedClassCache.CachedFused compileVectorLoop(
+                MethodHandles.Lookup caller,
+                FusionNode tree,
+                MethodType type,
+                String... methods
+            ) throws Stitcher.StitchingException {
+                return cachedResolved(caller, tree, Path.PLAIN_VECTOR, type, methods);
             }
 
             @Override
@@ -1009,9 +1025,13 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             }
 
             @Override
-            public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-                throws Stitcher.StitchingException {
-                return cached(caller, tree, Path.CHECKED_VECTOR, type, methods);
+            public FusedClassCache.CachedFused compileVectorLoopChecked(
+                MethodHandles.Lookup caller,
+                FusionNode tree,
+                MethodType type,
+                String... methods
+            ) throws Stitcher.StitchingException {
+                return cachedResolved(caller, tree, Path.CHECKED_VECTOR, type, methods);
             }
 
             @Override
@@ -1020,9 +1040,13 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             }
 
             @Override
-            public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-                throws Stitcher.StitchingException {
-                return cached(caller, tree, Path.LOGICAL_BLOCK, type, methods);
+            public FusedClassCache.CachedFused compileLogicalBlockLoop(
+                MethodHandles.Lookup caller,
+                FusionNode tree,
+                MethodType type,
+                String... methods
+            ) throws Stitcher.StitchingException {
+                return cachedResolved(caller, tree, Path.LOGICAL_BLOCK, type, methods);
             }
 
             @Override
@@ -1031,19 +1055,31 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             }
 
             @Override
-            public Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-                throws Stitcher.StitchingException {
-                return cached(caller, tree, Path.LOGICAL_VECTOR, type, methods);
+            public FusedClassCache.CachedFused compileLogicalVectorLoop(
+                MethodHandles.Lookup caller,
+                FusionNode tree,
+                MethodType type,
+                String... methods
+            ) throws Stitcher.StitchingException {
+                return cachedResolved(caller, tree, Path.LOGICAL_VECTOR, type, methods);
             }
 
             @Override
             public Class<?> compileFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
                 throws Stitcher.StitchingException {
-                return compileFilterEvalBlockLoop(caller, predicateTree, projectionTree, null);
+                Shape shape = new Shape(
+                    FusionPlanner.filterEvalShapeOf(predicateTree, projectionTree),
+                    ElementKind.LONG,
+                    Path.FILTER_EVAL_BLOCK
+                );
+                return cache.get(
+                    shape,
+                    () -> FusedClassCache.stitchAndResolve(() -> stitch.stitch(caller, predicateTree, Path.FILTER_EVAL_BLOCK), caller, null)
+                );
             }
 
             @Override
-            public Class<?> compileFilterEvalBlockLoop(
+            public FusedClassCache.CachedFused compileFilterEvalBlockLoop(
                 MethodHandles.Lookup caller,
                 FusionNode predicateTree,
                 FusionNode projectionTree,
@@ -1056,7 +1092,7 @@ public class FusionFallbackHardeningTests extends ESTestCase {
                     ElementKind.LONG,
                     Path.FILTER_EVAL_BLOCK
                 );
-                return cache.get(
+                return cache.getResolved(
                     shape,
                     () -> FusedClassCache.stitchAndResolve(
                         () -> stitch.stitch(caller, predicateTree, Path.FILTER_EVAL_BLOCK),

@@ -68,8 +68,12 @@ final class FusionCompilationService {
         }
 
         @Override
-        public Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-            throws Stitcher.StitchingException {
+        public FusedClassCache.CachedFused compileBlockLoop(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
             return cached(shapeKey(tree, FusedClassCache.Path.BLOCK), () -> stitchBlockLoop(caller, tree), caller, type, methods);
         }
 
@@ -79,8 +83,12 @@ final class FusionCompilationService {
         }
 
         @Override
-        public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-            throws Stitcher.StitchingException {
+        public FusedClassCache.CachedFused compileVectorLoop(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
             return cached(
                 shapeKey(tree, FusedClassCache.Path.PLAIN_VECTOR),
                 () -> stitcher.compileVectorLoop(caller, tree),
@@ -96,8 +104,12 @@ final class FusionCompilationService {
         }
 
         @Override
-        public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-            throws Stitcher.StitchingException {
+        public FusedClassCache.CachedFused compileVectorLoopChecked(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
             return cached(
                 shapeKey(tree, FusedClassCache.Path.CHECKED_VECTOR),
                 () -> stitcher.compileVectorLoopChecked(caller, tree),
@@ -113,8 +125,12 @@ final class FusionCompilationService {
         }
 
         @Override
-        public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-            throws Stitcher.StitchingException {
+        public FusedClassCache.CachedFused compileLogicalBlockLoop(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
             return cached(
                 shapeKey(tree, FusedClassCache.Path.LOGICAL_BLOCK),
                 () -> stitcher.compileLogicalBlockLoop(caller, tree),
@@ -130,8 +146,12 @@ final class FusionCompilationService {
         }
 
         @Override
-        public Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-            throws Stitcher.StitchingException {
+        public FusedClassCache.CachedFused compileLogicalVectorLoop(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
             return cached(
                 shapeKey(tree, FusedClassCache.Path.LOGICAL_VECTOR),
                 () -> stitcher.compileLogicalVectorLoop(caller, tree),
@@ -148,7 +168,7 @@ final class FusionCompilationService {
         }
 
         @Override
-        public Class<?> compileFilterEvalBlockLoop(
+        public FusedClassCache.CachedFused compileFilterEvalBlockLoop(
             MethodHandles.Lookup caller,
             FusionNode predicateTree,
             FusionNode projectionTree,
@@ -169,18 +189,18 @@ final class FusionCompilationService {
 
     /**
      * Cache lookup whose stitcher lambda stitches <em>and</em> resolves {@code methods} against {@code type}.
-     * WHY: a {@code findStatic} miss must run inside {@link FusedClassCache#get} so the class is not stored as a
-     * success. Production always passes a non-null {@code type}; the 2-arg compile entry points throw rather than
-     * skip resolution.
+     * WHY: a {@code findStatic} miss must run inside {@link FusedClassCache#getResolved} so the class is not stored
+     * as a success. Production always passes a non-null {@code type}; the 2-arg compile entry points throw rather
+     * than skip resolution. Returns the {@link FusedClassCache.CachedFused} unit so the factory can pin it.
      */
-    private Class<?> cached(
+    private FusedClassCache.CachedFused cached(
         FusedClassCache.Shape shape,
         FusedClassCache.ClassStitcher stitch,
         MethodHandles.Lookup caller,
         MethodType type,
         String... methods
     ) throws Stitcher.StitchingException {
-        return cache.get(shape, () -> FusedClassCache.stitchAndResolve(stitch, caller, type, methods));
+        return cache.getResolved(shape, () -> FusedClassCache.stitchAndResolve(stitch, caller, type, methods));
     }
 
     /** The production caching compiler consulted by {@link FusionPlanner} when no test override is installed. */

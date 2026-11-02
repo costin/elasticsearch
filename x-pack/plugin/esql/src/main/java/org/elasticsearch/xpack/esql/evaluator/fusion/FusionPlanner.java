@@ -144,33 +144,49 @@ public final class FusionPlanner {
          * {@code methods} against {@code type} <em>inside</em> the cached unit so a {@code findStatic} miss is
          * negatively cached (WARN once). Test doubles default to the 2-arg form.
          */
-        default Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-            throws Stitcher.StitchingException {
-            return compileBlockLoop(caller, tree);
+        default FusedClassCache.CachedFused compileBlockLoop(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
+            return new FusedClassCache.CachedFused(compileBlockLoop(caller, tree), null, Map.of());
         }
 
         Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
 
         /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
-        default Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-            throws Stitcher.StitchingException {
-            return compileVectorLoop(caller, tree);
+        default FusedClassCache.CachedFused compileVectorLoop(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
+            return new FusedClassCache.CachedFused(compileVectorLoop(caller, tree), null, Map.of());
         }
 
         Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
 
         /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
-        default Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-            throws Stitcher.StitchingException {
-            return compileVectorLoopChecked(caller, tree);
+        default FusedClassCache.CachedFused compileVectorLoopChecked(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
+            return new FusedClassCache.CachedFused(compileVectorLoopChecked(caller, tree), null, Map.of());
         }
 
         Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
 
         /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
-        default Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-            throws Stitcher.StitchingException {
-            return compileLogicalBlockLoop(caller, tree);
+        default FusedClassCache.CachedFused compileLogicalBlockLoop(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
+            return new FusedClassCache.CachedFused(compileLogicalBlockLoop(caller, tree), null, Map.of());
         }
 
         /**
@@ -183,9 +199,13 @@ public final class FusionPlanner {
         }
 
         /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
-        default Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree, MethodType type, String... methods)
-            throws Stitcher.StitchingException {
-            return compileLogicalVectorLoop(caller, tree);
+        default FusedClassCache.CachedFused compileLogicalVectorLoop(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
+            return new FusedClassCache.CachedFused(compileLogicalVectorLoop(caller, tree), null, Map.of());
         }
 
         /**
@@ -199,14 +219,14 @@ public final class FusionPlanner {
         }
 
         /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
-        default Class<?> compileFilterEvalBlockLoop(
+        default FusedClassCache.CachedFused compileFilterEvalBlockLoop(
             MethodHandles.Lookup caller,
             FusionNode predicateTree,
             FusionNode projectionTree,
             MethodType type,
             String... methods
         ) throws Stitcher.StitchingException {
-            return compileFilterEvalBlockLoop(caller, predicateTree, projectionTree);
+            return new FusedClassCache.CachedFused(compileFilterEvalBlockLoop(caller, predicateTree, projectionTree), null, Map.of());
         }
     }
 

@@ -98,6 +98,12 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
     private final ElementKind[] projectionInputElements;
     // Null iff the stitch failed at plan time (then the evaluator always uses the unfused pair).
     private final MethodHandle fusedHandle;
+    /**
+     * Strong hold on the filter-eval cached unit, or {@code null} on stitch failure (same as {@link #fusedHandle}).
+     * I2: pins the {@link FusedClassCache} entry so a WEAK / soft-reclaimed referent cannot be GC'd mid-query and
+     * re-stitched as a duplicate hidden class.
+     */
+    private final FusedClassCache.CachedFused fusedUnit;
     private final Object[] predicateConstants;
     private final Object[] projectionConstants;
     private final ExpressionEvaluator.Factory unfusedPredicate;
@@ -117,7 +123,8 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
         Object[] projectionConstants,
         ExpressionEvaluator.Factory unfusedPredicate,
         ExpressionEvaluator.Factory unfusedProjection,
-        String shape
+        String shape,
+        FusedClassCache.CachedFused fusedUnit
     ) {
         this.warningSources = warningSources;
         this.predicateChannels = predicateChannels;
@@ -125,6 +132,8 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
         this.predicateInputElements = predicateInputElements;
         this.projectionInputElements = projectionInputElements;
         this.fusedHandle = fusedHandle;
+        this.fusedUnit = fusedUnit;
+        assert (this.fusedHandle == null) == (this.fusedUnit == null);
         this.predicateConstants = predicateConstants;
         this.projectionConstants = projectionConstants;
         this.unfusedPredicate = unfusedPredicate;
@@ -159,6 +168,7 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
         Object[] predConstValues = constantValues(predicateConstants);
         Object[] projConstValues = constantValues(projectionConstants);
         MethodHandle handle = null;
+        FusedClassCache.CachedFused unit = null;
         List<byte[]> captured = null;
         if (FusionSettings.isVerifyEnabled()) {
             captured = new ArrayList<>();
@@ -172,14 +182,8 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
                 constantParamTypes(predicateConstants),
                 constantParamTypes(projectionConstants)
             );
-            Class<?> fusedClass = compiler.compileFilterEvalBlockLoop(
-                LOOKUP,
-                predicateTree,
-                projectionTree,
-                type,
-                Stitcher.FUSED_METHOD_NAME
-            );
-            handle = FusedExpressionEvaluatorFactory.bindHandle(fusedClass, Stitcher.FUSED_METHOD_NAME, type);
+            unit = compiler.compileFilterEvalBlockLoop(LOOKUP, predicateTree, projectionTree, type, Stitcher.FUSED_METHOD_NAME);
+            handle = FusedExpressionEvaluatorFactory.bindHandle(unit, Stitcher.FUSED_METHOD_NAME, type);
         } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError e) {
             // Filter-eval is block-only: a stitch failure loses fusion entirely, so WARN once per shape.
             Throwable failure = e;
@@ -189,6 +193,7 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
             FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure(logger, shape, FusedClassCache.Path.FILTER_EVAL_BLOCK, true, failure);
             FusionTelemetry.recordFailure(shape, FusedClassCache.Path.FILTER_EVAL_BLOCK);
             handle = null;
+            unit = null;
         } finally {
             if (captured != null) {
                 FusionDump.endThreadCapture();
@@ -206,7 +211,8 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
             projConstValues,
             unfusedPredicate,
             unfusedProjection,
-            shape
+            shape,
+            unit
         );
     }
 
