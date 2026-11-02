@@ -65,10 +65,54 @@ public class StitcherDebugInfoTests extends ESTestCase {
         }
     }
 
-    private static final FusionDescriptor ADD = new FusionDescriptor(ArithmeticKernels.class, "add", "(JJ)J", true, true);
-    private static final FusionDescriptor MUL = new FusionDescriptor(ArithmeticKernels.class, "mul", "(JJ)J", true, true);
-    private static final FusionDescriptor GT = new FusionDescriptor(ComparisonKernels.class, "gt", "(JJ)Z", false, true);
-    private static final FusionDescriptor LT = new FusionDescriptor(ComparisonKernels.class, "lt", "(JJ)Z", false, true);
+    private static final FusionDescriptor ADD = new FusionDescriptor(
+        ArithmeticKernels.class,
+        "add",
+        "(JJ)J",
+        true,
+        true,
+        "java.lang.ArithmeticException",
+        false,
+        false,
+        true,
+        true
+    );
+    private static final FusionDescriptor MUL = new FusionDescriptor(
+        ArithmeticKernels.class,
+        "mul",
+        "(JJ)J",
+        true,
+        true,
+        "java.lang.ArithmeticException",
+        false,
+        false,
+        true,
+        true
+    );
+    private static final FusionDescriptor GT = new FusionDescriptor(
+        ComparisonKernels.class,
+        "gt",
+        "(JJ)Z",
+        false,
+        true,
+        "",
+        false,
+        false,
+        false,
+        true
+    );
+    private static final FusionDescriptor LT = new FusionDescriptor(
+        ComparisonKernels.class,
+        "lt",
+        "(JJ)Z",
+        false,
+        true,
+        "",
+        false,
+        false,
+        false,
+        true
+    );
 
     private static final String ADD_ENTRY = ArithmeticKernels.class.getName() + "#add";
     private static final String MUL_ENTRY = ArithmeticKernels.class.getName() + "#mul";

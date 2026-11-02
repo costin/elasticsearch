@@ -57,10 +57,54 @@ public class StitcherArithmeticVectorInterfaceTests extends ESTestCase {
         }
     }
 
-    private static final FusionDescriptor ADD = new FusionDescriptor(LongKernels.class, "add", "(JJ)J", false, true);
-    private static final FusionDescriptor MUL = new FusionDescriptor(LongKernels.class, "mul", "(JJ)J", false, true);
-    private static final FusionDescriptor ADD_EXACT = new FusionDescriptor(LongKernels.class, "addExact", "(JJ)J", true, true);
-    private static final FusionDescriptor MUL_EXACT = new FusionDescriptor(LongKernels.class, "mulExact", "(JJ)J", true, true);
+    private static final FusionDescriptor ADD = new FusionDescriptor(
+        LongKernels.class,
+        "add",
+        "(JJ)J",
+        false,
+        true,
+        "",
+        false,
+        false,
+        false,
+        true
+    );
+    private static final FusionDescriptor MUL = new FusionDescriptor(
+        LongKernels.class,
+        "mul",
+        "(JJ)J",
+        false,
+        true,
+        "",
+        false,
+        false,
+        false,
+        true
+    );
+    private static final FusionDescriptor ADD_EXACT = new FusionDescriptor(
+        LongKernels.class,
+        "addExact",
+        "(JJ)J",
+        true,
+        true,
+        "java.lang.ArithmeticException",
+        false,
+        false,
+        true,
+        true
+    );
+    private static final FusionDescriptor MUL_EXACT = new FusionDescriptor(
+        LongKernels.class,
+        "mulExact",
+        "(JJ)J",
+        true,
+        true,
+        "java.lang.ArithmeticException",
+        false,
+        false,
+        true,
+        true
+    );
 
     private static final String VECTOR_UNSAFE = "org/elasticsearch/compute/data/VectorUnsafe";
 

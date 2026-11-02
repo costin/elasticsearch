@@ -219,6 +219,11 @@ public class FusionBytesRefAliasingTests extends FusionDifferentialTestCase {
             "processBytesRef",
             "(Lorg/apache/lucene/util/BytesRef;Lorg/apache/lucene/util/BytesRef;)Z",
             false,
+            true,
+            "",
+            false,
+            false,
+            false,
             true
         );
         FusionDescriptor left = new FusionDescriptor(
@@ -226,6 +231,11 @@ public class FusionBytesRefAliasingTests extends FusionDifferentialTestCase {
             "process",
             "(Lorg/apache/lucene/util/BytesRef;Lorg/apache/lucene/util/UnicodeUtil$UTF8CodePoint;"
                 + "Lorg/apache/lucene/util/BytesRef;I)Lorg/apache/lucene/util/BytesRef;",
+            false,
+            true,
+            "",
+            false,
+            false,
             false,
             true
         );

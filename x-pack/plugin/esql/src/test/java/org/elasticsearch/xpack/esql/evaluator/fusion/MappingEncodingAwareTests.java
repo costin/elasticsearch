@@ -500,7 +500,18 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
 
         // Structural: a LENGTH(CONCAT(single BytesRef leaf)) tree must not be encoding-aware even when CONCAT
         // is not overflow-checked and declares no warnExceptions (the previous heuristic treated it as safe).
-        FusionDescriptor length = new FusionDescriptor(Length.class, "process", "(Lorg/apache/lucene/util/BytesRef;)I", false, true);
+        FusionDescriptor length = new FusionDescriptor(
+            Length.class,
+            "process",
+            "(Lorg/apache/lucene/util/BytesRef;)I",
+            false,
+            true,
+            "",
+            false,
+            false,
+            false,
+            true
+        );
         FusionNode tree = new FusionNode.Kernel(
             length,
             List.of(new FusionNode.Kernel(FusionPlanner.CONCAT_DESCRIPTOR, List.of(new FusionNode.Input(0))))

@@ -181,9 +181,42 @@ public class StitcherBlockFusionTests extends ESTestCase {
     // ---------------------------------------------------------------------------------------------------------------
 
     public void testLongRandomTreesBlockDifferential() throws Throwable {
-        FusionDescriptor add = new FusionDescriptor(LongKernels.class, "add", "(JJ)J", true, true);
-        FusionDescriptor mul = new FusionDescriptor(LongKernels.class, "mul", "(JJ)J", true, true);
-        FusionDescriptor sub = new FusionDescriptor(LongKernels.class, "sub", "(JJ)J", true, true);
+        FusionDescriptor add = new FusionDescriptor(
+            LongKernels.class,
+            "add",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        FusionDescriptor mul = new FusionDescriptor(
+            LongKernels.class,
+            "mul",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        FusionDescriptor sub = new FusionDescriptor(
+            LongKernels.class,
+            "sub",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         Map<FusionDescriptor, LongBinaryOperator> ops = new HashMap<>();
         ops.put(add, (a, b) -> a + b);
         ops.put(mul, (a, b) -> a * b);
@@ -251,9 +284,42 @@ public class StitcherBlockFusionTests extends ESTestCase {
     }
 
     public void testIntRandomTreesBlockDifferential() throws Throwable {
-        FusionDescriptor add = new FusionDescriptor(IntKernels.class, "add", "(II)I", true, true);
-        FusionDescriptor mul = new FusionDescriptor(IntKernels.class, "mul", "(II)I", true, true);
-        FusionDescriptor sub = new FusionDescriptor(IntKernels.class, "sub", "(II)I", true, true);
+        FusionDescriptor add = new FusionDescriptor(
+            IntKernels.class,
+            "add",
+            "(II)I",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        FusionDescriptor mul = new FusionDescriptor(
+            IntKernels.class,
+            "mul",
+            "(II)I",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        FusionDescriptor sub = new FusionDescriptor(
+            IntKernels.class,
+            "sub",
+            "(II)I",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         Map<FusionDescriptor, IntBinaryOperator> ops = new HashMap<>();
         ops.put(add, (a, b) -> a + b);
         ops.put(mul, (a, b) -> a * b);
@@ -321,9 +387,9 @@ public class StitcherBlockFusionTests extends ESTestCase {
     }
 
     public void testDoubleRandomTreesBlockDifferential() throws Throwable {
-        FusionDescriptor add = new FusionDescriptor(DoubleKernels.class, "add", "(DD)D", false, true);
-        FusionDescriptor mul = new FusionDescriptor(DoubleKernels.class, "mul", "(DD)D", false, true);
-        FusionDescriptor sub = new FusionDescriptor(DoubleKernels.class, "sub", "(DD)D", false, true);
+        FusionDescriptor add = new FusionDescriptor(DoubleKernels.class, "add", "(DD)D", false, true, "", false, false, false, true);
+        FusionDescriptor mul = new FusionDescriptor(DoubleKernels.class, "mul", "(DD)D", false, true, "", false, false, false, true);
+        FusionDescriptor sub = new FusionDescriptor(DoubleKernels.class, "sub", "(DD)D", false, true, "", false, false, false, true);
         Map<FusionDescriptor, DoubleBinaryOperator> ops = new HashMap<>();
         ops.put(add, (a, b) -> a + b);
         ops.put(mul, (a, b) -> a * b);
@@ -579,7 +645,18 @@ public class StitcherBlockFusionTests extends ESTestCase {
     public void testUnusedInputDoesNotOverNullify() throws Throwable {
         // add(in0, in2): input index 1 exists in [0, arity) (arity = 3) but is never consumed. Its nulls/multi-values
         // must be ignored — only in0 and in2 gate the result.
-        FusionDescriptor add = new FusionDescriptor(LongKernels.class, "add", "(JJ)J", true, true);
+        FusionDescriptor add = new FusionDescriptor(
+            LongKernels.class,
+            "add",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         FusionNode tree = new FusionNode.Kernel(add, List.of(new FusionNode.Input(0), new FusionNode.Input(2)));
 
         Class<?> fused = stitcher.compileBlockLoop(MethodHandles.lookup(), tree);
@@ -626,8 +703,30 @@ public class StitcherBlockFusionTests extends ESTestCase {
 
     /** {@code (a - b) / c} : Div(Sub(in0, in1), in2). Div at the root makes the tree non-commutative. */
     private static FusionNode subDivTree() {
-        FusionDescriptor sub = new FusionDescriptor(LongKernels.class, "sub", "(JJ)J", true, true);
-        FusionDescriptor div = new FusionDescriptor(LongKernels.class, "div", "(JJ)J", true, true);
+        FusionDescriptor sub = new FusionDescriptor(
+            LongKernels.class,
+            "sub",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        FusionDescriptor div = new FusionDescriptor(
+            LongKernels.class,
+            "div",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         return new FusionNode.Kernel(
             div,
             List.of(new FusionNode.Kernel(sub, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
@@ -636,9 +735,42 @@ public class StitcherBlockFusionTests extends ESTestCase {
 
     /** {@code ((a + b) * c) - d} : Sub(Mul(Add(in0, in1), in2), in3) — kernel depth 3. */
     private static FusionNode depth3Tree() {
-        FusionDescriptor add = new FusionDescriptor(LongKernels.class, "add", "(JJ)J", true, true);
-        FusionDescriptor mul = new FusionDescriptor(LongKernels.class, "mul", "(JJ)J", true, true);
-        FusionDescriptor sub = new FusionDescriptor(LongKernels.class, "sub", "(JJ)J", true, true);
+        FusionDescriptor add = new FusionDescriptor(
+            LongKernels.class,
+            "add",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        FusionDescriptor mul = new FusionDescriptor(
+            LongKernels.class,
+            "mul",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        FusionDescriptor sub = new FusionDescriptor(
+            LongKernels.class,
+            "sub",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         FusionNode addNode = new FusionNode.Kernel(add, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
         FusionNode mulNode = new FusionNode.Kernel(mul, List.of(addNode, new FusionNode.Input(2)));
         return new FusionNode.Kernel(sub, List.of(mulNode, new FusionNode.Input(3)));
@@ -656,6 +788,11 @@ public class StitcherBlockFusionTests extends ESTestCase {
             KernelFixtures.class,
             "processBytesRefIdentity",
             "(Lorg/apache/lucene/util/BytesRef;)Lorg/apache/lucene/util/BytesRef;",
+            false,
+            true,
+            "",
+            false,
+            false,
             false,
             true
         );
@@ -711,6 +848,11 @@ public class StitcherBlockFusionTests extends ESTestCase {
             KernelFixtures.class,
             "processAppendSuffix",
             "(Lorg/apache/lucene/util/BytesRef;Ljava/lang/String;)Lorg/apache/lucene/util/BytesRef;",
+            false,
+            true,
+            "",
+            false,
+            false,
             false,
             true
         );

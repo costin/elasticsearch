@@ -47,8 +47,30 @@ public class StitcherLogicalVectorFusionTests extends ESTestCase {
         }
     }
 
-    private static final FusionDescriptor GT = new FusionDescriptor(ComparisonKernels.class, "gt", "(JJ)Z", false, true);
-    private static final FusionDescriptor LT = new FusionDescriptor(ComparisonKernels.class, "lt", "(JJ)Z", false, true);
+    private static final FusionDescriptor GT = new FusionDescriptor(
+        ComparisonKernels.class,
+        "gt",
+        "(JJ)Z",
+        false,
+        true,
+        "",
+        false,
+        false,
+        false,
+        true
+    );
+    private static final FusionDescriptor LT = new FusionDescriptor(
+        ComparisonKernels.class,
+        "lt",
+        "(JJ)Z",
+        false,
+        true,
+        "",
+        false,
+        false,
+        false,
+        true
+    );
 
     private Stitcher stitcher;
 

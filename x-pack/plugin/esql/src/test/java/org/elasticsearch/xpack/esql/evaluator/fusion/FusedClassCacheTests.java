@@ -211,8 +211,8 @@ public class FusedClassCacheTests extends ESTestCase {
      * {@code NOT(a>b AND c<d)} is stable across two equivalent trees.
      */
     public void testNotShapeDiffersFromBareComparisonAndIsStable() {
-        FusionDescriptor gt = new FusionDescriptor(Math.class, "gt", "(JJ)Z", false, true);
-        FusionDescriptor lt = new FusionDescriptor(Math.class, "lt", "(JJ)Z", false, true);
+        FusionDescriptor gt = new FusionDescriptor(Math.class, "gt", "(JJ)Z", false, true, "", false, false, false, true);
+        FusionDescriptor lt = new FusionDescriptor(Math.class, "lt", "(JJ)Z", false, true, "", false, false, false, true);
         FusionNode cmp = new FusionNode.Kernel(gt, List.of(input(0), input(1)));
         FusionNode notCmp = new FusionNode.Not(cmp);
         String cmpShape = FusionPlanner.shapeOf(cmp);
@@ -742,7 +742,10 @@ public class FusedClassCacheTests extends ESTestCase {
 
     /** A binary kernel node over {@code kernelClass}/{@code method} with a {@code (JJ)J} descriptor. */
     private static FusionNode kernelNode(Class<?> kernelClass, String method, FusionNode left, FusionNode right) {
-        return new FusionNode.Kernel(new FusionDescriptor(kernelClass, method, "(JJ)J", true, false), List.of(left, right));
+        return new FusionNode.Kernel(
+            new FusionDescriptor(kernelClass, method, "(JJ)J", true, false, "java.lang.ArithmeticException", false, false, true, true),
+            List.of(left, right)
+        );
     }
 
     /**
@@ -751,7 +754,7 @@ public class FusedClassCacheTests extends ESTestCase {
      * (real {@code (JJ)J} static methods on {@link Math}); only their rendered signature matters here.
      */
     private static FusionDescriptor descriptor(String method) {
-        return new FusionDescriptor(Math.class, method, "(JJ)J", true, false);
+        return new FusionDescriptor(Math.class, method, "(JJ)J", true, false, "java.lang.ArithmeticException", false, false, true, true);
     }
 
     /**

@@ -149,7 +149,18 @@ public class BodyExtractorTests extends ESTestCase {
         // A loop-bodied kernel (a for back-edge) with a single terminal return and no ATHROW is loop-capable: it
         // extracts like any straight-line body, with the back-edge preserved in the cloned computation (#8a).
         TemplateRegistry registry = new TemplateRegistry();
-        FusionDescriptor sumTo = new FusionDescriptor(KernelFixtures.class, "processSumTo", "(I)I", false, true);
+        FusionDescriptor sumTo = new FusionDescriptor(
+            KernelFixtures.class,
+            "processSumTo",
+            "(I)I",
+            false,
+            true,
+            "",
+            false,
+            false,
+            false,
+            true
+        );
         MethodNode kernel = registry.methodNode(sumTo);
         int originalSize = kernel.instructions.size();
 
@@ -246,6 +257,17 @@ public class BodyExtractorTests extends ESTestCase {
     }
 
     private static FusionDescriptor descriptor(String kernelMethod) {
-        return new FusionDescriptor(KernelFixtures.class, kernelMethod, LONG_BINARY_TYPE, true, true);
+        return new FusionDescriptor(
+            KernelFixtures.class,
+            kernelMethod,
+            LONG_BINARY_TYPE,
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
     }
 }

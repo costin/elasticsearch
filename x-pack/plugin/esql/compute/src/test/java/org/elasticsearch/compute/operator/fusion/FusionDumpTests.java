@@ -36,7 +36,18 @@ public class FusionDumpTests extends ESTestCase {
     }
 
     private static FusionNode greaterThanTree() {
-        FusionDescriptor gt = new FusionDescriptor(KernelFixtures.class, "processLongsGreaterThan", "(JJ)Z", false, true);
+        FusionDescriptor gt = new FusionDescriptor(
+            KernelFixtures.class,
+            "processLongsGreaterThan",
+            "(JJ)Z",
+            false,
+            true,
+            "",
+            false,
+            false,
+            false,
+            true
+        );
         return new FusionNode.Kernel(gt, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
     }
 

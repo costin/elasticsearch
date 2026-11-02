@@ -100,7 +100,18 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
      */
     public void testRealAddProcessLongsBlockPathOverflowMatchesUnfused() throws Throwable {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
-        FusionDescriptor descriptor = new FusionDescriptor(Add.class, "processLongs", "(JJ)J", true, true);
+        FusionDescriptor descriptor = new FusionDescriptor(
+            Add.class,
+            "processLongs",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         assertThat(descriptor.overflowExceptionType(), equalTo("java.lang.ArithmeticException"));
         FusionNode tree = new FusionNode.Kernel(descriptor, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
 
@@ -158,7 +169,18 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
      */
     public void testRealAddProcessDoublesBlockPathOverflowMatchesUnfused() throws Throwable {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
-        FusionDescriptor descriptor = new FusionDescriptor(Add.class, "processDoubles", "(DD)D", true, true);
+        FusionDescriptor descriptor = new FusionDescriptor(
+            Add.class,
+            "processDoubles",
+            "(DD)D",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         FusionNode tree = new FusionNode.Kernel(descriptor, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
 
         Class<?> fused = stitcher.compileBlockLoop(lookup, tree);
@@ -223,7 +245,18 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
      */
     public void testRealAddProcessDoublesCheckedVectorPathMatchesUnfused() throws Throwable {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
-        FusionDescriptor descriptor = new FusionDescriptor(Add.class, "processDoubles", "(DD)D", true, true);
+        FusionDescriptor descriptor = new FusionDescriptor(
+            Add.class,
+            "processDoubles",
+            "(DD)D",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         FusionNode tree = new FusionNode.Kernel(descriptor, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
 
         // No StitchingException: the vector path now defines into the caller's module and links NumericUtils.

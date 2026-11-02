@@ -118,6 +118,6 @@ public class TemplateRegistryTests extends ESTestCase {
     }
 
     private static FusionDescriptor descriptor(String method, String type) {
-        return new FusionDescriptor(TestKernel.class, method, type, false, true);
+        return new FusionDescriptor(TestKernel.class, method, type, false, true, "", false, false, false, true);
     }
 }

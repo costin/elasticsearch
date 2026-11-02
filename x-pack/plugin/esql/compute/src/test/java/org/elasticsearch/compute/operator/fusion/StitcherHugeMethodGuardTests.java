@@ -44,10 +44,54 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
         Stitcher.maxFusedMethodBytecodesForTests(Stitcher.DEFAULT_MAX_FUSED_METHOD_BYTECODES);
     }
 
-    private static final FusionDescriptor ADD = new FusionDescriptor(ArithmeticKernels.class, "add", "(JJ)J", true, true);
-    private static final FusionDescriptor MUL = new FusionDescriptor(ArithmeticKernels.class, "mul", "(JJ)J", true, true);
-    private static final FusionDescriptor GT = new FusionDescriptor(ComparisonKernels.class, "gt", "(JJ)Z", false, true);
-    private static final FusionDescriptor LT = new FusionDescriptor(ComparisonKernels.class, "lt", "(JJ)Z", false, true);
+    private static final FusionDescriptor ADD = new FusionDescriptor(
+        ArithmeticKernels.class,
+        "add",
+        "(JJ)J",
+        true,
+        true,
+        "java.lang.ArithmeticException",
+        false,
+        false,
+        true,
+        true
+    );
+    private static final FusionDescriptor MUL = new FusionDescriptor(
+        ArithmeticKernels.class,
+        "mul",
+        "(JJ)J",
+        true,
+        true,
+        "java.lang.ArithmeticException",
+        false,
+        false,
+        true,
+        true
+    );
+    private static final FusionDescriptor GT = new FusionDescriptor(
+        ComparisonKernels.class,
+        "gt",
+        "(JJ)Z",
+        false,
+        true,
+        "",
+        false,
+        false,
+        false,
+        true
+    );
+    private static final FusionDescriptor LT = new FusionDescriptor(
+        ComparisonKernels.class,
+        "lt",
+        "(JJ)Z",
+        false,
+        true,
+        "",
+        false,
+        false,
+        false,
+        true
+    );
 
     /** {@code long} arithmetic kernels shaped like the production {@code Add}/{@code Mul}. */
     public static final class ArithmeticKernels {

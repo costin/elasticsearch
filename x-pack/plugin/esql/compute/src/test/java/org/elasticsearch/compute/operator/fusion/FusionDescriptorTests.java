@@ -44,9 +44,9 @@ public class FusionDescriptorTests extends ESTestCase {
         assertThat(fusionAware.fusionDescriptor(), is(expected));
     }
 
-    public void testConvenienceConstructorDerivesOverflowExceptionType() {
-        // Overflow-checked kernels throw ArithmeticException (matching what the APT derives from warnExceptions);
-        // non-overflow kernels carry no exception type.
+    public void testOverflowCheckedDerivesOverflowExceptionType() {
+        // The helper replicates the old 5-arg mapping: overflow-checked kernels throw ArithmeticException
+        // (matching what the APT derives from warnExceptions); non-overflow kernels carry no exception type.
         assertThat(descriptor(KERNEL_TYPE, true, true).overflowExceptionType(), is("java.lang.ArithmeticException"));
         assertThat(descriptor(KERNEL_TYPE, true, true).hasOverflowException(), is(true));
         assertThat(descriptor(KERNEL_TYPE, false, true).overflowExceptionType(), is(""));
@@ -60,24 +60,65 @@ public class FusionDescriptorTests extends ESTestCase {
             KERNEL_TYPE,
             true,
             true,
-            "java.lang.ArithmeticException"
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
         );
-        FusionDescriptor b = new FusionDescriptor(FusionDescriptorTests.class, "fixtureProcess", KERNEL_TYPE, true, true, "");
+        FusionDescriptor b = new FusionDescriptor(
+            FusionDescriptorTests.class,
+            "fixtureProcess",
+            KERNEL_TYPE,
+            true,
+            true,
+            "",
+            false,
+            false,
+            false,
+            true
+        );
         assertThat(a.overflowExceptionType(), is("java.lang.ArithmeticException"));
         assertThat(a.hasOverflowException(), is(true));
         assertThat(b.hasOverflowException(), is(false));
         assertThat(a, not(b));
     }
 
-    public void testMappingDefaultsFalseOnConvenienceConstructors() {
-        assertThat(descriptor(KERNEL_TYPE, false, true).mapping(), is(false));
-        assertThat(descriptor(KERNEL_TYPE, false, true).variadic(), is(false));
-        FusionDescriptor variadic = new FusionDescriptor(FusionDescriptorTests.class, "fixtureProcess", KERNEL_TYPE, false, true, "", true);
+    public void testCanonicalConstructorStoresVariadicAndMapping() {
+        FusionDescriptor plain = descriptor(KERNEL_TYPE, false, true);
+        assertThat(plain.mapping(), is(false));
+        assertThat(plain.variadic(), is(false));
+        FusionDescriptor variadic = new FusionDescriptor(
+            FusionDescriptorTests.class,
+            "fixtureProcess",
+            KERNEL_TYPE,
+            false,
+            true,
+            "",
+            true,
+            false,
+            false,
+            true
+        );
         assertThat(variadic.variadic(), is(true));
         assertThat(variadic.mapping(), is(false));
+        FusionDescriptor mapping = new FusionDescriptor(
+            FusionDescriptorTests.class,
+            "fixtureProcess",
+            KERNEL_TYPE,
+            false,
+            true,
+            "",
+            false,
+            true,
+            false,
+            true
+        );
+        assertThat(mapping.mapping(), is(true));
+        assertThat(mapping.variadic(), is(false));
     }
 
-    public void testConvenienceConstructorsDeriveWarnsAndDefaultDictionarySafe() {
+    public void testCanonicalConstructorStoresWarnsAndDictionarySafe() {
         FusionDescriptor overflow = descriptor(KERNEL_TYPE, true, true);
         assertThat(overflow.warns(), is(true));
         assertThat(overflow.dictionarySafe(), is(true));
@@ -106,7 +147,23 @@ public class FusionDescriptorTests extends ESTestCase {
         assertThat(fusionAware.fusionFixedArgs().isEmpty(), is(true));
     }
 
+    /**
+     * Builds via the canonical 10-arg constructor, replicating the deleted 5-arg derivation so existing
+     * callers keep the same component values: ArithmeticException + {@code warns=true} when overflow-checked,
+     * empty exception type + {@code warns=false} otherwise; not variadic, not mapping, {@code dictionarySafe=true}.
+     */
     private static FusionDescriptor descriptor(String kernelType, boolean overflowChecked, boolean allNullsIsNull) {
-        return new FusionDescriptor(FusionDescriptorTests.class, "fixtureProcess", kernelType, overflowChecked, allNullsIsNull);
+        return new FusionDescriptor(
+            FusionDescriptorTests.class,
+            "fixtureProcess",
+            kernelType,
+            overflowChecked,
+            allNullsIsNull,
+            overflowChecked ? "java.lang.ArithmeticException" : "",
+            false,
+            false,
+            overflowChecked,
+            true
+        );
     }
 }

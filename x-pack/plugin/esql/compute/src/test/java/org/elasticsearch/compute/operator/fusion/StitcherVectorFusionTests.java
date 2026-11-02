@@ -87,8 +87,30 @@ public class StitcherVectorFusionTests extends ESTestCase {
     }
 
     public void testLongAddMulTreeDifferential() throws Throwable {
-        FusionDescriptor add = new FusionDescriptor(KernelFixtures.class, "processLongsAdd", "(JJ)J", true, true);
-        FusionDescriptor mul = new FusionDescriptor(KernelFixtures.class, "processLongsMul", "(JJ)J", true, true);
+        FusionDescriptor add = new FusionDescriptor(
+            KernelFixtures.class,
+            "processLongsAdd",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        FusionDescriptor mul = new FusionDescriptor(
+            KernelFixtures.class,
+            "processLongsMul",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         // (a + b) * c
         FusionNode tree = new FusionNode.Kernel(
             mul,
@@ -134,8 +156,30 @@ public class StitcherVectorFusionTests extends ESTestCase {
     }
 
     public void testIntAddMulTreeDifferential() throws Throwable {
-        FusionDescriptor add = new FusionDescriptor(IntKernels.class, "processIntsAdd", "(II)I", true, true);
-        FusionDescriptor mul = new FusionDescriptor(IntKernels.class, "processIntsMul", "(II)I", true, true);
+        FusionDescriptor add = new FusionDescriptor(
+            IntKernels.class,
+            "processIntsAdd",
+            "(II)I",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        FusionDescriptor mul = new FusionDescriptor(
+            IntKernels.class,
+            "processIntsMul",
+            "(II)I",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         // (a + b) * c
         FusionNode tree = new FusionNode.Kernel(
             mul,
@@ -185,7 +229,18 @@ public class StitcherVectorFusionTests extends ESTestCase {
      * FreqInlineSize budget). Asserts the fused method computes {@code a + 60*b} position-by-position.
      */
     public void testDeepChainFusesInlineAndComputesCorrectly() throws Throwable {
-        FusionDescriptor add = new FusionDescriptor(KernelFixtures.class, "processLongsAdd", "(JJ)J", true, true);
+        FusionDescriptor add = new FusionDescriptor(
+            KernelFixtures.class,
+            "processLongsAdd",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         int adds = 60;
         FusionNode tree = new FusionNode.Input(0);
         for (int i = 0; i < adds; i++) {
@@ -233,7 +288,18 @@ public class StitcherVectorFusionTests extends ESTestCase {
      * the result is {@code a + 60} proves constant plumbing is correct under INLINE fusion.
      */
     public void testDeepChainWithConstantsFusesInlineAndComputesCorrectly() throws Throwable {
-        FusionDescriptor add = new FusionDescriptor(KernelFixtures.class, "processLongsAdd", "(JJ)J", true, true);
+        FusionDescriptor add = new FusionDescriptor(
+            KernelFixtures.class,
+            "processLongsAdd",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         int adds = 60;
         FusionNode tree = new FusionNode.Input(0);
         for (int i = 0; i < adds; i++) {
@@ -287,9 +353,42 @@ public class StitcherVectorFusionTests extends ESTestCase {
      * comparison constant in the same tree still occupies a trailing param slot.
      */
     public void testBakedDivisorIsImmediateAndDoesNotConsumeParamSlot() throws Exception {
-        FusionDescriptor mul = new FusionDescriptor(KernelFixtures.class, "processLongsMul", "(JJ)J", true, true);
-        FusionDescriptor div = new FusionDescriptor(KernelFixtures.class, "processLongsDiv", "(JJ)J", true, true);
-        FusionDescriptor gt = new FusionDescriptor(KernelFixtures.class, "processLongsGreaterThan", "(JJ)Z", false, true);
+        FusionDescriptor mul = new FusionDescriptor(
+            KernelFixtures.class,
+            "processLongsMul",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        FusionDescriptor div = new FusionDescriptor(
+            KernelFixtures.class,
+            "processLongsDiv",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        FusionDescriptor gt = new FusionDescriptor(
+            KernelFixtures.class,
+            "processLongsGreaterThan",
+            "(JJ)Z",
+            false,
+            true,
+            "",
+            false,
+            false,
+            false,
+            true
+        );
         FusionNode.Constant baked = FusionNode.Constant.baked(1000L, 'J');
         FusionNode.Constant cmpConst = new FusionNode.Constant(5L, 'J');
         FusionNode mulNode = new FusionNode.Kernel(mul, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
@@ -323,8 +422,30 @@ public class StitcherVectorFusionTests extends ESTestCase {
      * checked-vector path. The immediate must still be present (INT stays baked).
      */
     public void testBakedIntDivisorIsImmediateOnCheckedPath() throws Exception {
-        FusionDescriptor mul = new FusionDescriptor(IntKernels.class, "processIntsMul", "(II)I", true, true);
-        FusionDescriptor div = new FusionDescriptor(IntKernels.class, "processIntsDiv", "(II)I", true, true);
+        FusionDescriptor mul = new FusionDescriptor(
+            IntKernels.class,
+            "processIntsMul",
+            "(II)I",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        FusionDescriptor div = new FusionDescriptor(
+            IntKernels.class,
+            "processIntsDiv",
+            "(II)I",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         FusionNode.Constant baked = FusionNode.Constant.baked(1000, 'I');
         FusionNode mulNode = new FusionNode.Kernel(mul, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
         FusionNode divTree = new FusionNode.Kernel(div, List.of(mulNode, baked));
@@ -344,8 +465,30 @@ public class StitcherVectorFusionTests extends ESTestCase {
      * F1/H3: BLOCK-path variant of the LONG baked-divisor immediate test.
      */
     public void testBakedLongDivisorIsImmediateOnBlockPath() throws Exception {
-        FusionDescriptor mul = new FusionDescriptor(KernelFixtures.class, "processLongsMul", "(JJ)J", true, true);
-        FusionDescriptor div = new FusionDescriptor(KernelFixtures.class, "processLongsDiv", "(JJ)J", true, true);
+        FusionDescriptor mul = new FusionDescriptor(
+            KernelFixtures.class,
+            "processLongsMul",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        FusionDescriptor div = new FusionDescriptor(
+            KernelFixtures.class,
+            "processLongsDiv",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         FusionNode.Constant baked = FusionNode.Constant.baked(1000L, 'J');
         FusionNode mulNode = new FusionNode.Kernel(mul, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
         FusionNode divTree = new FusionNode.Kernel(div, List.of(mulNode, baked));
@@ -365,8 +508,30 @@ public class StitcherVectorFusionTests extends ESTestCase {
      * F1/H3: BLOCK-path INT-divisor variant. The immediate must still be present (INT stays baked).
      */
     public void testBakedIntDivisorIsImmediateOnBlockPath() throws Exception {
-        FusionDescriptor mul = new FusionDescriptor(IntKernels.class, "processIntsMul", "(II)I", true, true);
-        FusionDescriptor div = new FusionDescriptor(IntKernels.class, "processIntsDiv", "(II)I", true, true);
+        FusionDescriptor mul = new FusionDescriptor(
+            IntKernels.class,
+            "processIntsMul",
+            "(II)I",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        FusionDescriptor div = new FusionDescriptor(
+            IntKernels.class,
+            "processIntsDiv",
+            "(II)I",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         FusionNode.Constant baked = FusionNode.Constant.baked(1000, 'I');
         FusionNode mulNode = new FusionNode.Kernel(mul, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
         FusionNode divTree = new FusionNode.Kernel(div, List.of(mulNode, baked));

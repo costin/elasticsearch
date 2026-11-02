@@ -75,7 +75,18 @@ public class StitcherBlockCrossModuleTests extends ESTestCase {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
         Stitcher stitcher = new Stitcher(new TemplateRegistry());
         // Mirrors the descriptor the annotation processor emits onto AddDoublesEvaluator$Factory.
-        FusionDescriptor descriptor = new FusionDescriptor(Add.class, "processDoubles", DOUBLE_BINARY_TYPE, true, true);
+        FusionDescriptor descriptor = new FusionDescriptor(
+            Add.class,
+            "processDoubles",
+            DOUBLE_BINARY_TYPE,
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         // add(in0, in1) over two DoubleBlocks.
         FusionNode tree = new FusionNode.Kernel(descriptor, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
 

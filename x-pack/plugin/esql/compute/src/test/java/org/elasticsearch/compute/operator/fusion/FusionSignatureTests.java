@@ -27,12 +27,23 @@ import static org.hamcrest.Matchers.is;
 public class FusionSignatureTests extends ESTestCase {
 
     private static FusionDescriptor overflowKernel(String type) {
-        // overflowChecked == true -> the convenience ctor maps to java.lang.ArithmeticException.
-        return new FusionDescriptor(FusionSignatureTests.class, "k", type, true, true);
+        // overflowChecked == true -> ArithmeticException, warns=true, dictionarySafe=true (old 5-arg derivation).
+        return new FusionDescriptor(
+            FusionSignatureTests.class,
+            "k",
+            type,
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
     }
 
     private static FusionDescriptor plainKernel(String type) {
-        return new FusionDescriptor(FusionSignatureTests.class, "k", type, false, true);
+        return new FusionDescriptor(FusionSignatureTests.class, "k", type, false, true, "", false, false, false, true);
     }
 
     public void testArithmeticTreeFacts() {

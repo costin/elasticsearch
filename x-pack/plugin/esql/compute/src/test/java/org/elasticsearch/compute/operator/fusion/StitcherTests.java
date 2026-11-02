@@ -49,7 +49,18 @@ public class StitcherTests extends ESTestCase {
     public void testFuseAddDepth1() throws Throwable {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
         Stitcher stitcher = new Stitcher(new TemplateRegistry());
-        FusionDescriptor descriptor = new FusionDescriptor(KernelFixtures.class, "processLongsAdd", LONG_BINARY_TYPE, true, true);
+        FusionDescriptor descriptor = new FusionDescriptor(
+            KernelFixtures.class,
+            "processLongsAdd",
+            LONG_BINARY_TYPE,
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
 
         Class<?> fused = stitcher.compile(lookup, descriptor);
 
@@ -71,7 +82,18 @@ public class StitcherTests extends ESTestCase {
     public void testFuseMulDepth1() throws Throwable {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
         Stitcher stitcher = new Stitcher(new TemplateRegistry());
-        FusionDescriptor descriptor = new FusionDescriptor(KernelFixtures.class, "processLongsMul", LONG_BINARY_TYPE, true, true);
+        FusionDescriptor descriptor = new FusionDescriptor(
+            KernelFixtures.class,
+            "processLongsMul",
+            LONG_BINARY_TYPE,
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
 
         Class<?> fused = stitcher.compile(lookup, descriptor);
         MethodHandle handle = lookup.findStatic(fused, Stitcher.FUSED_METHOD_NAME, LONG_BINARY);
@@ -87,7 +109,18 @@ public class StitcherTests extends ESTestCase {
     public void testFuseAddIntsDepth1SingleSlot() throws Throwable {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
         Stitcher stitcher = new Stitcher(new TemplateRegistry());
-        FusionDescriptor descriptor = new FusionDescriptor(IntKernel.class, "processIntsAdd", INT_BINARY_TYPE, true, true);
+        FusionDescriptor descriptor = new FusionDescriptor(
+            IntKernel.class,
+            "processIntsAdd",
+            INT_BINARY_TYPE,
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
 
         Class<?> fused = stitcher.compile(lookup, descriptor);
         MethodHandle handle = lookup.findStatic(fused, Stitcher.FUSED_METHOD_NAME, INT_BINARY);
@@ -103,7 +136,18 @@ public class StitcherTests extends ESTestCase {
 
     public void testMissingKernelSurfacesAsIllegalState() {
         Stitcher stitcher = new Stitcher(new TemplateRegistry());
-        FusionDescriptor descriptor = new FusionDescriptor(KernelFixtures.class, "noSuchKernel", LONG_BINARY_TYPE, true, true);
+        FusionDescriptor descriptor = new FusionDescriptor(
+            KernelFixtures.class,
+            "noSuchKernel",
+            LONG_BINARY_TYPE,
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         // A descriptor that names no real kernel fails while reading the template, before any bytecode is emitted.
         expectThrows(IllegalStateException.class, () -> stitcher.compile(MethodHandles.lookup(), descriptor));
     }
@@ -118,7 +162,18 @@ public class StitcherTests extends ESTestCase {
             host.instructions.add(new InsnNode(Opcodes.ICONST_0));
             host.instructions.add(new InsnNode(Opcodes.IRETURN));
         };
-        FusionDescriptor descriptor = new FusionDescriptor(KernelFixtures.class, "processLongsAdd", LONG_BINARY_TYPE, true, true);
+        FusionDescriptor descriptor = new FusionDescriptor(
+            KernelFixtures.class,
+            "processLongsAdd",
+            LONG_BINARY_TYPE,
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
 
         Stitcher.StitchingException e = expectThrows(
             Stitcher.StitchingException.class,

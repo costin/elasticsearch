@@ -58,7 +58,18 @@ public class StitcherLoopBodyTests extends ESTestCase {
     }
 
     public void testLoopBodyKernelSplicesAndComputes() throws Throwable {
-        FusionDescriptor sumTo = new FusionDescriptor(KernelFixtures.class, "processSumTo", "(I)I", false, true);
+        FusionDescriptor sumTo = new FusionDescriptor(
+            KernelFixtures.class,
+            "processSumTo",
+            "(I)I",
+            false,
+            true,
+            "",
+            false,
+            false,
+            false,
+            true
+        );
         FusionNode tree = new FusionNode.Kernel(sumTo, List.of(new FusionNode.Input(0)));
 
         Class<?> fused = stitcher.compileVectorLoop(MethodHandles.lookup(), tree);

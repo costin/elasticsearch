@@ -720,11 +720,16 @@ public final class FusionPlanner {
      * inner-class descriptor for {@code UnicodeUtil.UTF8CodePoint} is written explicitly. Not overflow-checked; a null
      * input yields null (the block emitter's present flag propagates it via the str/length operands).
      */
-    private static final FusionDescriptor LEFT_DESCRIPTOR = new FusionDescriptor(
+    static final FusionDescriptor LEFT_DESCRIPTOR = new FusionDescriptor(
         Left.class,
         "process",
         "(Lorg/apache/lucene/util/BytesRef;Lorg/apache/lucene/util/UnicodeUtil$UTF8CodePoint;"
             + "Lorg/apache/lucene/util/BytesRef;I)Lorg/apache/lucene/util/BytesRef;",
+        false,
+        true,
+        "",
+        false,
+        false,
         false,
         true
     );
@@ -905,7 +910,7 @@ public final class FusionPlanner {
      * (caught as a warning) on a negative/too-long count, so the encoding-aware path must refuse it even though
      * {@code warns=true} already excludes it.
      */
-    private static final FusionDescriptor SPACE_DESCRIPTOR = new FusionDescriptor(
+    static final FusionDescriptor SPACE_DESCRIPTOR = new FusionDescriptor(
         Space.class,
         "process",
         "(Lorg/elasticsearch/compute/operator/BreakingBytesRefBuilder;I)Lorg/apache/lucene/util/BytesRef;",
@@ -951,18 +956,23 @@ public final class FusionPlanner {
     }
 
     /** The manually-built descriptor for {@code Right#process(@Fixed BytesRef out, @Fixed UTF8CodePoint cp, BytesRef str, int length)} — LEFT's shape. */
-    private static final FusionDescriptor RIGHT_DESCRIPTOR = new FusionDescriptor(
+    static final FusionDescriptor RIGHT_DESCRIPTOR = new FusionDescriptor(
         Right.class,
         "process",
         "(Lorg/apache/lucene/util/BytesRef;Lorg/apache/lucene/util/UnicodeUtil$UTF8CodePoint;"
             + "Lorg/apache/lucene/util/BytesRef;I)Lorg/apache/lucene/util/BytesRef;",
         false,
+        true,
+        "",
+        false,
+        false,
+        false,
         true
     );
 
-    private static final FusionDescriptor TRIM_DESCRIPTOR = unaryStringDescriptor(Trim.class);
-    private static final FusionDescriptor LTRIM_DESCRIPTOR = unaryStringDescriptor(LTrim.class);
-    private static final FusionDescriptor RTRIM_DESCRIPTOR = unaryStringDescriptor(RTrim.class);
+    static final FusionDescriptor TRIM_DESCRIPTOR = unaryStringDescriptor(Trim.class);
+    static final FusionDescriptor LTRIM_DESCRIPTOR = unaryStringDescriptor(LTrim.class);
+    static final FusionDescriptor RTRIM_DESCRIPTOR = unaryStringDescriptor(RTrim.class);
 
     /** Descriptor for a unary {@code process(BytesRef) -> BytesRef} string kernel (TRIM/LTRIM/RTRIM). Not overflow-checked. */
     private static FusionDescriptor unaryStringDescriptor(Class<?> kernelClass) {
@@ -970,6 +980,11 @@ public final class FusionPlanner {
             kernelClass,
             "process",
             "(Lorg/apache/lucene/util/BytesRef;)Lorg/apache/lucene/util/BytesRef;",
+            false,
+            true,
+            "",
+            false,
+            false,
             false,
             true
         );
@@ -1323,13 +1338,46 @@ public final class FusionPlanner {
         if (element == null) {
             return null;
         }
-        // 6-arg convenience matches the generated DivLongsEvaluator / ModLongsEvaluator FUSION_DESCRIPTOR
+        // Canonical 10-arg matches the generated DivLongsEvaluator / ModLongsEvaluator FUSION_DESCRIPTOR
         // field-for-field: explicit ArithmeticException, not variadic, not mapping, warns=true (non-empty
         // exception type), dictionarySafe=true (the throw is caught as a warning).
         return switch (element) {
-            case LONG -> new FusionDescriptor(kernelClass, "processLongs", "(JJ)J", true, true, "java.lang.ArithmeticException");
-            case INT -> new FusionDescriptor(kernelClass, "processInts", "(II)I", true, true, "java.lang.ArithmeticException");
-            case DOUBLE -> new FusionDescriptor(kernelClass, "processDoubles", "(DD)D", true, true, "java.lang.ArithmeticException");
+            case LONG -> new FusionDescriptor(
+                kernelClass,
+                "processLongs",
+                "(JJ)J",
+                true,
+                true,
+                "java.lang.ArithmeticException",
+                false,
+                false,
+                true,
+                true
+            );
+            case INT -> new FusionDescriptor(
+                kernelClass,
+                "processInts",
+                "(II)I",
+                true,
+                true,
+                "java.lang.ArithmeticException",
+                false,
+                false,
+                true,
+                true
+            );
+            case DOUBLE -> new FusionDescriptor(
+                kernelClass,
+                "processDoubles",
+                "(DD)D",
+                true,
+                true,
+                "java.lang.ArithmeticException",
+                false,
+                false,
+                true,
+                true
+            );
             case BOOLEAN, BYTES_REF -> null;
         };
     }

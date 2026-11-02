@@ -55,7 +55,7 @@ import static org.hamcrest.Matchers.nullValue;
  * <p>The fixture kernels below are byte-for-byte shaped like the production long {@code Add}/{@code Mul}/{@code Sub}
  * kernels — {@code Math.*Exact} delegates that throw {@link ArithmeticException} with message {@code "long overflow"}
  * on overflow — so the stitched body splices the same instruction sequence the real overflow-checked kernels do. The
- * descriptors are built {@code overflowChecked = true}, so the convenience constructor derives
+ * descriptors are built {@code overflowChecked = true} with
  * {@code overflowExceptionType = "java.lang.ArithmeticException"}, exactly what the annotation processor emits onto
  * the real evaluators' {@code FUSION_DESCRIPTOR}, and what the stitcher catches around each spliced kernel body.
  *
@@ -227,7 +227,18 @@ public class StitcherOverflowTests extends ESTestCase {
 
     public void testMultiValueNullPlusWarningBlockPath() throws Throwable {
         // add(in0, in1): p0 multi-value lhs, p1 clean, p2 null lhs (no warning), p3 multi-value rhs.
-        FusionDescriptor add = new FusionDescriptor(LongKernels.class, "add", "(JJ)J", true, true);
+        FusionDescriptor add = new FusionDescriptor(
+            LongKernels.class,
+            "add",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         FusionNode tree = new FusionNode.Kernel(add, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
         MethodHandle handle = blockHandle(tree, 2);
         Warnings warnings = collectingWarnings();
@@ -528,8 +539,30 @@ public class StitcherOverflowTests extends ESTestCase {
 
     /** {@code (a + b) * c} : Mul(Add(in0, in1), in2). Add overflow is intermediate; Mul overflow is at the root. */
     private static FusionNode addThenMulTree() {
-        FusionDescriptor add = new FusionDescriptor(LongKernels.class, "add", "(JJ)J", true, true);
-        FusionDescriptor mul = new FusionDescriptor(LongKernels.class, "mul", "(JJ)J", true, true);
+        FusionDescriptor add = new FusionDescriptor(
+            LongKernels.class,
+            "add",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        FusionDescriptor mul = new FusionDescriptor(
+            LongKernels.class,
+            "mul",
+            "(JJ)J",
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
         return new FusionNode.Kernel(
             mul,
             List.of(new FusionNode.Kernel(add, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))

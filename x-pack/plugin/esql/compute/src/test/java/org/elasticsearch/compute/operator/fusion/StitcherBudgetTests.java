@@ -214,19 +214,123 @@ public class StitcherBudgetTests extends ESTestCase {
         }
     }
 
-    private static final FusionDescriptor ADD = new FusionDescriptor(ArithmeticKernels.class, "add", "(JJ)J", true, true);
-    private static final FusionDescriptor MUL = new FusionDescriptor(ArithmeticKernels.class, "mul", "(JJ)J", true, true);
-    private static final FusionDescriptor MUL_INT = new FusionDescriptor(ArithmeticKernels.class, "mulInt", "(II)I", true, true);
-    private static final FusionDescriptor ADD_DOUBLE = new FusionDescriptor(ArithmeticKernels.class, "addDouble", "(DD)D", true, true);
-    private static final FusionDescriptor GT = new FusionDescriptor(ComparisonKernels.class, "gt", "(JJ)Z", false, true);
-    private static final FusionDescriptor LT = new FusionDescriptor(ComparisonKernels.class, "lt", "(JJ)Z", false, true);
-    private static final FusionDescriptor INT_TO_LONG = new FusionDescriptor(CastKernels.class, "intToLong", "(I)J", false, true);
-    private static final FusionDescriptor LONG_TO_DOUBLE = new FusionDescriptor(CastKernels.class, "longToDouble", "(J)D", false, true);
-    private static final FusionDescriptor GT_INT = new FusionDescriptor(ComparisonKernels.class, "gtInt", "(II)Z", false, true);
+    private static final FusionDescriptor ADD = new FusionDescriptor(
+        ArithmeticKernels.class,
+        "add",
+        "(JJ)J",
+        true,
+        true,
+        "java.lang.ArithmeticException",
+        false,
+        false,
+        true,
+        true
+    );
+    private static final FusionDescriptor MUL = new FusionDescriptor(
+        ArithmeticKernels.class,
+        "mul",
+        "(JJ)J",
+        true,
+        true,
+        "java.lang.ArithmeticException",
+        false,
+        false,
+        true,
+        true
+    );
+    private static final FusionDescriptor MUL_INT = new FusionDescriptor(
+        ArithmeticKernels.class,
+        "mulInt",
+        "(II)I",
+        true,
+        true,
+        "java.lang.ArithmeticException",
+        false,
+        false,
+        true,
+        true
+    );
+    private static final FusionDescriptor ADD_DOUBLE = new FusionDescriptor(
+        ArithmeticKernels.class,
+        "addDouble",
+        "(DD)D",
+        true,
+        true,
+        "java.lang.ArithmeticException",
+        false,
+        false,
+        true,
+        true
+    );
+    private static final FusionDescriptor GT = new FusionDescriptor(
+        ComparisonKernels.class,
+        "gt",
+        "(JJ)Z",
+        false,
+        true,
+        "",
+        false,
+        false,
+        false,
+        true
+    );
+    private static final FusionDescriptor LT = new FusionDescriptor(
+        ComparisonKernels.class,
+        "lt",
+        "(JJ)Z",
+        false,
+        true,
+        "",
+        false,
+        false,
+        false,
+        true
+    );
+    private static final FusionDescriptor INT_TO_LONG = new FusionDescriptor(
+        CastKernels.class,
+        "intToLong",
+        "(I)J",
+        false,
+        true,
+        "",
+        false,
+        false,
+        false,
+        true
+    );
+    private static final FusionDescriptor LONG_TO_DOUBLE = new FusionDescriptor(
+        CastKernels.class,
+        "longToDouble",
+        "(J)D",
+        false,
+        true,
+        "",
+        false,
+        false,
+        false,
+        true
+    );
+    private static final FusionDescriptor GT_INT = new FusionDescriptor(
+        ComparisonKernels.class,
+        "gtInt",
+        "(II)Z",
+        false,
+        true,
+        "",
+        false,
+        false,
+        false,
+        true
+    );
     private static final FusionDescriptor LENGTH = new FusionDescriptor(
         StringKernels.class,
         "length",
         "(Lorg/apache/lucene/util/BytesRef;)I",
+        false,
+        true,
+        "",
+        false,
+        false,
         false,
         true
     );

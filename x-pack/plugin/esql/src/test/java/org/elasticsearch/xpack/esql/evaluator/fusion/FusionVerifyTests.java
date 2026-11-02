@@ -578,7 +578,11 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
                     "(JJ)J",
                     true,
                     true,
-                    "java.lang.ArithmeticException"
+                    "java.lang.ArithmeticException",
+                    false,
+                    false,
+                    true,
+                    true
                 );
                 return new FusionNode.Kernel(swapped, children);
             }
