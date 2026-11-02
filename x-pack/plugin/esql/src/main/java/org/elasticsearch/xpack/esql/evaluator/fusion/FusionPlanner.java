@@ -113,14 +113,16 @@ public final class FusionPlanner {
     }
 
     /**
-     * Maximum distinct baked Div/Mod divisor values admitted per un-baked shape. Further values of the same shape
+     * Maximum distinct baked Div/Mod divisor tuples admitted per un-baked shape. Further tuples of the same shape
      * share one runtime-parameter class, bounding classes-per-shape at {@code BAKED_DIVISOR_CAP + 1}.
      */
     static final int BAKED_DIVISOR_CAP = 8;
 
     /**
-     * Distinct baked Div/Mod divisor values admitted per un-baked shape (the {@link #shapeOf} string with baked
-     * values stripped). The inner set is capped at {@link #BAKED_DIVISOR_CAP}; the outer map is capped at
+     * Distinct ordered baked-value tuples admitted per un-baked shape (the {@link #shapeOf} string with baked
+     * values stripped). One tuple per tree, in deterministic tree-walk order. The inner set is capped at
+     * {@link #BAKED_DIVISOR_CAP} so classes-per-shape is bounded at {@code BAKED_DIVISOR_CAP + 1} (≤8 fully-baked
+     * tuples + 1 shared fully-unbaked runtime-param class). The outer map is capped at
      * {@link FusedClassCache#MAX_ENTRIES} so a long-lived node cannot accumulate unbounded shape keys after cache
      * eviction. Plan-time can be multi-threaded, so both tiers are concurrent: the map is a {@link ConcurrentHashMap}
      * and each inner set is {@link ConcurrentHashMap#newKeySet()}, with admission serialized per shape.
@@ -129,7 +131,7 @@ public final class FusionPlanner {
      * time, before cache lookup, and the cache key <em>includes</em> the baked value — the cache cannot admit
      * before bake without a parallel map anyway.
      */
-    private static final ConcurrentHashMap<String, Set<Object>> BAKED_DIVISORS_BY_UNBAKED_SHAPE = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, Set<List<Object>>> BAKED_DIVISOR_TUPLES_BY_UNBAKED_SHAPE = new ConcurrentHashMap<>();
 
     /**
      * The stitch entry points the planner uses. Extracted behind an interface so tests (in this package) can inject a
@@ -262,7 +264,7 @@ public final class FusionPlanner {
             // null keeps the fraction genuinely additive — the caller uses the ordinary unfused factory tree.
             return null;
         }
-        FusionPlan plan = planOrNull(exp, layout, rawFactory);
+        FusionPlan plan = planOrNull(exp, layout, rawFactory, true);
         if (plan == null) {
             return null;
         }
@@ -289,23 +291,26 @@ public final class FusionPlanner {
      * to detect fusable islands without changing production factories.
      */
     static boolean isFusableAtPlan(Expression exp, Layout layout, Function<Expression, ExpressionEvaluator.Factory> rawFactory) {
-        return planOrNull(exp, layout, rawFactory) != null;
+        return planOrNull(exp, layout, rawFactory, false) != null;
     }
 
     /**
      * Builds a {@link FusionPlan} when {@code exp} is fusable at plan time, or {@code null} when the tree is
      * ineligible (build failed, empty inputs, or a lone kernel with no depth-1 exemption). Does not stitch and does
-     * not consult the kill switch / sample — those stay in {@link #maybeFuse}.
+     * not consult the kill switch / sample — those stay in {@link #maybeFuse}. {@code admit} is {@code true} on the
+     * real stitch path and {@code false} for the coverage classifier, which must not consume a baked-tuple slot.
      */
-    private static FusionPlan planOrNull(Expression exp, Layout layout, Function<Expression, ExpressionEvaluator.Factory> rawFactory) {
+    private static FusionPlan planOrNull(
+        Expression exp,
+        Layout layout,
+        Function<Expression, ExpressionEvaluator.Factory> rawFactory,
+        boolean admit
+    ) {
         PlanContext ctx = new PlanContext(layout, rawFactory);
         FusionNode tree = build(exp, ctx, null, null, true);
         if (tree == null || ctx.outputElement == null || ctx.inputElements.isEmpty()) {
             return null;
         }
-        // H3: after the tree exists, un-bake over-cap Div/Mod divisors so they share one runtime-param class.
-        // Must run before FusionSignature.of: un-baking a constant adds a trailing parameter slot.
-        tree = applyBakedDivisorCap(tree, ctx);
         int[] channels = toIntArray(ctx.channels);
         ElementKind[] inputElements = ctx.inputElements.toArray(new ElementKind[0]);
         // The build walk appends one element per leaf input as it assigns channels, so every index in [0, arity) is
@@ -313,14 +318,12 @@ public final class FusionPlanner {
         // planner-produced tree never has one — that fallback is dead code for this path, asserted here.)
         assert noNullElements(inputElements)
             : "planner must populate every input element densely; got " + java.util.Arrays.toString(inputElements);
-        // One walk derives the whole positional contract (warning-source slots + constants-in-emit-order); the Stitcher
-        // re-derives the same facts when it emits, and both agree because FusionSignature is the single source of truth.
-        FusionSignature signature = FusionSignature.of(tree);
         // A lone single-value BytesRef string function (LEFT/SPACE/CONCAT) fuses at depth 1 only under the opt-in
         // esql.fusion.string_depth1 switch (its win is marginal — string work dominates — so it is off by default).
         // ctx.mapping is true for a lone converter root (TO_LOWER/TO_UPPER); excluding it here keeps that kernel
         // from wrongly fusing via the string path. A converter fuses only as a nested mapping in a depth>=2 chain (D4).
         boolean stringDepth1 = ctx.outputElement == ElementKind.BYTES_REF && ctx.mapping == false && FusionSettings.isStringDepth1Enabled();
+        // encodingAware (and inputElements) are unaffected by un-baking, so they are computed on the pre-cap tree.
         boolean encodingAware = encodingAware(tree, inputElements);
         // A lone BytesRef comparison (column == literal, column != literal, or literal == column) is depth-1, but
         // the encoding-aware dictionary gather evaluates once per distinct value — the same depth-1 exemption as
@@ -331,6 +334,13 @@ public final class FusionPlanner {
             // A lone mapping convert (ctx.mapping) is always depth-1, so this refuses it (D4).
             return null;
         }
+        // After every plan gate has passed, un-bake over-cap Div/Mod divisor tuples so they share one runtime-param
+        // class. Must run before FusionSignature.of: un-baking a constant adds a trailing parameter slot. A refused
+        // plan (depth / stringDepth1 / bytesRefComparisonDepth1) returns above and consumes no slot.
+        tree = applyBakedDivisorCap(tree, ctx, admit);
+        // One walk derives the whole positional contract (warning-source slots + constants-in-emit-order); the Stitcher
+        // re-derives the same facts when it emits, and both agree because FusionSignature is the single source of truth.
+        FusionSignature signature = FusionSignature.of(tree);
         return new FusionPlan(
             signature,
             tree,
@@ -397,14 +407,14 @@ public final class FusionPlanner {
         if (containsNestedMapping(predicateTree) || containsNestedMapping(projectionTree) || predCtx.mapping || projCtx.mapping) {
             return null;
         }
-        predicateTree = applyBakedDivisorCap(predicateTree, predCtx);
-        projectionTree = applyBakedDivisorCap(projectionTree, projCtx);
-
         // FilterEvalEmitter cannot forward an 'L' constant and constantParamClass rejects it, so these shapes stay
-        // on the unfused chain; the single-expression path handles L constants.
+        // on the unfused chain; the single-expression path handles L constants. Structure-only, so it runs before
+        // the cap: every refusal here precedes admission and consumes no baked-tuple slot.
         if (containsReferenceConstant(predicateTree) || containsReferenceConstant(projectionTree)) {
             return null;
         }
+        predicateTree = applyBakedDivisorCap(predicateTree, predCtx, true);
+        projectionTree = applyBakedDivisorCap(projectionTree, projCtx, true);
 
         int[] predicateChannels = toIntArray(predCtx.channels);
         int[] projectionChannels = toIntArray(projCtx.channels);
@@ -1409,22 +1419,60 @@ public final class FusionPlanner {
     }
 
     /**
-     * Un-bakes Div/Mod divisors of {@code tree} whose values were not admitted under {@link #BAKED_DIVISOR_CAP} for
-     * this tree's un-baked shape. Already-admitted values stay baked (reuse the existing class). Kernel identity in
+     * Un-bakes every Div/Mod divisor of {@code tree} when its baked-value tuple is not admitted under
+     * {@link #BAKED_DIVISOR_CAP} for this tree's un-baked shape. Admitted tuples stay fully baked (reuse the existing
+     * class); refused tuples are fully un-baked (one shared runtime-param class). Kernel identity in
      * {@code ctx.kernelSources} is remapped when a {@link FusionNode.Kernel} is rewritten. Trees with no baked
      * constant return unchanged without allocating a shape string.
+     *
+     * @param admit {@code false} for the coverage classifier, which never consumes a slot — baking vs un-baking does
+     *              not affect any plan gate (depth, stringDepth1, encodingAware, bytesRefComparisonDepth1 are all
+     *              structure/element only), so the classifier's fusability answer is identical either way.
      */
-    private static FusionNode applyBakedDivisorCap(FusionNode tree, PlanContext ctx) {
+    private static FusionNode applyBakedDivisorCap(FusionNode tree, PlanContext ctx, boolean admit) {
         if (ctx.hasBakedDivisor == false) {
             return tree;
         }
-        return rewriteOverCap(tree, unbakedShapeOf(tree), ctx);
+        if (admit == false) {
+            return tree;
+        }
+        String unbakedShape = unbakedShapeOf(tree);
+        List<Object> tuple = new ArrayList<>();
+        collectBakedDivisors(tree, tuple);
+        assert tuple.isEmpty() == false : "hasBakedDivisor implies at least one baked constant in the tree";
+        if (tryAdmitBakedTuple(unbakedShape, tuple)) {
+            return tree;
+        }
+        return rewriteOverCap(tree, ctx);
     }
 
-    private static FusionNode rewriteOverCap(FusionNode node, String unbakedShape, PlanContext ctx) {
+    /** Appends baked-divisor values of {@code node} in deterministic tree-walk order. */
+    private static void collectBakedDivisors(FusionNode node, List<Object> tuple) {
+        switch (node) {
+            case FusionNode.Constant constant -> {
+                if (constant.isBaked()) {
+                    tuple.add(constant.value());
+                }
+            }
+            case FusionNode.Input unused -> {
+            }
+            case FusionNode.Kernel kernel -> {
+                for (FusionNode child : kernel.children()) {
+                    collectBakedDivisors(child, tuple);
+                }
+            }
+            case FusionNode.Logical logical -> {
+                collectBakedDivisors(logical.left(), tuple);
+                collectBakedDivisors(logical.right(), tuple);
+            }
+            case FusionNode.Not not -> collectBakedDivisors(not.child(), tuple);
+        }
+    }
+
+    private static FusionNode rewriteOverCap(FusionNode node, PlanContext ctx) {
         return switch (node) {
             case FusionNode.Constant constant -> {
-                if (constant.isBaked() && tryAdmitBakedDivisor(unbakedShape, constant.value()) == false) {
+                if (constant.isBaked()) {
                     yield new FusionNode.Constant(constant.value(), constant.element());
                 }
                 yield node;
@@ -1434,7 +1482,7 @@ public final class FusionPlanner {
                 List<FusionNode> children = kernel.children();
                 List<FusionNode> rewritten = null;
                 for (int i = 0; i < children.size(); i++) {
-                    FusionNode child = rewriteOverCap(children.get(i), unbakedShape, ctx);
+                    FusionNode child = rewriteOverCap(children.get(i), ctx);
                     if (child != children.get(i)) {
                         if (rewritten == null) {
                             rewritten = new ArrayList<>(children);
@@ -1453,53 +1501,64 @@ public final class FusionPlanner {
                 yield replacement;
             }
             case FusionNode.Logical logical -> {
-                FusionNode left = rewriteOverCap(logical.left(), unbakedShape, ctx);
-                FusionNode right = rewriteOverCap(logical.right(), unbakedShape, ctx);
+                FusionNode left = rewriteOverCap(logical.left(), ctx);
+                FusionNode right = rewriteOverCap(logical.right(), ctx);
                 if (left == logical.left() && right == logical.right()) {
                     yield node;
                 }
                 yield new FusionNode.Logical(logical.op(), left, right);
             }
             case FusionNode.Not not -> {
-                FusionNode child = rewriteOverCap(not.child(), unbakedShape, ctx);
+                FusionNode child = rewriteOverCap(not.child(), ctx);
                 yield child == not.child() ? node : new FusionNode.Not(child);
             }
         };
     }
 
     /**
-     * Admits {@code value} as a baked divisor of {@code unbakedShape}, or returns {@code false} so the planner emits
-     * the runtime-parameter form instead. Already-admitted values return {@code true} (reuse the baked class). The
-     * inner set is capped at {@link #BAKED_DIVISOR_CAP}; a brand-new un-baked shape is refused without insertion when
-     * the outer map is already at {@link FusedClassCache#MAX_ENTRIES}.
+     * Admits {@code tuple} as a baked divisor tuple of {@code unbakedShape}, or returns {@code false} so the planner
+     * un-bakes every divisor in the tree (runtime-parameter form). Already-admitted tuples return {@code true}
+     * (reuse the baked class). The inner set is capped at {@link #BAKED_DIVISOR_CAP}; a brand-new un-baked shape is
+     * refused without insertion when the outer map is already at {@link FusedClassCache#MAX_ENTRIES}.
      */
-    static boolean tryAdmitBakedDivisor(String unbakedShape, Object value) {
-        Set<Object> admitted = BAKED_DIVISORS_BY_UNBAKED_SHAPE.get(unbakedShape);
+    static boolean tryAdmitBakedTuple(String unbakedShape, List<Object> tuple) {
+        List<Object> key = List.copyOf(tuple);
+        Set<List<Object>> admitted = BAKED_DIVISOR_TUPLES_BY_UNBAKED_SHAPE.get(unbakedShape);
         if (admitted == null) {
             // Fail-safe bound on un-baked *shapes* (not cached classes); mixed-grain with MAX_ENTRIES, harmless.
-            if (BAKED_DIVISORS_BY_UNBAKED_SHAPE.size() >= FusedClassCache.MAX_ENTRIES) {
+            if (BAKED_DIVISOR_TUPLES_BY_UNBAKED_SHAPE.size() >= FusedClassCache.MAX_ENTRIES) {
+                FusionTelemetry.recordBakingDisabledRegistryFull();
                 return false;
             }
-            admitted = BAKED_DIVISORS_BY_UNBAKED_SHAPE.computeIfAbsent(unbakedShape, unused -> ConcurrentHashMap.newKeySet());
+            admitted = BAKED_DIVISOR_TUPLES_BY_UNBAKED_SHAPE.computeIfAbsent(unbakedShape, unused -> ConcurrentHashMap.newKeySet());
         }
-        if (admitted.contains(value)) {
+        if (admitted.contains(key)) {
             return true;
         }
         synchronized (admitted) {
-            if (admitted.contains(value)) {
+            if (admitted.contains(key)) {
                 return true;
             }
             if (admitted.size() >= BAKED_DIVISOR_CAP) {
                 return false;
             }
-            admitted.add(value);
+            admitted.add(key);
             return true;
         }
     }
 
     /** Test-only: drops every per-shape baked-divisor admission so a later test starts from a clean cap. */
     static void resetBakedDivisorsForTests() {
-        BAKED_DIVISORS_BY_UNBAKED_SHAPE.clear();
+        BAKED_DIVISOR_TUPLES_BY_UNBAKED_SHAPE.clear();
+    }
+
+    /** Test-only: sum of all admitted tuples across every un-baked shape (0 when empty). */
+    static int totalAdmittedTuplesForTests() {
+        int total = 0;
+        for (Set<List<Object>> inner : BAKED_DIVISOR_TUPLES_BY_UNBAKED_SHAPE.values()) {
+            total += inner.size();
+        }
+        return total;
     }
 
     /** JVM descriptor of the one supported reference argument/leaf element, {@code org.apache.lucene.util.BytesRef}. */

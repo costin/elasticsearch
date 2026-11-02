@@ -74,6 +74,7 @@ import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.nullValue;
 
 /**
  * The unified, <b>spec-driven</b> generative differential harness (iter 23, Stage 4). One declarative palette of
@@ -1297,6 +1298,83 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
         );
         assertThat("cap test must actually stitch (not refuse)", block, greaterThan(1));
         assertThat("cap test must actually stitch the checked-vector path", checked, greaterThan(1));
+    }
+
+    /**
+     * I3: 400 distinct {@code (a,b)} pairs of {@code (x / a) % b} must create at most
+     * {@link FusionPlanner#BAKED_DIVISOR_CAP}+1 classes per emit path (≤8 fully-baked tuples + 1 shared fully-unbaked
+     * class). Pre-I3 admission is per value, so two baked positions explode well past cap+1.
+     */
+    public void testBakedDivisorTupleCapBoundsClassesForTwoDivisorTrees() {
+        FieldAttribute x = field("x", DataType.LONG);
+        Layout layout = layout(x);
+        FusedClassCache cache = FusionPlanner.classCache();
+        int positions = 16;
+        int n = 20;
+        long[] as = new long[n];
+        long[] bs = new long[n];
+        for (int i = 0; i < n; i++) {
+            as[i] = randomLongBetween(2, 100000);
+            bs[i] = randomLongBetween(2, 100000);
+        }
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j < n; j++) {
+                Expression expr = new Mod(
+                    Source.EMPTY,
+                    new Div(Source.EMPTY, x, constant(ElementKind.LONG, as[i])),
+                    constant(ElementKind.LONG, bs[j])
+                );
+                Block[] inputs = { denseColumn(ElementKind.LONG, positions, 1) };
+                runConstantDifferential(expr, layout, ElementKind.LONG, inputs, positions, "(x/" + as[i] + ")%" + bs[j]);
+            }
+        }
+        int capPlusOne = FusionPlanner.BAKED_DIVISOR_CAP + 1;
+        int block = 0;
+        int checked = 0;
+        for (Shape shape : cache.entriesForTests()) {
+            if (shape.path() == Path.BLOCK) {
+                block++;
+            } else if (shape.path() == Path.CHECKED_VECTOR) {
+                checked++;
+            }
+        }
+        assertThat(
+            "BLOCK classes for 400 (a,b) tuples of one un-baked shape must be <= cap+1, got " + block,
+            block,
+            lessThanOrEqualTo(capPlusOne)
+        );
+        assertThat(
+            "CHECKED_VECTOR classes for 400 (a,b) tuples of one un-baked shape must be <= cap+1, got " + checked,
+            checked,
+            lessThanOrEqualTo(capPlusOne)
+        );
+        assertThat("tuple-cap test must actually stitch (not refuse)", block, greaterThan(1));
+        assertThat("tuple-cap test must actually stitch the checked-vector path", checked, greaterThan(1));
+    }
+
+    /**
+     * I3: a depth-1 {@code x / 1000} is refused by the depth gate before admission, so it consumes no baked-tuple
+     * slot. A depth-2 {@code (x * y) / 7} that does fuse admits exactly one tuple.
+     */
+    public void testLoneDivisorConsumesNoBakedSlot() {
+        FusionPlanner.resetBakedDivisorsForTests();
+        FusionSettings.setEnabledForTests(true);
+        FusionSettings.setSampleFractionForTests(1.0);
+        FusionSettings.setAdaptiveMinRowsForTests(0);
+
+        FieldAttribute x = field("x", DataType.LONG);
+        Layout layout = layout(x);
+        Function<Expression, ExpressionEvaluator.Factory> rawFactory = e -> unfusedFactory(e, layout);
+        Expression lone = new Div(Source.EMPTY, x, constant(ElementKind.LONG, 1000L));
+        assertThat("depth-1 x/1000 must refuse fusion", FusionPlanner.maybeFuse(lone, layout, rawFactory), nullValue());
+        assertThat("a refused depth-1 divisor must consume no baked-tuple slot", FusionPlanner.totalAdmittedTuplesForTests(), is(0));
+
+        FieldAttribute y = field("y", DataType.LONG);
+        Layout layout2 = layout(x, y);
+        Function<Expression, ExpressionEvaluator.Factory> rawFactory2 = e -> unfusedFactory(e, layout2);
+        Expression depth2 = new Div(Source.EMPTY, new Mul(Source.EMPTY, x, y), constant(ElementKind.LONG, 7L));
+        assertThat("depth-2 (x*y)/7 must fuse", FusionPlanner.maybeFuse(depth2, layout2, rawFactory2), notNullValue());
+        assertThat("a fused depth-2 tree must admit exactly one tuple", FusionPlanner.totalAdmittedTuplesForTests(), is(1));
     }
 
     /**

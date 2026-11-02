@@ -119,6 +119,7 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
         // Clear the shape-keyed class cache so a negative-cache marker (or a hidden class) from an earlier test
         // in the same JVM cannot change this test's stitch/first-failure behaviour.
         FusionPlanner.classCache().resetForTests();
+        FusionPlanner.resetBakedDivisorsForTests();
         FusionPlanner.compilerForTests = null;
         FusionSettings.setEnabledForTests(true);
     }
@@ -128,6 +129,7 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
         FusionPlanner.compilerForTests = null;
         FusionPlanner.compilation().compileBlockLoopForTests = null;
         FusionPlanner.classCache().resetForTests();
+        FusionPlanner.resetBakedDivisorsForTests();
         FusionSettings.setEnabledForTests(true);
         FusionSettings.setAdaptiveMinRowsForTests(0);
         FusionSettings.setSampleFractionForTests(1.0);

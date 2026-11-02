@@ -70,6 +70,12 @@ public final class FusionTelemetry {
     private static final LongAdder VECTOR_DEGRADED = new LongAdder();
 
     /**
+     * Number of plans that could not bake a divisor tuple because the per-shape tuple registry outer map was already
+     * at {@link FusedClassCache#MAX_ENTRIES}. Diagnostic side-channel only; not coverage-gated.
+     */
+    private static final LongAdder BAKING_DISABLED_REGISTRY_FULL = new LongAdder();
+
+    /**
      * Opt-in coverage probe (F4/H9). Default {@code false}: every coverage {@code record*} call early-returns, so
      * production pays nothing. Latched from the {@code esql.fusion.coverage_report} <em>system property</em> (not a
      * node Setting — see {@link FusionSettings}); Gradle forwards only {@code tests.*}, so a CsvIT run uses
@@ -195,6 +201,19 @@ public final class FusionTelemetry {
     /** Number of shapes that degraded to block-only fusion after a vector-fast-path stitch failure. */
     public static long vectorDegraded() {
         return VECTOR_DEGRADED.sum();
+    }
+
+    /**
+     * Records one plan that could not bake a divisor tuple because the per-shape tuple registry outer map was already
+     * at {@link FusedClassCache#MAX_ENTRIES}.
+     */
+    public static void recordBakingDisabledRegistryFull() {
+        BAKING_DISABLED_REGISTRY_FULL.increment();
+    }
+
+    /** Number of plans that skipped baking because the tuple registry outer map was full. */
+    public static long bakingDisabledRegistryFull() {
+        return BAKING_DISABLED_REGISTRY_FULL.sum();
     }
 
     /** Number of adaptive unfused-to-fused switches recorded. */
@@ -456,6 +475,7 @@ public final class FusionTelemetry {
         ADAPTIVE_SWITCHES.reset();
         ADAPTIVE_ABANDONED.reset();
         VECTOR_DEGRADED.reset();
+        BAKING_DISABLED_REGISTRY_FULL.reset();
         ATTEMPTS.reset();
         FUSED.reset();
         ISLAND.reset();
