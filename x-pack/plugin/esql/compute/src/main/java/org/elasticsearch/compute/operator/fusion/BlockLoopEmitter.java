@@ -188,32 +188,13 @@ final class BlockLoopEmitter {
         insns.add(new JumpInsnNode(Opcodes.IFEQ, appendNull));
         insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
         insns.add(new VarInsnNode(outputElement.type().getOpcode(Opcodes.ILOAD), root.value()));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                outputElement.appendMethod(),
-                outputElement.appendDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
+        FusedBuilderEmit.emitAppend(insns, outputElement);
         insns.add(new JumpInsnNode(Opcodes.GOTO, next));
 
         // out.appendNull(); reached when the root is not present (a null / multi-value leaf or an overflow on the value
         // path short-circuited the position; any warning was already registered inline by the emitter).
         insns.add(appendNull);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                "appendNull",
-                outputElement.appendNullDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
+        FusedBuilderEmit.emitAppendNull(insns, builderSlot, outputElement);
 
         insns.add(next);
         insns.add(new IincInsnNode(pSlot, 1));
@@ -325,30 +306,11 @@ final class BlockLoopEmitter {
         insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, doNull));
         insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
         insns.add(new VarInsnNode(Opcodes.ILOAD, tRoot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                outputElement.appendMethod(),
-                outputElement.appendDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
+        FusedBuilderEmit.emitAppend(insns, outputElement);
         insns.add(new JumpInsnNode(Opcodes.GOTO, next));
 
         insns.add(doNull);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                "appendNull",
-                outputElement.appendNullDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
+        FusedBuilderEmit.emitAppendNull(insns, builderSlot, outputElement);
 
         insns.add(next);
         insns.add(new IincInsnNode(pSlot, 1));

@@ -410,29 +410,10 @@ final class FilterEvalEmitter {
         insns.add(new JumpInsnNode(Opcodes.IFEQ, doNull));
         insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
         insns.add(new VarInsnNode(projOutputElement.type().getOpcode(Opcodes.ILOAD), root.value()));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                projOutputElement.builderInternalName(),
-                projOutputElement.appendMethod(),
-                projOutputElement.appendDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
+        FusedBuilderEmit.emitAppend(insns, projOutputElement);
         insns.add(new JumpInsnNode(Opcodes.GOTO, done));
         insns.add(doNull);
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                projOutputElement.builderInternalName(),
-                "appendNull",
-                projOutputElement.appendNullDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
+        FusedBuilderEmit.emitAppendNull(insns, builderSlot, projOutputElement);
         insns.add(done);
         insns.add(new InsnNode(Opcodes.RETURN));
         return proj;

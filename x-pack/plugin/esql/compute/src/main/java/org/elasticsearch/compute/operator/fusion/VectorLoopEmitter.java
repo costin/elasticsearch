@@ -443,16 +443,7 @@ final class VectorLoopEmitter {
             debug
         );
         emitter.emit(tree, outputElement);
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                outputElement.builderInternalName(),
-                outputElement.appendMethod(),
-                outputElement.appendDescriptor(),
-                true
-            )
-        );
-        insns.add(new InsnNode(Opcodes.POP));
+        FusedBuilderEmit.emitAppend(insns, outputElement);
         if (tryEndOverflow != null) {
             insns.add(tryEndOverflow);
         }
@@ -477,17 +468,7 @@ final class VectorLoopEmitter {
                     false
                 )
             );
-            insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKEINTERFACE,
-                    outputElement.builderInternalName(),
-                    "appendNull",
-                    outputElement.appendNullDescriptor(),
-                    true
-                )
-            );
-            insns.add(new InsnNode(Opcodes.POP));
+            FusedBuilderEmit.emitAppendNull(insns, builderSlot, outputElement);
             insns.add(new JumpInsnNode(Opcodes.GOTO, next));
             host.tryCatchBlocks.add(new TryCatchBlockNode(tryStartOverflow, tryEndOverflow, overflowHandler, exType));
         }

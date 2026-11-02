@@ -79,4 +79,22 @@ final class FusedBuilderEmit {
 
         host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, null));
     }
+
+    /**
+     * Value is already on the stack (builder then typed value); fluent {@code *Block.Builder.append*(value)}
+     * then {@code POP} the builder result.
+     */
+    static void emitAppend(InsnList insns, Element out) {
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, out.builderInternalName(), out.appendMethod(), out.appendDescriptor(), true));
+        insns.add(new InsnNode(Opcodes.POP));
+    }
+
+    /**
+     * {@code out.appendNull();} — {@code ALOAD} the builder, invoke fluent {@code appendNull()}, {@code POP} the result.
+     */
+    static void emitAppendNull(InsnList insns, int builderSlot, Element out) {
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, out.builderInternalName(), "appendNull", out.appendNullDescriptor(), true));
+        insns.add(new InsnNode(Opcodes.POP));
+    }
 }
