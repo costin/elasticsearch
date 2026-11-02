@@ -77,10 +77,6 @@ final class BlockLoopEmitter {
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
         FrameLayout frame = new FrameLayout();
         FrameLayout.FusedParams params = frame.fusedParams(true, arity, constants);
-        int warningsArraySlot = params.warningsSlot();
-        int pcSlot = params.pcSlot();
-        int inputBase = params.inputBase();
-        Map<FusionNode.Constant, Integer> constantSlots = params.constantSlots();
         // Scratch region above the parameters: the builder, loop counter, a scratch value-count slot, the built result
         // slot, the caught-throwable slot (builder-safety), the per-kernel overflow-exception slot, then:
         int builderSlot = frame.slot();
@@ -126,7 +122,7 @@ final class BlockLoopEmitter {
         // out = bf.new*BlockBuilder(positionCount); the builder is the OUTPUT element. The builder is a resource:
         // everything up to and including build() runs inside a try whose catch-all handler closes it before
         // rethrowing, so a break part-way through does not leak breaker bytes.
-        PositionLoop loop = PositionLoop.open(insns, pcSlot, pSlot, builderSlot, outputElement);
+        PositionLoop loop = PositionLoop.open(insns, params.pcSlot(), pSlot, builderSlot, outputElement);
         LabelNode appendNull = new LabelNode();
 
         // Per-position DFS evaluation. Each node computes a {@code present} flag (did this node produce a value at
@@ -151,16 +147,16 @@ final class BlockLoopEmitter {
             insns,
             host,
             inputElements,
-            inputBase,
+            params.inputBase(),
             pSlot,
             countSlot,
-            warningsArraySlot,
+            params.warningsSlot(),
             sourceIndices,
             liveSlot,
             overflowExcSlot,
             spareByInput,
             workBase,
-            constantSlots,
+            params.constantSlots(),
             debug
         );
         NodeSlots root = emitter.emit(tree, outputElement);
@@ -219,10 +215,6 @@ final class BlockLoopEmitter {
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
         FrameLayout frame = new FrameLayout();
         FrameLayout.FusedParams params = frame.fusedParams(true, arity, constants);
-        int warningsArraySlot = params.warningsSlot();
-        int pcSlot = params.pcSlot();
-        int inputBase = params.inputBase();
-        Map<FusionNode.Constant, Integer> constantSlots = params.constantSlots();
         // Scratch region above the parameters: builder, loop counter, built result, caught-throwable; the tri-state
         // node slots start at workBase.
         int builderSlot = frame.slot();
@@ -241,21 +233,21 @@ final class BlockLoopEmitter {
         InsnList insns = host.instructions;
 
         // out = bf.newBooleanBlockBuilder(positionCount);
-        PositionLoop loop = PositionLoop.open(insns, pcSlot, pSlot, builderSlot, outputElement);
+        PositionLoop loop = PositionLoop.open(insns, params.pcSlot(), pSlot, builderSlot, outputElement);
         LabelNode doNull = new LabelNode();
 
         // Evaluate the logical tree for position p into a tri-state (0 false / 1 true / 2 null) in tRoot.
         LogicalDfsEmitter emitter = new LogicalDfsEmitter(
             insns,
             inputElement,
-            inputBase,
+            params.inputBase(),
             pSlot,
-            warningsArraySlot,
+            params.warningsSlot(),
             sourceIndices,
             internalName,
             helperNames,
             workBase,
-            constantSlots
+            params.constantSlots()
         );
         int tRoot = emitter.alloc(1);
         emitter.emit(tree, tRoot);

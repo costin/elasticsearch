@@ -339,10 +339,6 @@ final class VectorLoopEmitter {
         // current-kernel slot sit ABOVE the parameters.
         FrameLayout frame = new FrameLayout();
         FrameLayout.FusedParams params = frame.fusedParams(true, arity, constants);
-        int warningsArraySlot = params.warningsSlot();
-        int pcSlot = params.pcSlot();
-        int inputBase = params.inputBase();
-        Map<FusionNode.Constant, Integer> constantSlots = params.constantSlots();
         // Scratch region above the parameters. Per-input value slots are sized by each input's own element (a
         // long/double takes two slots); an unused index (never expected) reserves one. The FrameLayout guarantees the
         // widths never collide.
@@ -366,12 +362,12 @@ final class VectorLoopEmitter {
 
         // Narrow each CONSUMED input once, outside the loop (JIT #6).
         for (int i : consumed) {
-            emitExtractConsumedInput(insns, inputElements[i], inputBase + i, extractedBase + i, raw);
+            emitExtractConsumedInput(insns, inputElements[i], params.inputBase() + i, extractedBase + i, raw);
         }
 
         // out = bf.new*BlockBuilder(positionCount); the builder is the OUTPUT element (BooleanBlock.Builder for a
         // comparison root).
-        PositionLoop loop = PositionLoop.open(insns, pcSlot, pSlot, builderSlot, outputElement);
+        PositionLoop loop = PositionLoop.open(insns, params.pcSlot(), pSlot, builderSlot, outputElement);
 
         // v_i = extracted_i[p]; no null guard — a vector is dense and single-valued.
         for (int i : consumed) {
@@ -392,7 +388,7 @@ final class VectorLoopEmitter {
         insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
         StackKernelEmitter emitter = new StackKernelEmitter(
             insns,
-            constantSlots,
+            params.constantSlots(),
             kernelBase,
             // Checked-vector leaf: the per-position value already read (no null/mv guard — the vector is dense).
             input -> {
@@ -422,7 +418,7 @@ final class VectorLoopEmitter {
             insns.add(new VarInsnNode(Opcodes.ASTORE, overflowExcSlot));
             // Register the overflow on the currently-evaluating kernel's OWN Warnings (warnings[currentKernelSlot]) so
             // the header matches the unfused chain's per-node evaluator source.
-            Stitcher.emitRegisterException(insns, warningsArraySlot, currentKernelSlot, true, overflowExcSlot);
+            Stitcher.emitRegisterException(insns, params.warningsSlot(), currentKernelSlot, true, overflowExcSlot);
             FusedBuilderEmit.emitAppendNull(insns, builderSlot, outputElement);
             insns.add(new JumpInsnNode(Opcodes.GOTO, loop.next()));
             host.tryCatchBlocks.add(new TryCatchBlockNode(tryStartOverflow, tryEndOverflow, overflowHandler, exType));
