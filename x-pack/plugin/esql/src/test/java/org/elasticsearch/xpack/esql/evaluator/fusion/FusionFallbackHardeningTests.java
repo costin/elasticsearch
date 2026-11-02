@@ -118,7 +118,6 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         FusionPlanner.compilerForTests = null;
         FusedExpressionEvaluatorFactory.injectEvalLinkageErrorForTests = false;
         FusionSettings.setEnabledForTests(true);
-        FusionSettings.setAdaptiveMinRowsForTests(0);
     }
 
     @After
@@ -127,7 +126,6 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         FusionPlanner.compilation().compileBlockLoopForTests = null;
         FusedExpressionEvaluatorFactory.injectEvalLinkageErrorForTests = false;
         FusionSettings.setEnabledForTests(true);
-        FusionSettings.setAdaptiveMinRowsForTests(0);
         FusionPlanner.classCache().resetForTests();
         assertThat(breaker.getUsed(), is(0L));
     }
@@ -197,98 +195,36 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         reason = "assert an IAE stitch failure WARNs once at the factory then DEBUG on negative-cache hits"
     )
     public void testIllegalArgumentExceptionStitchesOnceAndWarnsOnce() {
-        FusionSettings.setAdaptiveMinRowsForTests(0);
-        try {
-            FieldAttribute a = field("a", DataType.LONG);
-            FieldAttribute b = field("b", DataType.LONG);
-            FieldAttribute c = field("c", DataType.LONG);
-            Layout layout = layout(a, b, c);
-            Expression expr = addMul(a, b, c);
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression expr = addMul(a, b, c);
 
-            FusedClassCache cache = FusionPlanner.classCache();
-            cache.resetForTests();
-            AtomicInteger invocations = new AtomicInteger();
-            FusionPlanner.compilerForTests = cacheBackedCompiler(cache, (caller, tree, path) -> {
-                invocations.incrementAndGet();
-                throw new IllegalArgumentException("injected emit failure");
-            });
+        FusedClassCache cache = FusionPlanner.classCache();
+        cache.resetForTests();
+        AtomicInteger invocations = new AtomicInteger();
+        FusionPlanner.compilerForTests = cacheBackedCompiler(cache, (caller, tree, path) -> {
+            invocations.incrementAndGet();
+            throw new IllegalArgumentException("injected emit failure");
+        });
 
-            try (var mockLog = MockLog.capture(FusedExpressionEvaluatorFactory.class)) {
-                mockLog.addExpectation(exactlyOneUnfusedWarn(FusedExpressionEvaluatorFactory.class));
-                mockLog.addExpectation(seenFactoryDebugRepeat(FusedExpressionEvaluatorFactory.class));
-                for (int i = 0; i < 3; i++) {
-                    ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
-                    assertThat(
-                        "eager minRows=0 must not produce an adaptive factory",
-                        candidate,
-                        not(instanceOf(AdaptiveFusionEvaluatorFactory.class))
-                    );
-                    assertThat(
-                        "IAE from the stitcher must fall back to the unfused factory",
-                        candidate,
-                        not(instanceOf(FusedExpressionEvaluatorFactory.class))
-                    );
-                }
-                mockLog.assertAllExpectationsMatched();
+        try (var mockLog = MockLog.capture(FusedExpressionEvaluatorFactory.class)) {
+            mockLog.addExpectation(exactlyOneUnfusedWarn(FusedExpressionEvaluatorFactory.class));
+            mockLog.addExpectation(seenFactoryDebugRepeat(FusedExpressionEvaluatorFactory.class));
+            for (int i = 0; i < 3; i++) {
+                ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+                assertThat(
+                    "IAE from the stitcher must fall back to the unfused factory",
+                    candidate,
+                    not(instanceOf(FusedExpressionEvaluatorFactory.class))
+                );
             }
-            assertThat("planning the shape 3× must stitch once", invocations.get(), is(1));
-            assertThat(cache.failures(), is(1L));
-            assertThat(cache.negativeHits(), is(2L));
-        } finally {
-            FusionSettings.setAdaptiveMinRowsForTests(0);
+            mockLog.assertAllExpectationsMatched();
         }
-    }
-
-    /**
-     * A1: the wrap covers the adaptive switch, not just eager plan-time. With {@code minRows > 0} the stitch is
-     * deferred until the row threshold is crossed; crossing it three times (three factories) stitches once and the
-     * factory WARNs exactly once (fusion is lost). The cache itself does not WARN.
-     */
-    @TestLogging(
-        value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG,"
-            + "org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory:DEBUG",
-        reason = "assert a deferred adaptive IAE stitch failure WARNs once at the factory then DEBUG on the second threshold crossing"
-    )
-    public void testAdaptiveIllegalArgumentExceptionStitchesOnceAndWarnsOnce() {
-        FusionSettings.setAdaptiveMinRowsForTests(50);
-        try {
-            FieldAttribute a = field("a", DataType.LONG);
-            FieldAttribute b = field("b", DataType.LONG);
-            FieldAttribute c = field("c", DataType.LONG);
-            Layout layout = layout(a, b, c);
-            Expression expr = addMul(a, b, c);
-
-            FusedClassCache cache = FusionPlanner.classCache();
-            cache.resetForTests();
-            AtomicInteger invocations = new AtomicInteger();
-            FusionPlanner.compilerForTests = cacheBackedCompiler(cache, (caller, tree, path) -> {
-                invocations.incrementAndGet();
-                throw new IllegalArgumentException("injected emit failure");
-            });
-
-            ExpressionEvaluator.Factory firstFactory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
-            assertThat("minRows>0 must produce an adaptive factory", firstFactory, instanceOf(AdaptiveFusionEvaluatorFactory.class));
-            assertThat("no eager stitch at plan time", invocations.get(), is(0));
-            assertThat(cache.failures(), is(0L));
-
-            ExpressionEvaluator.Factory secondFactory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
-            assertThat(secondFactory, instanceOf(AdaptiveFusionEvaluatorFactory.class));
-            ExpressionEvaluator.Factory thirdFactory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
-            assertThat(thirdFactory, instanceOf(AdaptiveFusionEvaluatorFactory.class));
-            try (var mockLog = MockLog.capture(FusedExpressionEvaluatorFactory.class)) {
-                mockLog.addExpectation(exactlyOneUnfusedWarn(FusedExpressionEvaluatorFactory.class));
-                mockLog.addExpectation(seenFactoryDebugRepeat(FusedExpressionEvaluatorFactory.class));
-                evalUntilAbandoned(firstFactory, 64);
-                evalUntilAbandoned(secondFactory, 64);
-                evalUntilAbandoned(thirdFactory, 64);
-                mockLog.assertAllExpectationsMatched();
-            }
-            assertThat("three adaptive threshold crossings must stitch once", invocations.get(), is(1));
-            assertThat(cache.failures(), is(1L));
-            assertThat(cache.negativeHits(), is(2L));
-        } finally {
-            FusionSettings.setAdaptiveMinRowsForTests(0);
-        }
+        assertThat("planning the shape 3× must stitch once", invocations.get(), is(1));
+        assertThat(cache.failures(), is(1L));
+        assertThat(cache.negativeHits(), is(2L));
     }
 
     /**
@@ -389,11 +325,6 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             for (int i = 0; i < 3; i++) {
                 ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
                 assertThat(
-                    "eager minRows=0 must not produce an adaptive factory",
-                    candidate,
-                    not(instanceOf(AdaptiveFusionEvaluatorFactory.class))
-                );
-                assertThat(
                     "a failed plan-time stitch must fall back to the unfused factory",
                     candidate,
                     not(instanceOf(FusedExpressionEvaluatorFactory.class))
@@ -418,31 +349,28 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         reason = "assert a factory findStatic miss WARNs once then DEBUG on negative-cache hits"
     )
     public void testFactoryFindStaticMissWarnsOnceThenDebug() {
-        FusionSettings.setAdaptiveMinRowsForTests(0);
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression expr = addMul(a, b, c);
+
+        FusedClassCache cache = FusionPlanner.classCache();
+        cache.resetForTests();
+        assertThat(
+            "G5 must use the production compiler (compilerForTests bypasses FusionCompilationService.cached)",
+            FusionPlanner.compilerForTests,
+            nullValue()
+        );
+        // Real stitched bytecode, wrong method: the vector class has fused(BlockFactory, int, Vector…)
+        // but the factory findStatics the block signature (BlockFactory, Warnings[], int, LongBlock…).
+        FusionPlanner.compilation().compileBlockLoopForTests = (real, caller, tree) -> real.compileVectorLoop(caller, tree);
         try {
-            FieldAttribute a = field("a", DataType.LONG);
-            FieldAttribute b = field("b", DataType.LONG);
-            FieldAttribute c = field("c", DataType.LONG);
-            Layout layout = layout(a, b, c);
-            Expression expr = addMul(a, b, c);
-
-            FusedClassCache cache = FusionPlanner.classCache();
-            cache.resetForTests();
-            assertThat(
-                "G5 must use the production compiler (compilerForTests bypasses FusionCompilationService.cached)",
-                FusionPlanner.compilerForTests,
-                nullValue()
-            );
-            // Real stitched bytecode, wrong method: the vector class has fused(BlockFactory, int, Vector…)
-            // but the factory findStatics the block signature (BlockFactory, Warnings[], int, LongBlock…).
-            FusionPlanner.compilation().compileBlockLoopForTests = (real, caller, tree) -> real.compileVectorLoop(caller, tree);
-
             try (var mockLog = MockLog.capture(FusedExpressionEvaluatorFactory.class)) {
                 mockLog.addExpectation(exactlyOneUnfusedWarn(FusedExpressionEvaluatorFactory.class));
                 mockLog.addExpectation(seenFactoryDebugRepeat(FusedExpressionEvaluatorFactory.class));
                 for (int i = 0; i < 3; i++) {
                     ExpressionEvaluator.Factory candidate = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
-                    assertThat(candidate, not(instanceOf(AdaptiveFusionEvaluatorFactory.class)));
                     assertThat(
                         "a findStatic miss must fall back to the unfused factory",
                         candidate,
@@ -455,7 +383,6 @@ public class FusionFallbackHardeningTests extends ESTestCase {
             assertThat(cache.negativeHits(), is(2L));
         } finally {
             FusionPlanner.compilation().compileBlockLoopForTests = null;
-            FusionSettings.setAdaptiveMinRowsForTests(0);
         }
     }
 
@@ -901,29 +828,6 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         @Override
         public void assertMatched() {
             assertThat(name + ": expected exactly 1 WARN", count.get(), is(1));
-        }
-    }
-
-    /**
-     * Runs one page of {@code positionCount} rows through an adaptive factory so the deferred stitch fires (the page
-     * must be {@code >= minRows}). The stitch is expected to fail; the evaluator stays unfused. Releases every block.
-     */
-    private void evalUntilAbandoned(ExpressionEvaluator.Factory factory, int positionCount) {
-        ExpressionEvaluator evaluator = factory.get(driverContext);
-        Page page = null;
-        Block result = null;
-        try {
-            page = new Page(
-                randomLongBlock(positionCount, false),
-                randomLongBlock(positionCount, false),
-                randomLongBlock(positionCount, false)
-            );
-            result = evaluator.eval(page);
-        } finally {
-            Releasables.closeExpectNoException(result, evaluator);
-            if (page != null) {
-                page.releaseBlocks();
-            }
         }
     }
 

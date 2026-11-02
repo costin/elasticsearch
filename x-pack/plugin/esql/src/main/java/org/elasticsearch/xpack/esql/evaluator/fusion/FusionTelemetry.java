@@ -52,18 +52,6 @@ public final class FusionTelemetry {
     private static final LongAdder TOTAL_FAILURES = new LongAdder();
 
     /**
-     * Number of adaptive evaluators that crossed their row threshold and successfully switched from the unfused chain
-     * to a stitched fused evaluator (Stage-6 {@code esql.fusion.adaptive.min_rows}). Diagnostic side-channel only.
-     */
-    private static final LongAdder ADAPTIVE_SWITCHES = new LongAdder();
-
-    /**
-     * Number of adaptive evaluators that crossed their row threshold but whose deferred stitch failed, so they stayed
-     * on the unfused chain for the rest of their life. Diagnostic side-channel only.
-     */
-    private static final LongAdder ADAPTIVE_ABANDONED = new LongAdder();
-
-    /**
      * Number of shapes that fused on the block path but degraded to block-only because the vector fast path could not
      * be built (e.g. the plain-vector huge-method guard refused a deep tree). Diagnostic side-channel only.
      */
@@ -100,7 +88,7 @@ public final class FusionTelemetry {
     /** Top-level expressions classified while the probe was on (one per EVAL/WHERE/FilterEval pair). */
     private static final LongAdder ATTEMPTS = new LongAdder();
 
-    /** Top-level expressions whose factory is fused (eager, adaptive, or FilterEval {@code fused()==true}). */
+    /** Top-level expressions whose factory is fused (eager, or FilterEval {@code fused()==true}). */
     private static final LongAdder FUSED = new LongAdder();
 
     /** Top-level expressions that contain a fusable descendant island (partial codegen out of scope). */
@@ -179,16 +167,6 @@ public final class FusionTelemetry {
         return TOTAL_FAILURES.sum();
     }
 
-    /** Records one adaptive evaluator successfully switching to its stitched fused evaluator after the row threshold. */
-    public static void recordAdaptiveSwitch() {
-        ADAPTIVE_SWITCHES.increment();
-    }
-
-    /** Records one adaptive evaluator whose deferred stitch failed, so it stayed unfused. */
-    public static void recordAdaptiveAbandoned() {
-        ADAPTIVE_ABANDONED.increment();
-    }
-
     /**
      * Records one shape whose block path fused but whose vector fast path could not be built (most commonly the
      * plain-vector huge-method guard refusing a deep tree), so it degraded to block-only fusion instead of falling all
@@ -214,16 +192,6 @@ public final class FusionTelemetry {
     /** Number of plans that skipped baking because the tuple registry outer map was full. */
     public static long bakingDisabledRegistryFull() {
         return BAKING_DISABLED_REGISTRY_FULL.sum();
-    }
-
-    /** Number of adaptive unfused-to-fused switches recorded. */
-    public static long adaptiveSwitches() {
-        return ADAPTIVE_SWITCHES.sum();
-    }
-
-    /** Number of adaptive evaluators that crossed the threshold but abandoned fusion after a failed stitch. */
-    public static long adaptiveAbandoned() {
-        return ADAPTIVE_ABANDONED.sum();
     }
 
     /** An immutable snapshot of the per-shape counters, for diagnostics or assertions. */
@@ -472,8 +440,6 @@ public final class FusionTelemetry {
         REFUSALS.clear();
         TOP_LEVEL_DEPTH.remove();
         TOTAL_FAILURES.reset();
-        ADAPTIVE_SWITCHES.reset();
-        ADAPTIVE_ABANDONED.reset();
         VECTOR_DEGRADED.reset();
         BAKING_DISABLED_REGISTRY_FULL.reset();
         ATTEMPTS.reset();

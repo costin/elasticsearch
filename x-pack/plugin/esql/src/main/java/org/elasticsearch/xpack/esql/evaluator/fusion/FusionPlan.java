@@ -17,8 +17,8 @@ import java.util.List;
 /**
  * The typed, behaviour-neutral carrier of everything needed to stitch and bind ONE fused expression tree — produced by
  * {@link FusionPlanner} and consumed by {@link FusedExpressionEvaluatorFactory}. It collapses what used to be an
- * eight-argument positional list threaded through {@code tryCreate}/{@code tryCreateFusedOrNull} (and duplicated into
- * the adaptive lambda) into one record, so a caller cannot silently mis-order or drop an argument.
+ * eight-argument positional list threaded through {@code tryCreate}/{@code tryCreateFusedOrNull} into one record, so a
+ * caller cannot silently mis-order or drop an argument.
  *
  * <p>It holds the derived {@link FusionSignature} — the single source of the ordered positional contract (constants in
  * emit order, warning-source slots) — alongside the esql-side bindings the {@link org.elasticsearch.compute.operator.fusion.Stitcher}

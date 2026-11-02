@@ -281,22 +281,12 @@ public class CsvIT extends ESTestCase {
                         .put("xpack.license.self_generated.type", "trial")
                         .put("ingest.geoip.downloader.enabled", false);
                     // Additive test hook: expression fusion is node-scoped and defaults ON, so the whole corpus already
-                    // runs fused. These -D-guarded overrides let a corpus run flip fusion off, or force the adaptive
-                    // (tiered) path, to prove result/warning parity across every csv-spec regardless of fusion mode.
-                    // Unset by default, so an ordinary run is unchanged.
+                    // runs fused. This -D-guarded override lets a corpus run flip fusion off to prove result/warning
+                    // parity across every csv-spec regardless of fusion mode. Unset by default, so an ordinary run is
+                    // unchanged.
                     String fusionEnabled = System.getProperty("esql.fusion.enabled");
                     if (fusionEnabled != null) {
                         builder.put("esql.fusion.enabled", fusionEnabled);
-                    }
-                    String adaptiveMinRows = System.getProperty("esql.fusion.adaptive.min_rows");
-                    if (adaptiveMinRows != null) {
-                        builder.put("esql.fusion.adaptive.min_rows", adaptiveMinRows);
-                    }
-                    // -Desql.fusion.string_depth1=true additionally fuses bare LEFT/SPACE/CONCAT, proving parity for
-                    // every depth-1 string function across the corpus.
-                    String stringDepth1 = System.getProperty("esql.fusion.string_depth1");
-                    if (stringDepth1 != null) {
-                        builder.put("esql.fusion.string_depth1", stringDepth1);
                     }
                     // Fusion coverage is sysprop-only (like esql.fusion.verify), not a node Setting. Gradle forwards
                     // only tests.* into the test JVM, so a corpus coverage run must use

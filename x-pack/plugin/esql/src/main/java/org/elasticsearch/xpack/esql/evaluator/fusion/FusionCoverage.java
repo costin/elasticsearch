@@ -39,8 +39,7 @@ import java.util.function.Function;
  * matching that F0 decision and the named buckets:
  * <ul>
  *   <li>{@link FusionTelemetry.Category#FUSED} — the top-level expression produced a fused factory (eager
- *       {@link FusedExpressionEvaluatorFactory}, {@link AdaptiveFusionEvaluatorFactory}, or a FilterEval factory with
- *       {@code fused()==true}).</li>
+ *       {@link FusedExpressionEvaluatorFactory}, or a FilterEval factory with {@code fused()==true}).</li>
  *   <li>{@link FusionTelemetry.Category#ISLAND} — not fused, but a proper descendant <em>would</em> fuse under the
  *       same {@link FusionPlanner} gates (a fusable island under an unfusable parent; partial codegen is out of
  *       scope).</li>
@@ -65,7 +64,7 @@ public final class FusionCoverage {
         Function<Expression, ExpressionEvaluator.Factory> rawFactory,
         ExpressionEvaluator.Factory fuseResult
     ) {
-        if (fuseResult instanceof FusedExpressionEvaluatorFactory || fuseResult instanceof AdaptiveFusionEvaluatorFactory) {
+        if (fuseResult instanceof FusedExpressionEvaluatorFactory) {
             return new Result(FusionTelemetry.Category.FUSED, null);
         }
         return classifyUnfused(exp, layout, rawFactory);

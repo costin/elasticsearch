@@ -266,7 +266,7 @@ final class FusedClassCache {
      * {@link VirtualMachineError}s ({@link OutOfMemoryError}, {@link InternalError}) are rethrown unwrapped — a
      * transient OOM is not a {@link LinkageError} and must be retried, not remembered as a permanent shape failure.
      * Other {@link Error}s are not caught here and fall through to {@link #get}'s empty-slot drop. Invoked only from
-     * {@link Entry#resolve} so every cache-backed stitch (plan-time and adaptive switch) is covered once.
+     * {@link Entry#resolve} so every cache-backed stitch is covered once.
      */
     private static CachedFused wrapStitchFailures(ClassStitcher stitcher) throws Stitcher.StitchingException {
         try {

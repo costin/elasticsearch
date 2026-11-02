@@ -12,11 +12,9 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.FeatureFlag;
 import org.elasticsearch.core.Assertions;
 
-import java.util.concurrent.ThreadLocalRandom;
-
 /**
- * The node-level runtime controls for expression fusion: the kill switch (acceptance criterion #3) plus the Stage-6
- * rollout dials — an <b>adaptive</b> row threshold and an <b>A/B sampling</b> fraction.
+ * The node-level runtime controls for expression fusion: the kill switch (acceptance criterion #3) and the
+ * {@code esql_fusion} {@link FeatureFlag}.
  *
  * <p>{@code esql.fusion.enabled} (default {@code true}) is a {@link Setting.Property#NodeScope} setting — it is read
  * once at node start and is <b>not</b> dynamically updatable, so a node either fuses for its whole lifetime or never
@@ -24,18 +22,6 @@ import java.util.concurrent.ThreadLocalRandom;
  * both the flag and the setting are on. When either is off, {@link FusionPlanner#maybeFuse} returns {@code null} for
  * every expression, so {@link org.elasticsearch.xpack.esql.evaluator.EvalMapper} produces the ordinary unfused factory
  * tree unchanged and the {@link org.elasticsearch.compute.operator.fusion.Stitcher} is never invoked.
- *
- * <p>Two further node-scoped dials shape <em>how</em> a fusable expression is served (both fully additive — the
- * defaults reproduce the pre-Stage-6 eager, always-on behaviour):
- * <ul>
- *   <li>{@code esql.fusion.adaptive.min_rows} (default {@code 0}) — operator-level tiered compilation. When {@code > 0},
- *       {@link FusionPlanner} does <b>not</b> stitch at plan time; it returns an {@link AdaptiveFusionEvaluatorFactory}
- *       that starts on the unfused chain and only stitches + switches once an evaluator has seen at least this many
- *       rows, so cold/tiny queries never pay the stitch cost. {@code 0} keeps the eager plan-time stitch.</li>
- *   <li>{@code esql.fusion.sample} (default {@code 1.0}) — A/B sampling. The fraction of fusable expression subtrees on
- *       which fusion is actually attempted; the rest run unfused. {@code 1.0} always attempts (pre-Stage-6 behaviour),
- *       {@code 0.0} never does, and an intermediate value gathers real-world signal without a full rollout.</li>
- * </ul>
  *
  * <p>Because {@code EvalMapper}/{@code FusionPlanner} are static utilities reached from many call sites that have no
  * {@link Settings} in hand, the resolved values are latched into {@code volatile} fields that
@@ -81,68 +67,10 @@ public final class FusionSettings {
     );
 
     /**
-     * A warmup-informed <b>recommended</b> value for {@link #FUSION_ADAPTIVE_MIN_ROWS_SETTING} when a deployment opts
-     * into adaptive mode — <b>not</b> the hard default (which stays {@code 0}/eager; see below). It matches Trino's
-     * {@code PageProcessor.MAX_BATCH_SIZE} (8×1024), i.e. one compiled batch worth of rows.
-     *
-     * <p>Rationale: the fused method runs once per page with the row loop inside it, so its JIT back-edge count equals
-     * the rows it processes, and a fresh per-shape hidden class starts interpreted and needs ~15k–40k rows (HotSpot JDK
-     * 21 {@code Tier4CompileThreshold=15000}/{@code Tier4BackEdgeThreshold=40000}) to reach C2. Eager stitching
-     * therefore gives the <em>most</em> warmup runway; the adaptive threshold's real purpose is only to skip the stitch
-     * on trivially small queries while switching early enough to leave the rest of a large query as warmup runway.
-     * {@code 8192} skips sub-page queries without meaningfully delaying warmup. Our own {@code FusionBenchmark} (warmed,
-     * steady-state) refines this later.
-     */
-    public static final int RECOMMENDED_ADAPTIVE_MIN_ROWS = 8 * 1024;
-
-    /**
-     * {@code esql.fusion.adaptive.min_rows}: node-scoped, non-dynamic; default {@code 0} (eager plan-time stitch, which
-     * is also warmup-optimal — see {@link #RECOMMENDED_ADAPTIVE_MIN_ROWS}). When {@code > 0}, a fusable subtree is
-     * served adaptively — unfused until an evaluator has seen this many rows, then stitched and switched;
-     * {@link #RECOMMENDED_ADAPTIVE_MIN_ROWS} is the suggested starting value for that mode. Bounded at
-     * {@link Integer#MAX_VALUE}.
-     */
-    public static final Setting<Integer> FUSION_ADAPTIVE_MIN_ROWS_SETTING = Setting.intSetting(
-        "esql.fusion.adaptive.min_rows",
-        0,
-        0,
-        Setting.Property.NodeScope
-    );
-
-    /**
-     * {@code esql.fusion.sample}: node-scoped, non-dynamic; default {@code 1.0} (always attempt). The A/B fraction of
-     * fusable subtrees on which fusion is attempted; the remainder run unfused.
-     */
-    public static final Setting<Double> FUSION_SAMPLE_SETTING = Setting.doubleSetting(
-        "esql.fusion.sample",
-        1.0,
-        0.0,
-        1.0,
-        Setting.Property.NodeScope
-    );
-
-    /**
-     * Opt-in: fuse a lone (depth-1) BytesRef string function — {@code LEFT}/{@code SPACE}/{@code CONCAT} — that would
-     * otherwise be "not worth fusing" as a single kernel. Default off because a bare string function's per-row cost is
-     * dominated by the string work (byte copies / breaker append), not the evaluator dispatch fusion removes, so the
-     * win is marginal and it adds a plan-time stitch; enable it to fuse the common bare-string-function case (e.g. for
-     * A/B measurement). Nested string functions fuse regardless. A mapping convert (TO_LOWER/TO_UPPER) fuses only
-     * as a nested kernel in a depth ≥ 2 chain, not at depth 1; this switch is for the single-value string kernels.
-     */
-    public static final Setting<Boolean> FUSION_STRING_DEPTH1_SETTING = Setting.boolSetting(
-        "esql.fusion.string_depth1",
-        false,
-        Setting.Property.NodeScope
-    );
-
-    /**
      * The effective switch. Written once at node start (or by a test hook) and read on the cold plan-time path, so a
      * plain {@code volatile} is sufficient — there is no per-row cost and no need for stronger ordering.
      */
     private static volatile boolean enabled = initialEnabledDefault();
-
-    /** The effective depth-1 string-fusion opt-in (default off). Cold-path read. */
-    private static volatile boolean stringDepth1Enabled = Boolean.parseBoolean(System.getProperty("esql.fusion.string_depth1", "false"));
 
     /**
      * Benchmark/test-only {@code esql.fusion.vector_reads}. <b>Not</b> a node {@link Setting}. WHY {@code static final}
@@ -152,12 +80,6 @@ public final class FusionSettings {
      * modes in one JVM use {@link FusedExpressionEvaluatorFactory#getForTests}, not a mutable override of this flag.
      */
     private static final boolean VECTOR_READS_INTERFACE = resolveVectorReadsInterface(System.getProperty("esql.fusion.vector_reads"));
-
-    /** The effective adaptive row threshold (0 = eager). Cold-path read; {@code volatile} is sufficient. */
-    private static volatile long adaptiveMinRows = initialLongProperty("esql.fusion.adaptive.min_rows", 0L);
-
-    /** The effective A/B sampling fraction in {@code [0.0, 1.0]} (1.0 = always). Cold-path read. */
-    private static volatile double sampleFraction = initialDoubleProperty("esql.fusion.sample", 1.0);
 
     /**
      * The effective coverage-report opt-in (default off). Sysprop-only (not a {@link Setting}); also latches
@@ -183,25 +105,6 @@ public final class FusionSettings {
         return property == null ? true : Boolean.parseBoolean(property);
     }
 
-    /**
-     * Parses a {@code -Desql.fusion.*} long. A malformed value throws at class init
-     * ({@code ExceptionInInitializerError}) and fails every EVAL plan in this JVM — intended fail-fast so a typo
-     * cannot silently keep the fallback and make a bench/test cell look like production.
-     */
-    private static long initialLongProperty(String name, long fallback) {
-        String property = System.getProperty(name);
-        return property == null ? fallback : Long.parseLong(property);
-    }
-
-    /**
-     * Parses a {@code -Desql.fusion.*} double. Same fail-fast as {@link #initialLongProperty}: a bad {@code -D}
-     * becomes {@code ExceptionInInitializerError} rather than a silent default.
-     */
-    private static double initialDoubleProperty(String name, double fallback) {
-        String property = System.getProperty(name);
-        return property == null ? fallback : Double.parseDouble(property);
-    }
-
     private static boolean initialCoverageReportDefault() {
         // Honor -Desql.fusion.coverage_report before any plugin wiring so CsvIT / unit tests that never build a node
         // still flip the probe. Default false: production pays nothing. Not overwritten by initFromNodeSettings —
@@ -214,20 +117,7 @@ public final class FusionSettings {
     /** Latches all fusion dials from the node {@link Settings}. Called once by {@code EsqlPlugin#createComponents}. */
     public static void initFromNodeSettings(Settings settings) {
         enabled = FUSION_ENABLED_SETTING.get(settings);
-        adaptiveMinRows = FUSION_ADAPTIVE_MIN_ROWS_SETTING.get(settings);
-        sampleFraction = FUSION_SAMPLE_SETTING.get(settings);
-        stringDepth1Enabled = FUSION_STRING_DEPTH1_SETTING.get(settings);
         // coverage_report is sysprop-only (like verify); do not clobber the class-init latch from a node Setting.
-    }
-
-    /** Whether a lone (depth-1) single-value BytesRef string function (LEFT/SPACE/CONCAT) may fuse (opt-in, default off). */
-    public static boolean isStringDepth1Enabled() {
-        return stringDepth1Enabled;
-    }
-
-    /** Test-only: flips the depth-1 string-fusion opt-in; restore in a finally. */
-    static void setStringDepth1EnabledForTests(boolean value) {
-        stringDepth1Enabled = value;
     }
 
     /**
@@ -289,43 +179,9 @@ public final class FusionSettings {
         return property == null ? assertionsEnabled : Boolean.parseBoolean(property);
     }
 
-    /**
-     * The adaptive row threshold: {@code 0} means stitch eagerly at plan time; {@code > 0} means serve the subtree
-     * unfused until an evaluator has seen this many rows, then stitch and switch.
-     */
-    public static long adaptiveMinRows() {
-        return adaptiveMinRows;
-    }
-
-    /**
-     * The A/B decision for one fusable subtree: {@code true} if fusion should be attempted. A fraction of {@code >= 1.0}
-     * always attempts and {@code <= 0.0} never does; otherwise a per-subtree random draw decides, so enabling on (say)
-     * 10% of subtrees gathers signal without a full rollout. The draw is on the cold plan-time path only.
-     */
-    public static boolean shouldAttemptFusion() {
-        double fraction = sampleFraction;
-        if (fraction >= 1.0) {
-            return true;
-        }
-        if (fraction <= 0.0) {
-            return false;
-        }
-        return ThreadLocalRandom.current().nextDouble() < fraction;
-    }
-
     /** Test-only: flips the switch so a test can assert both the fused and unfused wiring; restore in a finally. */
     static void setEnabledForTests(boolean value) {
         enabled = value;
-    }
-
-    /** Test-only: sets the adaptive row threshold; restore in a finally. */
-    static void setAdaptiveMinRowsForTests(long value) {
-        adaptiveMinRows = value;
-    }
-
-    /** Test-only: sets the A/B sampling fraction; restore in a finally. */
-    static void setSampleFractionForTests(double value) {
-        sampleFraction = value;
     }
 
     /** Whether the opt-in fusion coverage probe is on. Default {@code false} (zero cost). */

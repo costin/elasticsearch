@@ -199,8 +199,6 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
         assumeTrue("verify is on by default in test JVMs (-ea); skip when -Desql.fusion.verify=false", FusionSettings.isVerifyEnabled());
         FusionVerify.skipForTests = false;
         FusionSettings.setEnabledForTests(true);
-        FusionSettings.setSampleFractionForTests(1.0);
-        FusionSettings.setAdaptiveMinRowsForTests(0);
 
         FieldAttribute a = field("a", DataType.LONG);
         FieldAttribute b = field("b", DataType.LONG);

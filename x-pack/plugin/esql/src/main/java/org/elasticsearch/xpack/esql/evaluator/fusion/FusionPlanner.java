@@ -256,12 +256,7 @@ public final class FusionPlanner {
     ) {
         if (FusionSettings.isEnabled() == false) {
             // Runtime kill switch (criterion #3): the node never fuses; the caller uses the unfused tree unchanged and
-            // the Stitcher is never touched. Not an "attempt" — the probe does not count kill-switch / sample skips.
-            return null;
-        }
-        if (FusionSettings.shouldAttemptFusion() == false) {
-            // A/B sampling (Stage 6): this subtree was not drawn into the fusion sample, so run it unfused. Returning
-            // null keeps the fraction genuinely additive — the caller uses the ordinary unfused factory tree.
+            // the Stitcher is never touched. Not an "attempt" — the probe does not count kill-switch skips.
             return null;
         }
         FusionPlan plan = planOrNull(exp, layout, rawFactory, true);
@@ -270,25 +265,14 @@ public final class FusionPlanner {
         }
         ExpressionEvaluator.Factory unfused = rawFactory.apply(exp);
         FusedClassCompiler compiler = compilerForTests != null ? compilerForTests : COMPILATION.compiler();
-        long minRows = FusionSettings.adaptiveMinRows();
-        if (minRows > 0) {
-            // Adaptive path (Stage 6): defer the stitch. Serve the unfused chain until an evaluator has seen minRows
-            // rows, then stitch once (memoised) and switch. The supplier returns the fused factory or null on failure.
-            return new AdaptiveFusionEvaluatorFactory(
-                unfused,
-                () -> FusedExpressionEvaluatorFactory.tryCreateFusedOrNull(plan, unfused, compiler),
-                minRows,
-                plan.shape()
-            );
-        }
-        // Eager path (default, minRows == 0): stitch now at plan time, falling back to the unfused factory on failure.
+        // Eager path: stitch now at plan time, falling back to the unfused factory on failure.
         return FusedExpressionEvaluatorFactory.tryCreate(plan, unfused, compiler);
     }
 
     /**
-     * True when {@code exp} would pass the plan-time fusion gates (build + depth / stringDepth1 /
-     * encoding-aware exemptions) and would proceed to a stitch. Does not stitch. Used by the H9 coverage classifier
-     * to detect fusable islands without changing production factories.
+     * True when {@code exp} would pass the plan-time fusion gates (build + depth / encoding-aware exemptions)
+     * and would proceed to a stitch. Does not stitch. Used by the H9 coverage classifier to detect fusable islands
+     * without changing production factories.
      */
     static boolean isFusableAtPlan(Expression exp, Layout layout, Function<Expression, ExpressionEvaluator.Factory> rawFactory) {
         return planOrNull(exp, layout, rawFactory, false) != null;
@@ -297,7 +281,7 @@ public final class FusionPlanner {
     /**
      * Builds a {@link FusionPlan} when {@code exp} is fusable at plan time, or {@code null} when the tree is
      * ineligible (build failed, empty inputs, or a lone kernel with no depth-1 exemption). Does not stitch and does
-     * not consult the kill switch / sample — those stay in {@link #maybeFuse}. {@code admit} is {@code true} on the
+     * not consult the kill switch — that stays in {@link #maybeFuse}. {@code admit} is {@code true} on the
      * real stitch path and {@code false} for the coverage classifier, which must not consume a baked-tuple slot.
      */
     private static FusionPlan planOrNull(
@@ -318,25 +302,21 @@ public final class FusionPlanner {
         // planner-produced tree never has one — that fallback is dead code for this path, asserted here.)
         assert noNullElements(inputElements)
             : "planner must populate every input element densely; got " + java.util.Arrays.toString(inputElements);
-        // A lone single-value BytesRef string function (LEFT/SPACE/CONCAT) fuses at depth 1 only under the opt-in
-        // esql.fusion.string_depth1 switch (its win is marginal — string work dominates — so it is off by default).
-        // ctx.mapping is true for a lone converter root (TO_LOWER/TO_UPPER); excluding it here keeps that kernel
-        // from wrongly fusing via the string path. A converter fuses only as a nested mapping in a depth>=2 chain (D4).
-        boolean stringDepth1 = ctx.outputElement == ElementKind.BYTES_REF && ctx.mapping == false && FusionSettings.isStringDepth1Enabled();
         // encodingAware (and inputElements) are unaffected by un-baking, so they are computed on the pre-cap tree.
         boolean encodingAware = encodingAware(tree, inputElements);
         // A lone BytesRef comparison (column == literal, column != literal, or literal == column) is depth-1, but
-        // the encoding-aware dictionary gather evaluates once per distinct value — the same depth-1 exemption as
-        // stringDepth1.
+        // the encoding-aware dictionary gather evaluates once per distinct value, so it is the depth-1 exemption.
+        // A converter fuses only as a nested mapping in a depth>=2 chain (D4); a lone TO_LOWER/TO_UPPER is always
+        // depth-1 and is refused here.
         boolean bytesRefComparisonDepth1 = encodingAware && ctx.outputElement == ElementKind.BOOLEAN;
-        if (depth(tree) < 2 && stringDepth1 == false && bytesRefComparisonDepth1 == false) {
+        if (depth(tree) < 2 && bytesRefComparisonDepth1 == false) {
             // A lone kernel is not worth fusing — leave it to the generated evaluator.
             // A lone mapping convert (ctx.mapping) is always depth-1, so this refuses it (D4).
             return null;
         }
         // After every plan gate has passed, un-bake over-cap Div/Mod divisor tuples so they share one runtime-param
         // class. Must run before FusionSignature.of: un-baking a constant adds a trailing parameter slot. A refused
-        // plan (depth / stringDepth1 / bytesRefComparisonDepth1) returns above and consumes no slot.
+        // plan (depth / bytesRefComparisonDepth1) returns above and consumes no slot.
         tree = applyBakedDivisorCap(tree, ctx, admit);
         // One walk derives the whole positional contract (warning-source slots + constants-in-emit-order); the Stitcher
         // re-derives the same facts when it emits, and both agree because FusionSignature is the single source of truth.
@@ -529,8 +509,9 @@ public final class FusionPlanner {
         private ElementKind outputElement;
         private boolean overflowChecked;
         /**
-         * Set when the root is a mapping convert kernel (TO_LOWER/TO_UPPER). Excludes that root from
-         * {@code stringDepth1} so a lone converter stays unfused (D4); nested mapping leaves this false.
+         * Set when the root is a mapping convert kernel (TO_LOWER/TO_UPPER). FilterEval refuses a mapping
+         * projection; a lone converter is always depth-1 so {@link #planOrNull} refuses it (D4). Nested mapping
+         * leaves this false.
          */
         private boolean mapping;
         /**
@@ -774,8 +755,8 @@ public final class FusionPlanner {
      * Builds the fused node for a mapping {@code @ConvertEvaluator} (e.g. {@code TO_LOWER}/{@code TO_UPPER}): a
      * single kernel over its BytesRef field child plus the Factory's {@code @Fixed} SINGLETON constants.
      *
-     * <p>At the root {@link PlanContext#mapping} is set so a lone converter is excluded from the string-depth-1
-     * opt-in and refused by the depth guard (D4: a converter fuses only as a nested mapping kernel). In a
+     * <p>At the root {@link PlanContext#mapping} is set so a lone converter is recognized as always depth-1 and
+     * refused by the depth guard (D4: a converter fuses only as a nested mapping kernel). In a
      * <b>non-root</b> position the kernel is admitted only as a child of a single-value parent that consumes
      * {@code BytesRef} (e.g. {@code LENGTH}, {@code Equals}) — the parent compiles via the ordinary block path
      * ({@code ctx.mapping} stays false) and the nested mapping body is spliced as a unary kernel. Multi-value pages
@@ -828,7 +809,7 @@ public final class FusionPlanner {
         FusionNode.Kernel kernel = new FusionNode.Kernel(descriptor, operands);
         ctx.kernelSources.put(kernel, exp.source());
         if (root) {
-            // Root mapping sets ctx.mapping so stringDepth1 excludes a lone converter; maybeFuse then refuses
+            // Root mapping sets ctx.mapping so FilterEval refuses a mapping projection; maybeFuse then refuses
             // depth-1 mapping so a lone TO_LOWER stays unfused (D4). Nested mapping does not flip this — the
             // parent single-value kernel (LENGTH→int, Equals→boolean) compiles via the ordinary block path.
             ctx.outputElement = ElementKind.BYTES_REF;
@@ -1426,7 +1407,7 @@ public final class FusionPlanner {
      * constant return unchanged without allocating a shape string.
      *
      * @param admit {@code false} for the coverage classifier, which never consumes a slot — baking vs un-baking does
-     *              not affect any plan gate (depth, stringDepth1, encodingAware, bytesRefComparisonDepth1 are all
+     *              not affect any plan gate (depth, encodingAware, bytesRefComparisonDepth1 are all
      *              structure/element only), so the classifier's fusability answer is identical either way.
      */
     private static FusionNode applyBakedDivisorCap(FusionNode tree, PlanContext ctx, boolean admit) {

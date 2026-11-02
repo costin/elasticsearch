@@ -15,7 +15,6 @@ import org.elasticsearch.compute.data.LongBlock;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.lucene.EmptyIndexedByShardId;
-import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.core.Releasables;
@@ -70,7 +69,6 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
         FusionTelemetry.resetForTests();
         FusionPlanner.compilerForTests = null;
         FusedExpressionEvaluatorFactory.injectEvalLinkageErrorForTests = false;
-        FusionSettings.setAdaptiveMinRowsForTests(0);
     }
 
     public void testCoverageDisabledRecordMethodsAreNoOps() {
@@ -376,33 +374,6 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
             assertThat(FusionTelemetry.coverageEnabled, is(false));
         } finally {
             FusionSettings.setCoverageReportEnabledForTests(originalCoverage);
-        }
-    }
-
-    public void testAdaptiveTwoDriversRecordFusedOnce() {
-        FusionSettings.setAdaptiveMinRowsForTests(1);
-        FieldAttribute a = field("a", DataType.LONG);
-        FieldAttribute b = field("b", DataType.LONG);
-        FieldAttribute c = field("c", DataType.LONG);
-        Layout layout = layout(a, b, c);
-        Expression expr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
-
-        ExpressionEvaluator.Factory factory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
-        assertThat(factory, instanceOf(AdaptiveFusionEvaluatorFactory.class));
-        assertThat("attempt is counted at plan time", FusionTelemetry.attempts(), is(1L));
-        assertThat("adaptive factory is FUSED at plan time (F0-comparable)", FusionTelemetry.fused(), is(1L));
-
-        DriverContext other = new DriverContext(bigArrays, blockFactory, null);
-        ExpressionEvaluator first = factory.get(driverContext);
-        ExpressionEvaluator second = factory.get(other);
-        try {
-            evalAddMulPage(first, 8);
-            evalAddMulPage(second, 8);
-            assertThat("two drivers crossing minRows switch twice", FusionTelemetry.adaptiveSwitches(), is(2L));
-            assertThat("recordFused fires once per factory, not per driver", FusionTelemetry.fused(), is(1L));
-            assertAccountingIdentity();
-        } finally {
-            Releasables.closeExpectNoException(first, second);
         }
     }
 

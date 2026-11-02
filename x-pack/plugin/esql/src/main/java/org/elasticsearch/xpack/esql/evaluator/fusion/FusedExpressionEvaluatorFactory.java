@@ -383,9 +383,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * Stitches {@code tree} and returns the fused factory, or {@code null} on any stitch failure that loses fusion
      * entirely (logging and recording the failure, exactly as {@link #tryCreate}). Unlike {@link #tryCreate} this
      * does <b>not</b> substitute the unfused factory on failure — it returns {@code null} — so the caller can
-     * distinguish "fused" from "could not fuse". The adaptive path ({@link AdaptiveFusionEvaluatorFactory}) uses this
-     * so a deferred stitch that fails is abandoned (the evaluator stays on its already-running unfused chain) rather
-     * than swapped for a fresh unfused factory.
+     * distinguish "fused" from "could not fuse".
      */
     static FusedExpressionEvaluatorFactory tryCreateFusedOrNull(
         FusionPlan plan,
