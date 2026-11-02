@@ -9,6 +9,9 @@ package org.elasticsearch.compute.operator.fusion;
 
 import org.objectweb.asm.Type;
 
+import java.util.List;
+import java.util.Map;
+
 /**
  * A running local-variable slot allocator for a fused host method. It hands out slots sequentially, sized by JVM
  * category width (a {@code long}/{@code double} takes two slots, everything else one), so a frame layout is
@@ -59,6 +62,26 @@ final class FrameLayout {
         next += count;
         return base;
     }
+
+    /**
+     * Parameter region [0..): BlockFactory, optional {@code Warnings[]} when {@code withWarnings},
+     * positionCount, one input per {@code arity}, then one primitive/reference per embedded constant.
+     * Continues allocating on {@code this} so scratch that follows keeps the same slot numbering.
+     * {@code warningsSlot} is {@code -1} when {@code withWarnings} is false.
+     */
+    FusedParams fusedParams(boolean withWarnings, int arity, List<FusionNode.Constant> constants) {
+        slot(); // [0] BlockFactory
+        int warningsSlot = withWarnings ? slot() : -1;
+        int pcSlot = slot();
+        int inputBase = slots(arity);
+        return new FusedParams(warningsSlot, pcSlot, inputBase, Stitcher.allocConstantSlots(constants, this));
+    }
+
+    /**
+     * Slots of the fused host parameter region reserved by {@link #fusedParams}. The {@link FrameLayout}
+     * that produced this continues as the scratch allocator.
+     */
+    record FusedParams(int warningsSlot, int pcSlot, int inputBase, Map<FusionNode.Constant, Integer> constantSlots) {}
 
     /** The next free slot: the base a per-kernel body's own (disjoint) local range starts at. */
     int mark() {

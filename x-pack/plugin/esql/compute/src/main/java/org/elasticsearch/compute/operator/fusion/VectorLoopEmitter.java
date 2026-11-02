@@ -24,6 +24,7 @@ import org.objectweb.asm.tree.TypeInsnNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
 import java.lang.invoke.MethodHandles;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -93,30 +94,20 @@ final class VectorLoopEmitter {
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
 
         FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$VectorLoop", tree);
-        MethodNode raw = emitVectorMethod(
-            tree,
+        List<LoopSpec> specs = List.of(
             new LoopSpec(LoopSpec.Reads.RAW, LoopSpec.Output.VECTOR, false, outputElement),
-            inputElements,
-            constants,
-            consumed,
-            Set.of(),
-            Map.of(),
-            debug
+            new LoopSpec(LoopSpec.Reads.INTERFACE, LoopSpec.Output.VECTOR, false, outputElement)
         );
-        MethodNode iface = emitVectorMethod(
-            tree,
-            new LoopSpec(LoopSpec.Reads.INTERFACE, LoopSpec.Output.VECTOR, false, outputElement),
-            inputElements,
-            constants,
-            consumed,
-            Set.of(),
-            Map.of(),
-            debug
-        );
-        hostMethodInterceptor.accept(raw);
-        hostMethodInterceptor.accept(iface);
-        ClassNode classNode = Stitcher.newFusedClass(Stitcher.fusedClassName(caller, "Fused$$VectorLoop"), raw, debug);
-        classNode.methods.add(iface);
+        List<MethodNode> methods = new ArrayList<>(specs.size());
+        for (LoopSpec spec : specs) {
+            MethodNode method = emitVectorMethod(tree, spec, inputElements, constants, consumed, Set.of(), Map.of(), debug);
+            hostMethodInterceptor.accept(method);
+            methods.add(method);
+        }
+        ClassNode classNode = Stitcher.newFusedClass(Stitcher.fusedClassName(caller, "Fused$$VectorLoop"), methods.get(0), debug);
+        for (int i = 1; i < methods.size(); i++) {
+            classNode.methods.add(methods.get(i));
+        }
         // The plain-vector fast path enforces the HugeMethodLimit huge-method guard on every method of the class.
         // An over-limit body is refused (→ unfused fallback) rather than split: 8000 is the size at which HotSpot
         // will not JIT-compile the method at all, which is strictly worse than the unfused chain.
@@ -171,18 +162,13 @@ final class VectorLoopEmitter {
     }
 
     static String vectorMethodDescriptor(LoopSpec spec, int arity, List<FusionNode.Constant> constants) {
-        StringBuilder desc = new StringBuilder("(L").append(Stitcher.BLOCK_FACTORY).append(";");
-        if (spec.checked()) {
-            desc.append(Stitcher.WARNINGS_ARRAY_DESCRIPTOR);
-        }
-        desc.append("I");
+        String vector = "L" + Stitcher.VECTOR + ";";
+        String[] inputDescriptors = new String[arity];
         for (int i = 0; i < arity; i++) {
-            desc.append("L").append(Stitcher.VECTOR).append(";");
+            inputDescriptors[i] = vector;
         }
-        Stitcher.appendConstantParamDescriptors(desc, constants);
-        desc.append(")")
-            .append(spec.output() == LoopSpec.Output.VECTOR ? spec.outElement().vectorDescriptor() : spec.outElement().blockDescriptor());
-        return desc.toString();
+        String ret = spec.output() == LoopSpec.Output.VECTOR ? spec.outElement().vectorDescriptor() : spec.outElement().blockDescriptor();
+        return Stitcher.fusedMethodDescriptor(spec.checked(), "", inputDescriptors, constants, ret);
     }
 
     /**
@@ -207,29 +193,16 @@ final class VectorLoopEmitter {
         // The per-input extracted refs (raw arrays OR typed *Vector), the output array, and the loop counter
         // sit ABOVE the parameters.
         FrameLayout frame = new FrameLayout();
-        frame.slot();                                                       // [0] BlockFactory
-        int pcSlot;
-        if (spec.checked()) {
-            frame.slot();                                                   // [1] Warnings[] (unused on the raw path)
-            pcSlot = frame.slot();                                          // [2] int positionCount
-        } else {
-            pcSlot = frame.slot();                                          // [1] int positionCount
-        }
-        int inputBase = frame.slots(arity);                                 // input Vectors
-        Map<FusionNode.Constant, Integer> constantSlots = Stitcher.allocConstantSlots(constants, frame);
+        FrameLayout.FusedParams params = frame.fusedParams(spec.checked(), arity, constants);
+        int pcSlot = params.pcSlot();
+        int inputBase = params.inputBase();
+        Map<FusionNode.Constant, Integer> constantSlots = params.constantSlots();
         int extractedBase = frame.slots(arity);                             // per-input raw array OR typed *Vector
         int outSlot = frame.slot();
         int pSlot = frame.slot();
         int kernelBase = frame.mark();
 
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            vectorMethodName(spec),
-            vectorMethodDescriptor(spec, arity, constants),
-            null,
-            null
-        );
+        MethodNode host = Stitcher.newFusedMethod(vectorMethodName(spec), vectorMethodDescriptor(spec, arity, constants));
         InsnList insns = host.instructions;
 
         // Narrow each CONSUMED input once, outside the loop (JIT #6: no per-position checkcast).
@@ -338,56 +311,24 @@ final class VectorLoopEmitter {
         Map<FusionNode, Integer> sourceIndices = signature.warningSourceIndices();
         FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$CheckedVectorLoop", tree);
 
-        MethodNode host = emitVectorMethod(
-            tree,
+        List<LoopSpec> specs = List.of(
             new LoopSpec(LoopSpec.Reads.RAW, LoopSpec.Output.BUILDER, true, outputElement),
-            inputElements,
-            constants,
-            consumed,
-            overflowTypes,
-            sourceIndices,
-            debug
-        );
-        MethodNode hostIface = emitVectorMethod(
-            tree,
             new LoopSpec(LoopSpec.Reads.INTERFACE, LoopSpec.Output.BUILDER, true, outputElement),
-            inputElements,
-            constants,
-            consumed,
-            overflowTypes,
-            sourceIndices,
-            debug
-        );
-        MethodNode raw = emitVectorMethod(
-            tree,
             new LoopSpec(LoopSpec.Reads.RAW, LoopSpec.Output.BLOCK, true, outputElement),
-            inputElements,
-            constants,
-            consumed,
-            overflowTypes,
-            sourceIndices,
-            debug
+            new LoopSpec(LoopSpec.Reads.INTERFACE, LoopSpec.Output.BLOCK, true, outputElement)
         );
-        MethodNode rawIface = emitVectorMethod(
-            tree,
-            new LoopSpec(LoopSpec.Reads.INTERFACE, LoopSpec.Output.BLOCK, true, outputElement),
-            inputElements,
-            constants,
-            consumed,
-            overflowTypes,
-            sourceIndices,
-            debug
-        );
-        hostMethodInterceptor.accept(host);
-        hostMethodInterceptor.accept(hostIface);
-        hostMethodInterceptor.accept(raw);
-        hostMethodInterceptor.accept(rawIface);
+        List<MethodNode> methods = new ArrayList<>(specs.size());
+        for (LoopSpec spec : specs) {
+            MethodNode method = emitVectorMethod(tree, spec, inputElements, constants, consumed, overflowTypes, sourceIndices, debug);
+            hostMethodInterceptor.accept(method);
+            methods.add(method);
+        }
 
         String internalName = Stitcher.fusedClassName(caller, "Fused$$CheckedVectorLoop");
-        ClassNode classNode = Stitcher.newFusedClass(internalName, host, debug);
-        classNode.methods.add(hostIface);
-        classNode.methods.add(raw);
-        classNode.methods.add(rawIface);
+        ClassNode classNode = Stitcher.newFusedClass(internalName, methods.get(0), debug);
+        for (int i = 1; i < methods.size(); i++) {
+            classNode.methods.add(methods.get(i));
+        }
         return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "checked-vector loop");
     }
 
@@ -414,11 +355,11 @@ final class VectorLoopEmitter {
         // the builder, loop counter, per-input value slots, built result, the two exception slots and the
         // current-kernel slot sit ABOVE the parameters.
         FrameLayout frame = new FrameLayout();
-        frame.slot();                                                       // [0] BlockFactory
-        int warningsArraySlot = frame.slot();                               // [1] Warnings[]
-        int pcSlot = frame.slot();                                          // [2] int positionCount
-        int inputBase = frame.slots(arity);                                 // [3 .. 3+arity) input Vectors
-        Map<FusionNode.Constant, Integer> constantSlots = Stitcher.allocConstantSlots(constants, frame);
+        FrameLayout.FusedParams params = frame.fusedParams(true, arity, constants);
+        int warningsArraySlot = params.warningsSlot();
+        int pcSlot = params.pcSlot();
+        int inputBase = params.inputBase();
+        Map<FusionNode.Constant, Integer> constantSlots = params.constantSlots();
         // Scratch region above the parameters. Per-input value slots are sized by each input's own element (a
         // long/double takes two slots); an unused index (never expected) reserves one. The FrameLayout guarantees the
         // widths never collide.
@@ -437,14 +378,7 @@ final class VectorLoopEmitter {
         int currentKernelSlot = frame.slot();
         int kernelBase = frame.mark();
 
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            raw ? Stitcher.FUSED_METHOD_NAME : Stitcher.FUSED_INTERFACE_METHOD_NAME,
-            descriptor,
-            null,
-            null
-        );
+        MethodNode host = Stitcher.newFusedMethod(raw ? Stitcher.FUSED_METHOD_NAME : Stitcher.FUSED_INTERFACE_METHOD_NAME, descriptor);
         InsnList insns = host.instructions;
 
         // Narrow each CONSUMED input once, outside the loop (JIT #6).

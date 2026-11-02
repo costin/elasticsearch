@@ -77,13 +77,12 @@ final class BlockLoopEmitter {
         // One trailing primitive parameter per embedded constant (canonical emit order) sits between the input *Blocks
         // and the scratch region, so every scratch base is shifted up by the constant parameters' total slot size.
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
-        // Parameter region [0..): BlockFactory, Warnings[], positionCount, one *Block per input, one primitive per constant.
         FrameLayout frame = new FrameLayout();
-        frame.slot();                                                       // [0] BlockFactory
-        int warningsArraySlot = frame.slot();                               // [1] Warnings[]
-        int pcSlot = frame.slot();                                          // [2] int positionCount
-        int inputBase = frame.slots(arity);                                 // [3 .. 3+arity) input *Blocks
-        Map<FusionNode.Constant, Integer> constantSlots = Stitcher.allocConstantSlots(constants, frame);
+        FrameLayout.FusedParams params = frame.fusedParams(true, arity, constants);
+        int warningsArraySlot = params.warningsSlot();
+        int pcSlot = params.pcSlot();
+        int inputBase = params.inputBase();
+        Map<FusionNode.Constant, Integer> constantSlots = params.constantSlots();
         // Scratch region above the parameters: the builder, loop counter, a scratch value-count slot, the built result
         // slot, the caught-throwable slot (builder-safety), the per-kernel overflow-exception slot, then:
         int builderSlot = frame.slot();
@@ -113,24 +112,13 @@ final class BlockLoopEmitter {
 
         // Each input *Block param uses its OWN element; the returned block uses the OUTPUT element (BooleanBlock for a
         // comparison root).
-        StringBuilder desc = new StringBuilder("(L").append(Stitcher.BLOCK_FACTORY)
-            .append(";")
-            .append(Stitcher.WARNINGS_ARRAY_DESCRIPTOR)
-            .append("I");
+        String[] inputDescriptors = new String[arity];
         for (int i = 0; i < arity; i++) {
-            desc.append(inputElements[i].blockDescriptor());
+            inputDescriptors[i] = inputElements[i].blockDescriptor();
         }
-        Stitcher.appendConstantParamDescriptors(desc, constants);
-        desc.append(")").append(outputElement.blockDescriptor());
+        String desc = Stitcher.fusedMethodDescriptor(true, "", inputDescriptors, constants, outputElement.blockDescriptor());
 
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            Stitcher.FUSED_METHOD_NAME,
-            desc.toString(),
-            null,
-            null
-        );
+        MethodNode host = Stitcher.newFusedMethod(Stitcher.FUSED_METHOD_NAME, desc);
         InsnList insns = host.instructions;
 
         // out = bf.new*BlockBuilder(positionCount); the builder is the OUTPUT element.
@@ -273,13 +261,12 @@ final class BlockLoopEmitter {
         // the tri-state node slots start at workBase. The top-level loop loads each constant from its parameter slot
         // and threads it into the relevant cmpN helper call.
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
-        // Parameter region [0..): BlockFactory, Warnings[], positionCount, one *Block per input, one primitive per constant.
         FrameLayout frame = new FrameLayout();
-        frame.slot();                                                       // [0] BlockFactory
-        int warningsArraySlot = frame.slot();                               // [1] Warnings[]
-        int pcSlot = frame.slot();                                          // [2] int positionCount
-        int inputBase = frame.slots(arity);                                 // [3 .. 3+arity) input *Blocks
-        Map<FusionNode.Constant, Integer> constantSlots = Stitcher.allocConstantSlots(constants, frame);
+        FrameLayout.FusedParams params = frame.fusedParams(true, arity, constants);
+        int warningsArraySlot = params.warningsSlot();
+        int pcSlot = params.pcSlot();
+        int inputBase = params.inputBase();
+        Map<FusionNode.Constant, Integer> constantSlots = params.constantSlots();
         // Scratch region above the parameters: builder, loop counter, built result, caught-throwable; the tri-state
         // node slots start at workBase.
         int builderSlot = frame.slot();
@@ -288,24 +275,13 @@ final class BlockLoopEmitter {
         int excSlot = frame.slot();
         int workBase = frame.mark();
 
-        StringBuilder desc = new StringBuilder("(L").append(Stitcher.BLOCK_FACTORY)
-            .append(";")
-            .append(Stitcher.WARNINGS_ARRAY_DESCRIPTOR)
-            .append("I");
+        String[] inputDescriptors = new String[arity];
         for (int i = 0; i < arity; i++) {
-            desc.append(inputElement.blockDescriptor());
+            inputDescriptors[i] = inputElement.blockDescriptor();
         }
-        Stitcher.appendConstantParamDescriptors(desc, constants);
-        desc.append(")").append(outputElement.blockDescriptor());
+        String desc = Stitcher.fusedMethodDescriptor(true, "", inputDescriptors, constants, outputElement.blockDescriptor());
 
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            Stitcher.FUSED_METHOD_NAME,
-            desc.toString(),
-            null,
-            null
-        );
+        MethodNode host = Stitcher.newFusedMethod(Stitcher.FUSED_METHOD_NAME, desc);
         InsnList insns = host.instructions;
 
         // out = bf.newBooleanBlockBuilder(positionCount);
@@ -446,7 +422,7 @@ final class BlockLoopEmitter {
         Stitcher.appendConstantParamDescriptors(desc, helperConstants);
         desc.append(")I");
 
-        MethodNode helper = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, methodName, desc.toString(), null, null);
+        MethodNode helper = Stitcher.newFusedHelper(methodName, desc.toString());
         InsnList insns = helper.instructions;
 
         // Params [0..): Warnings, int p, one *Block per column operand, one primitive per constant. Then scratch + body.

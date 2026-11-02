@@ -286,14 +286,7 @@ public final class Stitcher {
         }
         SlotRemapper.shift(body.computation(), base);
 
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            FUSED_METHOD_NAME,
-            descriptor.kernelType(),
-            null,
-            null
-        );
+        MethodNode host = newFusedMethod(FUSED_METHOD_NAME, descriptor.kernelType());
 
         // Clean-stack input protocol: copy each host parameter into the kernel's shifted argument slot. Because
         // the host descriptor mirrors the kernel's, parameter i sits at the same offset in both frames, so the
@@ -344,6 +337,22 @@ public final class Stitcher {
     static String fusedClassName(MethodHandles.Lookup caller, String simpleName) {
         String pkg = caller.lookupClass().getPackageName().replace('.', '/');
         return pkg.isEmpty() ? simpleName : pkg + "/" + simpleName;
+    }
+
+    /**
+     * Public static fused host method ({@code fused} / {@code fusedInterface} / {@code fusedRaw}).
+     * Access, name and descriptor pass through to the {@link MethodNode} unchanged.
+     */
+    static MethodNode newFusedMethod(String name, String descriptor) {
+        return new MethodNode(Opcodes.ASM9, Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, name, descriptor, null, null);
+    }
+
+    /**
+     * Private static helper ({@code pred}, {@code projAppend}, {@code cmpN}). Access, name and descriptor
+     * pass through to the {@link MethodNode} unchanged.
+     */
+    static MethodNode newFusedHelper(String name, String descriptor) {
+        return new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, name, descriptor, null, null);
     }
 
     /**
@@ -898,6 +907,32 @@ public final class Stitcher {
 
     static int constantSlotSize(FusionNode.Constant constant) {
         return constant.element() == 'J' || constant.element() == 'D' ? 2 : 1;
+    }
+
+    /**
+     * Host method descriptor: {@code (LBlockFactory; [Warnings[] if withWarnings] I extraParams <inputs> <constants>)<return>}.
+     * {@code extraParams} is inserted after positionCount (empty on the block/vector hosts; {@code [I} for
+     * filter-eval's positions array). Input descriptors are supplied already rendered so a block host can pass
+     * per-element {@code *Block} types while a vector host repeats {@code LVector;}.
+     */
+    static String fusedMethodDescriptor(
+        boolean withWarnings,
+        String extraParams,
+        String[] inputDescriptors,
+        List<FusionNode.Constant> constants,
+        String returnDescriptor
+    ) {
+        StringBuilder desc = new StringBuilder("(L").append(BLOCK_FACTORY).append(";");
+        if (withWarnings) {
+            desc.append(WARNINGS_ARRAY_DESCRIPTOR);
+        }
+        desc.append("I").append(extraParams);
+        for (String input : inputDescriptors) {
+            desc.append(input);
+        }
+        appendConstantParamDescriptors(desc, constants);
+        desc.append(")").append(returnDescriptor);
+        return desc.toString();
     }
 
     /**

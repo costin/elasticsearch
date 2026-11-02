@@ -148,28 +148,19 @@ final class FilterEvalEmitter {
         int excSlot = frame.slot();
         int tSlot = frame.slot();
 
-        StringBuilder desc = new StringBuilder("(L").append(Stitcher.BLOCK_FACTORY)
-            .append(";")
-            .append(Stitcher.WARNINGS_ARRAY_DESCRIPTOR)
-            .append("I[I");
+        String[] inputDescriptors = new String[predArity + projArity];
         for (int i = 0; i < predArity; i++) {
-            desc.append(predInputElements[i].blockDescriptor());
+            inputDescriptors[i] = predInputElements[i].blockDescriptor();
         }
         for (int i = 0; i < projArity; i++) {
-            desc.append(projInputElements[i].blockDescriptor());
+            inputDescriptors[predArity + i] = projInputElements[i].blockDescriptor();
         }
-        Stitcher.appendConstantParamDescriptors(desc, predConstants);
-        Stitcher.appendConstantParamDescriptors(desc, projConstants);
-        desc.append(")").append(projOutputElement.blockDescriptor());
+        List<FusionNode.Constant> hostConstants = new ArrayList<>(predConstants.size() + projConstants.size());
+        hostConstants.addAll(predConstants);
+        hostConstants.addAll(projConstants);
+        String desc = Stitcher.fusedMethodDescriptor(true, "[I", inputDescriptors, hostConstants, projOutputElement.blockDescriptor());
 
-        MethodNode host = new MethodNode(
-            Opcodes.ASM9,
-            Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
-            Stitcher.FUSED_METHOD_NAME,
-            desc.toString(),
-            null,
-            null
-        );
+        MethodNode host = Stitcher.newFusedMethod(Stitcher.FUSED_METHOD_NAME, desc);
         InsnList insns = host.instructions;
 
         // out = bf.new<Proj>BlockBuilder(positionCount) — a COMPACT builder that receives one entry per surviving row.
@@ -282,7 +273,7 @@ final class FilterEvalEmitter {
         Stitcher.appendConstantParamDescriptors(desc, predConstants);
         desc.append(")I");
 
-        MethodNode pred = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "pred", desc.toString(), null, null);
+        MethodNode pred = Stitcher.newFusedHelper("pred", desc.toString());
         InsnList insns = pred.instructions;
 
         // Params [0..): Warnings[], int p, one *Block per input, one primitive per constant. Then the scratch region.
@@ -376,7 +367,7 @@ final class FilterEvalEmitter {
         Stitcher.appendConstantParamDescriptors(desc, projConstants);
         desc.append(")V");
 
-        MethodNode proj = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC, "projAppend", desc.toString(), null, null);
+        MethodNode proj = Stitcher.newFusedHelper("projAppend", desc.toString());
         InsnList insns = proj.instructions;
 
         // Params [0..): builder, Warnings[], int p, one *Block per input, one primitive per constant. Then scratch.
