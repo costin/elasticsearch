@@ -20,30 +20,14 @@ import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 
 /**
- * C1: {@code esql.fusion.verify} is a test/CI-only system property (default {@link Assertions#ENABLED}),
- * not a node {@link Setting}. Test JVMs run with {@code -ea} so verify is ON unless
- * {@code -Desql.fusion.verify=false}.
+ * Verify defaults to {@link Assertions#ENABLED} (on under {@code -ea} test JVMs) and is not a node
+ * {@link Setting}. Tests that need the comparison off in-process use {@code FusionVerify.skipForTests}.
  */
 public class FusionSettingsVerifyTests extends ESTestCase {
 
-    public void testVerifyDefaultsToAssertionsEnabledWhenPropertyUnset() {
-        assertThat(FusionSettings.resolveVerifyEnabled(null, true), is(true));
-        assertThat(FusionSettings.resolveVerifyEnabled(null, false), is(false));
-    }
-
-    public void testVerifyPropertyFalseDisablesEvenWhenAssertionsOn() {
-        assertThat(FusionSettings.resolveVerifyEnabled("false", true), is(false));
-        assertThat(FusionSettings.resolveVerifyEnabled("false", false), is(false));
-    }
-
-    public void testVerifyPropertyTrueEnablesEvenWhenAssertionsOff() {
-        assertThat(FusionSettings.resolveVerifyEnabled("true", false), is(true));
-        assertThat(FusionSettings.resolveVerifyEnabled("true", true), is(true));
-    }
-
     public void testIsVerifyEnabledMatchesAssertionsInThisTestJvm() {
-        assumeTrue("skip when -Desql.fusion.verify=false (this test pins the -ea default)", FusionSettings.isVerifyEnabled());
-        // Test JVMs run with -ea and do not set -Desql.fusion.verify, so the latched flag equals Assertions.ENABLED.
+        assumeTrue("skip when verify is off (this test pins the -ea default)", FusionSettings.isVerifyEnabled());
+        // Test JVMs run with -ea, so the latched flag equals Assertions.ENABLED.
         assertThat(FusionSettings.isVerifyEnabled(), is(Assertions.ENABLED));
         assertThat("ES tests run with -ea, so verify is on by default", FusionSettings.isVerifyEnabled(), is(true));
     }

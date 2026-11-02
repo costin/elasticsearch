@@ -307,7 +307,8 @@ public class EsqlPlugin extends Plugin implements ActionPlugin, ExtensiblePlugin
         Settings settings = services.clusterService().getSettings();
         // Latch the node-level expression-fusion kill switch (esql.fusion.enabled) once at node start; it is not a
         // dynamic cluster setting, so this single read fixes the node's fusion behavior for its lifetime.
-        // esql.fusion.coverage_report is sysprop-only (like verify).
+        // coverage_report (default off) and verify (default Assertions.ENABLED) are non-Setting diagnostics controlled only via test hooks,
+        // not node settings.
         FusionSettings.initFromNodeSettings(settings);
         BigArrays bigArrays = services.indicesService().getBigArrays().withCircuitBreaking();
         var blockFactoryProvider = blockFactoryProvider(

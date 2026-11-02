@@ -37,7 +37,8 @@ import java.util.function.Supplier;
  * C2 verify-mode A/B: when {@link FusionSettings#isVerifyEnabled()} the fused evaluators evaluate the unfused
  * fallback on the same page and fail on any difference. This class holds the comparison, encoding check, and
  * mismatch dump. The hot path in production is a single {@code static final} read of {@link FusionSettings#isVerifyEnabled()}
- * that the JIT folds away; nothing here is reached without {@code -ea} (or {@code -Desql.fusion.verify=true}).
+ * that the JIT folds away; nothing here is reached without {@code -ea} (verify defaults to {@code Assertions.ENABLED};
+ * the in-process OFF hook is {@link #skipForTests}).
  *
  * <h2>Typed equality</h2>
  * Long/int/boolean/BytesRef use the compute-data {@code *Block.equals} contracts (positions, nulls, multi-values,
@@ -80,7 +81,7 @@ final class FusionVerify {
     /**
      * In-process seam for the one unit test that must observe eval with comparison forced off. Production never
      * reads this: it lives behind {@code if (FusionSettings.isVerifyEnabled())}, which is {@code static final false}
-     * without {@code -ea}. Prefer {@code -Desql.fusion.verify=false} to disable for a whole test JVM.
+     * without {@code -ea}. Verify defaults to {@code Assertions.ENABLED}; tests disable it in-process via this flag.
      */
     static volatile boolean skipForTests;
 

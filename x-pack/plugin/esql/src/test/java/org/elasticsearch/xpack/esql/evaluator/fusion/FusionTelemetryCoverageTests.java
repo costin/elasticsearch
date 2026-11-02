@@ -355,10 +355,10 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
         assertAccountingIdentity();
     }
 
-    public void testCoverageReportIsSyspropNotANodeSetting() {
+    public void testCoverageReportIsNotANodeSetting() {
         for (Setting<?> setting : new EsqlPlugin().getSettings()) {
             assertThat(
-                "EsqlPlugin must not register esql.fusion.coverage_report (sysprop-only, like esql.fusion.verify)",
+                "EsqlPlugin must not register esql.fusion.coverage_report (a non-Setting diagnostic, like verify)",
                 setting.getKey().equals("esql.fusion.coverage_report"),
                 is(false)
             );

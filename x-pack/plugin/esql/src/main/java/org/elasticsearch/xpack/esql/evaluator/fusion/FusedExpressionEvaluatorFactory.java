@@ -646,10 +646,10 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
     /**
      * Test-only: like {@link #get} but forces the vector_reads INTERFACE vs RAW choice. WHY this lives here:
-     * {@code esql.fusion.vector_reads} is a {@code static final} resolved at class init, and a unit test cannot
-     * flip it in-process without a mutable static. The instance field is a test seam, not a C2-foldable constant.
-     * Production {@link #get} delegates here so both paths share one constructor call. Never called in production
-     * with a value other than the class-init snapshot.
+     * {@link FusionSettings#isVectorReadsInterface()} is a {@code static final} constant default ({@code auto}/RAW),
+     * and a unit test cannot flip it in-process without a mutable static. The instance field is a test seam, not a
+     * C2-foldable constant. Production {@link #get} delegates here so both paths share one constructor call. Never
+     * called in production with a value other than the class-init snapshot.
      */
     ExpressionEvaluator getForTests(DriverContext context, boolean vectorReadsInterface) {
         // Snapshot the class-init static-final into an instance field so tests can override the choice
@@ -965,9 +965,10 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
         /**
          * Test/verify side effect: records {@code p} and returns {@code true} so {@code assert recordPath(p)} compiles.
-         * Because the write is under {@code assert}, verify ON with assertions OFF ({@code -Desql.fusion.verify=true}
-         * without {@code -ea}) leaves {@link #lastEvalPath} unset and {@link FusionVerify} labels the path {@code ?}
-         * — a documented cosmetic limitation of that non-CI combo (CI always runs with {@code -ea}).
+         * Because the write is under {@code assert}, a JVM without {@code -ea} leaves {@link #lastEvalPath} unset and
+         * {@link FusionVerify} would label the path {@code ?}. Verify itself defaults to {@code Assertions.ENABLED},
+         * so that combo is not a production concern (CI always runs with {@code -ea}; the in-process OFF hook is
+         * {@code FusionVerify.skipForTests}).
          */
         private boolean recordPath(LastEvalPath p) {
             this.lastEvalPath = p;
@@ -1421,10 +1422,10 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
         /** True when every vector is the exact {@code *ArrayVector} of its input's element (the ALL-RAW variant). */
         private boolean allExactArrayVectors(Vector[] vectors) {
-            // Benchmark/test-only esql.fusion.vector_reads=interface: treat exact *ArrayVector inputs as non-exact
-            // so eval takes ALL-INTERFACE (typed *Vector.getX) instead of ALL-RAW (VectorUnsafe). Only force when an
-            // INTERFACE spreader exists so a block-only path is left alone. Reads the instance final (production:
-            // class-init static-final snapshot), never a volatile.
+            // Test-only ALL-INTERFACE (via getForTests(ctx, true)): treat exact *ArrayVector inputs as non-exact
+            // so eval takes ALL-INTERFACE (typed *Vector.getX) instead of ALL-RAW (VectorUnsafe). The production
+            // default is auto (RAW/false). Only force when an INTERFACE spreader exists so a block-only path is left
+            // alone. Reads the instance final (production: class-init static-final snapshot), never a volatile.
             if (vectorReadsInterface && (vectorInterfaceSpreader != null || vectorRawInterfaceSpreader != null)) {
                 return false;
             }

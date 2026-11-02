@@ -94,7 +94,7 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
     }
 
     public void testDeliberatelyWrongFusedClassThrowsAssertionErrorUnderVerify() throws Exception {
-        assumeTrue("verify is on by default in test JVMs (-ea); skip when -Desql.fusion.verify=false", FusionSettings.isVerifyEnabled());
+        assumeTrue("verify is on by default in test JVMs (-ea); skip when verify is off", FusionSettings.isVerifyEnabled());
         FieldAttribute a = field("a", DataType.LONG);
         FieldAttribute b = field("b", DataType.LONG);
         FieldAttribute c = field("c", DataType.LONG);
@@ -166,7 +166,7 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
     }
 
     public void testEvalOperatorBreakerReturnsToZeroWithVerifyOn() {
-        assumeTrue("verify is on by default in test JVMs (-ea); skip when -Desql.fusion.verify=false", FusionSettings.isVerifyEnabled());
+        assumeTrue("verify is on by default in test JVMs (-ea); skip when verify is off", FusionSettings.isVerifyEnabled());
         FieldAttribute a = field("a", DataType.LONG);
         FieldAttribute b = field("b", DataType.LONG);
         FieldAttribute c = field("c", DataType.LONG);
@@ -196,7 +196,7 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
      * its try, so the fused block leaks and the breaker stays non-zero.
      */
     public void testVerifyUnfusedGetFailureClosesFusedBlock() {
-        assumeTrue("verify is on by default in test JVMs (-ea); skip when -Desql.fusion.verify=false", FusionSettings.isVerifyEnabled());
+        assumeTrue("verify is on by default in test JVMs (-ea); skip when verify is off", FusionSettings.isVerifyEnabled());
         FusionVerify.skipForTests = false;
         FusionSettings.setEnabledForTests(true);
 
@@ -223,7 +223,7 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
     }
 
     public void testFilterEvalOperatorBreakerReturnsToZeroWithVerifyOn() {
-        assumeTrue("verify is on by default in test JVMs (-ea); skip when -Desql.fusion.verify=false", FusionSettings.isVerifyEnabled());
+        assumeTrue("verify is on by default in test JVMs (-ea); skip when verify is off", FusionSettings.isVerifyEnabled());
         FieldAttribute a = field("a", DataType.LONG);
         FieldAttribute b = field("b", DataType.LONG);
         FieldAttribute c = field("c", DataType.LONG);

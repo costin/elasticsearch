@@ -288,10 +288,6 @@ public class CsvIT extends ESTestCase {
                     if (fusionEnabled != null) {
                         builder.put("esql.fusion.enabled", fusionEnabled);
                     }
-                    // Fusion coverage is sysprop-only (like esql.fusion.verify), not a node Setting. Gradle forwards
-                    // only tests.* into the test JVM, so a corpus coverage run must use
-                    // -Dtests.jvm.argline=-Desql.fusion.coverage_report=true
-                    // EsqlPlugin.close logs FusionTelemetry.coverageReport() when that sysprop is on.
                     return builder.build();
                 }
 

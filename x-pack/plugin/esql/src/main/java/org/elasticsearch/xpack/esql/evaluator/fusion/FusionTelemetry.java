@@ -65,10 +65,9 @@ public final class FusionTelemetry {
 
     /**
      * Opt-in coverage probe (F4/H9). Default {@code false}: every coverage {@code record*} call early-returns, so
-     * production pays nothing. Latched from the {@code esql.fusion.coverage_report} <em>system property</em> (not a
-     * node Setting — see {@link FusionSettings}); Gradle forwards only {@code tests.*}, so a CsvIT run uses
-     * {@code -Dtests.jvm.argline=-Desql.fusion.coverage_report=true}. {@link #recordFailure} stays unconditional — it
-     * is the criterion #5 stitch-failure counter, not a coverage bucket.
+     * production pays nothing. Latched from the {@link FusionSettings} constant default (off) and flipped only via
+     * {@link FusionSettings#setCoverageReportEnabledForTests}; not a node Setting. {@link #recordFailure} stays
+     * unconditional — it is the criterion #5 stitch-failure counter, not a coverage bucket.
      */
     static volatile boolean coverageEnabled = false;
 

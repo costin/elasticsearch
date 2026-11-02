@@ -26,28 +26,20 @@ import org.elasticsearch.core.Assertions;
  * <p>Because {@code EvalMapper}/{@code FusionPlanner} are static utilities reached from many call sites that have no
  * {@link Settings} in hand, the resolved values are latched into {@code volatile} fields that
  * {@link org.elasticsearch.xpack.esql.plugin.EsqlPlugin} sets once from the node settings at component creation via
- * {@link #initFromNodeSettings(Settings)}. The initial values also honor the matching system properties so a JVM-level
- * flag (e.g. {@code -Desql.fusion.enabled=false}) takes effect in unit tests and tooling that never build a plugin.
+ * {@link #initFromNodeSettings(Settings)}. Tests and benchmarks that never build a plugin flip the same fields via
+ * {@link #setEnabledForTests} / {@link #setEnabledForBenchmarks}.
  *
- * <p>{@code esql.fusion.verify} is <b>not</b> a node {@link Setting} and is <b>not</b> registered in
- * {@code EsqlPlugin}. It is a test/CI-only system property that latches into a {@code static final} boolean (see
- * {@link #isVerifyEnabled()}): default {@link Assertions#ENABLED} so {@code -ea} test JVMs A/B every fused page
- * against the unfused evaluator, and production / JMH (no {@code -ea}) pay zero cost. {@code -Desql.fusion.verify=false}
- * disables the A/B even when assertions are on.
+ * <p>Verify defaults to {@link Assertions#ENABLED} (on under {@code -ea} test JVMs, off in production / JMH where
+ * the {@code static final} branch folds away). It is <b>not</b> a node {@link Setting} and is <b>not</b> registered
+ * in {@code EsqlPlugin}. The in-process OFF hook is {@code FusionVerify.skipForTests}.
  *
- * <p>{@code esql.fusion.vector_reads} is likewise <b>not</b> a node {@link Setting}. It latches into a
- * {@code static final} boolean (see {@link #isVectorReadsInterface()}): {@code auto} (default) keeps ALL-RAW over
- * exact {@code *ArrayVector}s; {@code interface} forces ALL-INTERFACE. Unknown values throw at class init. Production
- * / JMH (unset) pay zero cost — the dispatch branch is a constant the C2 JIT folds away. JMH sets the system property
- * per fork rather than calling the accessor.
+ * <p>Vector reads default to {@code auto} (ALL-RAW, {@code false}). The ALL-INTERFACE path is reachable only via the
+ * per-evaluator {@link FusedExpressionEvaluatorFactory#getForTests} seam. This is <b>not</b> a node {@link Setting};
+ * production / JMH pay zero cost — the dispatch branch is a constant the C2 JIT folds away.
  *
- * <p>{@code esql.fusion.coverage_report} is <b>not</b> a node {@link Setting} and is <b>not</b> registered in
- * {@code EsqlPlugin} — same shape as {@code esql.fusion.verify}. It is a test/CI-only system property that latches
- * into {@link FusionTelemetry#coverageEnabled} (default {@code false}). A registered Setting used to overwrite the
- * sysprop at node start (default {@code false}), so {@code -Desql.fusion.coverage_report=true} was dead on a real
- * node. Gradle forwards only {@code tests.*} into the test JVM, so a CsvIT coverage run must use
- * {@code -Dtests.jvm.argline=-Desql.fusion.coverage_report=true}. {@code EsqlPlugin#close()} logs
- * {@link FusionTelemetry#coverageReport()} when the probe is on.
+ * <p>The coverage-report probe defaults off and is <b>not</b> a node {@link Setting}. Tests flip it in-process via
+ * {@link #setCoverageReportEnabledForTests}, which latches both this flag and {@link FusionTelemetry#coverageEnabled}.
+ * {@code EsqlPlugin#close()} logs {@link FusionTelemetry#coverageReport()} when the probe is on.
  */
 public final class FusionSettings {
 
@@ -67,87 +59,51 @@ public final class FusionSettings {
     );
 
     /**
-     * The effective switch. Written once at node start (or by a test hook) and read on the cold plan-time path, so a
+     * The effective switch. Default {@code true}; the effective value is latched from the node Setting by
+     * {@link #initFromNodeSettings} (or flipped by a test/benchmark hook). Read on the cold plan-time path, so a
      * plain {@code volatile} is sufficient — there is no per-row cost and no need for stronger ordering.
      */
-    private static volatile boolean enabled = initialEnabledDefault();
+    private static volatile boolean enabled = true;
 
     /**
-     * Benchmark/test-only {@code esql.fusion.vector_reads}. <b>Not</b> a node {@link Setting}. WHY {@code static final}
-     * (not {@code volatile}): production dispatch must be a C2-foldable constant so an unset hook costs nothing per
-     * dense page. A9's per-page volatile read was the only hot-path difference vs. the stabilize tip. JMH sets
-     * {@code -Desql.fusion.vector_reads} per fork (class-init of this class in that fork); tests that need both
-     * modes in one JVM use {@link FusedExpressionEvaluatorFactory#getForTests}, not a mutable override of this flag.
+     * Default {@code auto} (ALL-RAW, {@code false}). <b>Not</b> a node {@link Setting}. WHY {@code static final}
+     * (not {@code volatile}): production dispatch must be a C2-foldable constant so the default costs nothing per
+     * dense page. The ALL-INTERFACE path is reachable only via the per-evaluator
+     * {@link FusedExpressionEvaluatorFactory#getForTests} seam, not a mutable override of this flag.
      */
-    private static final boolean VECTOR_READS_INTERFACE = resolveVectorReadsInterface(System.getProperty("esql.fusion.vector_reads"));
+    private static final boolean VECTOR_READS_INTERFACE = false;
 
     /**
-     * The effective coverage-report opt-in (default off). Sysprop-only (not a {@link Setting}); also latches
-     * {@link FusionTelemetry#coverageEnabled} so the counters stay zero-cost when this is false. Volatile rather
-     * than {@code static final} so unit tests can flip it in-process via {@link #setCoverageReportEnabledForTests};
-     * the probe is plan-time only, so a C2-foldable constant is not required.
+     * The effective coverage-report opt-in (default off). Not a {@link Setting}; flipped only via
+     * {@link #setCoverageReportEnabledForTests}, which also latches {@link FusionTelemetry#coverageEnabled} so the
+     * counters stay zero-cost when this is false. Volatile rather than {@code static final} so unit tests can flip
+     * it in-process; the probe is plan-time only, so a C2-foldable constant is not required.
      */
-    private static volatile boolean coverageReportEnabled = initialCoverageReportDefault();
+    private static volatile boolean coverageReportEnabled = false;
 
     /**
-     * Test/CI-only {@code esql.fusion.verify}. <b>Not</b> a node {@link Setting} — do not register it in
-     * {@code EsqlPlugin}. Read once into a {@code static final} so the fused-eval {@code if (isVerifyEnabled())}
-     * branch is a single constant the JIT folds away in production (no {@code -ea}) and in JMH (no {@code -ea}).
-     * Default is {@link Assertions#ENABLED}; {@code -Desql.fusion.verify=false} disables even when {@code -ea} is on.
-     * Tests that need the comparison off in-process use {@code FusionVerify.skipForTests} (inside the already-dead
-     * production branch), not a mutable override of this flag.
+     * Verify-mode A/B. <b>Not</b> a node {@link Setting} — do not register it in {@code EsqlPlugin}. Default is
+     * {@link Assertions#ENABLED} (on under {@code -ea} test JVMs, off in production / JMH where the
+     * {@code static final} branch folds away). Tests that need the comparison off in-process use
+     * {@code FusionVerify.skipForTests} (inside the already-dead production branch), not a mutable override of this
+     * flag. It is no longer a system property.
      */
-    private static final boolean VERIFY_ENABLED = resolveVerifyEnabled(System.getProperty("esql.fusion.verify"), Assertions.ENABLED);
-
-    private static boolean initialEnabledDefault() {
-        // Honor -Desql.fusion.enabled before any plugin wiring so JVM-flagged runs (tests, benchmarks) behave.
-        String property = System.getProperty("esql.fusion.enabled");
-        return property == null ? true : Boolean.parseBoolean(property);
-    }
-
-    private static boolean initialCoverageReportDefault() {
-        // Honor -Desql.fusion.coverage_report before any plugin wiring so CsvIT / unit tests that never build a node
-        // still flip the probe. Default false: production pays nothing. Not overwritten by initFromNodeSettings —
-        // a Setting used to clobber this to false at node start.
-        boolean value = Boolean.parseBoolean(System.getProperty("esql.fusion.coverage_report", "false"));
-        FusionTelemetry.coverageEnabled = value;
-        return value;
-    }
+    private static final boolean VERIFY_ENABLED = Assertions.ENABLED;
 
     /** Latches all fusion dials from the node {@link Settings}. Called once by {@code EsqlPlugin#createComponents}. */
     public static void initFromNodeSettings(Settings settings) {
         enabled = FUSION_ENABLED_SETTING.get(settings);
-        // coverage_report is sysprop-only (like verify); do not clobber the class-init latch from a node Setting.
+        // coverage_report and verify are non-Setting diagnostics (constant defaults; flipped only via test hooks).
     }
 
     /**
      * Whether eval should treat exact {@code *ArrayVector} inputs as non-exact and take ALL-INTERFACE.
-     * Benchmark/test-only; default {@code false} ({@code auto}). WHY package-private: production dispatch snapshots
-     * this into a {@code final} evaluator field at construction; JMH sets {@code -Desql.fusion.vector_reads} per
-     * fork (this {@code static final} reads it at class init) and must not reach across packages to toggle a runtime
-     * flag. WHY unknown values are rejected at {@link #resolveVectorReadsInterface}: a typo would silently keep RAW
-     * and an INTERFACE bench/test cell would look like {@code auto}. That throw happens at class init, so a bad
-     * {@code -Desql.fusion.vector_reads} becomes {@code ExceptionInInitializerError} and fails every EVAL plan —
-     * intended fail-fast, not a silent fallback.
+     * Default {@code false} ({@code auto} / ALL-RAW). The ALL-INTERFACE path is reachable only via
+     * {@link FusedExpressionEvaluatorFactory#getForTests}{@code (ctx, true)}; this accessor returns the constant
+     * default and is still read by {@link FusedExpressionEvaluatorFactory#get}.
      */
     static boolean isVectorReadsInterface() {
         return VECTOR_READS_INTERFACE;
-    }
-
-    /**
-     * Resolves {@code esql.fusion.vector_reads}: unset/{@code auto} → {@code false} (RAW); {@code interface} →
-     * {@code true}. Anything else throws (and at class init that is {@code ExceptionInInitializerError} — intended
-     * fail-fast). Package-private so unit tests can pin the matrix without reloading this class.
-     */
-    static boolean resolveVectorReadsInterface(String property) {
-        String value = property == null ? "auto" : property;
-        return switch (value) {
-            case "auto" -> false;
-            case "interface" -> true;
-            default -> throw new IllegalArgumentException(
-                "unknown esql.fusion.vector_reads [" + value + "]; expected [auto] or [interface]"
-            );
-        };
     }
 
     /**
@@ -165,18 +121,12 @@ public final class FusionSettings {
 
     /**
      * Whether fused evaluators must A/B each page against the unfused fallback and fail on any difference.
-     * Test/CI-only; production reads a {@code static final false} and the JIT removes the branch.
+     * Defaults to {@link Assertions#ENABLED} (on under {@code -ea} test JVMs, off in production / JMH where the
+     * branch folds away). The in-process OFF hook is {@code FusionVerify.skipForTests}; it is no longer a system
+     * property.
      */
     public static boolean isVerifyEnabled() {
         return VERIFY_ENABLED;
-    }
-
-    /**
-     * Resolves {@code esql.fusion.verify}: unset → {@code assertionsEnabled}; otherwise {@link Boolean#parseBoolean}.
-     * Package-private so unit tests can pin the property/assertions matrix without reloading this class.
-     */
-    static boolean resolveVerifyEnabled(String property, boolean assertionsEnabled) {
-        return property == null ? assertionsEnabled : Boolean.parseBoolean(property);
     }
 
     /** Test-only: flips the switch so a test can assert both the fused and unfused wiring; restore in a finally. */

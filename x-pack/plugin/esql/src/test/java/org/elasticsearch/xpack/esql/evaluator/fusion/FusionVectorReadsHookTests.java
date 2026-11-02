@@ -22,32 +22,15 @@ import org.elasticsearch.xpack.esql.planner.Layout;
 
 import java.util.List;
 
-import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
 
 /**
- * Benchmark/test-only {@code esql.fusion.vector_reads} hook: default {@code auto} keeps ALL-RAW over exact
- * {@code *ArrayVector} inputs; {@code interface} treats those same inputs as non-exact so eval takes ALL-INTERFACE,
- * with unchanged values. The production flag is a class-init {@code static final}, so both paths are forced here via
+ * Vector-reads hook: default {@code auto} keeps ALL-RAW over exact {@code *ArrayVector} inputs; the ALL-INTERFACE
+ * path treats those same inputs as non-exact so eval takes ALL-INTERFACE, with unchanged values. The production
+ * flag is a class-init {@code static final} constant ({@code false}), so both paths are forced here via
  * {@link FusedExpressionEvaluatorFactory#getForTests} rather than mutating global state.
  */
 public class FusionVectorReadsHookTests extends FusionDifferentialTestCase {
-
-    public void testResolveVectorReadsInterfaceAutoAndUnset() {
-        assertThat(FusionSettings.resolveVectorReadsInterface(null), is(false));
-        assertThat(FusionSettings.resolveVectorReadsInterface("auto"), is(false));
-        assertThat(FusionSettings.resolveVectorReadsInterface("interface"), is(true));
-    }
-
-    public void testUnknownVectorReadsPropertyIsRejected() {
-        IllegalArgumentException thrown = expectThrows(
-            IllegalArgumentException.class,
-            () -> FusionSettings.resolveVectorReadsInterface("raw")
-        );
-        assertThat(thrown.getMessage(), containsString("raw"));
-        expectThrows(IllegalArgumentException.class, () -> FusionSettings.resolveVectorReadsInterface(""));
-        expectThrows(IllegalArgumentException.class, () -> FusionSettings.resolveVectorReadsInterface("INTERFACE"));
-    }
 
     public void testVectorReadsInterfaceTreatsExactArrayVectorsAsNonExact() {
         assertThat("default auto is not the interface force", FusionSettings.isVectorReadsInterface(), is(false));

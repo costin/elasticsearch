@@ -1359,7 +1359,7 @@ public class FusionSpecDifferentialTests extends FusionDifferentialTestCase {
      * Pre-H3 doubles bake as {@code LDC2_W} and the shape carries {@code #C:D:<value>}.
      */
     public void testDoubleDivisorIsTrailingParameterNotImmediate() {
-        assumeTrue("class-byte capture is verify-mode only; skip when -Desql.fusion.verify=false", FusionSettings.isVerifyEnabled());
+        assumeTrue("class-byte capture is verify-mode only; skip when verify is off", FusionSettings.isVerifyEnabled());
         FieldAttribute a = field("a", DataType.DOUBLE);
         FieldAttribute b = field("b", DataType.DOUBLE);
         Layout layout = layout(a, b);
