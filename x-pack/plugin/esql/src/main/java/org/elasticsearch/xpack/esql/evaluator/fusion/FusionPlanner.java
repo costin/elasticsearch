@@ -380,6 +380,12 @@ public final class FusionPlanner {
         predicateTree = applyBakedDivisorCap(predicateTree, predCtx);
         projectionTree = applyBakedDivisorCap(projectionTree, projCtx);
 
+        // FilterEvalEmitter cannot forward an 'L' constant and constantParamClass rejects it, so these shapes stay
+        // on the unfused chain; the single-expression path handles L constants.
+        if (containsReferenceConstant(predicateTree) || containsReferenceConstant(projectionTree)) {
+            return null;
+        }
+
         int[] predicateChannels = toIntArray(predCtx.channels);
         int[] projectionChannels = toIntArray(projCtx.channels);
         ElementKind[] predicateInputElements = predCtx.inputElements.toArray(new ElementKind[0]);
@@ -1623,6 +1629,32 @@ public final class FusionPlanner {
         }
         if (node instanceof FusionNode.Not not) {
             return containsNestedMapping(not.child());
+        }
+        return false;
+    }
+
+    /**
+     * True when the tree carries a BytesRef/{@code 'L'} {@link FusionNode.Constant}. FilterEvalEmitter cannot forward
+     * an {@code 'L'} constant and {@code constantParamClass} rejects it, so these shapes stay on the unfused chain;
+     * the single-expression path handles L constants.
+     */
+    private static boolean containsReferenceConstant(FusionNode node) {
+        if (node instanceof FusionNode.Constant c && c.isReference()) {
+            return true;
+        }
+        if (node instanceof FusionNode.Kernel kernel) {
+            for (FusionNode child : kernel.children()) {
+                if (containsReferenceConstant(child)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (node instanceof FusionNode.Logical logical) {
+            return containsReferenceConstant(logical.left()) || containsReferenceConstant(logical.right());
+        }
+        if (node instanceof FusionNode.Not not) {
+            return containsReferenceConstant(not.child());
         }
         return false;
     }

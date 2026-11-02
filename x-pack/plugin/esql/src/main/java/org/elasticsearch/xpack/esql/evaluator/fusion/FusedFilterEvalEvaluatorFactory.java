@@ -32,6 +32,8 @@ import java.lang.invoke.MethodType;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * A {@link FilterEvalEvaluator.Factory} that fuses a WHERE predicate and a single EVAL projection into ONE stitched
@@ -65,8 +67,21 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
 
     private static final Logger logger = LogManager.getLogger(FusedFilterEvalEvaluatorFactory.class);
 
+    /**
+     * Shapes whose plan-time stitch failed with a raw (non-{@link Stitcher.StitchingException}) throwable. The class
+     * cache already tracks first-failure for {@code StitchingException}s; this set gives the same WARN-once signal
+     * when {@code create} hits {@code constantParamClass} / a test-injected {@link IllegalArgumentException} before
+     * the compiler.
+     */
+    private static final Set<String> FAILED_SHAPES = ConcurrentHashMap.newKeySet();
+
     /** Lookup of this (esql-proper) module, so the fused hidden class links both {@code compute} and {@code esql-core}. */
     private static final MethodHandles.Lookup LOOKUP = MethodHandles.lookup();
+
+    /** Test hygiene: drop remembered raw-failure shapes so a later test sees a fresh first-failure WARN. */
+    static void clearFailedShapesForTests() {
+        FAILED_SHAPES.clear();
+    }
 
     /**
      * Test-only: when {@code true}, the first {@code evalProjection} on a fresh fused evaluator throws a
@@ -167,7 +182,11 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
             handle = FusedExpressionEvaluatorFactory.bindHandle(fusedClass, Stitcher.FUSED_METHOD_NAME, type);
         } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError e) {
             // Filter-eval is block-only: a stitch failure loses fusion entirely, so WARN once per shape.
-            FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure(logger, shape, FusedClassCache.Path.FILTER_EVAL_BLOCK, true, e);
+            Throwable failure = e;
+            if ((e instanceof Stitcher.StitchingException) == false) {
+                failure = new Stitcher.StitchingException(e.getMessage(), e, FAILED_SHAPES.add(shape));
+            }
+            FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure(logger, shape, FusedClassCache.Path.FILTER_EVAL_BLOCK, true, failure);
             FusionTelemetry.recordFailure(shape, FusedClassCache.Path.FILTER_EVAL_BLOCK);
             handle = null;
         } finally {
