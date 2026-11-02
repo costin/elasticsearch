@@ -20,3 +20,10 @@ Reviewer (fresh): GO, no blockers. Verified scope (only fusion SIMD), completene
 E1: 43 survivors byte-identical to D0a.txt; D1.txt baseline. Emitter dup scan 23 regions (dupscan-d1.txt). Eight-file total 4142->3843.
 Gate: fusion gate BUILD SUCCESSFUL 5m31s, GATE_D1_EXIT=0.
 Pure deletion with byte-identity net - no fails-before-fix.
+
+## D.2 — delete Stitcher test seams (commit 33e9553bf28)
+Deleted 6 *LoopBytecode forwarders + 3 static *MethodCodeLength forwarders from Stitcher. serializeWithBudgetGuard now calls FusedMethodCodeLengths.maxMethodCodeLength directly (identical measurement). New test helper FusionTestEmitters replicates Stitcher's emitter graph (same TemplateRegistry, no-op interceptor == Stitcher's this::intercept when hostMethodInterceptor==null, FilterEvalEmitter shares the BlockLoopEmitter instance). Rewired 8 compute fusion test classes to call emitters + FusedMethodCodeLengths directly; compile* still via Stitcher.
+Reviewer (fresh): GO, no blockers. Verified only prod change is the deletions + the one repoint (FusedMethodCodeLengths.java comment-only); helper matches Stitcher ctor field-for-field; no assertion weakened; no dead fields/imports. 2 nits = informational (helper coupling flagged in javadoc + caught by E1; shared no-op lambda behaviorally identical).
+E1: 43 shapes byte-identical to D1.txt (D2.txt). Dup scan 23 regions (dupscan-d2.txt). Stitcher 1193->1133.
+Gate: fusion gate BUILD SUCCESSFUL 5m31s, GATE_D2_EXIT=0.
+Mechanical delete+rewire with byte-identity net - no fails-before-fix.
