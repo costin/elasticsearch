@@ -43,10 +43,30 @@ removed) and D.5a (declared reorder). Fusion gate green per commit; full CsvIT v
 | D.4c array-vector + register helpers | done | f9bd8a0bd54 | `e1/D4c.txt` 43 shapes byte-identical to D4b (md5 98ff3ece...) | 10 regions (dupscan-d4c.txt) | fusion gate BUILD SUCCESSFUL 4m29s exit 0 |
 | D.4d finishFusedClass tail helper | done | 50ea15da1b1 | `e1/D4d.txt` 43 shapes byte-identical to D4c (md5 98ff3ece...) | 10 regions (dupscan-d4d.txt; structural prep, below window-6) | fusion gate BUILD SUCCESSFUL exit 0 (post-spotlessApply) |
 | D.4e leaf guard/read helpers (BlockLeafEmit) | done | 460c9a71358 | `e1/D4e.txt` 43 shapes byte-identical to D4d (md5 98ff3ece...) | 9 regions (dupscan-d4e.txt; cross-emitter getValue region gone) | fusion gate BUILD SUCCESSFUL 5m21s exit 0 |
-| D.5a move pre-loop inits | pending | | declared diff | | |
-| D.5b builder position loop | pending | | identical | | |
-| D.5c PositionLoop header/footer | pending | | identical | | |
-| D.7 comment pass | pending | | identical | | |
+| D.5a hoist pre-loop inits (DECLARED DIFF) | done | 344469b38f7 | `e1/D5a.txt` 10/43 shapes changed by pure reorder + 33 identical; javap proof in `javap/d5a/` (equivalent) | 9 regions (dupscan-d5a.txt; emitBlockLoop + emitFilterEval now match the vector skeleton, D.5b/c targets) | fusion gate BUILD SUCCESSFUL 4m52s exit 0 (correctness suites = behavioral proof) |
+| D.5b emitAppendOrNull append-tail | done | dc73e010902 | `e1/D5b.txt` 43 shapes byte-identical to D5a (md5 ac36a096...) | 8 regions (dupscan-d5b.txt; append-tail self-dup gone) | fusion gate BUILD SUCCESSFUL 5m17s exit 0 |
+| D.5c PositionLoop builder-loop skeleton | done | 51923ff9340 | `e1/D5c.txt` 43 shapes byte-identical to D5b (md5 ac36a096...) | 6 regions (dupscan-d5c.txt; both 12-line skeleton regions gone; one 11-line prologue left) | fusion gate BUILD SUCCESSFUL 5m02s exit 0 |
+| D.5d inline FusedParams accessor locals | done | 639e4ebbc36 | `e1/D5d.txt` 43 shapes byte-identical to D5c (md5 ac36a096...) | 4 regions, max 6 lines (dupscan-d5d.txt; last >=8-line prologue region gone) | fusion gate BUILD SUCCESSFUL 4m47s exit 0 |
+| D.7 strip merge-plan tags from comments | done | 3410128d302 | comment-only; fused bytes unchanged (compile+spotless only, no re-dump) | 4 regions, max 6 lines (unchanged) | compile+spotless BUILD SUCCESSFUL |
+
+### Phase D end
+- D.8 window-6 scan: **4 regions, max 6 lines; no region >= 8 lines** (target met). Remaining 6-line regions
+  (`dupscan-d5d.txt`): BlockLoop 463-468~546-551, FilterEval 297-302~372-377, FilterEval 310-315~385-390,
+  VectorLoop 127-132~181-186 — all below the window-6 gate; folding them would add helper overhead for no net
+  line win, so they are left.
+- Line counts (10 files: 8 emitters + PositionLoop + BlockLeafEmit; `wc -l`): **total 3737** = 2141 code + 1329
+  comment + 267 blank. Baseline (8 files at c1474931f0e6) was **4142** = 2528 code + 1321 comment + blank.
+  **Code dropped 2528 -> 2141 (-387, -15%)**; comments flat (1321 -> 1329). The 3350 raw-line target is NOT met
+  (3737): with the comment footprint fixed at ~1329 mandated Javadoc (AGENTS.md requires class/method "why" docs
+  and forbids removing comments unless the code is removed), 3350 would require code at ~1762 lines — far below
+  functional need. The dedup objective (no >=8-line region; 23 regions -> 4) is fully met; the raw-line target was
+  mis-calibrated against the pre-existing Javadoc and is left unmet by design rather than by cutting documentation.
+- FusionSimd.java deleted (D.1). New helpers: PositionLoop.java (68), BlockLeafEmit.java (76), plus growth in
+  FusedBuilderEmit and FusedMethodCodeLengths absorbing extracted sequences.
+- Phase-end CsvIT verify-on (`:x-pack:plugin:esql:internalClusterTest --tests CsvIT`
+  `-Dtests.jvm.argline=-Desql.fusion.verify=true`, full csv-spec corpus): **7657 tests, 0 failures, 0 errors,
+  252 skipped** (capability/mode skips), BUILD SUCCESSFUL 3m21s. Every fused page was A/B'd against the unfused
+  fallback and matched — behavioral proof across the whole corpus, on top of the 43-shape byte-identity.
 
 ## Phase P0
 | Item | Status | Commit | Notes |

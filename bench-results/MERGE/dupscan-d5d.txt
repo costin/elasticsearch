@@ -1,0 +1,4 @@
+BlockLoopEmitter.java:463-468  ~  BlockLoopEmitter.java:546-551  (6 lines)
+FilterEvalEmitter.java:297-302  ~  FilterEvalEmitter.java:372-377  (6 lines)
+FilterEvalEmitter.java:310-315  ~  FilterEvalEmitter.java:385-390  (6 lines)
+VectorLoopEmitter.java:127-132  ~  VectorLoopEmitter.java:181-186  (6 lines)
