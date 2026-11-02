@@ -85,7 +85,7 @@ All six dumps share md5 7cbf6fa3520c30dd271ded1ca9b0dd8a (byte-identical through
 | Step | Commit | Changed shapes | Hash list file |
 |---|---|---|---|
 | pre-H1 | dec0810a47a | baseline | T4/e1/pre-h1.txt |
-| H1 | 2a7e47987f9 | byte-identical (aliasing fix is eval-time spare, not fused-class bytes) | T4/e1/h1.txt |
+| H1 | 2a7e47987f9 | hashes identical on the then-33-shape corpus, which had no two-BytesRef-column shape; H1 emits one `new BytesRef` per column and DOES change fused-class bytes (the old corpus simply never captured it) | T4/e1/h1.txt |
 | H2 | 25fd1cabcaf | byte-identical (huge-method guard refuses; in-budget TE classes unchanged) | T4/e1/h2.txt |
 | H3 | 9622eed87db | byte-identical (TE bakedDiv already emitted bounded baked form) | T4/e1/h3.txt |
 | pre-H11 | 333f1202b3f | baseline for H11 | T4/e1/pre-h11.txt |
