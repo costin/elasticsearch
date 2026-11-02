@@ -162,6 +162,12 @@ final class FilterEvalEmitter {
         MethodNode host = Stitcher.newFusedMethod(Stitcher.FUSED_METHOD_NAME, desc);
         InsnList insns = host.instructions;
 
+        // rowCount = 0, hoisted above the builder/try so the block and filter-eval loops share the vector loops'
+        // builder -> try -> p=0 -> loop-header skeleton. The store cannot throw and rowCount is never read on the
+        // builder-safety handler path, so keeping it outside the try is equivalent.
+        insns.add(new InsnNode(Opcodes.ICONST_0));
+        insns.add(new VarInsnNode(Opcodes.ISTORE, rowCountSlot));
+
         // out = bf.new<Proj>BlockBuilder(positionCount) — a COMPACT builder that receives one entry per surviving row.
         FusedBuilderEmit.emitNewBlockBuilder(insns, pcSlot, builderSlot, projOutputElement);
 
@@ -170,8 +176,6 @@ final class FilterEvalEmitter {
         LabelNode handler = new LabelNode();
         insns.add(tryStart);
 
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, rowCountSlot));
         insns.add(new InsnNode(Opcodes.ICONST_0));
         insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
 

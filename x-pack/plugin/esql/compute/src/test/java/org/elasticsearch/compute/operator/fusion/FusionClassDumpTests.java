@@ -29,6 +29,8 @@ import java.util.TreeMap;
  * E1 dump harness: emits fused class bytes for the TE structural corpus and writes a deterministic
  * {@code sha256  &lt;shape-label&gt;} list (sorted by label, no timestamps). Set
  * {@code -Desql.fusion.dump.list} (via {@code -Dtests.jvm.argline}) to the output path; skipped otherwise.
+ * Optionally also write each shape's raw class bytes to {@code -Desql.fusion.dump.dir/&lt;shape&gt;.class}
+ * (evidence-only; does not change the fused bytecode).
  *
  * <p>The original TE corpus is 34 shapes. The dump kept 33 after H11 deleted the unreachable mapping-block emit
  * path ({@code mapping_append_suffix} stays omitted). D.0a added 13 shapes that pin the paths later D refactors
@@ -305,9 +307,18 @@ public class FusionClassDumpTests extends ESTestCase {
         true
     );
 
+    /** Evidence-only: when {@code esql.fusion.dump.dir} is set, {@link #put} also writes {@code <shape>.class}. */
+    private static Path dumpDir;
+
     public void testDumpFusionClassCorpus() throws Exception {
         String listProp = System.getProperty("esql.fusion.dump.list");
         assumeFalse("set -Desql.fusion.dump.list to write the E1 sha256 list", listProp == null || listProp.isBlank());
+
+        String dirProp = System.getProperty("esql.fusion.dump.dir");
+        dumpDir = (dirProp == null || dirProp.isBlank()) ? null : Path.of(dirProp);
+        if (dumpDir != null) {
+            Files.createDirectories(dumpDir);
+        }
 
         FusionTestEmitters emitters = new FusionTestEmitters();
         MethodHandles.Lookup lookup = MethodHandles.lookup();
@@ -382,6 +393,9 @@ public class FusionClassDumpTests extends ESTestCase {
     private static void put(TreeMap<String, String> hashes, String shape, byte[] bytecode) throws Exception {
         byte[] digest = MessageDigest.getInstance("SHA-256").digest(bytecode);
         hashes.put(shape, HexFormat.of().formatHex(digest));
+        if (dumpDir != null) {
+            Files.write(dumpDir.resolve(shape + ".class"), bytecode);
+        }
     }
 
     private static FusionNode addMulLong() {

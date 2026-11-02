@@ -120,12 +120,12 @@ final class BlockLoopEmitter {
         MethodNode host = Stitcher.newFusedMethod(Stitcher.FUSED_METHOD_NAME, desc);
         InsnList insns = host.instructions;
 
-        // out = bf.new*BlockBuilder(positionCount); the builder is the OUTPUT element.
-        FusedBuilderEmit.emitNewBlockBuilder(insns, pcSlot, builderSlot, outputElement);
-
         // Allocate one reusable BytesRef spare per reference column, before the loop. Plain locals (no breaker
         // accounting), so they live outside the builder's try region. No-op when the tree has no reference input.
         Stitcher.emitBytesRefSpareInits(insns, spareByInput);
+
+        // out = bf.new*BlockBuilder(positionCount); the builder is the OUTPUT element.
+        FusedBuilderEmit.emitNewBlockBuilder(insns, pcSlot, builderSlot, outputElement);
 
         // The builder is a resource: everything up to and including build() runs inside a try whose catch-all
         // handler closes it before rethrowing, so a break part-way through does not leak breaker bytes.
