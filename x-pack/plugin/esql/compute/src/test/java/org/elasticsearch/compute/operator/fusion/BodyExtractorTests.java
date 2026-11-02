@@ -55,6 +55,29 @@ public class BodyExtractorTests extends ESTestCase {
         }
 
         /**
+         * A java.base-only mirror of {@code Mod.processLongs}: the same zero-guard + {@code lhs%rhs} body the fused
+         * path splices (not {@code *ByConstant}, which omits the zero check). Used with {@link #processLongsDiv} for
+         * the baked-divisor-tuple dump shape.
+         */
+        public static long processLongsMod(long lhs, long rhs) {
+            if (rhs == 0L) {
+                throw new ArithmeticException("/ by zero");
+            }
+            return lhs % rhs;
+        }
+
+        /**
+         * A warnExceptions-only kernel: throws {@link IllegalArgumentException}, not overflow. {@code overflowChecked}
+         * stays false; the fused block path still wraps the body so a throw becomes {@code registerException} + null.
+         */
+        public static int processWarnOnNegative(int v) {
+            if (v < 0) {
+                throw new IllegalArgumentException("negative");
+            }
+            return v;
+        }
+
+        /**
          * A straight-line {@code BytesRef -> BytesRef} kernel (identity) for exercising the fused block path's
          * BytesRef-OUTPUT support (B3b): a single terminal {@code ARETURN}, no loops, so {@link BodyExtractor} can
          * splice it. Returns the (reused input spare) reference — the block builder's {@code appendBytesRef} copies its

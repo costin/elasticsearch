@@ -75,9 +75,25 @@ public class StitcherBudgetTests extends ESTestCase {
             return Math.multiplyExact(a, b);
         }
 
+        /** {@code int} add shaped like the production {@code Add} over ints (overflow-checked, {@code int} result). */
+        public static int addInt(int a, int b) {
+            return Math.addExact(a, b);
+        }
+
         /** {@code double} add shaped like the production {@code Add} over doubles (overflow/finite-checked, {@code double} result). */
         public static double addDouble(double a, double b) {
             return a + b;
+        }
+
+        /**
+         * {@code double} divide shaped like the production {@code Div} over doubles: zero-guard then {@code lhs/rhs}.
+         * Overflow-checked (the fused path keeps the per-kernel try/catch).
+         */
+        public static double divDouble(double lhs, double rhs) {
+            if (rhs == 0.0) {
+                throw new ArithmeticException("/ by zero");
+            }
+            return lhs / rhs;
         }
     }
 
@@ -95,6 +111,11 @@ public class StitcherBudgetTests extends ESTestCase {
         public static boolean gtInt(int a, int b) {
             return a > b;
         }
+
+        /** {@code long} equality shaped like the production {@code Equals} over longs (boolean return, never overflow). */
+        public static boolean eq(long a, long b) {
+            return a == b;
+        }
     }
 
     /**
@@ -107,6 +128,74 @@ public class StitcherBudgetTests extends ESTestCase {
         public static int length(org.apache.lucene.util.BytesRef v) {
             return v.length;
         }
+
+        /**
+         * {@code BytesRef} equality shaped like production {@code Equals#processBytesRef}: {@code lhs.equals(rhs)},
+         * throw-free, boolean return.
+         */
+        public static boolean eq(org.apache.lucene.util.BytesRef lhs, org.apache.lucene.util.BytesRef rhs) {
+            return lhs.equals(rhs);
+        }
+
+        /**
+         * Simplified {@code LEFT}: {@code (BytesRef str, int length, BytesRef scratch) -> BytesRef}. Copies a
+         * prefix of {@code str} into the per-driver scratch and returns it (the same THREAD_LOCAL {@code @Fixed
+         * BytesRef out} contract as production {@code Left#process}, minus the UTF-8 code-point walker).
+         */
+        public static org.apache.lucene.util.BytesRef left(
+            org.apache.lucene.util.BytesRef str,
+            int length,
+            org.apache.lucene.util.BytesRef scratch
+        ) {
+            scratch.bytes = str.bytes;
+            scratch.offset = str.offset;
+            int n = length;
+            if (n < 0) {
+                n = 0;
+            }
+            if (n > str.length) {
+                n = str.length;
+            }
+            scratch.length = n;
+            return scratch;
+        }
+
+        /**
+         * Filter-eval overload of {@link #left}: the host {@code pushConstantArg} cannot forward element {@code 'L'}
+         * (I4), so this path has no scratch param. Still {@code LEFT(k, n)} over two BytesRef columns so the pred
+         * helper allocates per-column spares.
+         */
+        public static org.apache.lucene.util.BytesRef left(org.apache.lucene.util.BytesRef str, int length) {
+            return left(str, length, new org.apache.lucene.util.BytesRef());
+        }
+
+        /**
+         * Variadic {@code CONCAT}: last parameter is {@code BytesRef[]}, no breaker scratch. Copies every element
+         * into one new {@code BytesRef}. One terminal return, no {@code ATHROW} (the production 1MB cap is omitted
+         * so {@link BodyExtractor} can splice the loop body).
+         */
+        public static org.apache.lucene.util.BytesRef concat(org.apache.lucene.util.BytesRef[] values) {
+            int n = 0;
+            for (int i = 0; i < values.length; i++) {
+                n += values[i].length;
+            }
+            byte[] bytes = new byte[n];
+            int p = 0;
+            for (int i = 0; i < values.length; i++) {
+                org.apache.lucene.util.BytesRef v = values[i];
+                System.arraycopy(v.bytes, v.offset, bytes, p, v.length);
+                p += v.length;
+            }
+            return new org.apache.lucene.util.BytesRef(bytes);
+        }
+
+        /**
+         * Nested mapping convert shaped like {@code ChangeCase#process}: {@code BytesRef -> BytesRef} with a
+         * captured {@code @Fixed Locale}. {@code String.concat} is avoided so the body has no {@code invokedynamic}.
+         */
+        public static org.apache.lucene.util.BytesRef toLower(org.apache.lucene.util.BytesRef v, java.util.Locale locale) {
+            return new org.apache.lucene.util.BytesRef(v.utf8ToString().toLowerCase(locale));
+        }
     }
 
     /** Widening numeric cast kernels shaped like the implicit {@code Cast} evaluators (return element != arg element). */
@@ -116,6 +205,11 @@ public class StitcherBudgetTests extends ESTestCase {
         }
 
         public static double longToDouble(long v) {
+            return v;
+        }
+
+        /** Widening {@code int -> double} cast shaped like the implicit {@code Cast} evaluator. */
+        public static double intToDouble(int v) {
             return v;
         }
     }
