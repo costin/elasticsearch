@@ -824,6 +824,29 @@ public final class Stitcher {
     }
 
     /**
+     * {@code warnings[constIndex].registerException(exc)}: {@link #loadWarnings} then {@code ALOAD exc};
+     * {@code INVOKEVIRTUAL registerException(Exception)}.
+     */
+    static void emitRegisterException(InsnList insns, int warningsArraySlot, int constIndex, int excSlot) {
+        loadWarnings(insns, warningsArraySlot, constIndex);
+        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, WARNINGS, "registerException", WARNINGS_REGISTER_DESCRIPTOR, false));
+    }
+
+    /**
+     * {@code warnings[localIndex].registerException(exc)} where the index is a runtime local:
+     * {@code ALOAD warnings[]; ILOAD localIndex; AALOAD; ALOAD exc; INVOKEVIRTUAL}. The boolean disambiguates
+     * from the constIndex overload.
+     */
+    static void emitRegisterException(InsnList insns, int warningsArraySlot, int indexLocal, boolean fromLocal, int excSlot) {
+        insns.add(new VarInsnNode(Opcodes.ALOAD, warningsArraySlot));
+        insns.add(new VarInsnNode(Opcodes.ILOAD, indexLocal));
+        insns.add(new InsnNode(Opcodes.AALOAD));
+        insns.add(new VarInsnNode(Opcodes.ALOAD, excSlot));
+        insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, WARNINGS, "registerException", WARNINGS_REGISTER_DESCRIPTOR, false));
+    }
+
+    /**
      * Emits a constant leaf at a use site: a <em>baked</em> constant is pushed as a bytecode immediate
      * ({@code LDC}/{@code ICONST}/{@code LCONST}/{@code DCONST}), while a non-baked constant is loaded from its
      * trailing <b>method-parameter</b> slot with the type-correct {@code xLOAD}. A constant leaf reads no array and

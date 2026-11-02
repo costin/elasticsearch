@@ -262,19 +262,7 @@ final class VectorLoopEmitter {
         if (spec.output() == LoopSpec.Output.BLOCK) {
             emitReturnNewArrayVectorAsBlock(insns, outSlot, pcSlot, outputElement);
         } else {
-            // return blockFactory.new*ArrayVector(out, positionCount);
-            insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
-            insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKEVIRTUAL,
-                    Stitcher.BLOCK_FACTORY,
-                    outputElement.newVectorMethod(),
-                    outputElement.newVectorDescriptor(),
-                    false
-                )
-            );
+            emitNewArrayVector(insns, outSlot, pcSlot, outputElement);
             insns.add(new InsnNode(Opcodes.ARETURN));
         }
 
@@ -455,19 +443,7 @@ final class VectorLoopEmitter {
             insns.add(new VarInsnNode(Opcodes.ASTORE, overflowExcSlot));
             // Register the overflow on the currently-evaluating kernel's OWN Warnings (warnings[currentKernelSlot]) so
             // the header matches the unfused chain's per-node evaluator source.
-            insns.add(new VarInsnNode(Opcodes.ALOAD, warningsArraySlot));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, currentKernelSlot));
-            insns.add(new InsnNode(Opcodes.AALOAD));
-            insns.add(new VarInsnNode(Opcodes.ALOAD, overflowExcSlot));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKEVIRTUAL,
-                    Stitcher.WARNINGS,
-                    "registerException",
-                    Stitcher.WARNINGS_REGISTER_DESCRIPTOR,
-                    false
-                )
-            );
+            Stitcher.emitRegisterException(insns, warningsArraySlot, currentKernelSlot, true, overflowExcSlot);
             FusedBuilderEmit.emitAppendNull(insns, builderSlot, outputElement);
             insns.add(new JumpInsnNode(Opcodes.GOTO, next));
             host.tryCatchBlocks.add(new TryCatchBlockNode(tryStartOverflow, tryEndOverflow, overflowHandler, exType));
@@ -483,11 +459,11 @@ final class VectorLoopEmitter {
     }
 
     /**
-     * {@code return blockFactory.new*ArrayVector(out, positionCount).asBlock();} — the dense-output epilogue shared by
-     * {@link #emitArrayVectorMethod} when {@link LoopSpec.Output#BLOCK}. {@code new*ArrayVector} charges the
-     * breaker; the {@code out[]} written above is a transient uncharged array (same as {@link #emitVectorLoop}).
+     * Pushes {@code blockFactory.new*ArrayVector(out, positionCount)} onto the stack. {@code new*ArrayVector} charges
+     * the breaker; the {@code out[]} written above is a transient uncharged array. Leaves the vector on the stack
+     * (no {@code asBlock}, no {@code ARETURN}).
      */
-    static void emitReturnNewArrayVectorAsBlock(InsnList insns, int outSlot, int pcSlot, Element outputElement) {
+    static void emitNewArrayVector(InsnList insns, int outSlot, int pcSlot, Element outputElement) {
         insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
         insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
         insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
@@ -500,6 +476,15 @@ final class VectorLoopEmitter {
                 false
             )
         );
+    }
+
+    /**
+     * {@code return blockFactory.new*ArrayVector(out, positionCount).asBlock();} — the dense-output epilogue shared by
+     * {@link #emitArrayVectorMethod} when {@link LoopSpec.Output#BLOCK}. {@code new*ArrayVector} charges the
+     * breaker; the {@code out[]} written above is a transient uncharged array (same as {@link #emitVectorLoop}).
+     */
+    static void emitReturnNewArrayVectorAsBlock(InsnList insns, int outSlot, int pcSlot, Element outputElement) {
+        emitNewArrayVector(insns, outSlot, pcSlot, outputElement);
         insns.add(
             new MethodInsnNode(
                 Opcodes.INVOKEINTERFACE,

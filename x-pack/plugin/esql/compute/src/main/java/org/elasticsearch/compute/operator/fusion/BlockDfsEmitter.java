@@ -235,17 +235,7 @@ final class BlockDfsEmitter {
             // silently but still marks the kernel not present.
             insns.add(new VarInsnNode(Opcodes.ILOAD, liveSlot));
             insns.add(new JumpInsnNode(Opcodes.IFEQ, skipRegister));
-            Stitcher.loadWarnings(insns, warningsArraySlot, kernelSlot);
-            insns.add(new VarInsnNode(Opcodes.ALOAD, overflowExcSlot));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKEVIRTUAL,
-                    Stitcher.WARNINGS,
-                    "registerException",
-                    Stitcher.WARNINGS_REGISTER_DESCRIPTOR,
-                    false
-                )
-            );
+            Stitcher.emitRegisterException(insns, warningsArraySlot, kernelSlot, overflowExcSlot);
             insns.add(skipRegister);
             insns.add(new InsnNode(Opcodes.ICONST_0));
             insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
