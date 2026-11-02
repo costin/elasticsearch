@@ -10,6 +10,7 @@ package org.elasticsearch.compute.operator.fusion;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
@@ -96,5 +97,19 @@ final class FusedBuilderEmit {
         insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
         insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, out.builderInternalName(), "appendNull", out.appendNullDescriptor(), true));
         insns.add(new InsnNode(Opcodes.POP));
+    }
+
+    /**
+     * The append-or-null tail of a per-position builder loop: appends the value in {@code valueSlot} (the caller has
+     * already emitted the guard that jumps to {@code nullLabel} when the position is null) then branches to
+     * {@code nextLabel}; at {@code nullLabel} it appends a null instead. Instruction order is the byte-identity contract.
+     */
+    static void emitAppendOrNull(InsnList insns, int builderSlot, int valueSlot, Element out, LabelNode nullLabel, LabelNode nextLabel) {
+        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
+        insns.add(new VarInsnNode(out.type().getOpcode(Opcodes.ILOAD), valueSlot));
+        emitAppend(insns, out);
+        insns.add(new JumpInsnNode(Opcodes.GOTO, nextLabel));
+        insns.add(nullLabel);
+        emitAppendNull(insns, builderSlot, out);
     }
 }

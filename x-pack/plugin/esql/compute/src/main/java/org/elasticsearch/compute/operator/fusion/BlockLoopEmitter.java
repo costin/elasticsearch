@@ -185,15 +185,9 @@ final class BlockLoopEmitter {
         // if (root not present) appendNull; else append the root value.
         insns.add(new VarInsnNode(Opcodes.ILOAD, root.present()));
         insns.add(new JumpInsnNode(Opcodes.IFEQ, appendNull));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new VarInsnNode(outputElement.type().getOpcode(Opcodes.ILOAD), root.value()));
-        FusedBuilderEmit.emitAppend(insns, outputElement);
-        insns.add(new JumpInsnNode(Opcodes.GOTO, next));
-
         // out.appendNull(); reached when the root is not present (a null / multi-value leaf or an overflow on the value
         // path short-circuited the position; any warning was already registered inline by the emitter).
-        insns.add(appendNull);
-        FusedBuilderEmit.emitAppendNull(insns, builderSlot, outputElement);
+        FusedBuilderEmit.emitAppendOrNull(insns, builderSlot, root.value(), outputElement, appendNull, next);
 
         insns.add(next);
         insns.add(new IincInsnNode(pSlot, 1));
@@ -308,13 +302,7 @@ final class BlockLoopEmitter {
         insns.add(new VarInsnNode(Opcodes.ILOAD, tRoot));
         insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
         insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, doNull));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, builderSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, tRoot));
-        FusedBuilderEmit.emitAppend(insns, outputElement);
-        insns.add(new JumpInsnNode(Opcodes.GOTO, next));
-
-        insns.add(doNull);
-        FusedBuilderEmit.emitAppendNull(insns, builderSlot, outputElement);
+        FusedBuilderEmit.emitAppendOrNull(insns, builderSlot, tRoot, outputElement, doNull, next);
 
         insns.add(next);
         insns.add(new IincInsnNode(pSlot, 1));
