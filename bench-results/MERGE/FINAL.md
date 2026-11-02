@@ -38,7 +38,10 @@ removed) and D.5a (declared reorder). Fusion gate green per commit; full CsvIT v
 | D.1 delete SIMD | done | 68bf1e55cab | `e1/D1.txt` 43 shapes; all byte-identical to D0a (only simd_long/double/int_gt removed) | 23 regions (SIMD-tail pair gone; line shifts net same count; raw `dupscan-d1.txt`) | fusion gate BUILD SUCCESSFUL 5m31s exit 0 |
 | D.2 delete Stitcher forwarders | done | 33e9553bf28 | `e1/D2.txt` 43 shapes byte-identical to D1 | 23 regions (dupscan-d2.txt) | fusion gate BUILD SUCCESSFUL 5m31s exit 0 |
 | D.3 one FusionDescriptor ctor (I7) | done | e74b469d9d9 | `e1/D3.txt` 43 shapes byte-identical to D2 (md5 98ff3ece...) | 17 regions (dupscan-d3.txt; 7 FusionDescriptor convenience-ctor self-dups gone; emitters unchanged) | fusion gate BUILD SUCCESSFUL 5m44s exit 0 |
-| D.4 helpers | pending | | identical | | |
+| D.4a method/descriptor/params helpers | done | ab629e68e8f | `e1/D4a.txt` 43 shapes byte-identical to D3 (md5 98ff3ece...) | 15 regions (dupscan-d4a.txt) | fusion gate BUILD SUCCESSFUL 5m08s exit 0 |
+| D.4b append helpers | pending | | identical | | |
+| D.4c array-vector + register helpers | pending | | identical | | |
+| D.4d leaf guard/read + finishFusedClass | pending | | identical | | |
 | D.5a move pre-loop inits | pending | | declared diff | | |
 | D.5b builder position loop | pending | | identical | | |
 | D.5c PositionLoop header/footer | pending | | identical | | |
