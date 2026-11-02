@@ -10,7 +10,6 @@ package org.elasticsearch.compute.operator.fusion;
 import org.elasticsearch.compute.operator.fusion.BodyExtractor.Body;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
-import org.objectweb.asm.tree.IincInsnNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.IntInsnNode;
@@ -124,28 +123,11 @@ final class BlockLoopEmitter {
         // accounting), so they live outside the builder's try region. No-op when the tree has no reference input.
         Stitcher.emitBytesRefSpareInits(insns, spareByInput);
 
-        // out = bf.new*BlockBuilder(positionCount); the builder is the OUTPUT element.
-        FusedBuilderEmit.emitNewBlockBuilder(insns, pcSlot, builderSlot, outputElement);
-
-        // The builder is a resource: everything up to and including build() runs inside a try whose catch-all
-        // handler closes it before rethrowing, so a break part-way through does not leak breaker bytes.
-        LabelNode tryStart = new LabelNode();
-        LabelNode tryEnd = new LabelNode();
-        LabelNode handler = new LabelNode();
-        insns.add(tryStart);
-
-        // int p = 0;
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
-
-        LabelNode loopStart = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
+        // out = bf.new*BlockBuilder(positionCount); the builder is the OUTPUT element. The builder is a resource:
+        // everything up to and including build() runs inside a try whose catch-all handler closes it before
+        // rethrowing, so a break part-way through does not leak breaker bytes.
+        PositionLoop loop = PositionLoop.open(insns, pcSlot, pSlot, builderSlot, outputElement);
         LabelNode appendNull = new LabelNode();
-        LabelNode next = new LabelNode();
-        insns.add(loopStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
 
         // Per-position DFS evaluation. Each node computes a {@code present} flag (did this node produce a value at
         // {@code p}?) and, when present, its value, both into disjoint local slots. The tree VALUE / null position is
@@ -187,15 +169,10 @@ final class BlockLoopEmitter {
         insns.add(new JumpInsnNode(Opcodes.IFEQ, appendNull));
         // out.appendNull(); reached when the root is not present (a null / multi-value leaf or an overflow on the value
         // path short-circuited the position; any warning was already registered inline by the emitter).
-        FusedBuilderEmit.emitAppendOrNull(insns, builderSlot, root.value(), outputElement, appendNull, next);
+        FusedBuilderEmit.emitAppendOrNull(insns, builderSlot, root.value(), outputElement, appendNull, loop.next());
 
-        insns.add(next);
-        insns.add(new IincInsnNode(pSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
-
-        insns.add(loopEnd);
         // result = out.build(); build() transfers the builder's breaker accounting to the produced block.
-        FusedBuilderEmit.emitBuilderTryFinally(host, insns, tryStart, tryEnd, handler, builderSlot, resultSlot, excSlot, outputElement);
+        loop.close(host, insns, resultSlot, excSlot, outputElement);
         return Stitcher.finishFusedClass(
             caller,
             Stitcher.fusedClassName(caller, "Fused$$BlockLoop"),
@@ -264,24 +241,8 @@ final class BlockLoopEmitter {
         InsnList insns = host.instructions;
 
         // out = bf.newBooleanBlockBuilder(positionCount);
-        FusedBuilderEmit.emitNewBlockBuilder(insns, pcSlot, builderSlot, outputElement);
-
-        LabelNode tryStart = new LabelNode();
-        LabelNode tryEnd = new LabelNode();
-        LabelNode handler = new LabelNode();
-        insns.add(tryStart);
-
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
-
-        LabelNode loopStart = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
+        PositionLoop loop = PositionLoop.open(insns, pcSlot, pSlot, builderSlot, outputElement);
         LabelNode doNull = new LabelNode();
-        LabelNode next = new LabelNode();
-        insns.add(loopStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
 
         // Evaluate the logical tree for position p into a tri-state (0 false / 1 true / 2 null) in tRoot.
         LogicalDfsEmitter emitter = new LogicalDfsEmitter(
@@ -302,14 +263,9 @@ final class BlockLoopEmitter {
         insns.add(new VarInsnNode(Opcodes.ILOAD, tRoot));
         insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
         insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, doNull));
-        FusedBuilderEmit.emitAppendOrNull(insns, builderSlot, tRoot, outputElement, doNull, next);
+        FusedBuilderEmit.emitAppendOrNull(insns, builderSlot, tRoot, outputElement, doNull, loop.next());
 
-        insns.add(next);
-        insns.add(new IincInsnNode(pSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
-
-        insns.add(loopEnd);
-        FusedBuilderEmit.emitBuilderTryFinally(host, insns, tryStart, tryEnd, handler, builderSlot, resultSlot, excSlot, outputElement);
+        loop.close(host, insns, resultSlot, excSlot, outputElement);
         // Enforce the huge-method limit on every method (criterion #6). The helpers keep the top-level loop small even
         // for nested trees; if any method exceeds the limit we refuse to fuse (→ unfused fallback) rather than emit
         // a method HotSpot will not JIT-compile.

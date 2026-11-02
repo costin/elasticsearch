@@ -371,23 +371,7 @@ final class VectorLoopEmitter {
 
         // out = bf.new*BlockBuilder(positionCount); the builder is the OUTPUT element (BooleanBlock.Builder for a
         // comparison root).
-        FusedBuilderEmit.emitNewBlockBuilder(insns, pcSlot, builderSlot, outputElement);
-
-        LabelNode tryStart = new LabelNode();
-        LabelNode tryEnd = new LabelNode();
-        LabelNode handler = new LabelNode();
-        insns.add(tryStart);
-
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
-
-        LabelNode loopStart = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
-        LabelNode next = new LabelNode();
-        insns.add(loopStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
+        PositionLoop loop = PositionLoop.open(insns, pcSlot, pSlot, builderSlot, outputElement);
 
         // v_i = extracted_i[p]; no null guard — a vector is dense and single-valued.
         for (int i : consumed) {
@@ -430,7 +414,7 @@ final class VectorLoopEmitter {
         if (tryEndOverflow != null) {
             insns.add(tryEndOverflow);
         }
-        insns.add(new JumpInsnNode(Opcodes.GOTO, next));
+        insns.add(new JumpInsnNode(Opcodes.GOTO, loop.next()));
 
         for (String exType : overflowTypes) {
             LabelNode overflowHandler = new LabelNode();
@@ -440,16 +424,11 @@ final class VectorLoopEmitter {
             // the header matches the unfused chain's per-node evaluator source.
             Stitcher.emitRegisterException(insns, warningsArraySlot, currentKernelSlot, true, overflowExcSlot);
             FusedBuilderEmit.emitAppendNull(insns, builderSlot, outputElement);
-            insns.add(new JumpInsnNode(Opcodes.GOTO, next));
+            insns.add(new JumpInsnNode(Opcodes.GOTO, loop.next()));
             host.tryCatchBlocks.add(new TryCatchBlockNode(tryStartOverflow, tryEndOverflow, overflowHandler, exType));
         }
 
-        insns.add(next);
-        insns.add(new IincInsnNode(pSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
-
-        insns.add(loopEnd);
-        FusedBuilderEmit.emitBuilderTryFinally(host, insns, tryStart, tryEnd, handler, builderSlot, resultSlot, excSlot, outputElement);
+        loop.close(host, insns, resultSlot, excSlot, outputElement);
         return host;
     }
 

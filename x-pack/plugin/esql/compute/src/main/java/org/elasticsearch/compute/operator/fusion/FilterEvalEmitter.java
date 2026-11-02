@@ -169,23 +169,7 @@ final class FilterEvalEmitter {
         insns.add(new VarInsnNode(Opcodes.ISTORE, rowCountSlot));
 
         // out = bf.new<Proj>BlockBuilder(positionCount) — a COMPACT builder that receives one entry per surviving row.
-        FusedBuilderEmit.emitNewBlockBuilder(insns, pcSlot, builderSlot, projOutputElement);
-
-        LabelNode tryStart = new LabelNode();
-        LabelNode tryEnd = new LabelNode();
-        LabelNode handler = new LabelNode();
-        insns.add(tryStart);
-
-        insns.add(new InsnNode(Opcodes.ICONST_0));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, pSlot));
-
-        LabelNode loopStart = new LabelNode();
-        LabelNode loopEnd = new LabelNode();
-        LabelNode next = new LabelNode();
-        insns.add(loopStart);
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
+        PositionLoop loop = PositionLoop.open(insns, pcSlot, pSlot, builderSlot, projOutputElement);
 
         // t = pred(warnings, p, <predBlocks...>, <predConsts...>);
         StringBuilder predCallDesc = new StringBuilder("(").append(Stitcher.WARNINGS_ARRAY_DESCRIPTOR).append("I");
@@ -206,7 +190,7 @@ final class FilterEvalEmitter {
         // if (t != 1) skip this position entirely (false OR null ⇒ dropped, no projection evaluated).
         insns.add(new VarInsnNode(Opcodes.ILOAD, tSlot));
         insns.add(new InsnNode(Opcodes.ICONST_1));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPNE, next));
+        insns.add(new JumpInsnNode(Opcodes.IF_ICMPNE, loop.next()));
 
         // projAppend(out, warnings, p, <projBlocks...>, <projConsts...>); — evaluates + appends the projection value/null.
         StringBuilder projCallDesc = new StringBuilder("(").append(projOutputElement.builderDescriptor())
@@ -233,13 +217,8 @@ final class FilterEvalEmitter {
         insns.add(new InsnNode(Opcodes.IASTORE));
         insns.add(new IincInsnNode(rowCountSlot, 1));
 
-        insns.add(next);
-        insns.add(new IincInsnNode(pSlot, 1));
-        insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
-
-        insns.add(loopEnd);
         // result = out.build(); the compact projection block's positionCount is exactly the surviving row count.
-        FusedBuilderEmit.emitBuilderTryFinally(host, insns, tryStart, tryEnd, handler, builderSlot, resultSlot, excSlot, projOutputElement);
+        loop.close(host, insns, resultSlot, excSlot, projOutputElement);
         // The two per-position bodies are factored into the pred/projAppend (and cmpN) helpers, so the top-level fused
         // loop stays small; the huge-method guard measures every method (→ unfused fallback if any exceeds the limit).
         return Stitcher.finishFusedClass(
