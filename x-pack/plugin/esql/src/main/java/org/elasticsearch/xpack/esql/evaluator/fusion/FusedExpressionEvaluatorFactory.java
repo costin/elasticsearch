@@ -1124,7 +1124,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 if (FusionVerify.skipForTests) {
                     return fused;
                 }
-                return FusionVerify.verifyPage(verifyUnfused(), page, fused, shape, vectorStrategy, lastEvalPath);
+                return FusionVerify.verifyPage(this::verifyUnfused, page, fused, shape, vectorStrategy, lastEvalPath);
             }
             return fused;
         }

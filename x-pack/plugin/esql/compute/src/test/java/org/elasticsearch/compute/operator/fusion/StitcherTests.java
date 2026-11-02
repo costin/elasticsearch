@@ -16,6 +16,7 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
 
@@ -181,5 +182,35 @@ public class StitcherTests extends ESTestCase {
         );
         // The typed failure must wrap the underlying JVM verification error so callers can diagnose it.
         assertThat(e.getCause(), instanceOf(LinkageError.class));
+    }
+
+    /**
+     * I8: {@link Stitcher#compile(MethodHandles.Lookup, FusionDescriptor)} must refuse through the same huge-method
+     * budget as the looped emit paths. Pre-fix {@code emit} serializes with a raw {@code ClassWriter} and ignores
+     * the limit, so this compile succeeds instead of throwing.
+     */
+    public void testCompileDescriptorEnforcesHugeMethodBudget() {
+        MethodHandles.Lookup lookup = MethodHandles.lookup();
+        Stitcher stitcher = new Stitcher(new TemplateRegistry());
+        FusionDescriptor descriptor = new FusionDescriptor(
+            KernelFixtures.class,
+            "processLongsAdd",
+            LONG_BINARY_TYPE,
+            true,
+            true,
+            "java.lang.ArithmeticException",
+            false,
+            false,
+            true,
+            true
+        );
+        int previous = Stitcher.maxFusedMethodBytecodes();
+        try {
+            Stitcher.maxFusedMethodBytecodesForTests(1);
+            Stitcher.StitchingException e = expectThrows(Stitcher.StitchingException.class, () -> stitcher.compile(lookup, descriptor));
+            assertThat(e.getMessage(), containsString("huge-method limit"));
+        } finally {
+            Stitcher.maxFusedMethodBytecodesForTests(previous);
+        }
     }
 }

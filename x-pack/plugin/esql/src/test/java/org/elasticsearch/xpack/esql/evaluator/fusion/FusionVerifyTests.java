@@ -16,9 +16,11 @@ import org.elasticsearch.compute.data.LongBlock;
 import org.elasticsearch.compute.data.OrdinalBytesRefVector;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.EvalOperator;
 import org.elasticsearch.compute.operator.FilterEvalEvaluator;
 import org.elasticsearch.compute.operator.FilterEvalOperator;
+import org.elasticsearch.compute.operator.fusion.FusionAware;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
@@ -184,6 +186,40 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
                 output.releaseBlocks();
             }
             operator.finish();
+        }
+        assertThat(breaker.getUsed(), is(0L));
+    }
+
+    /**
+     * I8: if verify-mode's lazy {@code unfusedFactory.get(ignoringWarnings())} throws, the already-computed fused
+     * Block must still be closed. Pre-fix {@code verifyUnfused()} runs as an argument to {@code verifyPage}, outside
+     * its try, so the fused block leaks and the breaker stays non-zero.
+     */
+    public void testVerifyUnfusedGetFailureClosesFusedBlock() {
+        assumeTrue("verify is on by default in test JVMs (-ea); skip when -Desql.fusion.verify=false", FusionSettings.isVerifyEnabled());
+        FusionVerify.skipForTests = false;
+        FusionSettings.setEnabledForTests(true);
+        FusionSettings.setSampleFractionForTests(1.0);
+        FusionSettings.setAdaptiveMinRowsForTests(0);
+
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression expr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+        Function<Expression, ExpressionEvaluator.Factory> rawFactory = e -> new ThrowingOnGetFactory(unfusedFactory(e, layout));
+        ExpressionEvaluator.Factory factory = FusionPlanner.maybeFuse(expr, layout, rawFactory);
+        assertThat(factory, instanceOf(FusedExpressionEvaluatorFactory.class));
+
+        int n = 4;
+        Page page = longPage(n, new long[] { 1, 2, 3, 4 }, new long[] { 10, 20, 30, 40 }, new long[] { 2, 2, 2, 2 });
+        ExpressionEvaluator evaluator = factory.get(driverContext);
+        try {
+            IllegalStateException thrown = expectThrows(IllegalStateException.class, () -> evaluator.eval(page));
+            assertThat(thrown.getMessage(), containsString("deliberate unfused get failure"));
+        } finally {
+            Releasables.closeExpectNoException(evaluator);
+            page.releaseBlocks();
         }
         assertThat(breaker.getUsed(), is(0L));
     }
@@ -478,7 +514,7 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
         try {
             AssertionError error = expectThrows(
                 AssertionError.class,
-                () -> FusionVerify.verifyPage(unfused, page, fused, "null-path-label", VectorStrategy.CHECKED_VECTOR, null)
+                () -> FusionVerify.verifyPage(() -> unfused, page, fused, "null-path-label", VectorStrategy.CHECKED_VECTOR, null)
             );
             assertThat(error.getMessage(), containsString("path=?"));
             assertThat(error.getMessage(), not(containsString("path=BLOCK")));
@@ -506,6 +542,33 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
         assertThat("fused survivors restored even on mismatch", positions[0], is(0));
         assertThat("fused survivors restored even on mismatch", positions[1], is(2));
         assertThat(breaker.getUsed(), is(0L));
+    }
+
+    /**
+     * Unfused factory that still reports the real {@link FusionAware} descriptor (so planning/stitching succeed)
+     * but throws from {@code get} so verify-mode's lazy unfused chain fails after the fused block is computed.
+     */
+    private static final class ThrowingOnGetFactory implements ExpressionEvaluator.Factory, FusionAware {
+        private final ExpressionEvaluator.Factory real;
+
+        ThrowingOnGetFactory(ExpressionEvaluator.Factory real) {
+            this.real = real;
+        }
+
+        @Override
+        public ExpressionEvaluator get(DriverContext context) {
+            throw new IllegalStateException("deliberate unfused get failure");
+        }
+
+        @Override
+        public FusionDescriptor fusionDescriptor() {
+            return ((FusionAware) real).fusionDescriptor();
+        }
+
+        @Override
+        public List<Object> fusionFixedArgs() {
+            return real instanceof FusionAware fusionAware ? fusionAware.fusionFixedArgs() : List.of();
+        }
     }
 
     // ---------------------------------------------------------------------------------------------------------------

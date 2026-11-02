@@ -270,7 +270,7 @@ public final class Stitcher {
      * boundary is exactly the {@code defineHiddenClass} call: everything here is pure ASM tree manipulation on
      * cloned nodes.
      */
-    private byte[] emit(MethodHandles.Lookup caller, FusionDescriptor descriptor) {
+    private byte[] emit(MethodHandles.Lookup caller, FusionDescriptor descriptor) throws StitchingException {
         MethodNode kernel = templates.methodNode(descriptor);
         Body body = BodyExtractor.extract(kernel);
 
@@ -316,9 +316,7 @@ public final class Stitcher {
         // COMPUTE_FRAMES recomputes maxStack, maxLocals, and stack-map frames. Straight-line kernel bodies have
         // no control-flow joins, so getCommonSuperClass (which would need the caller's class loader) is never
         // consulted — a plain writer suffices here (the looped paths use frameComputingWriter).
-        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES);
-        classNode.accept(writer);
-        return writer.toByteArray();
+        return serializeWithBudgetGuard(classNode, new ClassWriter(ClassWriter.COMPUTE_FRAMES), FUSED_METHOD_NAME);
     }
 
     /**

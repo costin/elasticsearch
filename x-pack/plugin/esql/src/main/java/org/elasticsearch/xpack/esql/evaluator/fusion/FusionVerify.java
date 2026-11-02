@@ -31,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.IntFunction;
+import java.util.function.Supplier;
 
 /**
  * C2 verify-mode A/B: when {@link FusionSettings#isVerifyEnabled()} the fused evaluators evaluate the unfused
@@ -109,15 +110,25 @@ final class FusionVerify {
     private FusionVerify() {}
 
     /**
-     * Evaluates {@code unfused} on {@code page}, compares with {@code fused}, closes the unfused block, and returns
-     * {@code fused}. On mismatch dumps the hidden class, closes <b>both</b> blocks, and throws {@link AssertionError}.
+     * Obtains the unfused evaluator from {@code unfusedSupplier} and evaluates it on {@code page}, compares with
+     * {@code fused}, closes the unfused block, and returns {@code fused}. The supplier is invoked inside the try
+     * that closes {@code fused} on throw, so a lazy-init failure also releases the fused block. On mismatch dumps
+     * the hidden class, closes <b>both</b> blocks, and throws {@link AssertionError}.
      */
-    static Block verifyPage(ExpressionEvaluator unfused, Page page, Block fused, String shape, VectorStrategy strategy, LastEvalPath path) {
+    static Block verifyPage(
+        Supplier<ExpressionEvaluator> unfusedSupplier,
+        Page page,
+        Block fused,
+        String shape,
+        VectorStrategy strategy,
+        LastEvalPath path
+    ) {
         if (skipForTests) {
             return fused;
         }
         Block reference;
         try {
+            ExpressionEvaluator unfused = unfusedSupplier.get();
             reference = unfused.eval(page);
         } catch (Throwable t) {
             Releasables.closeExpectNoException(fused);
