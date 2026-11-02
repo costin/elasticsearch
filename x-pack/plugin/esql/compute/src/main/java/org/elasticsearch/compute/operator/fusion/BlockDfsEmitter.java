@@ -270,15 +270,7 @@ final class BlockDfsEmitter {
         // warns about) an operand past its own short-circuit.
         insns.add(new VarInsnNode(Opcodes.ILOAD, presentSlot));
         insns.add(new JumpInsnNode(Opcodes.IFEQ, afterOperand));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.BLOCK, "getValueCount", "(I)I", true));
-        insns.add(new VarInsnNode(Opcodes.ISTORE, countSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-        insns.add(new JumpInsnNode(Opcodes.IFEQ, leafFail)); // count == 0 -> null, no warning
-        insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-        insns.add(new InsnNode(Opcodes.ICONST_1));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, leafSingle)); // count == 1 -> read the single value
+        BlockLeafEmit.emitSingleValueGuard(insns, block, pSlot, countSlot, leafFail, leafSingle);
         // count > 1 -> register the multi-value warning on THIS kernel's own Warnings, then fail.
         Stitcher.loadWarnings(insns, warningsArraySlot, kernelSlot);
         Stitcher.emitMultiValueWarningOn(insns);
@@ -293,24 +285,12 @@ final class BlockDfsEmitter {
         // block.getBytesRef(block.getFirstValueIndex(p), spare) — this column's own spare is pushed as the extra arg
         // before the call. Either way the value is stored into this kernel's argument slot (ASTORE for a reference,
         // derived by Type#getOpcode).
-        insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-        insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-        insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.BLOCK, "getFirstValueIndex", "(I)I", true));
+        int spare = -1;
         if (inputElement.reference()) {
-            int spare = spareByInput[input.index()];
+            spare = spareByInput[input.index()];
             assert spare >= 0 : "a BytesRef leaf requires a spare slot allocated by the host";
-            insns.add(new VarInsnNode(Opcodes.ALOAD, spare));
         }
-        insns.add(
-            new MethodInsnNode(
-                Opcodes.INVOKEINTERFACE,
-                inputElement.blockInternalName(),
-                inputElement.getValueMethod(),
-                inputElement.getValueDescriptor(),
-                true
-            )
-        );
+        BlockLeafEmit.emitReadFirstValue(insns, block, pSlot, inputElement, spare);
         insns.add(new VarInsnNode(argElem.type().getOpcode(Opcodes.ISTORE), argSlot));
         insns.add(afterOperand);
     }
@@ -357,15 +337,7 @@ final class BlockDfsEmitter {
             // If the kernel already short-circuited, skip this element entirely.
             insns.add(new VarInsnNode(Opcodes.ILOAD, presentSlot));
             insns.add(new JumpInsnNode(Opcodes.IFEQ, after));
-            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-            insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.BLOCK, "getValueCount", "(I)I", true));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, countSlot));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-            insns.add(new JumpInsnNode(Opcodes.IFEQ, fail)); // count == 0 -> null, no warning
-            insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-            insns.add(new InsnNode(Opcodes.ICONST_1));
-            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, single)); // count == 1 -> read
+            BlockLeafEmit.emitSingleValueGuard(insns, block, pSlot, countSlot, fail, single);
             // count > 1 -> single-value multi-value warning on THIS kernel's source, then fail.
             Stitcher.loadWarnings(insns, warningsArraySlot, kernelSlot);
             Stitcher.emitMultiValueWarningOn(insns);
@@ -386,15 +358,7 @@ final class BlockDfsEmitter {
             insns.add(new TypeInsnNode(Opcodes.NEW, elementInternalName));
             insns.add(new InsnNode(Opcodes.DUP));
             insns.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, elementInternalName, "<init>", "()V", false));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKEINTERFACE,
-                    inputElement.blockInternalName(),
-                    inputElement.getValueMethod(),
-                    inputElement.getValueDescriptor(),
-                    true
-                )
-            );
+            BlockLeafEmit.emitGetValue(insns, inputElement);
             insns.add(new InsnNode(Opcodes.AASTORE));
             insns.add(after);
         }

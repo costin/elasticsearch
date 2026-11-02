@@ -412,15 +412,7 @@ final class BlockLoopEmitter {
             int block = blockBase + blockParam;
             blockParam++;
             LabelNode read = new LabelNode();
-            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-            insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.BLOCK, "getValueCount", "(I)I", true));
-            insns.add(new VarInsnNode(Opcodes.ISTORE, countSlot));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-            insns.add(new JumpInsnNode(Opcodes.IFEQ, retNull)); // count == 0 -> null, no warning
-            insns.add(new VarInsnNode(Opcodes.ILOAD, countSlot));
-            insns.add(new InsnNode(Opcodes.ICONST_1));
-            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, read)); // count == 1 -> single value
+            BlockLeafEmit.emitSingleValueGuard(insns, block, pSlot, countSlot, retNull, read);
             // count > 1 -> register the multi-value warning on this comparison's own Warnings (the caller resolved
             // warnings[this-comparison's-source-slot] and passed it as the single w parameter), then null.
             insns.add(new VarInsnNode(Opcodes.ALOAD, warningsSlot));
@@ -428,19 +420,7 @@ final class BlockLoopEmitter {
             insns.add(new JumpInsnNode(Opcodes.GOTO, retNull));
             insns.add(read);
             // v = block.get*(block.getFirstValueIndex(p)); store into the comparison body's shifted arg slot.
-            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-            insns.add(new VarInsnNode(Opcodes.ALOAD, block));
-            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
-            insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, Stitcher.BLOCK, "getFirstValueIndex", "(I)I", true));
-            insns.add(
-                new MethodInsnNode(
-                    Opcodes.INVOKEINTERFACE,
-                    inputElement.blockInternalName(),
-                    inputElement.getValueMethod(),
-                    inputElement.getValueDescriptor(),
-                    true
-                )
-            );
+            BlockLeafEmit.emitReadFirstValue(insns, block, pSlot, inputElement, -1);
             insns.add(new VarInsnNode(inputElement.type().getOpcode(Opcodes.ISTORE), bodyBase + offset));
             offset += size;
         }
