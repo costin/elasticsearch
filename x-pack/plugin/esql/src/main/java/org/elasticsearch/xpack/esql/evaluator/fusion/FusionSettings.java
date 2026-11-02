@@ -9,6 +9,7 @@ package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.util.FeatureFlag;
 import org.elasticsearch.core.Assertions;
 
 import java.util.concurrent.ThreadLocalRandom;
@@ -19,9 +20,10 @@ import java.util.concurrent.ThreadLocalRandom;
  *
  * <p>{@code esql.fusion.enabled} (default {@code true}) is a {@link Setting.Property#NodeScope} setting — it is read
  * once at node start and is <b>not</b> dynamically updatable, so a node either fuses for its whole lifetime or never
- * does. When disabled, {@link FusionPlanner#maybeFuse} returns {@code null} for every expression, so
- * {@link org.elasticsearch.xpack.esql.evaluator.EvalMapper} produces the ordinary unfused factory tree unchanged and
- * the {@link org.elasticsearch.compute.operator.fusion.Stitcher} is never invoked.
+ * does. The {@code esql_fusion} {@link FeatureFlag} sits in front of this kill switch: fusion is attempted only when
+ * both the flag and the setting are on. When either is off, {@link FusionPlanner#maybeFuse} returns {@code null} for
+ * every expression, so {@link org.elasticsearch.xpack.esql.evaluator.EvalMapper} produces the ordinary unfused factory
+ * tree unchanged and the {@link org.elasticsearch.compute.operator.fusion.Stitcher} is never invoked.
  *
  * <p>Two further node-scoped dials shape <em>how</em> a fusable expression is served (both fully additive — the
  * defaults reproduce the pre-Stage-6 eager, always-on behaviour):
@@ -64,6 +66,12 @@ import java.util.concurrent.ThreadLocalRandom;
 public final class FusionSettings {
 
     private FusionSettings() {}
+
+    /**
+     * Build-level gate for expression fusion (compiled bytecode). On in snapshot builds and tests, off in release
+     * unless {@code -Des.esql_fusion_feature_flag_enabled=true}. Removed after rollout.
+     */
+    public static final FeatureFlag FUSION_FEATURE_FLAG = new FeatureFlag("esql_fusion");
 
     /** {@code esql.fusion.enabled}: node-scoped, non-dynamic; default {@code true}. Registered by {@code EsqlPlugin}. */
     public static final Setting<Boolean> FUSION_ENABLED_SETTING = Setting.boolSetting(
@@ -252,9 +260,17 @@ public final class FusionSettings {
         };
     }
 
-    /** Whether fusion may be attempted on this node. */
+    /**
+     * Whether fusion may be attempted on this node. True only when the {@code esql_fusion} feature flag
+     * <b>and</b> the {@code esql.fusion.enabled} kill switch are both on.
+     */
     public static boolean isEnabled() {
-        return enabled;
+        return effectiveEnabled(FUSION_FEATURE_FLAG.isEnabled(), enabled);
+    }
+
+    /** Fusion is active only when the build-level feature flag AND the node kill switch are both on. */
+    static boolean effectiveEnabled(boolean featureFlagEnabled, boolean killSwitchEnabled) {
+        return featureFlagEnabled && killSwitchEnabled;
     }
 
     /**
