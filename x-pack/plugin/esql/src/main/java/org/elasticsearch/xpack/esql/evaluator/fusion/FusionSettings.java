@@ -114,15 +114,6 @@ public final class FusionSettings {
     );
 
     /**
-     * {@code esql.fusion.simd}: node-scoped, non-dynamic; default {@code false}. Opt-in Panama Vector-API (SIMD)
-     * generation for the narrow shapes that measurably benefit (plain-vector, no-null, boolean comparisons). Off by
-     * default because (a) the incubator module + a HotSpot C2 VM must be present (checked at runtime, with a scalar
-     * fallback), and (b) SIMD only wins on comparison-mask shapes — everything else uses the scalar fast path either
-     * way. When on, the Stitcher may emit a SIMD variant guarded by {@link org.elasticsearch.compute.operator.fusion.FusionSimd}.
-     */
-    public static final Setting<Boolean> FUSION_SIMD_SETTING = Setting.boolSetting("esql.fusion.simd", false, Setting.Property.NodeScope);
-
-    /**
      * Opt-in: fuse a lone (depth-1) BytesRef string function — {@code LEFT}/{@code SPACE}/{@code CONCAT} — that would
      * otherwise be "not worth fusing" as a single kernel. Default off because a bare string function's per-row cost is
      * dominated by the string work (byte copies / breaker append), not the evaluator dispatch fusion removes, so the
@@ -141,9 +132,6 @@ public final class FusionSettings {
      * plain {@code volatile} is sufficient — there is no per-row cost and no need for stronger ordering.
      */
     private static volatile boolean enabled = initialEnabledDefault();
-
-    /** The effective SIMD opt-in (default off). Cold-path read; {@code volatile} is sufficient. */
-    private static volatile boolean simdEnabled = Boolean.parseBoolean(System.getProperty("esql.fusion.simd", "false"));
 
     /** The effective depth-1 string-fusion opt-in (default off). Cold-path read. */
     private static volatile boolean stringDepth1Enabled = Boolean.parseBoolean(System.getProperty("esql.fusion.string_depth1", "false"));
@@ -220,19 +208,8 @@ public final class FusionSettings {
         enabled = FUSION_ENABLED_SETTING.get(settings);
         adaptiveMinRows = FUSION_ADAPTIVE_MIN_ROWS_SETTING.get(settings);
         sampleFraction = FUSION_SAMPLE_SETTING.get(settings);
-        simdEnabled = FUSION_SIMD_SETTING.get(settings);
         stringDepth1Enabled = FUSION_STRING_DEPTH1_SETTING.get(settings);
         // coverage_report is sysprop-only (like verify); do not clobber the class-init latch from a node Setting.
-    }
-
-    /** Whether opt-in SIMD (Vector-API) generation may be attempted (subject to a runtime availability check). */
-    public static boolean isSimdEnabled() {
-        return simdEnabled;
-    }
-
-    /** Test-only: flips the SIMD opt-in; restore in a finally. */
-    static void setSimdEnabledForTests(boolean value) {
-        simdEnabled = value;
     }
 
     /** Whether a lone (depth-1) single-value BytesRef string function (LEFT/SPACE/CONCAT) may fuse (opt-in, default off). */

@@ -165,31 +165,6 @@ final class FusionCompilationService {
             return cached(shape, () -> stitcher.compileFilterEvalBlockLoop(caller, predicateTree, projectionTree), caller, type, methods);
         }
 
-        @Override
-        public Class<?> compileVectorLoopSimd(MethodHandles.Lookup caller, FusionNode tree, String comparison)
-            throws Stitcher.StitchingException {
-            return requireResolved();
-        }
-
-        @Override
-        public Class<?> compileVectorLoopSimd(
-            MethodHandles.Lookup caller,
-            FusionNode tree,
-            String comparison,
-            MethodType type,
-            String... methods
-        ) throws Stitcher.StitchingException {
-            // The comparison operator is part of the tree's shape (distinct comparison kernels -> distinct shapeOf),
-            // so the shape key already distinguishes a>b from a<b; keyed on the SIMD_VECTOR path.
-            return cached(
-                shapeKey(tree, FusedClassCache.Path.SIMD_VECTOR),
-                () -> stitcher.compileVectorLoopSimd(caller, tree, comparison),
-                caller,
-                type,
-                methods
-            );
-        }
-
     };
 
     /**

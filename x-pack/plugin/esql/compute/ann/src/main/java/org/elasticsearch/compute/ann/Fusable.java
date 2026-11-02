@@ -21,7 +21,7 @@ import java.lang.annotation.Target;
 @Retention(RetentionPolicy.SOURCE)
 public @interface Fusable {
     /**
-     * Whether this kernel can throw {@code ArithmeticException} on overflow (precludes SIMD vectorization).
+     * Whether this kernel can throw {@code ArithmeticException} on overflow (needs a per-kernel try/catch).
      */
     boolean overflowChecked() default false;
 }

@@ -545,19 +545,6 @@ public final class Stitcher {
     }
 
     /**
-     * Compiles the opt-in Panama Vector-API (SIMD) variant of the plain-vector fast path (B2) for a boolean COMPARISON
-     * of two same-primitive column operands (e.g. {@code a > b}), materialised as a hidden class. {@code comparison}
-     * is the {@code jdk.incubator.vector.VectorOperators.Comparison} constant name (e.g. {@code "GT"}) supplied by the
-     * planner from the comparison {@code Expression}. The caller must have {@linkplain FusionSimd#enableReadsFrom
-     * granted its module a read edge} to {@code jdk.incubator.vector} first.
-     *
-     * @throws StitchingException on verification/link/access failure — the caller falls back to the scalar path
-     */
-    public Class<?> compileVectorLoopSimd(MethodHandles.Lookup caller, FusionNode tree, String comparison) throws StitchingException {
-        return defineOrThrow(caller, vectors.emitVectorLoopSimd(caller, tree, comparison), "SIMD vector-loop class");
-    }
-
-    /**
      * Overflow-aware counterpart to {@link #compileVectorLoop}: fuses a tree of no-null single-valued primitive
      * {@code *ArrayVector} inputs whose kernels are <b>overflow-checked</b> into a single counted loop that reads
      * each input's backing array (the same fast, guard-free read as the plain vector path) but writes
@@ -1137,10 +1124,6 @@ public final class Stitcher {
     byte[] filterEvalBlockLoopBytecode(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
         throws StitchingException {
         return filterEval.emitFilterEvalBlockLoop(caller, predicateTree, projectionTree);
-    }
-
-    byte[] simdVectorLoopBytecode(MethodHandles.Lookup caller, FusionNode tree, String comparison) throws StitchingException {
-        return vectors.emitVectorLoopSimd(caller, tree, comparison);
     }
 
     /** @see FusedMethodCodeLengths#fusedMethodCodeLength */

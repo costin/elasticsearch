@@ -948,10 +948,7 @@ public class FusionFallbackHardeningTests extends ESTestCase {
                 case CHECKED_VECTOR -> real.compileVectorLoopChecked(caller, tree);
                 case LOGICAL_BLOCK -> real.compileLogicalBlockLoop(caller, tree);
                 case LOGICAL_VECTOR -> real.compileLogicalVectorLoop(caller, tree);
-                case SIMD_VECTOR, FILTER_EVAL_BLOCK -> throw new Stitcher.StitchingException(
-                    "test compiler has no real stitcher for " + path,
-                    null
-                );
+                case FILTER_EVAL_BLOCK -> throw new Stitcher.StitchingException("test compiler has no real stitcher for " + path, null);
             };
         });
     }

@@ -119,7 +119,7 @@ public class Mul extends DenseVectorArithmeticOperation implements BinaryCompari
     }
 
     // overflowChecked = true: asFiniteNumber throws ArithmeticException on a non-finite (NaN/Inf) result, so the fused
-    // path must keep the per-kernel try/catch boundary and cannot SIMD-vectorize this body.
+    // path must keep the per-kernel try/catch boundary.
     @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Doubles", warnExceptions = { ArithmeticException.class })
     static double processDoubles(double lhs, double rhs) {

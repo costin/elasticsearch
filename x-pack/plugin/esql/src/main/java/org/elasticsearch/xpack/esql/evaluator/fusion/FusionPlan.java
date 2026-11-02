@@ -36,12 +36,6 @@ record FusionPlan(
     Source[] warningSources,
     String shape,
     /**
-     * When non-empty, the {@code jdk.incubator.vector.VectorOperators.Comparison} constant name for a SIMD-eligible
-     * boolean comparison of two same-primitive columns (B2) — set by the planner from the comparison {@code
-     * Expression}. Empty means "no SIMD variant" (the scalar plain-vector path is used).
-     */
-    String vectorComparison,
-    /**
      * When true, the fused evaluator may evaluate ordinal/constant {@code BYTES_REF} pages once over the dictionary
      * (or a single constant position) and rebuild the output encoding, instead of the per-row block loop. True iff
      * the tree has exactly one column input, that input is {@code BYTES_REF}, there is a single input leaf, and

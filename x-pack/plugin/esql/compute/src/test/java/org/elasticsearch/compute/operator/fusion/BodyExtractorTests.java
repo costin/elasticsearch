@@ -87,19 +87,9 @@ public class BodyExtractorTests extends ESTestCase {
             return v;
         }
 
-        /** A straight-line {@code long > long -> boolean} comparison kernel for the SIMD (Vector-API) fast-path tests. */
+        /** A straight-line {@code long > long -> boolean} comparison kernel for vector-loop / dump tests. */
         public static boolean processLongsGreaterThan(long lhs, long rhs) {
             return lhs > rhs;
-        }
-
-        /** A straight-line {@code double > double -> boolean} comparison kernel for the double SIMD parity tests. */
-        public static boolean processDoublesGreaterThan(double lhs, double rhs) {
-            return lhs > rhs;
-        }
-
-        /** A straight-line {@code double == double -> boolean} comparison kernel (IEEE ==) for the double SIMD parity tests. */
-        public static boolean processDoublesEqual(double lhs, double rhs) {
-            return lhs == rhs;
         }
 
         /**

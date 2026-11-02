@@ -16,7 +16,6 @@ import org.elasticsearch.compute.operator.fusion.FusionAware;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.FusionSignature;
-import org.elasticsearch.compute.operator.fusion.FusionSimd;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
@@ -38,7 +37,6 @@ import org.elasticsearch.xpack.esql.expression.predicate.logical.Not;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Div;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mod;
-import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.EsqlBinaryComparison;
 import org.elasticsearch.xpack.esql.planner.Layout;
 
 import java.lang.invoke.MethodHandles;
@@ -82,7 +80,7 @@ import java.util.function.Function;
  *       refuses;</li>
  *   <li>the tree depth is &ge; 2 (a kernel, logical, or {@code Not} whose child is itself a kernel/logical/Not — a
  *       cast counts). A lone kernel gains nothing from fusion, so we leave it to the generated evaluator.
- *       {@code NOT(a>5)} is depth 2 and fuses; a bare comparison is depth 1 and does not (except SIMD).</li>
+ *       {@code NOT(a>5)} is depth 2 and fuses; a bare comparison is depth 1 and does not.</li>
  * </ul>
  * At runtime the {@link Stitcher} emits a dense vector fast path (over each input's backing {@code *ArrayVector}) when
  * every input is a no-null single-valued vector, else a null/multi-value-aware block loop; both are per-node typed
@@ -210,27 +208,6 @@ public final class FusionPlanner {
         ) throws Stitcher.StitchingException {
             return compileFilterEvalBlockLoop(caller, predicateTree, projectionTree);
         }
-
-        /**
-         * Compiles the opt-in SIMD (Vector-API) variant of the plain-vector path for a boolean comparison (B2), where
-         * {@code comparison} is the {@code VectorOperators.Comparison} constant name. Defaulted so existing test doubles
-         * need not implement it; {@link FusionCompilationService} provides the real, cache-backed implementation.
-         */
-        default Class<?> compileVectorLoopSimd(MethodHandles.Lookup caller, FusionNode tree, String comparison)
-            throws Stitcher.StitchingException {
-            throw new UnsupportedOperationException("compileVectorLoopSimd not implemented by this compiler");
-        }
-
-        /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
-        default Class<?> compileVectorLoopSimd(
-            MethodHandles.Lookup caller,
-            FusionNode tree,
-            String comparison,
-            MethodType type,
-            String... methods
-        ) throws Stitcher.StitchingException {
-            return compileVectorLoopSimd(caller, tree, comparison);
-        }
     }
 
     /**
@@ -287,7 +264,7 @@ public final class FusionPlanner {
     }
 
     /**
-     * True when {@code exp} would pass the plan-time fusion gates (build + depth / SIMD / stringDepth1 /
+     * True when {@code exp} would pass the plan-time fusion gates (build + depth / stringDepth1 /
      * encoding-aware exemptions) and would proceed to a stitch. Does not stitch. Used by the H9 coverage classifier
      * to detect fusable islands without changing production factories.
      */
@@ -319,11 +296,6 @@ public final class FusionPlanner {
         // One walk derives the whole positional contract (warning-source slots + constants-in-emit-order); the Stitcher
         // re-derives the same facts when it emits, and both agree because FusionSignature is the single source of truth.
         FusionSignature signature = FusionSignature.of(tree);
-        // A SIMD-eligible boolean comparison is a single (depth-1) comparison over two columns — normally "not worth
-        // fusing" on the scalar paths, but the Vector-API lane compare DOES beat the generated evaluator, so it is
-        // worth fusing when SIMD is opted in AND available in this runtime. Everything else still requires depth >= 2.
-        String vectorComparison = simdComparison(exp, tree, inputElements, ctx.outputElement, signature.constantsInEmitOrder());
-        boolean simdWorthwhile = vectorComparison.isEmpty() == false && FusionSettings.isSimdEnabled() && FusionSimd.available();
         // A lone single-value BytesRef string function (LEFT/SPACE/CONCAT) fuses at depth 1 only under the opt-in
         // esql.fusion.string_depth1 switch (its win is marginal — string work dominates — so it is off by default).
         // ctx.mapping is true for a lone converter root (TO_LOWER/TO_UPPER); excluding it here keeps that kernel
@@ -332,10 +304,10 @@ public final class FusionPlanner {
         boolean encodingAware = encodingAware(tree, inputElements);
         // A lone BytesRef comparison (column == literal, column != literal, or literal == column) is depth-1, but
         // the encoding-aware dictionary gather evaluates once per distinct value — the same depth-1 exemption as
-        // SIMD / stringDepth1.
+        // stringDepth1.
         boolean bytesRefComparisonDepth1 = encodingAware && ctx.outputElement == ElementKind.BOOLEAN;
-        if (depth(tree) < 2 && simdWorthwhile == false && stringDepth1 == false && bytesRefComparisonDepth1 == false) {
-            // A lone kernel is not worth fusing on the scalar paths — leave it to the generated evaluator.
+        if (depth(tree) < 2 && stringDepth1 == false && bytesRefComparisonDepth1 == false) {
+            // A lone kernel is not worth fusing — leave it to the generated evaluator.
             // A lone mapping convert (ctx.mapping) is always depth-1, so this refuses it (D4).
             return null;
         }
@@ -348,7 +320,6 @@ public final class FusionPlanner {
             ctx.overflowChecked,
             warningSources(signature.warningSourceIndices(), ctx),
             shapeOf(tree),
-            vectorComparison,
             encodingAware
         );
     }
@@ -454,47 +425,6 @@ public final class FusionPlanner {
      */
     static String filterEvalShapeOf(FusionNode predicateTree, FusionNode projectionTree) {
         return "FILTER_EVAL(" + shapeOf(predicateTree) + "|" + shapeOf(projectionTree) + ")";
-    }
-
-    /**
-     * The {@code jdk.incubator.vector.VectorOperators.Comparison} constant name for a SIMD-eligible boolean comparison
-     * (B2), or {@code ""} when the tree is not eligible. Eligible iff the root {@code Expression} is an
-     * {@link EsqlBinaryComparison} and the built tree is a single comparison kernel over exactly two <b>column</b>
-     * operands of the same {@code int}/{@code long}/{@code double} element, with a boolean output and no embedded
-     * constants — the narrow shape the Vector-API lane compare actually accelerates. Double is included because the
-     * lane compare's IEEE-754 unordered semantics match the Java operators the double kernels use (proven by a
-     * NaN/-0.0/Inf differential).
-     */
-    private static String simdComparison(
-        Expression exp,
-        FusionNode tree,
-        ElementKind[] inputElements,
-        ElementKind outputElement,
-        List<FusionNode.Constant> constants
-    ) {
-        if (outputElement != ElementKind.BOOLEAN
-            || constants.isEmpty() == false
-            || inputElements.length != 2
-            || inputElements[0] != inputElements[1]
-            || (inputElements[0] != ElementKind.INT && inputElements[0] != ElementKind.LONG && inputElements[0] != ElementKind.DOUBLE)
-            || exp instanceof EsqlBinaryComparison == false
-            || tree instanceof FusionNode.Kernel == false) {
-            return "";
-        }
-        FusionNode.Kernel root = (FusionNode.Kernel) tree;
-        if (root.children().size() != 2
-            || root.children().get(0) instanceof FusionNode.Input == false
-            || root.children().get(1) instanceof FusionNode.Input == false) {
-            return "";
-        }
-        return switch (((EsqlBinaryComparison) exp).getFunctionType()) {
-            case EQ -> "EQ";
-            case NEQ -> "NE";
-            case LT -> "LT";
-            case LTE -> "LE";
-            case GT -> "GT";
-            case GTE -> "GE";
-        };
     }
 
     private static int[] toIntArray(List<Integer> values) {

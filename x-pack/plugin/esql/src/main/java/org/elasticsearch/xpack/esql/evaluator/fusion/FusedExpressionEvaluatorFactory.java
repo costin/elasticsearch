@@ -34,7 +34,6 @@ import org.elasticsearch.compute.operator.Warnings;
 import org.elasticsearch.compute.operator.fusion.FusedFrameInfo;
 import org.elasticsearch.compute.operator.fusion.FusionDump;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
-import org.elasticsearch.compute.operator.fusion.FusionSimd;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.core.Releasable;
 import org.elasticsearch.core.Releasables;
@@ -145,7 +144,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
     /**
      * The four VECTOR {@link MethodHandle}s bound at plan time, named by role. {@code primary} is the first vector
-     * dispatch handle: ALL-RAW {@code fused} on PLAIN_VECTOR/SIMD, builder {@code fused} on CHECKED_VECTOR, and
+     * dispatch handle: ALL-RAW {@code fused} on PLAIN_VECTOR, builder {@code fused} on CHECKED_VECTOR, and
      * INTERFACE {@code fusedInterface} on LOGICAL_VECTOR (there is no RAW sibling). {@code blockHandle} stays a
      * separate factory parameter. Null components mean that variant was not compiled. MethodHandles are immutable;
      * the factory spreads them once and shares the spreaders across drivers.
@@ -155,7 +154,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             return new VectorHandles(null, null, null, null);
         }
 
-        /** One VECTOR handle (SIMD ALL-RAW, or LOGICAL_VECTOR INTERFACE-only stored as {@code primary}). */
+        /** One VECTOR handle (LOGICAL_VECTOR INTERFACE-only stored as {@code primary}). */
         static VectorHandles primary(MethodHandle handle) {
             return new VectorHandles(handle, null, null, null);
         }
@@ -382,9 +381,6 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         boolean overflowChecked = plan.overflowChecked();
         String shape = plan.shape();
         List<FusionNode.Constant> constants = plan.constants();
-        // Opt-in SIMD (B2): a non-empty vectorComparison marks a SIMD-eligible boolean comparison; usable only when the
-        // node opted in AND the Vector API is available in this runtime. Otherwise the scalar plain-vector path is used.
-        boolean useSimd = plan.vectorComparison().isEmpty() == false && FusionSettings.isSimdEnabled() && FusionSimd.available();
         int arity = inputChannels.length;
         // Embedded constants are trailing primitive parameters of the fused method now (iter 30): their types are
         // appended to every resolved MethodType and their values are marshalled into the invoke args, both in the
@@ -480,40 +476,22 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             // Named before the try so the catch can report which vector path failed (the cache cannot know the
             // consequence, so this factory is the single site that distinguishes degrade-to-block from unfused).
             FusedClassCache.Path vectorPath = overflowChecked == false
-                ? (useSimd ? FusedClassCache.Path.SIMD_VECTOR : FusedClassCache.Path.PLAIN_VECTOR)
+                ? FusedClassCache.Path.PLAIN_VECTOR
                 : FusedClassCache.Path.CHECKED_VECTOR;
             try {
                 if (overflowChecked == false) {
-                    Class<?> vectorClass;
                     MethodType plainType = plainVectorType(outputElement, arity, constantParamTypes);
-                    if (useSimd) {
-                        // SIMD (B2): the plain-vector-shaped Vector-API variant. Grant this module a read edge to
-                        // jdk.incubator.vector before defining the hidden class (see FusionSimd), then compile the
-                        // lane-compare loop. The MethodType is the plain-vector shape, so eval-time dispatch is
-                        // unchanged (VectorStrategy.PLAIN_VECTOR). SIMD stays ALL-RAW (exact *ArrayVector) only —
-                        // Constant/*BigArrayVector pages fall through to the block path.
-                        FusionSimd.enableReadsFrom(LOOKUP.lookupClass().getModule());
-                        vectorClass = compiler.compileVectorLoopSimd(
-                            LOOKUP,
-                            tree,
-                            plan.vectorComparison(),
-                            plainType,
-                            Stitcher.FUSED_METHOD_NAME
-                        );
-                        vectorHandles = VectorHandles.primary(bindHandle(vectorClass, Stitcher.FUSED_METHOD_NAME, plainType));
-                    } else {
-                        vectorClass = compiler.compileVectorLoop(
-                            LOOKUP,
-                            tree,
-                            plainType,
-                            Stitcher.FUSED_METHOD_NAME,
-                            Stitcher.FUSED_INTERFACE_METHOD_NAME
-                        );
-                        vectorHandles = VectorHandles.primaryInterface(
-                            bindHandle(vectorClass, Stitcher.FUSED_METHOD_NAME, plainType),
-                            bindHandle(vectorClass, Stitcher.FUSED_INTERFACE_METHOD_NAME, plainType)
-                        );
-                    }
+                    Class<?> vectorClass = compiler.compileVectorLoop(
+                        LOOKUP,
+                        tree,
+                        plainType,
+                        Stitcher.FUSED_METHOD_NAME,
+                        Stitcher.FUSED_INTERFACE_METHOD_NAME
+                    );
+                    vectorHandles = VectorHandles.primaryInterface(
+                        bindHandle(vectorClass, Stitcher.FUSED_METHOD_NAME, plainType),
+                        bindHandle(vectorClass, Stitcher.FUSED_INTERFACE_METHOD_NAME, plainType)
+                    );
                     strategy = VectorStrategy.PLAIN_VECTOR;
                 } else {
                     // Overflow-checked trees (including double, whose kernels call NumericUtils.asFiniteNumber) all use
@@ -601,7 +579,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * The single plan-time stitch-failure log site. WHY this lives in the factory, not the cache: only the factory
      * knows whether fusion was lost entirely ({@code unfusedFallback}) or the shape still fused via the block path.
      * The cache supplies {@link Stitcher.StitchingException#isFirstFailure()} so a full-unfused fallback WARNs
-     * exactly once per shape; vector/SIMD/logical-vector degrades, and every repeat, stay at DEBUG. Production
+     * exactly once per shape; vector/logical-vector degrades, and every repeat, stay at DEBUG. Production
      * {@code findStatic} runs inside the cached unit ({@link FusedClassCache#stitchAndResolve}), so a resolution miss
      * is a {@link Stitcher.StitchingException} carrying the cache's first-failure flag. Remaining first-failure
      * defaults are test compilers that bypass the cache. Production 2-arg compile entry points throw rather than
@@ -903,8 +881,8 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         private final MethodHandle vectorSpreader;
         private final Object[] vectorScratch;
         /**
-         * ALL-INTERFACE spreader ({@code fusedInterface}). Null when no interface variant was compiled (block-only,
-         * SIMD). Shares {@link #vectorScratch}.
+         * ALL-INTERFACE spreader ({@code fusedInterface}). Null when no interface variant was compiled (block-only).
+         * Shares {@link #vectorScratch}.
          */
         private final MethodHandle vectorInterfaceSpreader;
         /**
@@ -1074,8 +1052,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     assert recordPath(LastEvalPath.BLOCK);
                 }
                 if (fused == null) {
-                    // Block path: null/multi-value tolerant, overflow-aware. Also the logical (3VL) fallback and the
-                    // SIMD-without-interface fallback for non-array dense pages.
+                    // Block path: null/multi-value tolerant, overflow-aware. Also the logical (3VL) fallback.
                     Object[] args = blockScratch;
                     args[0] = blockFactory;
                     args[1] = warnings();
@@ -1296,8 +1273,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
         /**
          * Per-page RAW vs INTERFACE dispatch for a dense (no-null, no-multi-value) page. Returns {@code null} when
-         * the chosen variant has no spreader (SIMD PLAIN_VECTOR has no interface sibling) so the caller falls through
-         * to the block path.
+         * the chosen variant has no spreader so the caller falls through to the block path.
          */
         private Block evalDenseVectorPage(Vector[] dense, BlockFactory blockFactory, int positionCount, int arity, int constCount)
             throws Throwable {
@@ -1341,7 +1317,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         ) throws Throwable {
             MethodHandle spreader = exact ? vectorSpreader : vectorInterfaceSpreader;
             if (spreader == null) {
-                // SIMD compiles PLAIN_VECTOR without an interface sibling; non-array dense pages use the block path.
+                // No interface spreader compiled; non-array dense pages use the block path.
                 return null;
             }
             assert recordPath(exact ? LastEvalPath.RAW : LastEvalPath.INTERFACE);
@@ -1411,11 +1387,9 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         /** True when every vector is the exact {@code *ArrayVector} of its input's element (the ALL-RAW variant). */
         private boolean allExactArrayVectors(Vector[] vectors) {
             // Benchmark/test-only esql.fusion.vector_reads=interface: treat exact *ArrayVector inputs as non-exact
-            // so eval takes ALL-INTERFACE (typed *Vector.getX) instead of ALL-RAW (VectorUnsafe). SIMD PLAIN_VECTOR
-            // has no interface sibling — forcing non-exact would fall through to BLOCK — so only force when an
-            // INTERFACE spreader exists. That keeps the hook on the scalar RAW-vs-INTERFACE choice and leaves SIMD
-            // / block-only paths alone. Reads the instance final (production: class-init static-final snapshot),
-            // never a volatile.
+            // so eval takes ALL-INTERFACE (typed *Vector.getX) instead of ALL-RAW (VectorUnsafe). Only force when an
+            // INTERFACE spreader exists so a block-only path is left alone. Reads the instance final (production:
+            // class-init static-final snapshot), never a volatile.
             if (vectorReadsInterface && (vectorInterfaceSpreader != null || vectorRawInterfaceSpreader != null)) {
                 return false;
             }

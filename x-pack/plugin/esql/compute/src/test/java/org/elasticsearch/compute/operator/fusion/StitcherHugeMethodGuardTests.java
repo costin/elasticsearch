@@ -7,7 +7,6 @@
 
 package org.elasticsearch.compute.operator.fusion;
 
-import org.elasticsearch.compute.operator.fusion.BodyExtractorTests.KernelFixtures;
 import org.elasticsearch.test.ESTestCase;
 import org.junit.After;
 import org.objectweb.asm.ClassWriter;
@@ -31,7 +30,7 @@ import static org.hamcrest.Matchers.lessThanOrEqualTo;
  *
  * <p>The per-path tests drop the live limit to {@link #TINY_LIMIT} so a representative tree is over-budget
  * without walking to depth thousands. Pre-H2, LOGICAL_VECTOR measures only {@code fused} (absent → size 0) and
- * CHECKED/block/SIMD compile with {@code enforce=false}, so those cases must fail on pre-H2 code.
+ * CHECKED/block compile with {@code enforce=false}, so those cases must fail on pre-H2 code.
  * Plain-vector, logical-block and filter-eval already enforced the named {@code fused} method.
  */
 public class StitcherHugeMethodGuardTests extends ESTestCase {
@@ -129,15 +128,6 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
      */
     public void testTinyLimitRefusesLogicalVector() throws Exception {
         assertTinyLimitRefuses("logical vector loop", () -> stitcher.logicalVectorLoopBytecode(MethodHandles.lookup(), andGtLt()));
-    }
-
-    /** FAIL-before: the SIMD vector loop compiled with {@code enforce=false}. */
-    public void testTinyLimitRefusesSimd() throws Exception {
-        assumeTrue("Vector API (jdk.incubator.vector) not available in this runtime", FusionSimd.available());
-        FusionSimd.enableReadsFrom(getClass().getModule());
-        FusionDescriptor gt = new FusionDescriptor(KernelFixtures.class, "processLongsGreaterThan", "(JJ)Z", false, true);
-        FusionNode tree = new FusionNode.Kernel(gt, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
-        assertTinyLimitRefuses("SIMD vector loop", () -> stitcher.simdVectorLoopBytecode(MethodHandles.lookup(), tree, "GT"));
     }
 
     /** Passing-before: the filter-eval path already enforced the named {@code fused} method. */

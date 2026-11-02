@@ -15,7 +15,7 @@ package org.elasticsearch.compute.operator.fusion;
  * @param kernelClass          the class declaring the kernel {@code process} method
  * @param kernelMethod         the kernel method's simple name
  * @param kernelType           the kernel method's JVM descriptor (e.g. {@code (JJ)J})
- * @param overflowChecked      whether the kernel can throw on overflow (precludes SIMD vectorization)
+ * @param overflowChecked      whether the kernel can throw on overflow (needs a per-kernel try/catch)
  * @param allNullsIsNull       whether an all-null input yields a null result
  * @param overflowExceptionType the fully-qualified name of the exception the kernel throws on overflow
  *                              (e.g. {@code java.lang.ArithmeticException}), or the empty string when the

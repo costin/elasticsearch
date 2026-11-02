@@ -9,7 +9,6 @@ package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
-import org.elasticsearch.compute.operator.fusion.FusionSimd;
 import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
@@ -445,81 +444,6 @@ public class ComparisonFusionDifferentialTests extends FusionDifferentialTestCas
             containsWarning(warnings.fused(), "long overflow"),
             is(false)
         );
-    }
-
-    /**
-     * B2 end-to-end: with {@code esql.fusion.simd} on and the Vector API available, a bare {@code a OP b} column
-     * comparison (a depth-1 tree the scalar planner would skip) fuses via the SIMD lane-compare path. Feeding dense
-     * vector-backed columns drives the runtime onto that vector path, and the result must match the unfused evaluator
-     * position-by-position across sizes below/at/above one SIMD species. Skipped when the Vector API is unavailable.
-     */
-    public void testSimdComparisonMatchesUnfused() {
-        assumeTrue("Vector API (jdk.incubator.vector) not available", FusionSimd.available());
-        FusionSettings.setSimdEnabledForTests(true);
-        try {
-            runSimdSweep(DataType.LONG);
-            runSimdSweep(DataType.INTEGER);
-            runSimdSweep(DataType.DOUBLE);
-        } finally {
-            FusionSettings.setSimdEnabledForTests(false);
-        }
-    }
-
-    /** Drives all six comparison operators over dense vector-backed columns of {@code type} onto the SIMD path. */
-    private void runSimdSweep(DataType type) {
-        FieldAttribute a = field("a", type);
-        FieldAttribute b = field("b", type);
-        Layout layout = layout(a, b);
-        Expression[] comparisons = {
-            new GreaterThan(Source.EMPTY, a, b),
-            new GreaterThanOrEqual(Source.EMPTY, a, b),
-            new LessThan(Source.EMPTY, a, b),
-            new LessThanOrEqual(Source.EMPTY, a, b),
-            new Equals(Source.EMPTY, a, b),
-            new NotEquals(Source.EMPTY, a, b) };
-        for (Expression expr : comparisons) {
-            String label = type + " " + expr.getClass().getSimpleName();
-            ExpressionEvaluator.Factory fused = fusedFactory(expr, layout);
-            ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
-            assertFuses(fused, label + " (simd)");
-            for (int pc : new int[] { 0, 1, 5, 16, 17, 64, 129, 512 + randomIntBetween(0, 512) }) {
-                Block a0;
-                Block b0;
-                if (type == DataType.LONG) {
-                    long[] av = new long[pc];
-                    long[] bv = new long[pc];
-                    for (int p = 0; p < pc; p++) {
-                        av[p] = randomLongBetween(-50, 50);
-                        bv[p] = randomLongBetween(-50, 50); // overlapping ranges -> both true and false lanes
-                    }
-                    a0 = blockFactory.newLongArrayVector(av, pc).asBlock();
-                    b0 = blockFactory.newLongArrayVector(bv, pc).asBlock();
-                } else if (type == DataType.INTEGER) {
-                    int[] av = new int[pc];
-                    int[] bv = new int[pc];
-                    for (int p = 0; p < pc; p++) {
-                        av[p] = randomIntBetween(-50, 50);
-                        bv[p] = randomIntBetween(-50, 50);
-                    }
-                    a0 = blockFactory.newIntArrayVector(av, pc).asBlock();
-                    b0 = blockFactory.newIntArrayVector(bv, pc).asBlock();
-                } else {
-                    // Double: mix IEEE specials (NaN/±Inf/-0.0) with normals so the SIMD lane compare's unordered
-                    // semantics are exercised against the scalar tail end to end.
-                    double[] pool = { Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 0.0, -0.0, 1.0, -1.0, 2.5 };
-                    double[] av = new double[pc];
-                    double[] bv = new double[pc];
-                    for (int p = 0; p < pc; p++) {
-                        av[p] = pool[randomIntBetween(0, pool.length - 1)];
-                        bv[p] = pool[randomIntBetween(0, pool.length - 1)];
-                    }
-                    a0 = blockFactory.newDoubleArrayVector(av, pc).asBlock();
-                    b0 = blockFactory.newDoubleArrayVector(bv, pc).asBlock();
-                }
-                // Dense vector-backed columns so the runtime takes the vector (SIMD) path, not the block path.
-                runDifferentialWarnings(fused, unfused, ElementKind.BOOLEAN, new Block[] { a0, b0 }, pc, label + " simd pc=" + pc);
-            }
-        }
     }
 
     private static Literal lit(long v) {

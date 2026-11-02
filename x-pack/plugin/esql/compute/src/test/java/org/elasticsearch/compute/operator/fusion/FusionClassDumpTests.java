@@ -31,9 +31,10 @@ import java.util.TreeMap;
  * {@code -Desql.fusion.dump.list} (via {@code -Dtests.jvm.argline}) to the output path; skipped otherwise.
  *
  * <p>The original TE corpus is 34 shapes. The dump kept 33 after H11 deleted the unreachable mapping-block emit
- * path ({@code mapping_append_suffix} stays omitted). D.0a adds 13 shapes that pin the paths later D refactors
+ * path ({@code mapping_append_suffix} stays omitted). D.0a added 13 shapes that pin the paths later D refactors
  * touch (two-BytesRef-column, filter-eval BytesRef, double Div, baked divisor tuple, CONCAT varargs, nested
- * mapping, logical+Not, checked {@code a+b*c}, int array-vector boolean, mixed cast, warning-only). Total 46.
+ * mapping, logical+Not, checked {@code a+b*c}, int array-vector boolean, mixed cast, warning-only). D.1 dropped
+ * the three Vector-API comparison shapes. Total 43.
  */
 public class FusionClassDumpTests extends ESTestCase {
 
@@ -49,20 +50,6 @@ public class FusionClassDumpTests extends ESTestCase {
     private static final FusionDescriptor LT = new FusionDescriptor(ComparisonKernels.class, "lt", "(JJ)Z", false, true);
     private static final FusionDescriptor EQ = new FusionDescriptor(ComparisonKernels.class, "eq", "(JJ)Z", false, true);
     private static final FusionDescriptor GT_INT = new FusionDescriptor(ComparisonKernels.class, "gtInt", "(II)Z", false, true);
-    private static final FusionDescriptor GT_LONG_FIX = new FusionDescriptor(
-        KernelFixtures.class,
-        "processLongsGreaterThan",
-        "(JJ)Z",
-        false,
-        true
-    );
-    private static final FusionDescriptor GT_DOUBLE = new FusionDescriptor(
-        KernelFixtures.class,
-        "processDoublesGreaterThan",
-        "(DD)Z",
-        false,
-        true
-    );
     private static final FusionDescriptor INT_TO_LONG = new FusionDescriptor(CastKernels.class, "intToLong", "(I)J", false, true);
     private static final FusionDescriptor INT_TO_DOUBLE = new FusionDescriptor(CastKernels.class, "intToDouble", "(I)D", false, true);
     private static final FusionDescriptor LENGTH = new FusionDescriptor(
@@ -175,10 +162,6 @@ public class FusionClassDumpTests extends ESTestCase {
         put(hashes, "logical_vector_or", stitcher.logicalVectorLoopBytecode(lookup, orTree()));
         put(hashes, "logical_vector_not", stitcher.logicalVectorLoopBytecode(lookup, notTree()));
 
-        put(hashes, "simd_long_gt", stitcher.simdVectorLoopBytecode(lookup, gtLongFix(), "GT"));
-        put(hashes, "simd_double_gt", stitcher.simdVectorLoopBytecode(lookup, gtDouble(), "GT"));
-        put(hashes, "simd_int_gt", stitcher.simdVectorLoopBytecode(lookup, gtInt(), "GT"));
-
         put(hashes, "filter_eval_cmp", stitcher.filterEvalBlockLoopBytecode(lookup, gtOverAdd(), mulOverAdd()));
         put(hashes, "filter_eval_logical", stitcher.filterEvalBlockLoopBytecode(lookup, andTree(), addLong()));
 
@@ -196,7 +179,11 @@ public class FusionClassDumpTests extends ESTestCase {
         put(hashes, "plain_cast_int_to_double_add", stitcher.vectorLoopBytecode(lookup, castIntToDoubleAdd()));
         put(hashes, "block_warn_only", stitcher.blockLoopBytecode(lookup, warnOnly()));
 
-        assertEquals("TE corpus minus deleted mapping_append_suffix plus D.0a shapes is 46", 46, hashes.size());
+        assertEquals(
+            "TE corpus minus deleted mapping_append_suffix plus D.0a shapes minus D.1 Vector-API comparison shapes is 43",
+            43,
+            hashes.size()
+        );
 
         StringBuilder out = new StringBuilder();
         for (var e : hashes.entrySet()) {
@@ -236,16 +223,8 @@ public class FusionClassDumpTests extends ESTestCase {
         return new FusionNode.Kernel(GT, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
     }
 
-    private static FusionNode gtLongFix() {
-        return new FusionNode.Kernel(GT_LONG_FIX, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
-    }
-
     private static FusionNode gtInt() {
         return new FusionNode.Kernel(GT_INT, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
-    }
-
-    private static FusionNode gtDouble() {
-        return new FusionNode.Kernel(GT_DOUBLE, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
     }
 
     private static FusionNode castIntToLongAdd() {
