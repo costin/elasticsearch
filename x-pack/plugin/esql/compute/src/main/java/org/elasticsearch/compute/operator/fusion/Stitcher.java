@@ -66,7 +66,7 @@ import java.util.function.Consumer;
  * {@code StitchingException.isFirstFailure()}), so the plan-time caller (iter 13's {@code EvalMapper}) can catch it
  * and fall back to the unfused evaluator chain without the query path ever seeing an {@code Error}.
  *
- * <p><b>JIT discipline (criterion #6).</b> The emitted {@code fused} method is primitive-only: host inputs are
+ * <p><b>JIT discipline.</b> The emitted {@code fused} method is primitive-only: host inputs are
  * moved into the kernel's argument slots with type-correct {@code xLOAD}/{@code xSTORE} and the kernel body is
  * spliced verbatim, so there is no autoboxing and no per-position {@code checkcast}. For a depth-1 binary kernel
  * the whole method is a handful of instructions — far below HotSpot's default {@code HugeMethodLimit}
@@ -103,7 +103,7 @@ public final class Stitcher {
     /**
      * ALL-INTERFACE sibling of {@link #FUSED_METHOD_NAME}: typed {@code *Vector.getX(p)} instead of
      * {@code VectorUnsafe} + {@code xALOAD}. Arithmetic plain/checked vector classes still emit both methods so the
-     * factory picks per page. The logical vector class (B2) emits <em>only</em> this method — the logical RAW loop
+     * factory picks per page. The logical vector class emits <em>only</em> this method — the logical RAW loop
      * was the slow path and is not generated.
      */
     public static final String FUSED_INTERFACE_METHOD_NAME = "fusedInterface";
@@ -128,14 +128,14 @@ public final class Stitcher {
     public static final String FUSED_RAW_INTERFACE_METHOD_NAME = "fusedRawInterface";
 
     /**
-     * HotSpot's default {@code HugeMethodLimit} (criterion #6). A fused method above this many bytecodes
+     * HotSpot's default {@code HugeMethodLimit}. A fused method above this many bytecodes
      * is never JIT-compiled at all, which is strictly worse than the unfused chain of small per-expression
      * methods. Public so tests and diagnostics can name the default rather than hardcoding 8000.
      */
     public static final int DEFAULT_MAX_FUSED_METHOD_BYTECODES = 8000;
 
     /**
-     * HotSpot's default {@code HugeMethodLimit} huge-method guard (criterion #6). Mutable — not a
+     * HotSpot's default {@code HugeMethodLimit} huge-method guard. Mutable — not a
      * constant — so it is not SCREAMING_CASE: production reads {@code -Desql.fusion.max_method_bytecodes}
      * (default {@link #DEFAULT_MAX_FUSED_METHOD_BYTECODES}) once at class init; tests flip it via
      * {@link #maxFusedMethodBytecodesForTests}. A method above this many bytecodes is never JIT-compiled.
@@ -468,7 +468,7 @@ public final class Stitcher {
     /**
      * Internal name of the {@code compute.data} {@code Vector} base type. The fused method receives its inputs as
      * this common interface and narrows each once — outside the loop — to the concrete {@code *ArrayVector}
-     * whose {@code rawValues()} it reads (JIT criterion #6: no per-position {@code checkcast}).
+     * whose {@code rawValues()} it reads (no per-position {@code checkcast}).
      */
     static final String VECTOR = "org/elasticsearch/compute/data/Vector";
 
@@ -526,7 +526,7 @@ public final class Stitcher {
      * {@code Warnings}, so each warning-emitting node registers on the {@code Warnings} built from <em>its own</em> node
      * {@link org.elasticsearch.compute.operator.WarningSourceLocation source} — byte-for-byte the header the generated
      * unfused evaluator for that node would emit (each generated {@code *Evaluator} carries its own node source). This
-     * keeps the fused warning headers a <b>subset</b> of the unfused chain's (criterion #1): reached warnings are equal;
+     * keeps the fused warning headers a <b>subset</b> of the unfused chain's: reached warnings are equal;
      * short-circuit only drops the never-reached ones.
      */
     static final String WARNINGS_ARRAY_DESCRIPTOR = "[L" + WARNINGS + ";";
@@ -659,7 +659,7 @@ public final class Stitcher {
      * <p><b>Failure surface (rule #5).</b> Any verification/linkage failure at {@code defineHiddenClass} is rethrown
      * as a {@link StitchingException} for the caller to fall back to the unfused chain.
      *
-     * <p><b>JIT discipline (criterion #6).</b> The inner work is primitive-only (values read into
+     * <p><b>JIT discipline.</b> The inner work is primitive-only (values read into
      * {@code long}/{@code int}/{@code double} locals, kernel bodies spliced verbatim). The per-position null-check
      * branch is unavoidable for null propagation but is a single compare per <em>consumed</em> input; the concrete
      * {@code *Block} type is fixed by the method descriptor so there is no per-position {@code checkcast}.
@@ -705,7 +705,7 @@ public final class Stitcher {
      * {@code BooleanLogicExpressionEvaluator}, which turns a multi-valued operand into null without a warning. The only
      * multi-value warnings come from the sub-comparisons' own numeric inputs.
      *
-     * <p><b>Why {@code private static} helpers (criterion #6 huge-method guard).</b> Inlining the two per-operand
+     * <p><b>Why {@code private static} helpers (huge-method guard).</b> Inlining the two per-operand
      * null/multi-value guards (with their multi-value-warning construction) into the loop body inflates the
      * top-level {@code fused} method. Splitting each comparison operand into a tiny {@code private static} helper
      * keeps the top-level loop small even for deeply nested {@code AND}/{@code OR} trees; each helper is itself well
@@ -734,7 +734,7 @@ public final class Stitcher {
      * it with {@code newBooleanArrayVector(out, n).asBlock()}. The 3VL block path ({@link #compileLogicalBlockLoop})
      * stays for pages that carry nulls or multi-values.
      *
-     * <p>INTERFACE-only after B2: the hidden class exposes {@link #FUSED_INTERFACE_METHOD_NAME} and not
+     * <p>INTERFACE-only: the hidden class exposes {@link #FUSED_INTERFACE_METHOD_NAME} and not
      * {@link #FUSED_METHOD_NAME}. Each input is narrowed once to its {@code *Vector} interface and the loop does
      * {@code v.getX(p)}. The logical RAW loop ({@code VectorUnsafe} + {@code a[p]}) was the slow path (iteration-1
      * M10) and is not emitted; arithmetic plain/checked paths still keep RAW. Comparisons are spliced inline in the
@@ -773,7 +773,7 @@ public final class Stitcher {
      * with one {@code cmpN} helper per comparison) or {@link BlockDfsEmitter} (for a comparison
      * {@link FusionNode.Kernel}, including comparison-over-arithmetic). The projection is evaluated by the arithmetic
      * {@link BlockDfsEmitter} kernel DFS that {@link BlockLoopEmitter#emitBlockLoop} uses. To keep the top-level {@code fused} loop
-     * small and inlinable (criterion #6 budget
+     * small and inlinable (budget
      * guard, ENFORCED here) the two per-position bodies are factored into {@code private static} helpers ({@code pred}
      * returning the tri-state, {@code projAppend} evaluating + appending the projection value-or-null), so the top-level
      * loop only calls them and records survivors. The helpers are themselves below the budget for the representative
@@ -1153,7 +1153,7 @@ public final class Stitcher {
 
     /**
      * Serializes {@code classNode} through {@code writer} and applies the HugeMethodLimit huge-method
-     * guard (criterion #6) to the <em>largest</em> {@code Code} length over every method of the class,
+     * guard to the <em>largest</em> {@code Code} length over every method of the class,
      * measured against {@link #maxFusedMethodBytecodes} (HotSpot's default {@code -XX:HugeMethodLimit}, 8000).
      * A method above this limit is never JIT-compiled at all, which is strictly worse than the unfused chain.
      *

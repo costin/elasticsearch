@@ -32,7 +32,7 @@ import java.util.function.Consumer;
  * loop (with one {@code cmpN} helper per comparison operand). {@link Stitcher} owns the public {@code compile*}
  * façade and define boundary; this class is the block-path seam those entry points delegate to.
  * {@link BlockDfsEmitter} lives beside it for the arithmetic DFS walk. A lone TO_LOWER/TO_UPPER does not use a
- * dedicated mapping loop (D4 refused it); nested mapping kernels splice on this ordinary block path.
+ * dedicated mapping loop (it is refused at plan time); nested mapping kernels splice on this ordinary block path.
  */
 final class BlockLoopEmitter {
 
@@ -258,7 +258,7 @@ final class BlockLoopEmitter {
         FusedBuilderEmit.emitAppendOrNull(insns, builderSlot, tRoot, outputElement, doNull, loop.next());
 
         loop.close(host, insns, resultSlot, excSlot, outputElement);
-        // Enforce the huge-method limit on every method (criterion #6). The helpers keep the top-level loop small even
+        // Enforce the huge-method limit on every method. The helpers keep the top-level loop small even
         // for nested trees; if any method exceeds the limit we refuse to fuse (→ unfused fallback) rather than emit
         // a method HotSpot will not JIT-compile.
         return Stitcher.finishFusedClass(caller, internalName, debug, "logical block loop", List.of(host), helpers, hostMethodInterceptor);

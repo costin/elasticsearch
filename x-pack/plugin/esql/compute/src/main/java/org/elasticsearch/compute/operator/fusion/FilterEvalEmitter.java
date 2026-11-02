@@ -56,7 +56,7 @@ final class FilterEvalEmitter {
         // Shape guards: the projection root must be a kernel (a bare column/constant EVAL is not fused here), and the
         // predicate must be a boolean-returning comparison kernel or a 3VL logical tree. An ill-shaped tree throws a
         // bare RuntimeException before the define boundary, which the plan-time caller treats as a fusion failure and
-        // falls back to the unfused chain (criterion #5).
+        // falls back to the unfused chain.
         if ((projectionTree instanceof FusionNode.Kernel) == false) {
             throw new IllegalArgumentException("fused filter-eval requires a kernel projection root, not " + projectionTree);
         }

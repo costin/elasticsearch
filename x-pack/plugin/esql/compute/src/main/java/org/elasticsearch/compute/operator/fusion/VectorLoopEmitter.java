@@ -52,7 +52,7 @@ final class VectorLoopEmitter {
     }
 
     /**
-     * The surviving vector-loop combinations after E2/E3: how leaves are read, how the result is
+     * The surviving vector-loop combinations: how leaves are read, how the result is
      * materialised, whether the loop is overflow-checked, and the output element. Nested enums are
      * the record's components, not a strategy hierarchy.
      */
@@ -116,7 +116,7 @@ final class VectorLoopEmitter {
     }
 
     /**
-     * One {@link LoopSpec}-parameterised vector-loop method. Replaces the four pre-E6 copies
+     * One {@link LoopSpec}-parameterised vector-loop method. Unifies the four per-combination copies
      * ({@code emitPlainVectorMethod}, {@code emitCheckedVectorRawMethod}, {@code emitCheckedVectorBuilderMethod},
      * {@code emitLogicalVectorMethod}). {@link LoopSpec.Output#BUILDER} keeps the builder body; the remaining
      * combinations share the array-output loop (write {@code T[]}, then {@code new*ArrayVector} and optionally
@@ -206,7 +206,7 @@ final class VectorLoopEmitter {
         MethodNode host = Stitcher.newFusedMethod(vectorMethodName(spec), vectorMethodDescriptor(spec, arity, constants));
         InsnList insns = host.instructions;
 
-        // Narrow each CONSUMED input once, outside the loop (JIT #6: no per-position checkcast).
+        // Narrow each CONSUMED input once, outside the loop (no per-position checkcast).
         for (int i : consumed) {
             emitExtractConsumedInput(insns, inputElements[i], inputBase + i, extractedBase + i, raw);
         }
@@ -360,7 +360,7 @@ final class VectorLoopEmitter {
         MethodNode host = Stitcher.newFusedMethod(raw ? Stitcher.FUSED_METHOD_NAME : Stitcher.FUSED_INTERFACE_METHOD_NAME, descriptor);
         InsnList insns = host.instructions;
 
-        // Narrow each CONSUMED input once, outside the loop (JIT #6).
+        // Narrow each CONSUMED input once, outside the loop (no per-position checkcast).
         for (int i : consumed) {
             emitExtractConsumedInput(insns, inputElements[i], params.inputBase() + i, extractedBase + i, raw);
         }
@@ -468,7 +468,7 @@ final class VectorLoopEmitter {
     }
 
     /**
-     * Narrows one consumed input once, outside the loop (JIT #6: no per-position checkcast). ALL-RAW: CHECKCAST to
+     * Narrows one consumed input once, outside the loop (no per-position checkcast). ALL-RAW: CHECKCAST to
      * {@code *ArrayVector} and {@code VectorUnsafe} extract into {@code destSlot}. ALL-INTERFACE: CHECKCAST to the
      * typed {@code *Vector} interface and store that reference — {@code Constant*Vector}/{@code *BigArrayVector} then
      * read through {@code getX(p)} at the hidden class's own call sites.
@@ -649,8 +649,8 @@ final class VectorLoopEmitter {
     }
 
     /**
-     * Builds the class bytes for the dense logical vector loop: INTERFACE-only {@link Stitcher#FUSED_INTERFACE_METHOD_NAME}
-     * (B2). The RAW sibling is not emitted.
+     * Builds the class bytes for the dense logical vector loop: INTERFACE-only {@link Stitcher#FUSED_INTERFACE_METHOD_NAME}.
+     * The RAW sibling is not emitted.
      */
     byte[] emitLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
         if (FusionNode.isBooleanLogic(tree) == false) {

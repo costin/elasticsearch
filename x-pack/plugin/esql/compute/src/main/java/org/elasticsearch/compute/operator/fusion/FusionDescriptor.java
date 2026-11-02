@@ -27,7 +27,7 @@ package org.elasticsearch.compute.operator.fusion;
  *                              supplies the fixed leading operands followed by the array's elements as extra children,
  *                              and the stitcher builds the array per row from those trailing children.
  * @param mapping               whether this is a multi-value mapping convert kernel ({@code @ConvertEvaluator}).
- *                              A lone converter is refused at plan time (D4). Nested under a single-value parent
+ *                              A lone converter is refused at plan time. Nested under a single-value parent
  *                              it splices as a unary kernel on the ordinary block path. Generated {@code @Evaluator}
  *                              descriptors and hand-written string kernels default this to {@code false}; only the
  *                              convert generator emits {@code true}.
