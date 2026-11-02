@@ -455,7 +455,7 @@ public class StitcherOverflowTests extends ESTestCase {
      */
     public void testCheckedVectorRawMethodHasNoBlockBuilderInvokes() throws Exception {
         FusionNode tree = addThenMulTree();
-        byte[] bytecode = stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), tree);
+        byte[] bytecode = new FusionTestEmitters().vectors.emitVectorLoopChecked(MethodHandles.lookup(), tree);
 
         List<String> methods = new ArrayList<>();
         List<String> rawHotPathViolations = new ArrayList<>();

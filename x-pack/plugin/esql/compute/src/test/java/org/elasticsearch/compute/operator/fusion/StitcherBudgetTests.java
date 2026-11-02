@@ -38,7 +38,7 @@ import static org.hamcrest.Matchers.lessThanOrEqualTo;
  * 25). These are the deterministic guards behind criterion #6 ("large expressions still inline, or fall back"):
  *
  * <ul>
- *   <li><b>Budget.</b> On every emit path the largest method {@code Code} length ({@link Stitcher#maxMethodCodeLength})
+ *   <li><b>Budget.</b> On every emit path the largest method {@code Code} length ({@link FusedMethodCodeLengths#maxMethodCodeLength})
  *       must stay {@code <=} {@link Stitcher#maxFusedMethodBytecodes} (HotSpot's default {@code HugeMethodLimit}, 8000)
  *       for representative <em>and</em> deep trees. A method above that limit is never JIT-compiled at all, which is
  *       strictly worse than the unfused chain.</li>
@@ -55,7 +55,7 @@ import static org.hamcrest.Matchers.lessThanOrEqualTo;
  * <p>The kernels are local fixtures ({@link ArithmeticKernels}, {@link ComparisonKernels}, {@link CastKernels}) that
  * compile to the same instruction shapes the production {@code Add}/{@code Mul}/comparison/{@code Cast} kernels emit,
  * so the measured sizes and validity are representative of what the stitcher sees for real expressions. These tests
- * build class <em>bytes</em> only (via the package-private {@code *Bytecode} seams) — they neither define nor invoke
+ * build class <em>bytes</em> only (via the package-private emitters) — they neither define nor invoke
  * the hidden classes, so no breaker-backed data is needed.
  */
 public class StitcherBudgetTests extends ESTestCase {
@@ -231,12 +231,12 @@ public class StitcherBudgetTests extends ESTestCase {
         true
     );
 
-    private Stitcher stitcher;
+    private FusionTestEmitters emitters;
 
     @Override
     public void setUp() throws Exception {
         super.setUp();
-        stitcher = new Stitcher(new TemplateRegistry());
+        emitters = new FusionTestEmitters();
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -249,7 +249,7 @@ public class StitcherBudgetTests extends ESTestCase {
             MUL,
             List.of(new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
         );
-        int size = Stitcher.fusedMethodCodeLength(stitcher.vectorLoopBytecode(MethodHandles.lookup(), tree));
+        int size = FusedMethodCodeLengths.fusedMethodCodeLength(emitters.vectors.emitVectorLoop(MethodHandles.lookup(), tree));
         assertThat("emitted a fused method", size, greaterThan(0));
         assertThat(
             "representative plain-vector body must stay within the huge-method limit",
@@ -271,7 +271,7 @@ public class StitcherBudgetTests extends ESTestCase {
         for (int depth = 2; depth <= 4000; depth++) {
             FusionNode tree = leftChain(ADD, depth);
             try {
-                int size = Stitcher.fusedMethodCodeLength(stitcher.vectorLoopBytecode(MethodHandles.lookup(), tree));
+                int size = FusedMethodCodeLengths.fusedMethodCodeLength(emitters.vectors.emitVectorLoop(MethodHandles.lookup(), tree));
                 assertThat(
                     "depth=" + depth + " plain-vector body must stay within the huge-method limit when it fuses",
                     size,
@@ -305,7 +305,7 @@ public class StitcherBudgetTests extends ESTestCase {
             new FusionNode.Kernel(GT, List.of(new FusionNode.Input(0), new FusionNode.Input(1))),
             new FusionNode.Kernel(LT, List.of(new FusionNode.Input(2), new FusionNode.Input(3)))
         );
-        int size = Stitcher.fusedMethodCodeLength(stitcher.logicalBlockLoopBytecode(MethodHandles.lookup(), tree));
+        int size = FusedMethodCodeLengths.fusedMethodCodeLength(emitters.blocks.emitLogicalBlockLoop(MethodHandles.lookup(), tree));
         assertThat("emitted a fused logical method", size, greaterThan(0));
         assertThat(
             "representative logical body must stay within the huge-method limit",
@@ -329,7 +329,7 @@ public class StitcherBudgetTests extends ESTestCase {
         for (int depth = 1; depth <= 16; depth++) {
             FusionNode tree = balancedAnd(depth);
             try {
-                int size = Stitcher.fusedMethodCodeLength(stitcher.logicalBlockLoopBytecode(MethodHandles.lookup(), tree));
+                int size = FusedMethodCodeLengths.fusedMethodCodeLength(emitters.blocks.emitLogicalBlockLoop(MethodHandles.lookup(), tree));
                 assertThat(
                     "depth=" + depth + " logical top-level body must stay within the huge-method limit when it fuses",
                     size,
@@ -359,15 +359,15 @@ public class StitcherBudgetTests extends ESTestCase {
     // -----------------------------------------------------------------------------------------------------------------
 
     public void testPlainVectorStructurallyValid() throws Exception {
-        assertStructurallyValid(stitcher.vectorLoopBytecode(MethodHandles.lookup(), arithmeticTree()));
+        assertStructurallyValid(emitters.vectors.emitVectorLoop(MethodHandles.lookup(), arithmeticTree()));
     }
 
     public void testCheckedVectorStructurallyValid() throws Exception {
-        assertStructurallyValid(stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), arithmeticTree()));
+        assertStructurallyValid(emitters.vectors.emitVectorLoopChecked(MethodHandles.lookup(), arithmeticTree()));
     }
 
     public void testBlockLoopStructurallyValid() throws Exception {
-        assertStructurallyValid(stitcher.blockLoopBytecode(MethodHandles.lookup(), arithmeticTree()));
+        assertStructurallyValid(emitters.blocks.emitBlockLoop(MethodHandles.lookup(), arithmeticTree()));
     }
 
     public void testLogicalBlockLoopStructurallyValid() throws Exception {
@@ -376,7 +376,7 @@ public class StitcherBudgetTests extends ESTestCase {
             new FusionNode.Kernel(GT, List.of(new FusionNode.Input(0), new FusionNode.Input(1))),
             new FusionNode.Kernel(LT, List.of(new FusionNode.Input(2), new FusionNode.Input(3)))
         );
-        assertStructurallyValid(stitcher.logicalBlockLoopBytecode(MethodHandles.lookup(), tree));
+        assertStructurallyValid(emitters.blocks.emitLogicalBlockLoop(MethodHandles.lookup(), tree));
     }
 
     /**
@@ -390,9 +390,9 @@ public class StitcherBudgetTests extends ESTestCase {
             ADD,
             List.of(new FusionNode.Kernel(INT_TO_LONG, List.of(new FusionNode.Input(0))), new FusionNode.Input(1))
         );
-        assertStructurallyValid(stitcher.vectorLoopBytecode(MethodHandles.lookup(), tree));
-        assertStructurallyValid(stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), tree));
-        assertStructurallyValid(stitcher.blockLoopBytecode(MethodHandles.lookup(), tree));
+        assertStructurallyValid(emitters.vectors.emitVectorLoop(MethodHandles.lookup(), tree));
+        assertStructurallyValid(emitters.vectors.emitVectorLoopChecked(MethodHandles.lookup(), tree));
+        assertStructurallyValid(emitters.blocks.emitBlockLoop(MethodHandles.lookup(), tree));
     }
 
     /**
@@ -413,8 +413,8 @@ public class StitcherBudgetTests extends ESTestCase {
             ADD_DOUBLE,
             List.of(new FusionNode.Kernel(LONG_TO_DOUBLE, List.of(innerAddLong)), new FusionNode.Input(3))
         );
-        assertStructurallyValid(stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), tree));
-        assertStructurallyValid(stitcher.blockLoopBytecode(MethodHandles.lookup(), tree));
+        assertStructurallyValid(emitters.vectors.emitVectorLoopChecked(MethodHandles.lookup(), tree));
+        assertStructurallyValid(emitters.blocks.emitBlockLoop(MethodHandles.lookup(), tree));
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -449,10 +449,10 @@ public class StitcherBudgetTests extends ESTestCase {
             )
         );
         for (FusionNode tree : List.of(booleanRoot, intRoot)) {
-            byte[] bytecode = stitcher.blockLoopBytecode(MethodHandles.lookup(), tree);
+            byte[] bytecode = emitters.blocks.emitBlockLoop(MethodHandles.lookup(), tree);
             assertStructurallyValid(bytecode);
             assertNoBoxingOrIndy(bytecode, "bytes-ref block");
-            int size = Stitcher.fusedMethodCodeLength(bytecode);
+            int size = FusedMethodCodeLengths.fusedMethodCodeLength(bytecode);
             assertThat("emitted a fused BytesRef block method", size, greaterThan(0));
             logger.info("BytesRef two-leaf block loop fused method size = {} bytecodes", size);
         }
@@ -468,9 +468,9 @@ public class StitcherBudgetTests extends ESTestCase {
             GT_INT,
             List.of(new FusionNode.Kernel(LENGTH, List.of(new FusionNode.Input(0))), new FusionNode.Input(1))
         );
-        byte[] bytecode = stitcher.blockLoopBytecode(MethodHandles.lookup(), tree);
+        byte[] bytecode = emitters.blocks.emitBlockLoop(MethodHandles.lookup(), tree);
         assertStructurallyValid(bytecode);
-        int size = Stitcher.fusedMethodCodeLength(bytecode);
+        int size = FusedMethodCodeLengths.fusedMethodCodeLength(bytecode);
         logger.info("BytesRef single-leaf block loop fused method size = {} bytecodes", size);
         assertThat(
             "single BytesRef-leaf block body must stay within the huge-method limit",
@@ -498,7 +498,9 @@ public class StitcherBudgetTests extends ESTestCase {
             MUL,
             List.of(new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
         );
-        int size = Stitcher.maxMethodCodeLength(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection));
+        int size = FusedMethodCodeLengths.maxMethodCodeLength(
+            emitters.filterEval.emitFilterEvalBlockLoop(MethodHandles.lookup(), predicate, projection)
+        );
         assertThat("emitted a fused filter-eval method", size, greaterThan(0));
         assertThat(
             "filter-eval largest method must stay within the huge-method limit",
@@ -515,7 +517,9 @@ public class StitcherBudgetTests extends ESTestCase {
             new FusionNode.Kernel(LT, List.of(new FusionNode.Input(2), new FusionNode.Input(3)))
         );
         FusionNode projection = new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
-        int size = Stitcher.maxMethodCodeLength(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection));
+        int size = FusedMethodCodeLengths.maxMethodCodeLength(
+            emitters.filterEval.emitFilterEvalBlockLoop(MethodHandles.lookup(), predicate, projection)
+        );
         assertThat("emitted a fused filter-eval (logical predicate) method", size, greaterThan(0));
         assertThat(
             "filter-eval largest method must stay within the huge-method limit",
@@ -534,7 +538,7 @@ public class StitcherBudgetTests extends ESTestCase {
             MUL,
             List.of(new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
         );
-        assertStructurallyValid(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), comparisonPredicate, projection));
+        assertStructurallyValid(emitters.filterEval.emitFilterEvalBlockLoop(MethodHandles.lookup(), comparisonPredicate, projection));
 
         FusionNode logicalPredicate = new FusionNode.Logical(
             FusionNode.BoolOp.AND,
@@ -542,7 +546,7 @@ public class StitcherBudgetTests extends ESTestCase {
             new FusionNode.Kernel(LT, List.of(new FusionNode.Input(2), new FusionNode.Input(3)))
         );
         FusionNode shallowProjection = new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
-        assertStructurallyValid(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), logicalPredicate, shallowProjection));
+        assertStructurallyValid(emitters.filterEval.emitFilterEvalBlockLoop(MethodHandles.lookup(), logicalPredicate, shallowProjection));
     }
 
     /** The fused filter+eval body (and its pred/projAppend/cmpN helpers) must carry no boxing or invokedynamic. */
@@ -556,7 +560,7 @@ public class StitcherBudgetTests extends ESTestCase {
             MUL,
             List.of(new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
         );
-        assertNoBoxingOrIndy(stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection), "filter-eval");
+        assertNoBoxingOrIndy(emitters.filterEval.emitFilterEvalBlockLoop(MethodHandles.lookup(), predicate, projection), "filter-eval");
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -592,15 +596,15 @@ public class StitcherBudgetTests extends ESTestCase {
     );
 
     public void testFusedMethodsHaveNoBoxingOrInvokedynamic() throws Exception {
-        assertNoBoxingOrIndy(stitcher.vectorLoopBytecode(MethodHandles.lookup(), arithmeticTree()), "plain-vector");
-        assertNoBoxingOrIndy(stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), arithmeticTree()), "checked-vector");
-        assertNoBoxingOrIndy(stitcher.blockLoopBytecode(MethodHandles.lookup(), arithmeticTree()), "block");
+        assertNoBoxingOrIndy(emitters.vectors.emitVectorLoop(MethodHandles.lookup(), arithmeticTree()), "plain-vector");
+        assertNoBoxingOrIndy(emitters.vectors.emitVectorLoopChecked(MethodHandles.lookup(), arithmeticTree()), "checked-vector");
+        assertNoBoxingOrIndy(emitters.blocks.emitBlockLoop(MethodHandles.lookup(), arithmeticTree()), "block");
         FusionNode logical = new FusionNode.Logical(
             FusionNode.BoolOp.AND,
             new FusionNode.Kernel(GT, List.of(new FusionNode.Input(0), new FusionNode.Input(1))),
             new FusionNode.Kernel(LT, List.of(new FusionNode.Input(2), new FusionNode.Input(3)))
         );
-        assertNoBoxingOrIndy(stitcher.logicalBlockLoopBytecode(MethodHandles.lookup(), logical), "logical-block");
+        assertNoBoxingOrIndy(emitters.blocks.emitLogicalBlockLoop(MethodHandles.lookup(), logical), "logical-block");
     }
 
     /** Scans EVERY method of the emitted class (the fused loop and any {@code cmpN} helper) for boxing / invokedynamic. */
@@ -634,12 +638,12 @@ public class StitcherBudgetTests extends ESTestCase {
     // Debugging aid (S5.3) — a test-only utility to dump a stitched class's bytes for javap/decompilation, and to
     // base64-encode them (the transport-safe form if they are ever surfaced through a diagnostic response/profile).
     // Kept test-only on purpose: a production dump-to-disk would need a speculative file-write entitlement, which
-    // AGENTS.md forbids adding without a concrete need. The Stitcher's package-private *Bytecode seams already expose
+    // AGENTS.md forbids adding without a concrete need. The package-private emitters already expose
     // the raw bytes, so this is the intended way to inspect generated code: dump then `javap -c -p <file>`.
     // -----------------------------------------------------------------------------------------------------------------
 
     public void testDumpFusedClassForJavapAndBase64RoundTrips() throws Exception {
-        byte[] bytecode = stitcher.blockLoopBytecode(MethodHandles.lookup(), arithmeticTree());
+        byte[] bytecode = emitters.blocks.emitBlockLoop(MethodHandles.lookup(), arithmeticTree());
         assertThat("emitted non-empty class bytes", bytecode.length, greaterThan(0));
 
         // Dump to a file a developer can decompile with `javap -c -p <file>` (verified re-readable by ClassReader).

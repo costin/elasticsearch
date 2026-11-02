@@ -75,12 +75,12 @@ public class StitcherDebugInfoTests extends ESTestCase {
     private static final String GT_ENTRY = ComparisonKernels.class.getName() + "#gt";
     private static final String LT_ENTRY = ComparisonKernels.class.getName() + "#lt";
 
-    private Stitcher stitcher;
+    private FusionTestEmitters emitters;
 
     @Override
     public void setUp() throws Exception {
         super.setUp();
-        stitcher = new Stitcher(new TemplateRegistry());
+        emitters = new FusionTestEmitters();
     }
 
     /**
@@ -88,7 +88,7 @@ public class StitcherDebugInfoTests extends ESTestCase {
      * {@code fused} method splices both bodies, so its LineNumberTable is {@code 0, 1}.
      */
     public void testPlainVectorArithmeticEmitsSourceFileLineNumbersAndKernelMap() throws Exception {
-        byte[] bytecode = stitcher.vectorLoopBytecode(MethodHandles.lookup(), arithmeticTree());
+        byte[] bytecode = emitters.vectors.emitVectorLoop(MethodHandles.lookup(), arithmeticTree());
         assertDebugInfo(
             bytecode,
             "Fused$$VectorLoop",
@@ -104,7 +104,7 @@ public class StitcherDebugInfoTests extends ESTestCase {
      * kernels are indices {@code 0, 1}. Splices live in {@code fusedInterface}.
      */
     public void testLogicalVectorEmitsSourceFileLineNumbersAndKernelMap() throws Exception {
-        byte[] bytecode = stitcher.logicalVectorLoopBytecode(MethodHandles.lookup(), andGtLt());
+        byte[] bytecode = emitters.vectors.emitLogicalVectorLoop(MethodHandles.lookup(), andGtLt());
         assertDebugInfo(
             bytecode,
             "Fused$$LogicalVectorLoop",
@@ -116,7 +116,7 @@ public class StitcherDebugInfoTests extends ESTestCase {
 
     /** Block-path {@code (a + b) * c}: same kernel order as the vector path; splices live in {@code fused}. */
     public void testBlockArithmeticEmitsSourceFileLineNumbersAndKernelMap() throws Exception {
-        byte[] bytecode = stitcher.blockLoopBytecode(MethodHandles.lookup(), arithmeticTree());
+        byte[] bytecode = emitters.blocks.emitBlockLoop(MethodHandles.lookup(), arithmeticTree());
         assertDebugInfo(
             bytecode,
             "Fused$$BlockLoop",
@@ -133,7 +133,7 @@ public class StitcherDebugInfoTests extends ESTestCase {
      * kernel's global index.
      */
     public void testLogicalBlockEmitsSourceFileLineNumbersAndKernelMap() throws Exception {
-        byte[] bytecode = stitcher.logicalBlockLoopBytecode(MethodHandles.lookup(), andGtLt());
+        byte[] bytecode = emitters.blocks.emitLogicalBlockLoop(MethodHandles.lookup(), andGtLt());
         ClassNode classNode = readClass(bytecode);
         assertSourceFile(classNode, "Fused$$LogicalBlockLoop", List.of("AND", "gt", "lt"));
         assertKernelMap(classNode, "0=" + GT_ENTRY + ";1=" + LT_ENTRY);
@@ -143,7 +143,7 @@ public class StitcherDebugInfoTests extends ESTestCase {
 
     /** Checked-vector {@code (a + b) * c}: builder {@code fused} splices both overflow-checked kernels. */
     public void testCheckedVectorEmitsSourceFileLineNumbersAndKernelMap() throws Exception {
-        byte[] bytecode = stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), arithmeticTree());
+        byte[] bytecode = emitters.vectors.emitVectorLoopChecked(MethodHandles.lookup(), arithmeticTree());
         assertDebugInfo(
             bytecode,
             "Fused$$CheckedVectorLoop",
@@ -167,7 +167,7 @@ public class StitcherDebugInfoTests extends ESTestCase {
             MUL,
             List.of(new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
         );
-        byte[] bytecode = stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection);
+        byte[] bytecode = emitters.filterEval.emitFilterEvalBlockLoop(MethodHandles.lookup(), predicate, projection);
         ClassNode classNode = readClass(bytecode);
         assertSourceFile(classNode, "Fused$$FilterEvalBlockLoop", List.of("gt", "add", "mul"));
         assertKernelMap(classNode, "0=" + ADD_ENTRY + ";1=" + GT_ENTRY + ";2=" + ADD_ENTRY + ";3=" + MUL_ENTRY);
@@ -183,7 +183,7 @@ public class StitcherDebugInfoTests extends ESTestCase {
     public void testFilterEvalLogicalPredicateEmitsKernelIndicesAcrossHelpers() throws Exception {
         FusionNode predicate = andGtLt();
         FusionNode projection = new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
-        byte[] bytecode = stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection);
+        byte[] bytecode = emitters.filterEval.emitFilterEvalBlockLoop(MethodHandles.lookup(), predicate, projection);
         ClassNode classNode = readClass(bytecode);
         assertKernelMap(classNode, "0=" + GT_ENTRY + ";1=" + LT_ENTRY + ";2=" + ADD_ENTRY);
         assertLineNumbers(method(classNode, "cmp0"), List.of(0));
@@ -319,12 +319,12 @@ public class StitcherDebugInfoTests extends ESTestCase {
     }
 
     /**
-     * {@link Stitcher#fusedMethodCodeLength} reads {@code code_length}, which LineNumberTable does not inflate
+     * {@link FusedMethodCodeLengths#fusedMethodCodeLength} reads {@code code_length}, which LineNumberTable does not inflate
      * (it lives in the Code attribute's attributes). The budget guard must still see a positive, real bytecode
      * count — and the set of actual opcodes in the method must be non-empty.
      */
     private static void assertCodeLengthUninflatedByLineNumbers(byte[] bytecode, String methodName) {
-        int codeLength = Stitcher.methodCodeLength(bytecode, methodName);
+        int codeLength = FusedMethodCodeLengths.methodCodeLength(bytecode, methodName);
         assertThat("budget still measures code_length of [" + methodName + "]", codeLength, greaterThan(0));
         MethodNode method = method(readClass(bytecode), methodName);
         int opcodes = 0;

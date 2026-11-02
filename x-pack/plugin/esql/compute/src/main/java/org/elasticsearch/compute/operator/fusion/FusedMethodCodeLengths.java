@@ -12,7 +12,8 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * Minimal class-file walk over freshly written fused-class bytes: reports each method's {@code Code} attribute
- * {@code code_length}. No class loading, no ASM. {@link Stitcher} keeps the public names tests already call.
+ * {@code code_length}. No class loading, no ASM. {@link Stitcher#serializeWithBudgetGuard} and the fusion tests
+ * call these methods directly.
  */
 final class FusedMethodCodeLengths {
 

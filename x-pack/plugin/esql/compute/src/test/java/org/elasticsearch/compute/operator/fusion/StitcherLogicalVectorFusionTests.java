@@ -67,7 +67,7 @@ public class StitcherLogicalVectorFusionTests extends ESTestCase {
      */
     public void testLogicalVectorLoopHasNoBlockInterfaceOrBuilder() throws Exception {
         FusionNode tree = andGtLt();
-        byte[] bytecode = stitcher.logicalVectorLoopBytecode(MethodHandles.lookup(), tree);
+        byte[] bytecode = new FusionTestEmitters().vectors.emitLogicalVectorLoop(MethodHandles.lookup(), tree);
         assertStructurallyValid(bytecode);
 
         List<String> methods = new ArrayList<>();
@@ -133,13 +133,14 @@ public class StitcherLogicalVectorFusionTests extends ESTestCase {
      */
     public void testNotEmitsFlipOnVectorAndBlockPaths() throws Exception {
         FusionNode tree = new FusionNode.Not(new FusionNode.Kernel(GT, List.of(new FusionNode.Input(0), new FusionNode.Input(1))));
-        byte[] vectorBytes = stitcher.logicalVectorLoopBytecode(MethodHandles.lookup(), tree);
+        FusionTestEmitters emitters = new FusionTestEmitters();
+        byte[] vectorBytes = emitters.vectors.emitLogicalVectorLoop(MethodHandles.lookup(), tree);
         assertStructurallyValid(vectorBytes);
         assertThat("dense 2VL Not must emit IXOR", containsOpcode(vectorBytes, Opcodes.IXOR), is(true));
         Class<?> vectorClass = stitcher.compileLogicalVectorLoop(MethodHandles.lookup(), tree);
         assertThat(vectorClass.getPackageName(), is(getClass().getPackageName()));
 
-        byte[] blockBytes = stitcher.logicalBlockLoopBytecode(MethodHandles.lookup(), tree);
+        byte[] blockBytes = emitters.blocks.emitLogicalBlockLoop(MethodHandles.lookup(), tree);
         assertStructurallyValid(blockBytes);
         assertThat("3VL block Not must emit IXOR (flip 0↔1, keep 2)", containsOpcode(blockBytes, Opcodes.IXOR), is(true));
         assertThat(

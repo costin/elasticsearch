@@ -71,12 +71,12 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
         }
     }
 
-    private Stitcher stitcher;
+    private FusionTestEmitters emitters;
 
     @Override
     public void setUp() throws Exception {
         super.setUp();
-        stitcher = new Stitcher(new TemplateRegistry());
+        emitters = new FusionTestEmitters();
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -89,10 +89,10 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
      */
     public void testMaxMethodCodeLengthReturnsLargestOfThreeMethods() {
         byte[] bytes = classWithThreeMethods(1, 7, 21);
-        assertThat("small", Stitcher.methodCodeLength(bytes, "small"), is(1));
-        assertThat("medium", Stitcher.methodCodeLength(bytes, "medium"), is(7));
-        assertThat("large", Stitcher.methodCodeLength(bytes, "large"), is(21));
-        assertThat("max is the large method, not the first or a name match", Stitcher.maxMethodCodeLength(bytes), is(21));
+        assertThat("small", FusedMethodCodeLengths.methodCodeLength(bytes, "small"), is(1));
+        assertThat("medium", FusedMethodCodeLengths.methodCodeLength(bytes, "medium"), is(7));
+        assertThat("large", FusedMethodCodeLengths.methodCodeLength(bytes, "large"), is(21));
+        assertThat("max is the large method, not the first or a name match", FusedMethodCodeLengths.maxMethodCodeLength(bytes), is(21));
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -101,7 +101,7 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
 
     /** Passing-before: the plain-vector path already enforced the named {@code fused} method. */
     public void testTinyLimitRefusesPlainVector() throws Exception {
-        assertTinyLimitRefuses("plain-vector loop", () -> stitcher.vectorLoopBytecode(MethodHandles.lookup(), arithmeticTree()));
+        assertTinyLimitRefuses("plain-vector loop", () -> emitters.vectors.emitVectorLoop(MethodHandles.lookup(), arithmeticTree()));
     }
 
     /**
@@ -109,17 +109,20 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
      * class was still defined. After H2 the largest of the four methods is refused.
      */
     public void testTinyLimitRefusesCheckedVector() throws Exception {
-        assertTinyLimitRefuses("checked-vector loop", () -> stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), arithmeticTree()));
+        assertTinyLimitRefuses(
+            "checked-vector loop",
+            () -> emitters.vectors.emitVectorLoopChecked(MethodHandles.lookup(), arithmeticTree())
+        );
     }
 
     /** FAIL-before: the block loop compiled with {@code enforce=false}. */
     public void testTinyLimitRefusesBlock() throws Exception {
-        assertTinyLimitRefuses("block loop", () -> stitcher.blockLoopBytecode(MethodHandles.lookup(), arithmeticTree()));
+        assertTinyLimitRefuses("block loop", () -> emitters.blocks.emitBlockLoop(MethodHandles.lookup(), arithmeticTree()));
     }
 
     /** Passing-before: the logical-block path already enforced the named {@code fused} method. */
     public void testTinyLimitRefusesLogicalBlock() throws Exception {
-        assertTinyLimitRefuses("logical block loop", () -> stitcher.logicalBlockLoopBytecode(MethodHandles.lookup(), andGtLt()));
+        assertTinyLimitRefuses("logical block loop", () -> emitters.blocks.emitLogicalBlockLoop(MethodHandles.lookup(), andGtLt()));
     }
 
     /**
@@ -127,7 +130,7 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
      * size 0 and never refused. After H2 {@code maxMethodCodeLength} sees {@code fusedInterface}.
      */
     public void testTinyLimitRefusesLogicalVector() throws Exception {
-        assertTinyLimitRefuses("logical vector loop", () -> stitcher.logicalVectorLoopBytecode(MethodHandles.lookup(), andGtLt()));
+        assertTinyLimitRefuses("logical vector loop", () -> emitters.vectors.emitLogicalVectorLoop(MethodHandles.lookup(), andGtLt()));
     }
 
     /** Passing-before: the filter-eval path already enforced the named {@code fused} method. */
@@ -142,20 +145,24 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
         );
         assertTinyLimitRefuses(
             "filter-eval block loop",
-            () -> stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection)
+            () -> emitters.filterEval.emitFilterEvalBlockLoop(MethodHandles.lookup(), predicate, projection)
         );
     }
 
     /**
-     * LOGICAL_VECTOR's only loop method is {@code fusedInterface}: {@link Stitcher#fusedMethodCodeLength} is 0,
-     * {@link Stitcher#maxMethodCodeLength} is the INTERFACE body (the size the huge-method guard must use).
+     * LOGICAL_VECTOR's only loop method is {@code fusedInterface}: {@link FusedMethodCodeLengths#fusedMethodCodeLength} is 0,
+     * {@link FusedMethodCodeLengths#maxMethodCodeLength} is the INTERFACE body (the size the huge-method guard must use).
      */
     public void testLogicalVectorMaxMethodCodeLengthSeesFusedInterface() throws Exception {
-        byte[] bytecode = stitcher.logicalVectorLoopBytecode(MethodHandles.lookup(), andGtLt());
-        assertThat("LOGICAL_VECTOR does not emit fused", Stitcher.fusedMethodCodeLength(bytecode), is(0));
-        int iface = Stitcher.methodCodeLength(bytecode, Stitcher.FUSED_INTERFACE_METHOD_NAME);
+        byte[] bytecode = emitters.vectors.emitLogicalVectorLoop(MethodHandles.lookup(), andGtLt());
+        assertThat("LOGICAL_VECTOR does not emit fused", FusedMethodCodeLengths.fusedMethodCodeLength(bytecode), is(0));
+        int iface = FusedMethodCodeLengths.methodCodeLength(bytecode, Stitcher.FUSED_INTERFACE_METHOD_NAME);
         assertThat("LOGICAL_VECTOR fusedInterface is a real method", iface, greaterThan(0));
-        assertThat("maxMethodCodeLength must report fusedInterface, not 0", Stitcher.maxMethodCodeLength(bytecode), is(iface));
+        assertThat(
+            "maxMethodCodeLength must report fusedInterface, not 0",
+            FusedMethodCodeLengths.maxMethodCodeLength(bytecode),
+            is(iface)
+        );
     }
 
     /**
@@ -163,17 +170,17 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
      * {@code fusedRaw} rather than the builder {@code fused} the old walk named.
      */
     public void testCheckedVectorMaxMethodCodeLengthIsLargestOfFour() throws Exception {
-        byte[] bytecode = stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), arithmeticTree());
-        int fused = Stitcher.methodCodeLength(bytecode, Stitcher.FUSED_METHOD_NAME);
-        int fusedIface = Stitcher.methodCodeLength(bytecode, Stitcher.FUSED_INTERFACE_METHOD_NAME);
-        int fusedRaw = Stitcher.methodCodeLength(bytecode, Stitcher.FUSED_RAW_METHOD_NAME);
-        int fusedRawIface = Stitcher.methodCodeLength(bytecode, Stitcher.FUSED_RAW_INTERFACE_METHOD_NAME);
+        byte[] bytecode = emitters.vectors.emitVectorLoopChecked(MethodHandles.lookup(), arithmeticTree());
+        int fused = FusedMethodCodeLengths.methodCodeLength(bytecode, Stitcher.FUSED_METHOD_NAME);
+        int fusedIface = FusedMethodCodeLengths.methodCodeLength(bytecode, Stitcher.FUSED_INTERFACE_METHOD_NAME);
+        int fusedRaw = FusedMethodCodeLengths.methodCodeLength(bytecode, Stitcher.FUSED_RAW_METHOD_NAME);
+        int fusedRawIface = FusedMethodCodeLengths.methodCodeLength(bytecode, Stitcher.FUSED_RAW_INTERFACE_METHOD_NAME);
         int expected = Math.max(Math.max(fused, fusedIface), Math.max(fusedRaw, fusedRawIface));
         assertThat("each checked-vector sibling is a real method", fused, greaterThan(0));
         assertThat(fusedIface, greaterThan(0));
         assertThat(fusedRaw, greaterThan(0));
         assertThat(fusedRawIface, greaterThan(0));
-        assertThat(Stitcher.maxMethodCodeLength(bytecode), is(expected));
+        assertThat(FusedMethodCodeLengths.maxMethodCodeLength(bytecode), is(expected));
     }
 
     /**
@@ -181,8 +188,8 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
      * emits a LOGICAL_VECTOR class whose largest method is between 325 and {@link Stitcher#DEFAULT_MAX_FUSED_METHOD_BYTECODES}.
      */
     public void testDeepLogicalVectorLargestMethodBetween325And8000() throws Exception {
-        byte[] bytecode = stitcher.logicalVectorLoopBytecode(MethodHandles.lookup(), leftAndChain(16));
-        int size = Stitcher.maxMethodCodeLength(bytecode);
+        byte[] bytecode = emitters.vectors.emitLogicalVectorLoop(MethodHandles.lookup(), leftAndChain(16));
+        int size = FusedMethodCodeLengths.maxMethodCodeLength(bytecode);
         logger.info("16-AND logical-vector max method = {} bytecodes", size);
         assertThat("deep logical-vector body must be past the old 325 FreqInlineSize split", size, greaterThan(325));
         assertThat(
@@ -199,11 +206,11 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
     public void testDeepFilterEvalLargestMethodBetween325And8000() throws Exception {
         FusionNode predicate = new FusionNode.Kernel(GT, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
         FusionNode projection = leftChain(ADD, 16);
-        byte[] bytecode = stitcher.filterEvalBlockLoopBytecode(MethodHandles.lookup(), predicate, projection);
-        int fused = Stitcher.fusedMethodCodeLength(bytecode);
-        int pred = Stitcher.methodCodeLength(bytecode, "pred");
-        int projAppend = Stitcher.methodCodeLength(bytecode, "projAppend");
-        int size = Stitcher.maxMethodCodeLength(bytecode);
+        byte[] bytecode = emitters.filterEval.emitFilterEvalBlockLoop(MethodHandles.lookup(), predicate, projection);
+        int fused = FusedMethodCodeLengths.fusedMethodCodeLength(bytecode);
+        int pred = FusedMethodCodeLengths.methodCodeLength(bytecode, "pred");
+        int projAppend = FusedMethodCodeLengths.methodCodeLength(bytecode, "projAppend");
+        int size = FusedMethodCodeLengths.maxMethodCodeLength(bytecode);
         logger.info("16-add filter-eval fused={} pred={} projAppend={} max={}", fused, pred, projAppend, size);
         assertThat("max must see pred/projAppend, not just the tiny fused loop", size, greaterThan(fused));
         assertThat("deep filter-eval body must be past the old 325 FreqInlineSize split", size, greaterThan(325));

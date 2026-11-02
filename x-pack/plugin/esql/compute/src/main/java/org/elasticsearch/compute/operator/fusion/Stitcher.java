@@ -141,7 +141,7 @@ public final class Stitcher {
      * {@link #maxFusedMethodBytecodesForTests}. A method above this many bytecodes is never JIT-compiled.
      *
      * <p>Every emit path is enforced: {@link #serializeWithBudgetGuard} measures the largest {@code Code}
-     * length over <em>all</em> methods of the class via {@link #maxMethodCodeLength} and throws
+     * length over <em>all</em> methods of the class via {@link FusedMethodCodeLengths#maxMethodCodeLength} and throws
      * {@link StitchingException} when it exceeds this limit, so the caller falls back unfused (or degrades
      * to a previously-compiled in-budget block path). Values {@code <= 0} are rejected: a non-positive
      * limit would refuse every stitch. Not a node setting.
@@ -1082,7 +1082,7 @@ public final class Stitcher {
     static byte[] serializeWithBudgetGuard(ClassNode classNode, ClassWriter writer, String pathName) throws StitchingException {
         classNode.accept(writer);
         byte[] bytecode = writer.toByteArray();
-        int size = maxMethodCodeLength(bytecode);
+        int size = FusedMethodCodeLengths.maxMethodCodeLength(bytecode);
         if (size > maxFusedMethodBytecodes) {
             logger.debug(
                 "fused {} method is [{}] bytecodes, over the huge-method limit of [{}]; refusing to fuse (falling back to unfused)",
@@ -1096,49 +1096,6 @@ public final class Stitcher {
             );
         }
         return bytecode;
-    }
-
-    // Test seams: raw fused class bytes BEFORE defineHiddenClass. Tests measure Code length and run CheckClassAdapter.
-    // Each path throws StitchingException if any method exceeds the huge-method limit, matching compile*.
-
-    byte[] vectorLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return vectors.emitVectorLoop(caller, tree);
-    }
-
-    byte[] vectorLoopCheckedBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return vectors.emitVectorLoopChecked(caller, tree);
-    }
-
-    byte[] blockLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return blocks.emitBlockLoop(caller, tree);
-    }
-
-    byte[] logicalBlockLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return blocks.emitLogicalBlockLoop(caller, tree);
-    }
-
-    byte[] logicalVectorLoopBytecode(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
-        return vectors.emitLogicalVectorLoop(caller, tree);
-    }
-
-    byte[] filterEvalBlockLoopBytecode(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
-        throws StitchingException {
-        return filterEval.emitFilterEvalBlockLoop(caller, predicateTree, projectionTree);
-    }
-
-    /** @see FusedMethodCodeLengths#fusedMethodCodeLength */
-    static int fusedMethodCodeLength(byte[] classBytes) {
-        return FusedMethodCodeLengths.fusedMethodCodeLength(classBytes);
-    }
-
-    /** @see FusedMethodCodeLengths#maxMethodCodeLength */
-    static int maxMethodCodeLength(byte[] classBytes) {
-        return FusedMethodCodeLengths.maxMethodCodeLength(classBytes);
-    }
-
-    /** @see FusedMethodCodeLengths#methodCodeLength */
-    static int methodCodeLength(byte[] classBytes, String methodName) {
-        return FusedMethodCodeLengths.methodCodeLength(classBytes, methodName);
     }
 
     /**

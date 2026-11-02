@@ -81,7 +81,7 @@ public class StitcherArithmeticVectorInterfaceTests extends ESTestCase {
      * {@code *Block}/{@code *Builder}).
      */
     public void testPlainVectorInterfaceHasTypedGettersAndNoBlockOrBuilder() throws Exception {
-        byte[] bytecode = stitcher.vectorLoopBytecode(MethodHandles.lookup(), addThenMul(ADD, MUL));
+        byte[] bytecode = new FusionTestEmitters().vectors.emitVectorLoop(MethodHandles.lookup(), addThenMul(ADD, MUL));
         assertStructurallyValid(bytecode);
 
         List<String> methods = new ArrayList<>();
@@ -155,7 +155,7 @@ public class StitcherArithmeticVectorInterfaceTests extends ESTestCase {
      * the builder {@code fusedInterface} may. {@code fusedRaw} uses {@code VectorUnsafe} and must not call typed getters.
      */
     public void testCheckedVectorInterfaceHasTypedGettersAndFusedRawInterfaceHasNoBuilder() throws Exception {
-        byte[] bytecode = stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), addThenMul(ADD_EXACT, MUL_EXACT));
+        byte[] bytecode = new FusionTestEmitters().vectors.emitVectorLoopChecked(MethodHandles.lookup(), addThenMul(ADD_EXACT, MUL_EXACT));
         assertStructurallyValid(bytecode);
 
         List<String> methods = new ArrayList<>();

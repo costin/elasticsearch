@@ -295,8 +295,8 @@ public class StitcherVectorFusionTests extends ESTestCase {
         FusionNode mulNode = new FusionNode.Kernel(mul, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
         FusionNode divTree = new FusionNode.Kernel(div, List.of(mulNode, baked));
 
-        Stitcher stitcher = new Stitcher(new TemplateRegistry());
-        byte[] bakedOnly = stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), divTree);
+        FusionTestEmitters emitters = new FusionTestEmitters();
+        byte[] bakedOnly = emitters.vectors.emitVectorLoopChecked(MethodHandles.lookup(), divTree);
         assertStructurallyValid(bakedOnly);
         String bakedDesc = fusedMethodDescriptor(bakedOnly);
         assertThat("baked divisor must not add a trailing J param: " + bakedDesc, bakedDesc, not(containsString("J)")));
@@ -304,7 +304,7 @@ public class StitcherVectorFusionTests extends ESTestCase {
 
         // Same tree plus a runtime-param comparison constant: GreaterThan(Div(Mul(in0,in1), baked(1000)), 5).
         FusionNode mixed = new FusionNode.Kernel(gt, List.of(divTree, cmpConst));
-        byte[] mixedBytes = stitcher.vectorLoopCheckedBytecode(MethodHandles.lookup(), mixed);
+        byte[] mixedBytes = emitters.vectors.emitVectorLoopChecked(MethodHandles.lookup(), mixed);
         assertStructurallyValid(mixedBytes);
         String mixedDesc = fusedMethodDescriptor(mixedBytes);
         assertThat(
@@ -329,7 +329,7 @@ public class StitcherVectorFusionTests extends ESTestCase {
         FusionNode mulNode = new FusionNode.Kernel(mul, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
         FusionNode divTree = new FusionNode.Kernel(div, List.of(mulNode, baked));
 
-        byte[] bakedOnly = new Stitcher(new TemplateRegistry()).vectorLoopCheckedBytecode(MethodHandles.lookup(), divTree);
+        byte[] bakedOnly = new FusionTestEmitters().vectors.emitVectorLoopChecked(MethodHandles.lookup(), divTree);
         assertStructurallyValid(bakedOnly);
         String bakedDesc = fusedMethodDescriptor(bakedOnly);
         assertThat(
@@ -350,7 +350,7 @@ public class StitcherVectorFusionTests extends ESTestCase {
         FusionNode mulNode = new FusionNode.Kernel(mul, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
         FusionNode divTree = new FusionNode.Kernel(div, List.of(mulNode, baked));
 
-        byte[] bakedOnly = new Stitcher(new TemplateRegistry()).blockLoopBytecode(MethodHandles.lookup(), divTree);
+        byte[] bakedOnly = new FusionTestEmitters().blocks.emitBlockLoop(MethodHandles.lookup(), divTree);
         assertStructurallyValid(bakedOnly);
         String bakedDesc = fusedMethodDescriptor(bakedOnly);
         assertThat(
@@ -371,7 +371,7 @@ public class StitcherVectorFusionTests extends ESTestCase {
         FusionNode mulNode = new FusionNode.Kernel(mul, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
         FusionNode divTree = new FusionNode.Kernel(div, List.of(mulNode, baked));
 
-        byte[] bakedOnly = new Stitcher(new TemplateRegistry()).blockLoopBytecode(MethodHandles.lookup(), divTree);
+        byte[] bakedOnly = new FusionTestEmitters().blocks.emitBlockLoop(MethodHandles.lookup(), divTree);
         assertStructurallyValid(bakedOnly);
         String bakedDesc = fusedMethodDescriptor(bakedOnly);
         assertThat(

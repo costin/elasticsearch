@@ -125,59 +125,59 @@ public class FusionClassDumpTests extends ESTestCase {
         String listProp = System.getProperty("esql.fusion.dump.list");
         assumeFalse("set -Desql.fusion.dump.list to write the E1 sha256 list", listProp == null || listProp.isBlank());
 
-        Stitcher stitcher = new Stitcher(new TemplateRegistry());
+        FusionTestEmitters emitters = new FusionTestEmitters();
         MethodHandles.Lookup lookup = MethodHandles.lookup();
         TreeMap<String, String> hashes = new TreeMap<>();
 
-        put(hashes, "plain_long_add_mul", stitcher.vectorLoopBytecode(lookup, addMulLong()));
-        put(hashes, "plain_int_mul", stitcher.vectorLoopBytecode(lookup, mulInt()));
-        put(hashes, "plain_double_add", stitcher.vectorLoopBytecode(lookup, addDouble()));
-        put(hashes, "plain_long_gt", stitcher.vectorLoopBytecode(lookup, gtLong()));
-        put(hashes, "plain_int_gt", stitcher.vectorLoopBytecode(lookup, gtInt()));
-        put(hashes, "plain_cast_int_to_long_add", stitcher.vectorLoopBytecode(lookup, castIntToLongAdd()));
-        put(hashes, "plain_runtime_constant", stitcher.vectorLoopBytecode(lookup, addRuntimeConstant()));
-        put(hashes, "plain_baked_div", stitcher.vectorLoopBytecode(lookup, bakedDiv()));
+        put(hashes, "plain_long_add_mul", emitters.vectors.emitVectorLoop(lookup, addMulLong()));
+        put(hashes, "plain_int_mul", emitters.vectors.emitVectorLoop(lookup, mulInt()));
+        put(hashes, "plain_double_add", emitters.vectors.emitVectorLoop(lookup, addDouble()));
+        put(hashes, "plain_long_gt", emitters.vectors.emitVectorLoop(lookup, gtLong()));
+        put(hashes, "plain_int_gt", emitters.vectors.emitVectorLoop(lookup, gtInt()));
+        put(hashes, "plain_cast_int_to_long_add", emitters.vectors.emitVectorLoop(lookup, castIntToLongAdd()));
+        put(hashes, "plain_runtime_constant", emitters.vectors.emitVectorLoop(lookup, addRuntimeConstant()));
+        put(hashes, "plain_baked_div", emitters.vectors.emitVectorLoop(lookup, bakedDiv()));
 
-        put(hashes, "checked_long_add_mul", stitcher.vectorLoopCheckedBytecode(lookup, addMulLong()));
-        put(hashes, "checked_double_add", stitcher.vectorLoopCheckedBytecode(lookup, addDouble()));
-        put(hashes, "checked_cast_int_to_long_add", stitcher.vectorLoopCheckedBytecode(lookup, castIntToLongAdd()));
-        put(hashes, "checked_runtime_constant", stitcher.vectorLoopCheckedBytecode(lookup, addRuntimeConstant()));
-        put(hashes, "checked_baked_div", stitcher.vectorLoopCheckedBytecode(lookup, bakedDiv()));
+        put(hashes, "checked_long_add_mul", emitters.vectors.emitVectorLoopChecked(lookup, addMulLong()));
+        put(hashes, "checked_double_add", emitters.vectors.emitVectorLoopChecked(lookup, addDouble()));
+        put(hashes, "checked_cast_int_to_long_add", emitters.vectors.emitVectorLoopChecked(lookup, castIntToLongAdd()));
+        put(hashes, "checked_runtime_constant", emitters.vectors.emitVectorLoopChecked(lookup, addRuntimeConstant()));
+        put(hashes, "checked_baked_div", emitters.vectors.emitVectorLoopChecked(lookup, bakedDiv()));
 
-        put(hashes, "block_long_add_mul", stitcher.blockLoopBytecode(lookup, addMulLong()));
-        put(hashes, "block_int_mul", stitcher.blockLoopBytecode(lookup, mulInt()));
-        put(hashes, "block_double_add", stitcher.blockLoopBytecode(lookup, addDouble()));
-        put(hashes, "block_long_gt", stitcher.blockLoopBytecode(lookup, gtLong()));
-        put(hashes, "block_bytesref_identity", stitcher.blockLoopBytecode(lookup, bytesRefIdentity()));
-        put(hashes, "block_bytesref_length_gt", stitcher.blockLoopBytecode(lookup, lengthGtConst()));
-        put(hashes, "block_runtime_constant", stitcher.blockLoopBytecode(lookup, addRuntimeConstant()));
-        put(hashes, "block_cast_int_to_long_add", stitcher.blockLoopBytecode(lookup, castIntToLongAdd()));
+        put(hashes, "block_long_add_mul", emitters.blocks.emitBlockLoop(lookup, addMulLong()));
+        put(hashes, "block_int_mul", emitters.blocks.emitBlockLoop(lookup, mulInt()));
+        put(hashes, "block_double_add", emitters.blocks.emitBlockLoop(lookup, addDouble()));
+        put(hashes, "block_long_gt", emitters.blocks.emitBlockLoop(lookup, gtLong()));
+        put(hashes, "block_bytesref_identity", emitters.blocks.emitBlockLoop(lookup, bytesRefIdentity()));
+        put(hashes, "block_bytesref_length_gt", emitters.blocks.emitBlockLoop(lookup, lengthGtConst()));
+        put(hashes, "block_runtime_constant", emitters.blocks.emitBlockLoop(lookup, addRuntimeConstant()));
+        put(hashes, "block_cast_int_to_long_add", emitters.blocks.emitBlockLoop(lookup, castIntToLongAdd()));
 
-        put(hashes, "logical_block_and", stitcher.logicalBlockLoopBytecode(lookup, andTree()));
-        put(hashes, "logical_block_or", stitcher.logicalBlockLoopBytecode(lookup, orTree()));
-        put(hashes, "logical_block_not", stitcher.logicalBlockLoopBytecode(lookup, notTree()));
-        put(hashes, "logical_block_nested", stitcher.logicalBlockLoopBytecode(lookup, nestedLogical()));
+        put(hashes, "logical_block_and", emitters.blocks.emitLogicalBlockLoop(lookup, andTree()));
+        put(hashes, "logical_block_or", emitters.blocks.emitLogicalBlockLoop(lookup, orTree()));
+        put(hashes, "logical_block_not", emitters.blocks.emitLogicalBlockLoop(lookup, notTree()));
+        put(hashes, "logical_block_nested", emitters.blocks.emitLogicalBlockLoop(lookup, nestedLogical()));
 
-        put(hashes, "logical_vector_and", stitcher.logicalVectorLoopBytecode(lookup, andTree()));
-        put(hashes, "logical_vector_or", stitcher.logicalVectorLoopBytecode(lookup, orTree()));
-        put(hashes, "logical_vector_not", stitcher.logicalVectorLoopBytecode(lookup, notTree()));
+        put(hashes, "logical_vector_and", emitters.vectors.emitLogicalVectorLoop(lookup, andTree()));
+        put(hashes, "logical_vector_or", emitters.vectors.emitLogicalVectorLoop(lookup, orTree()));
+        put(hashes, "logical_vector_not", emitters.vectors.emitLogicalVectorLoop(lookup, notTree()));
 
-        put(hashes, "filter_eval_cmp", stitcher.filterEvalBlockLoopBytecode(lookup, gtOverAdd(), mulOverAdd()));
-        put(hashes, "filter_eval_logical", stitcher.filterEvalBlockLoopBytecode(lookup, andTree(), addLong()));
+        put(hashes, "filter_eval_cmp", emitters.filterEval.emitFilterEvalBlockLoop(lookup, gtOverAdd(), mulOverAdd()));
+        put(hashes, "filter_eval_logical", emitters.filterEval.emitFilterEvalBlockLoop(lookup, andTree(), addLong()));
 
-        put(hashes, "block_k1_eq_left_k2", stitcher.blockLoopBytecode(lookup, eqLeft()));
-        put(hashes, "filter_eval_k1_eq_k2", stitcher.filterEvalBlockLoopBytecode(lookup, eqBytes(), addLong()));
-        put(hashes, "filter_eval_k1_eq_left_k2", stitcher.filterEvalBlockLoopBytecode(lookup, eqLeftNoScratch(), addLong()));
-        put(hashes, "block_double_div_const", stitcher.blockLoopBytecode(lookup, doubleDivConst()));
-        put(hashes, "checked_baked_div_mod", stitcher.vectorLoopCheckedBytecode(lookup, bakedDivMod()));
-        put(hashes, "block_length_concat", stitcher.blockLoopBytecode(lookup, lengthConcat()));
-        put(hashes, "block_length_to_lower", stitcher.blockLoopBytecode(lookup, lengthToLower()));
-        put(hashes, "logical_block_not_and_or", stitcher.logicalBlockLoopBytecode(lookup, notAndOr()));
-        put(hashes, "filter_eval_not_and_mul_add", stitcher.filterEvalBlockLoopBytecode(lookup, notAnd(), mulAddRight()));
-        put(hashes, "checked_add_mul_right", stitcher.vectorLoopCheckedBytecode(lookup, addMulRight()));
-        put(hashes, "plain_int_add_gt", stitcher.vectorLoopBytecode(lookup, intAddGt()));
-        put(hashes, "plain_cast_int_to_double_add", stitcher.vectorLoopBytecode(lookup, castIntToDoubleAdd()));
-        put(hashes, "block_warn_only", stitcher.blockLoopBytecode(lookup, warnOnly()));
+        put(hashes, "block_k1_eq_left_k2", emitters.blocks.emitBlockLoop(lookup, eqLeft()));
+        put(hashes, "filter_eval_k1_eq_k2", emitters.filterEval.emitFilterEvalBlockLoop(lookup, eqBytes(), addLong()));
+        put(hashes, "filter_eval_k1_eq_left_k2", emitters.filterEval.emitFilterEvalBlockLoop(lookup, eqLeftNoScratch(), addLong()));
+        put(hashes, "block_double_div_const", emitters.blocks.emitBlockLoop(lookup, doubleDivConst()));
+        put(hashes, "checked_baked_div_mod", emitters.vectors.emitVectorLoopChecked(lookup, bakedDivMod()));
+        put(hashes, "block_length_concat", emitters.blocks.emitBlockLoop(lookup, lengthConcat()));
+        put(hashes, "block_length_to_lower", emitters.blocks.emitBlockLoop(lookup, lengthToLower()));
+        put(hashes, "logical_block_not_and_or", emitters.blocks.emitLogicalBlockLoop(lookup, notAndOr()));
+        put(hashes, "filter_eval_not_and_mul_add", emitters.filterEval.emitFilterEvalBlockLoop(lookup, notAnd(), mulAddRight()));
+        put(hashes, "checked_add_mul_right", emitters.vectors.emitVectorLoopChecked(lookup, addMulRight()));
+        put(hashes, "plain_int_add_gt", emitters.vectors.emitVectorLoop(lookup, intAddGt()));
+        put(hashes, "plain_cast_int_to_double_add", emitters.vectors.emitVectorLoop(lookup, castIntToDoubleAdd()));
+        put(hashes, "block_warn_only", emitters.blocks.emitBlockLoop(lookup, warnOnly()));
 
         assertEquals(
             "TE corpus minus deleted mapping_append_suffix plus D.0a shapes minus D.1 Vector-API comparison shapes is 43",
