@@ -44,3 +44,11 @@ Independent orchestrator checks: fresh E1 re-dump (post-spotlessApply) cmp-ident
 E1: 43 shapes byte-identical to D3.txt (e1/D4a.txt). Dup scan 15 regions (dupscan-d4a.txt; remaining >=8-line regions are the D.4b/c/d + D.5 append/leaf-read/register targets). Emitter total 3842->3801 (-41); Stitcher 1133->1168 (+helpers), VectorLoop 813->747, BlockLoop 701->677, FilterEval 450->441, FrameLayout 72->95.
 Gate: fusion gate BUILD SUCCESSFUL 5m08s, GATE_EXIT=0 (re-run post-spotlessApply; first run failed only on spotlessJavaCheck formatting).
 Pure mechanical dedup with byte-identity net - no fails-before-fix.
+
+## D.4b — builder-append emit helpers (commit 685d018b76b)
+Added FusedBuilderEmit.emitAppend(insns, out) = INVOKEINTERFACE out.appendMethod()/appendDescriptor() + POP (value already on stack) and emitAppendNull(insns, builderSlot, out) = ALOAD builder + INVOKEINTERFACE "appendNull"/appendNullDescriptor() + POP. Folded all 8 inlined sites: emitAppend x4 (BlockLoop emitBlockLoop + emitLogicalBlockLoop, VectorLoop checked-builder path, FilterEval projection) and emitAppendNull x4 (same four loops' null bodies). Callers keep the preceding ALOAD/typed-value-load and the appendNull/doNull labels; helpers emit only the invoke+POP core. Each site passed its own Element (outputElement or projOutputElement) and builderSlot.
+Reviewer (fresh, Opus): GO, no blockers. Verified all 8 sites emit the identical owner/method/descriptor/itf=true + POP; stack shape [builder,value] correct at every emitAppend; no label/jump/slot absorbed or reordered; correct Element per site; scope limited to 4 files; no masked divergence (each call threads its own Element/slot). 2 trivial doc nits.
+Independent orchestrator checks: fresh E1 re-dump cmp-identical to D4a.txt (43 shapes); D4b.txt == fresh dump; diffstat 26+/84- across 4 fusion files only.
+E1: 43 shapes byte-identical to D4a.txt (e1/D4b.txt). Dup scan 12 regions (dupscan-d4b.txt; 7 >=8-line regions remain = D.4c/d + D.5 register/leaf-read targets). Emitter total 3801->3743 (-58); VectorLoop 747->728, BlockLoop 677->639, FilterEval 441->422, FusedBuilderEmit 82->100.
+Gate: fusion gate BUILD SUCCESSFUL 4m37s, GATE_EXIT=0 (spotless passed in-run, no post-hoc format).
+Pure mechanical dedup with byte-identity net - no fails-before-fix.
