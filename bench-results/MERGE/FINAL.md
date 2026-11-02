@@ -40,7 +40,7 @@ removed) and D.5a (declared reorder). Fusion gate green per commit; full CsvIT v
 | D.3 one FusionDescriptor ctor (I7) | done | e74b469d9d9 | `e1/D3.txt` 43 shapes byte-identical to D2 (md5 98ff3ece...) | 17 regions (dupscan-d3.txt; 7 FusionDescriptor convenience-ctor self-dups gone; emitters unchanged) | fusion gate BUILD SUCCESSFUL 5m44s exit 0 |
 | D.4a method/descriptor/params helpers | done | ab629e68e8f | `e1/D4a.txt` 43 shapes byte-identical to D3 (md5 98ff3ece...) | 15 regions (dupscan-d4a.txt) | fusion gate BUILD SUCCESSFUL 5m08s exit 0 |
 | D.4b append helpers | done | 685d018b76b | `e1/D4b.txt` 43 shapes byte-identical to D4a (md5 98ff3ece...) | 12 regions (dupscan-d4b.txt) | fusion gate BUILD SUCCESSFUL 4m37s exit 0 |
-| D.4c array-vector + register helpers | pending | | identical | | |
+| D.4c array-vector + register helpers | done | f9bd8a0bd54 | `e1/D4c.txt` 43 shapes byte-identical to D4b (md5 98ff3ece...) | 10 regions (dupscan-d4c.txt) | fusion gate BUILD SUCCESSFUL 4m29s exit 0 |
 | D.4d leaf guard/read + finishFusedClass | pending | | identical | | |
 | D.5a move pre-loop inits | pending | | declared diff | | |
 | D.5b builder position loop | pending | | identical | | |
