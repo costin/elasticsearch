@@ -10,7 +10,6 @@ package org.elasticsearch.compute.operator.fusion;
 import org.elasticsearch.compute.operator.fusion.BodyExtractor.Body;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
-import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.IincInsnNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
@@ -203,10 +202,15 @@ final class BlockLoopEmitter {
         insns.add(loopEnd);
         // result = out.build(); build() transfers the builder's breaker accounting to the produced block.
         FusedBuilderEmit.emitBuilderTryFinally(host, insns, tryStart, tryEnd, handler, builderSlot, resultSlot, excSlot, outputElement);
-        hostMethodInterceptor.accept(host);
-
-        ClassNode classNode = Stitcher.newFusedClass(Stitcher.fusedClassName(caller, "Fused$$BlockLoop"), host, debug);
-        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "block loop");
+        return Stitcher.finishFusedClass(
+            caller,
+            Stitcher.fusedClassName(caller, "Fused$$BlockLoop"),
+            debug,
+            "block loop",
+            List.of(host),
+            List.of(),
+            hostMethodInterceptor
+        );
     }
 
     /**
@@ -318,14 +322,10 @@ final class BlockLoopEmitter {
 
         insns.add(loopEnd);
         FusedBuilderEmit.emitBuilderTryFinally(host, insns, tryStart, tryEnd, handler, builderSlot, resultSlot, excSlot, outputElement);
-        hostMethodInterceptor.accept(host);
-
-        ClassNode classNode = Stitcher.newFusedClass(internalName, host, debug);
-        classNode.methods.addAll(helpers);
         // Enforce the huge-method limit on every method (criterion #6). The helpers keep the top-level loop small even
         // for nested trees; if any method exceeds the limit we refuse to fuse (→ unfused fallback) rather than emit
         // a method HotSpot will not JIT-compile.
-        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "logical block loop");
+        return Stitcher.finishFusedClass(caller, internalName, debug, "logical block loop", List.of(host), helpers, hostMethodInterceptor);
     }
 
     /**

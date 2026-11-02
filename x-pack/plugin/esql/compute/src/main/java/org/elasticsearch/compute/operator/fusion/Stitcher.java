@@ -379,6 +379,31 @@ public final class Stitcher {
     }
 
     /**
+     * Finishes a fused hidden class: runs {@code interceptor} on each host (hosts only, never the helpers), builds the
+     * class from the first host, appends the remaining hosts then the helpers in order, and serializes with the
+     * huge-method budget guard. Method order (hosts first in their given order, then helpers) is the byte-identity contract.
+     */
+    static byte[] finishFusedClass(
+        MethodHandles.Lookup caller,
+        String internalName,
+        FusedClassDebugInfo debug,
+        String pathName,
+        List<MethodNode> hosts,
+        List<MethodNode> helpers,
+        Consumer<MethodNode> interceptor
+    ) throws StitchingException {
+        for (MethodNode host : hosts) {
+            interceptor.accept(host);
+        }
+        ClassNode classNode = newFusedClass(internalName, hosts.get(0), debug);
+        for (int i = 1; i < hosts.size(); i++) {
+            classNode.methods.add(hosts.get(i));
+        }
+        classNode.methods.addAll(helpers);
+        return serializeWithBudgetGuard(classNode, frameComputingWriter(caller), pathName);
+    }
+
+    /**
      * Marks this kernel splice with a {@code LineNumberTable} entry ({@code line = kernel index}) then
      * concatenates the body. The {@link LabelNode} names the offset of the first body instruction — it
      * is not itself an opcode, so {@code code_length} (and the budget guard) is unchanged.

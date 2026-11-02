@@ -10,7 +10,6 @@ package org.elasticsearch.compute.operator.fusion;
 import org.elasticsearch.compute.operator.fusion.BodyExtractor.Body;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
-import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.IincInsnNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
@@ -100,18 +99,20 @@ final class VectorLoopEmitter {
         );
         List<MethodNode> methods = new ArrayList<>(specs.size());
         for (LoopSpec spec : specs) {
-            MethodNode method = emitVectorMethod(tree, spec, inputElements, constants, consumed, Set.of(), Map.of(), debug);
-            hostMethodInterceptor.accept(method);
-            methods.add(method);
-        }
-        ClassNode classNode = Stitcher.newFusedClass(Stitcher.fusedClassName(caller, "Fused$$VectorLoop"), methods.get(0), debug);
-        for (int i = 1; i < methods.size(); i++) {
-            classNode.methods.add(methods.get(i));
+            methods.add(emitVectorMethod(tree, spec, inputElements, constants, consumed, Set.of(), Map.of(), debug));
         }
         // The plain-vector fast path enforces the HugeMethodLimit huge-method guard on every method of the class.
         // An over-limit body is refused (→ unfused fallback) rather than split: 8000 is the size at which HotSpot
         // will not JIT-compile the method at all, which is strictly worse than the unfused chain.
-        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "plain-vector loop");
+        return Stitcher.finishFusedClass(
+            caller,
+            Stitcher.fusedClassName(caller, "Fused$$VectorLoop"),
+            debug,
+            "plain-vector loop",
+            methods,
+            List.of(),
+            hostMethodInterceptor
+        );
     }
 
     /**
@@ -307,17 +308,11 @@ final class VectorLoopEmitter {
         );
         List<MethodNode> methods = new ArrayList<>(specs.size());
         for (LoopSpec spec : specs) {
-            MethodNode method = emitVectorMethod(tree, spec, inputElements, constants, consumed, overflowTypes, sourceIndices, debug);
-            hostMethodInterceptor.accept(method);
-            methods.add(method);
+            methods.add(emitVectorMethod(tree, spec, inputElements, constants, consumed, overflowTypes, sourceIndices, debug));
         }
 
         String internalName = Stitcher.fusedClassName(caller, "Fused$$CheckedVectorLoop");
-        ClassNode classNode = Stitcher.newFusedClass(internalName, methods.get(0), debug);
-        for (int i = 1; i < methods.size(); i++) {
-            classNode.methods.add(methods.get(i));
-        }
-        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "checked-vector loop");
+        return Stitcher.finishFusedClass(caller, internalName, debug, "checked-vector loop", methods, List.of(), hostMethodInterceptor);
     }
 
     /**
@@ -705,9 +700,15 @@ final class VectorLoopEmitter {
             Map.of(),
             debug
         );
-        hostMethodInterceptor.accept(iface);
-        ClassNode classNode = Stitcher.newFusedClass(internalName, iface, debug);
-        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "logical vector loop");
+        return Stitcher.finishFusedClass(
+            caller,
+            internalName,
+            debug,
+            "logical vector loop",
+            List.of(iface),
+            List.of(),
+            hostMethodInterceptor
+        );
     }
 
 }

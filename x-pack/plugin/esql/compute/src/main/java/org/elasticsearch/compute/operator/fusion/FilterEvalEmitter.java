@@ -9,7 +9,6 @@ package org.elasticsearch.compute.operator.fusion;
 
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
-import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.IincInsnNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
@@ -237,13 +236,17 @@ final class FilterEvalEmitter {
         insns.add(loopEnd);
         // result = out.build(); the compact projection block's positionCount is exactly the surviving row count.
         FusedBuilderEmit.emitBuilderTryFinally(host, insns, tryStart, tryEnd, handler, builderSlot, resultSlot, excSlot, projOutputElement);
-        hostMethodInterceptor.accept(host);
-
-        ClassNode classNode = Stitcher.newFusedClass(internalName, host, debug);
-        classNode.methods.addAll(methods);
         // The two per-position bodies are factored into the pred/projAppend (and cmpN) helpers, so the top-level fused
         // loop stays small; the huge-method guard measures every method (→ unfused fallback if any exceeds the limit).
-        return Stitcher.serializeWithBudgetGuard(classNode, Stitcher.frameComputingWriter(caller), "filter-eval block loop");
+        return Stitcher.finishFusedClass(
+            caller,
+            internalName,
+            debug,
+            "filter-eval block loop",
+            List.of(host),
+            methods,
+            hostMethodInterceptor
+        );
     }
 
     /**
