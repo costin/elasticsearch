@@ -1128,7 +1128,7 @@ public class LocalExecutionPlanner {
         if (eval.fields().size() == 1
             && eval.child() instanceof FilterExec filter
             && (context.shardContexts.isEmpty() || PlannerUtils.usesScoring(filter) == false)) {
-            // WHERE + single-EVAL fusion (S3.2b): when both the predicate and the single projection are fusable, emit
+            // WHERE + single-EVAL fusion: when both the predicate and the single projection are fusable, emit
             // ONE FilterEvalOperator instead of the separate FilterOperator + EvalOperator. The scoring path
             // (FilterOperator -> ScoreOperator -> EvalOperator) is excluded above and always takes the unfused chain.
             Alias field = eval.fields().get(0);

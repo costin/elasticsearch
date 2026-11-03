@@ -63,10 +63,11 @@ import java.util.concurrent.TimeUnit;
  * {@code pollute} recipe iterates {@code values()}, so a new constant would change pollution of every existing cell.
  *
  * <p>Helpers ({@code driverContext}, {@code longs}, {@code dictEntry}, {@code assertSameOutput}, ...) are reused from
- * {@link SlowPathFusionBenchmark}. Nested {@code TO_LOWER} cases fuse via D3/F3. {@link Case#DEEP_ARITH} is a deep
+ * {@link SlowPathFusionBenchmark}. Nested {@code TO_LOWER} cases fuse via the nested-mapping convert path plus
+ * keyword-{@code Equals} comparison fusion. {@link Case#DEEP_ARITH} is a deep
  * arithmetic chain that fuses INLINE under the 8000-bytecode {@code HugeMethodLimit} huge-method guard.
  * {@link Case#DEEP_LOGICAL} is a deep balanced AND/OR nest of long comparisons that also fuses INLINE (comfortably
- * under the same guard). F1/F2 cells ({@link Case#LONG_DIV_CONST}, {@link Case#AND_CMP_GTE_LTE_LONG},
+ * under the same guard). The baked-divisor and 3VL-logical cells ({@link Case#LONG_DIV_CONST}, {@link Case#AND_CMP_GTE_LTE_LONG},
  * {@link Case#NOT_AND_CMP_LONG}) and the unfused {@link Case#ROUND3} baseline live here so they do not change
  * {@code SlowPathFusionBenchmark} pollution. Both fused and unfused cells are correctness-checked in {@link #setup}
  * via {@code assertSameOutput}.
@@ -158,8 +159,8 @@ public class FusionFollowupBenchmark {
             }
         },
         /**
-         * {@code TO_LOWER(k) == "x"} over an {@code OrdinalBytesRefVector} with ~100 distinct values. Fuses via D3
-         * nested mapping + F3 keyword Equals.
+         * {@code TO_LOWER(k) == "x"} over an {@code OrdinalBytesRefVector} with ~100 distinct values. Fuses via the
+         * nested-mapping convert path plus keyword-{@code Equals} comparison fusion.
          */
         EQ_TO_LOWER_ORDINAL {
             @Override
@@ -178,7 +179,7 @@ public class FusionFollowupBenchmark {
             }
         },
         /**
-         * {@code LENGTH(TO_LOWER(k))} over the same ordinal input. Fuses via D3 nested mapping.
+         * {@code LENGTH(TO_LOWER(k))} over the same ordinal input. Fuses via the nested-mapping convert path.
          */
         LENGTH_TO_LOWER_ORDINAL {
             @Override
@@ -200,7 +201,7 @@ public class FusionFollowupBenchmark {
         },
         /**
          * {@code TO_LOWER(k) == "x"} over a plain (non-ordinal) {@code BytesRefArrayVector} with the same distinct
-         * values. Fuses via D3 nested mapping + F3 keyword Equals.
+         * values. Fuses via the nested-mapping convert path plus keyword-{@code Equals} comparison fusion.
          */
         EQ_TO_LOWER_PLAIN {
             @Override
@@ -225,7 +226,7 @@ public class FusionFollowupBenchmark {
         },
         /**
          * Lone {@code k == "x"} over a plain (non-ordinal) {@code BytesRefArrayVector} with the same distinct values.
-         * Fuses via F3 depth-1 keyword Equals ({@code bytesRefComparisonDepth1}).
+         * Fuses via the depth-1 keyword-{@code Equals} comparison exemption ({@code bytesRefComparisonDepth1}).
          */
         KEYWORD_EQ_PLAIN {
             @Override
@@ -281,7 +282,7 @@ public class FusionFollowupBenchmark {
                 return true;
             }
         },
-        /** {@code NOT(a > b AND c < d)}, long, dense. F2b: Kleene 3VL Not of a fusable AND of comparisons. */
+        /** {@code NOT(a > b AND c < d)}, long, dense. Kleene 3VL {@code Not} of a fusable {@code AND} of comparisons. */
         NOT_AND_CMP_LONG {
             @Override
             Built build() {
@@ -309,7 +310,7 @@ public class FusionFollowupBenchmark {
             }
         },
         /**
-         * F1: {@code (a * b) / 1000} over long vectors. Depth ≥ 2 so it fuses; the compile-time divisor is baked as an
+         * {@code (a * b) / 1000} over long vectors. Depth ≥ 2 so it fuses; the compile-time divisor is baked as an
          * immediate so C2 can strength-reduce the division. Kernel is still {@code processLongs}, not
          * {@code *ByConstant}.
          */

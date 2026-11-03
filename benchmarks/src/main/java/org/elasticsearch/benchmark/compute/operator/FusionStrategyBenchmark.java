@@ -36,7 +36,7 @@ import static org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchma
 import static org.elasticsearch.benchmark.compute.operator.SlowPathFusionBenchmark.driverContext;
 
 /**
- * B1 of the MethodHandle-chain PoC: isolated per-row throughput of each {@link FusionStrategy} on each {@link PocShape}
+ * Isolated per-row throughput of each {@link FusionStrategy} on each {@link PocShape}
  * over dense 8192-row pages. Run the JIT regimes with JVM flags: default (C2), {@code -XX:TieredStopAtLevel=1} (C1),
  * {@code -Xint} (interpreter). {@code pollute=true} first runs every other shape under every strategy so shared
  * classes (unfused evaluators, block accessors, the MH lambda forms) see mixed receivers, as on a busy node.

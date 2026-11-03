@@ -76,8 +76,8 @@ import java.util.concurrent.TimeUnit;
  * Fused vs unfused evaluation over the inputs {@link FusionBenchmark} does not cover: nulls, multi-values, constant and
  * non-array vectors, OR / double logical trees, ordinal-encoded keywords and overflowing arithmetic. Each case is
  * checked in {@link #setup} for (a) fusion actually happening when enabled (except lone mapping cells, which stay
- * unfused after D4) and (b) fused output equal to the unfused output, so the benchmark cannot measure a fast-but-wrong
- * body.
+ * unfused because a depth-1 mapping convert is not fusable) and (b) fused output equal to the unfused output, so the
+ * benchmark cannot measure a fast-but-wrong body.
  *
  * <p>{@code pollute=true} first drives every other case (fused and unfused) for a while so the shared unfused evaluator
  * classes ({@code AddLongsEvaluator}, block accessors, ...) see several receiver types before the measured shape is
@@ -266,7 +266,10 @@ public class SlowPathFusionBenchmark {
                 );
             }
         },
-        /** {@code TO_LOWER(s)} over an ordinal-encoded keyword vector with a 16-entry dictionary. Lone mapping is unfused (D4). */
+        /**
+         * {@code TO_LOWER(s)} over an ordinal-encoded keyword vector with a 16-entry dictionary. A lone depth-1 mapping
+         * convert is unfused.
+         */
         TO_LOWER_ORDINAL {
             @Override
             Built build() {
@@ -296,7 +299,10 @@ public class SlowPathFusionBenchmark {
                 return new Page(new OrdinalBytesRefVector(ordinals, dict).asBlock());
             }
         },
-        /** {@code TO_LOWER(s)} over a plain (non-ordinal) keyword vector with the same 16 distinct values. Lone mapping is unfused (D4). */
+        /**
+         * {@code TO_LOWER(s)} over a plain (non-ordinal) keyword vector with the same 16 distinct values. A lone
+         * depth-1 mapping convert is unfused.
+         */
         TO_LOWER_PLAIN {
             @Override
             Built build() {
@@ -356,7 +362,8 @@ public class SlowPathFusionBenchmark {
         abstract Page page(int size);
 
         /**
-         * {@code true} where fusion is expected today. Lone mapping cells ({@code TO_LOWER_*}) stay unfused (D4).
+         * {@code true} where fusion is expected today. Lone mapping cells ({@code TO_LOWER_*}) stay unfused because a
+         * depth-1 mapping convert is not fusable.
          */
         boolean fusesToday() {
             return true;

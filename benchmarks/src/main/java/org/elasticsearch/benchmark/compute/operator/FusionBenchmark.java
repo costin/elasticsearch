@@ -79,7 +79,7 @@ import java.util.concurrent.TimeUnit;
  * <ul>
  *   <li>{@code expression} — {@link Expr}: {@code (a+b)*c} over long and over double, {@code ((a+b)*c)-d} (deeper,
  *       under budget), {@code a+b>c} (comparison → boolean), {@code a>b AND c<d} (3VL logical, block path), and
- *       {@code a>25 AND b<25} (3VL logical with embedded literal thresholds — the common WHERE shape, iter 24);</li>
+ *       {@code a>25 AND b<25} (3VL logical with embedded literal thresholds — the common WHERE shape);</li>
  *   <li>{@code size} — the page position count. QUICK defaults to {@code {1024, 8192}}; the FULL matrix adds
  *       {@code {1, 64, 65536}} (all powers of two dividing {@link #TARGET_POSITIONS}, so ns/op stays ns/position);</li>
  *   <li>{@code fusion} — {@code true}/{@code false}, flipped in-process via {@link FusionSettings#setEnabledForBenchmarks}
@@ -314,9 +314,9 @@ public class FusionBenchmark {
             }
         },
         /**
-         * {@code sqrt(a) + b} over double columns (iter 26): a scalar math function ({@code (D)D} java.base kernel)
+         * {@code sqrt(a) + b} over double columns: a scalar math function ({@code (D)D} java.base kernel)
          * under an overflow-checked {@code Add}. {@code a} is kept strictly positive so {@code Sqrt} never hits its
-         * negative-domain error, and the whole tree takes the checked-vector fast path (iter-22 VectorUnsafe lets the
+         * negative-domain error, and the whole tree takes the checked-vector fast path (the VectorUnsafe forwarder lets the
          * throwing math kernel still vectorize).
          */
         SQRT_ADD_DOUBLE("sqrt_add_double") {
@@ -345,7 +345,7 @@ public class FusionBenchmark {
             }
         },
         /**
-         * {@code log(a) * b} over double columns (iter 26): the natural-log {@code (D)D} java.base kernel under an
+         * {@code log(a) * b} over double columns: the natural-log {@code (D)D} java.base kernel under an
          * overflow-checked {@code Mul}. {@code a} is kept strictly positive so {@code Log} never hits its
          * non-positive-domain error; the tree takes the checked-vector fast path.
          */
@@ -515,7 +515,7 @@ public class FusionBenchmark {
     @Setup(Level.Trial)
     public void setup() {
         FusionBenchmarkGuard.assertVerifyDisabled();
-        // The fusion decision is made when the factory is built, so the switch must be set FIRST (criterion #3 path).
+        // The fusion decision is made when the factory is built, so the kill switch must be set before building it.
         ExpressionEvaluator.Factory factory = factory(expression, fusion);
         if (fusion && isFused(factory) == false) {
             throw new AssertionError("[" + expression + "] must fuse when fusion=true but produced [" + unfusedClassName(factory) + "]");
@@ -613,7 +613,7 @@ public class FusionBenchmark {
         return i % 7;
     }
 
-    // Strictly-positive generator for the math-function benchmarks (iter 26): keeps sqrt(a)/log(a) inside their domain
+    // Strictly-positive generator for the math-function benchmarks: keeps sqrt(a)/log(a) inside their domain
     // so the dense fast path stays warning-free and checkExpected can compute exact expected values.
     private static long mathA(int i) {
         return (i % 1000) + 1;
@@ -632,7 +632,7 @@ public class FusionBenchmark {
         return i % 70;
     }
 
-    // Constant-threshold logical generators (iter 24): columns straddle the fixed thresholds so both a > K1 and b < K2
+    // Constant-threshold logical generators: columns straddle the fixed thresholds so both a > K1 and b < K2
     // yield a genuine mix of true/false.
     private static final long CONST_K1 = 25;
     private static final long CONST_K2 = 25;

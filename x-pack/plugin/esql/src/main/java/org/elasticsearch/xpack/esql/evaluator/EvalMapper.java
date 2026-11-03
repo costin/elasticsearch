@@ -90,8 +90,8 @@ public final class EvalMapper {
 
     /**
      * Attempts to fuse a WHERE {@code predicate} and a single EVAL {@code projection} into ONE
-     * {@link FilterEvalEvaluator.Factory} (S3.2b plan-time wiring, consumed by
-     * {@link org.elasticsearch.compute.operator.FilterEvalOperator}). Returns a {@link FilterEvalMapping} carrying
+     * {@link FilterEvalEvaluator.Factory} at plan time, consumed by
+     * {@link org.elasticsearch.compute.operator.FilterEvalOperator}. Returns a {@link FilterEvalMapping} carrying
      * either the fused factory (on success) or the ordinary predicate + projection factories to run as the usual
      * {@code Filter -> Eval} chain (when the pair declines to fuse). Both sides are built from a single
      * {@code unfusedMemo}, so every foldable subexpression folds exactly once — identical fold-budget consumption to
@@ -109,7 +109,7 @@ public final class EvalMapper {
     }
 
     /**
-     * The product of a WHERE-predicate + single-EVAL-projection fusion attempt (S3.2b). Exactly one alternative is
+     * The product of a WHERE-predicate + single-EVAL-projection fusion attempt. Exactly one alternative is
      * populated: {@link #fused} when the pair fused into a single {@link FilterEvalEvaluator.Factory}, or the
      * {@link #predicate}/{@link #projection} pair when the pair declined to fuse and the caller must run the ordinary
      * {@code Filter -> Eval} chain instead.
