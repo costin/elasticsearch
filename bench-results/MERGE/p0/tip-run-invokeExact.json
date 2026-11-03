@@ -1,0 +1,68 @@
+[
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/home/ubuntu/.gradle/jdks/oracle_corporation-26-amd64-linux.2/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=26",
+            "-Dplugins.dir=/workspace/benchmarks/build/plugins",
+            "-Dtests.index=/workspace/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "26.0.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "26.0.1+8-34",
+        "warmupIterations" : 2,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "pollute" : "NONE",
+            "shape" : "ADD_MUL_LONG",
+            "strategy" : "SPLICED"
+        },
+        "primaryMetric" : {
+            "score" : 1.5530983352828436,
+            "scoreError" : 6.104256026890733,
+            "scoreConfidence" : [
+                -4.551157691607889,
+                7.657354362173576
+            ],
+            "scorePercentiles" : {
+                "0.0" : 1.3535430759402878,
+                "50.0" : 1.3663676729870797,
+                "90.0" : 1.9393842569211635,
+                "95.0" : 1.9393842569211635,
+                "99.0" : 1.9393842569211635,
+                "99.9" : 1.9393842569211635,
+                "99.99" : 1.9393842569211635,
+                "99.999" : 1.9393842569211635,
+                "99.9999" : 1.9393842569211635,
+                "100.0" : 1.9393842569211635
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    1.9393842569211635,
+                    1.3535430759402878,
+                    1.3663676729870797
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    }
+]
+
+

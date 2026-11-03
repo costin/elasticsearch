@@ -69,7 +69,10 @@ removed) and D.5a (declared reorder). Fusion gate green per commit; full CsvIT v
   fallback and matched — behavioral proof across the whole corpus, on top of the 43-shape byte-identity.
 
 ## Phase P0
-All P0 items complete and pushed to `esql/fix/compute-codegen-followup`.
+All P0 items complete and pushed to `esql/fix/compute-codegen-followup`. A review round after `d3f349373a6`
+added a stabilization follow-up (settings made operator-dynamic, the fused-class cache bounded by weight with
+a doorkeeper, the doorkeeper collision bug fixed, a real-stitch eviction regression, and the last internal
+plan tags replaced) — one row per commit in the follow-up table below.
 
 | Item | Status | Commit | Notes |
 |---|---|---|---|
@@ -85,6 +88,69 @@ All P0 items complete and pushed to `esql/fix/compute-codegen-followup`.
 | P0.6 unit suites (toString) | done | af5495b2659 | fusion auto-on in snapshot test JVMs fused depth>=2 cast chains, breaking testEvaluatorToString/testFactoryToString; build those two with fusion disabled (setEnabledForTests widened public). Fails-before-fix: EqualsTests toString |
 | P0.7 hygiene | done | d3f349373a6 | FusionDump esql.fusion.dump de-sysprop (removed forbidden Boolean.getBoolean log channel; sink+thread-capture remain) + FusedFrameInfo MethodHandle#invoke->invokeExact. compute:forbiddenApisMain now green. Cosmetic residue (plan-ref/seam trimming) deprioritized under budget |
 
+### P0 stabilization follow-up (commits after `d3f349373a6`, one row each)
+
+Gate per commit = the four-project precommit
+(`:x-pack:plugin:esql:precommit :x-pack:plugin:esql:compute:precommit :x-pack:plugin:esql:compute:gen:precommit
+:benchmarks:precommit`, exit 0) **plus** the fusion gate (see `CHECK.md`). Author `Costin Leau`, 50/72, no
+trailers, no `--no-verify`. The last three were gated and verified this session; the earlier nine were gated in
+the prior session.
+
+| # | Hash | Summary | Gate |
+|---|---|---|---|
+| 1 | 6260eef633a | P0.5b fix test forbidden APIs for fusion | prior session, exit 0 |
+| 2 | 1c561ecf6d7 | P0.3 make fused-method byte budget test-only | prior session, exit 0 |
+| 3 | ee6e40ee1f0 | Restore previous fusion kill switch in test helper | prior session, exit 0 |
+| 4 | 2871861922e | Make esql.fusion.enabled a dynamic setting | prior session, exit 0 |
+| 5 | 5b5aaaf9352 | Shorten fusion test SuppressForbidden reasons (checkstyle LineLength) | prior session, exit 0 |
+| 6 | cf9bfa1f355 | Save raw fusion switch in test helper | prior session, exit 0 |
+| 7 | a9c6b7e4cd8 | Make esql.fusion.enabled operator-dynamic (+ dynamic-setting test) | prior session, exit 0 |
+| 8 | 9bd6ce21c1d | Bound fused-class cache by weight; add doorkeeper (P0.1b) | prior session, fusion + precommit exit 0 |
+| 9 | b21bf1bde91 | Drop internal plan tags; hide fusion test setter (P0.7) | prior session, both gates exit 0 |
+| 10 | 35a66c81fff | Fuse cached shapes despite doorkeeper collisions (+ fail-first test) | this session, fusion 4m25s + four-project precommit, exit 0 |
+| 11 | d9a670fd767 | Prove evicted shape still runs from pinned factory (real-stitch eviction test) | this session, fusion + four-project precommit, exit 0 |
+| 12 | d1618bc5d2d | Replace internal plan tags with their behaviour (EvalMapper/LocalExecutionPlanner + benchmarks) | this session, fusion 5m17s + four-project precommit, exit 0 |
+
+**Doorkeeper collision fix (10).** The admission doorkeeper is a direct-mapped `long[4096]`; two recurring plan
+shapes sharing a slot overwrote each other and were refused forever even though both classes were cached.
+`FusedClassCache.admit` now short-circuits to "fuse" whenever the plan's primary (block / logical-block /
+filter-eval-block) class is already cached, consulting the doorkeeper only on a cache miss; the refusal still
+precedes `applyBakedDivisorCap` so it consumes no baked-divisor tuple slot. Fail-first:
+`testDoorkeeperSlotCollisionDoesNotRefuseCachedShape` (test-only 1-slot doorkeeper, `min_sightings=2`) refuses
+the first A of the second half once A and B are both cached, driving `admissionSkips` to 3 instead of 2.
+
+**Eviction regression (11).** `testEvictedShapeStillEvaluatesFromPinnedFactory` shrinks the live process-wide
+cache to a 16 KB ceiling, fuses and holds a target factory, plans distinct fusing shapes until the cache evicts
+the target's classes, then builds an evaluator from the held factory and A/Bs a page against the unfused
+reference — proving the factory's pinned `CachedFused` units survive eviction. The shrink is restored in a
+`finally` so it cannot leak to later tests.
+
+**Fusion-test count (gate step `:x-pack:plugin:esql:test --tests "*fusion*"` at tip `d1618bc5d2d`):** 29 classes,
+**255 tests, 0 failures, 0 errors, 0 skipped**. The compute + gen structural fusion suites run green as part of
+the same gate. Four-project precommit at tip: **BUILD SUCCESSFUL, exit 0**.
+
+**E1 corpus at tip.** Regenerating the E1 structural corpus from the tip code (`FusionClassDumpTests` with
+`-Desql.fusion.dump.list`) reproduces md5 `ac36a0964b7c59f2969f08bdc2907a2b` — **byte-identical to `e1/D5d.txt`**
+— confirming the P0 follow-up changes (admission/caching/config/comments) do not alter any emitted fused class
+bytes. The previously-missing intermediate snapshots `e1/D5a.txt`, `e1/D5b.txt`, `e1/D5c.txt` are supplied: the
+recorded per-commit gates established D.5a ≡ D.5b ≡ D.5c ≡ D.5d byte-identical (all md5 `ac36a096`), and the tip
+regeneration reproduces exactly that corpus, so the three files carry that verified content.
+
+**JMH smoke (`p0/`).** `planCached`(planHit) + `planMiss` before (`2871861922e`, pre-ES-`Cache`) vs tip, and the
+`run()` throughput invokeExact cells before (`d3f349373a6^` = `af5495b2659`) vs tip, same command and host. All
+four pairs are **noise-dominated on this shared loop VM** (smoke error bars 4–30× the means; CIs overlap by an
+order of magnitude), so no planHit regression or invokeExact gain is host-resolvable — consistent with the prior
+invokeExact A/B. Numbers, the exact command, and the host caveat are in `p0/SMOKE.md`; raw JSON alongside. Not
+skipped silently: JMH ran, the data and its limitation are recorded.
+
+**`javap/d5a/` cannot be regenerated post-hoc.** The raw-`.class` dump seam (`-Desql.fusion.dump.dir`) was
+introduced **in D.5a itself** (`344469b38f7`); its parent D.4e (`460c9a71358`) has no such seam, so a genuine
+D.4e-vs-D.5a `javap` diff cannot be produced now without adding tooling to the historical parent (which would no
+longer reproduce it). The D.5a declared reorder's structural equivalence stands on (i) the recorded D.5a fusion
+gate (behavioral correctness suites green) and (ii) the phase-end CsvIT verify-on (7657 tests, 0 failures, every
+fused page A/B'd against the unfused fallback) — see the Phase D end section. The E1 snapshot for D.5a is
+supplied (`e1/D5a.txt`, 10 shapes changed from D.4e by the reorder, 33 identical).
+
 ## Phase P1
 - Rebase notes: pending (branch `esql/fusion-main`).
 - `allowNonFinite` decision: pending.
@@ -94,12 +160,12 @@ All P0 items complete and pushed to `esql/fix/compute-codegen-followup`.
 ## iter5 item map
 | iter5 | Lands in | Status |
 |---|---|---|
-| I1 coverage probe | deferred (evidence only, not PR series); correct FINAL_ITER4 "FUSED did not rise" | pending |
-| I2 cache pinning | P0.1 | pending |
-| I3 divisor-tuple cap | P0.1 | pending |
-| I4 filter-eval L WARN | P0.1 (first) | pending |
-| I5 finish dedup + E1 corpus | Phase D (corpus D.0a done; fold D.5) | corpus done; H1 reason corrected in FINAL_ITER4.md |
-| I6 filter-eval spreader/spare | P0.4 | pending |
-| I7 explicit dictionarySafe | D.3 | pending |
-| I8 small fixes | P0.1/P0.5/P0.7 | pending |
-| I9 cold planMiss | P2 (out of session) | n/a |
+| I1 coverage probe | deferred (evidence only, not PR series); correct FINAL_ITER4 "FUSED did not rise" | deferred (by design; evidence-only, not in the PR series) |
+| I2 cache pinning | P0.1 | done (`bf8affeaa6c`) |
+| I3 divisor-tuple cap | P0.1 | done (`68c90023501`) |
+| I4 filter-eval L WARN | P0.1 (first) | done (`558e05b9b4a`) |
+| I5 finish dedup + E1 corpus | Phase D (corpus D.0a done; fold D.5) | done (dedup D.1–D.5d; corpus `e1/` complete incl. D5a/b/c added this session) |
+| I6 filter-eval spreader/spare | P0.4 | done (`9d35e669dc9`) |
+| I7 explicit dictionarySafe | D.3 | done (`e74b469d9d9`) |
+| I8 small fixes | P0.1/P0.5/P0.7 | done (`e11905f1eda` + P0.5 `dba1c42e892` + P0.7 `d3f349373a6`) |
+| I9 cold planMiss | P2 (out of session) | n/a (P2, separate agent) |

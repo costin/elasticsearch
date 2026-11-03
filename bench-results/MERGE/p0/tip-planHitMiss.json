@@ -1,0 +1,327 @@
+[
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.planCached",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/home/ubuntu/.gradle/jdks/oracle_corporation-26-amd64-linux.2/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=26",
+            "-Dplugins.dir=/workspace/benchmarks/build/plugins",
+            "-Dtests.index=/workspace/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "26.0.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "26.0.1+8-34",
+        "warmupIterations" : 2,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "pollute" : "NONE",
+            "shape" : "ADD_MUL_LONG",
+            "strategy" : "SPLICED"
+        },
+        "primaryMetric" : {
+            "score" : 4.863399114762685,
+            "scoreError" : 33.590532602290715,
+            "scoreConfidence" : [
+                -28.72713348752803,
+                38.4539317170534
+            ],
+            "scorePercentiles" : {
+                "0.0" : 3.5737744594638055,
+                "50.0" : 4.044412595668294,
+                "90.0" : 6.972010289155954,
+                "95.0" : 6.972010289155954,
+                "99.0" : 6.972010289155954,
+                "99.9" : 6.972010289155954,
+                "99.99" : 6.972010289155954,
+                "99.999" : 6.972010289155954,
+                "99.9999" : 6.972010289155954,
+                "100.0" : 6.972010289155954
+            },
+            "scoreUnit" : "us/op",
+            "rawData" : [
+                [
+                    6.972010289155954,
+                    4.044412595668294,
+                    3.5737744594638055
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.planCachedThenGet",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/home/ubuntu/.gradle/jdks/oracle_corporation-26-amd64-linux.2/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=26",
+            "-Dplugins.dir=/workspace/benchmarks/build/plugins",
+            "-Dtests.index=/workspace/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "26.0.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "26.0.1+8-34",
+        "warmupIterations" : 2,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "n" : "1",
+            "pollute" : "NONE",
+            "shape" : "ADD_MUL_LONG",
+            "strategy" : "SPLICED"
+        },
+        "primaryMetric" : {
+            "score" : 0.047959926403538994,
+            "scoreError" : 0.47005800752960536,
+            "scoreConfidence" : [
+                -0.4220980811260664,
+                0.5180179339331443
+            ],
+            "scorePercentiles" : {
+                "0.0" : 0.031242263100183888,
+                "50.0" : 0.035005639692148795,
+                "90.0" : 0.07763187641828431,
+                "95.0" : 0.07763187641828431,
+                "99.0" : 0.07763187641828431,
+                "99.9" : 0.07763187641828431,
+                "99.99" : 0.07763187641828431,
+                "99.999" : 0.07763187641828431,
+                "99.9999" : 0.07763187641828431,
+                "100.0" : 0.07763187641828431
+            },
+            "scoreUnit" : "us/op",
+            "rawData" : [
+                [
+                    0.07763187641828431,
+                    0.031242263100183888,
+                    0.035005639692148795
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.planCachedThenGet",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/home/ubuntu/.gradle/jdks/oracle_corporation-26-amd64-linux.2/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=26",
+            "-Dplugins.dir=/workspace/benchmarks/build/plugins",
+            "-Dtests.index=/workspace/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "26.0.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "26.0.1+8-34",
+        "warmupIterations" : 2,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "n" : "4",
+            "pollute" : "NONE",
+            "shape" : "ADD_MUL_LONG",
+            "strategy" : "SPLICED"
+        },
+        "primaryMetric" : {
+            "score" : 0.16264920642161174,
+            "scoreError" : 1.4506627319543928,
+            "scoreConfidence" : [
+                -1.2880135255327811,
+                1.6133119383760044
+            ],
+            "scorePercentiles" : {
+                "0.0" : 0.11229669960190546,
+                "50.0" : 0.1213332165143896,
+                "90.0" : 0.25431770314854013,
+                "95.0" : 0.25431770314854013,
+                "99.0" : 0.25431770314854013,
+                "99.9" : 0.25431770314854013,
+                "99.99" : 0.25431770314854013,
+                "99.999" : 0.25431770314854013,
+                "99.9999" : 0.25431770314854013,
+                "100.0" : 0.25431770314854013
+            },
+            "scoreUnit" : "us/op",
+            "rawData" : [
+                [
+                    0.25431770314854013,
+                    0.1213332165143896,
+                    0.11229669960190546
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.planCachedThenGet",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/home/ubuntu/.gradle/jdks/oracle_corporation-26-amd64-linux.2/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=26",
+            "-Dplugins.dir=/workspace/benchmarks/build/plugins",
+            "-Dtests.index=/workspace/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "26.0.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "26.0.1+8-34",
+        "warmupIterations" : 2,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "n" : "16",
+            "pollute" : "NONE",
+            "shape" : "ADD_MUL_LONG",
+            "strategy" : "SPLICED"
+        },
+        "primaryMetric" : {
+            "score" : 0.4833401014475885,
+            "scoreError" : 1.5154145363277618,
+            "scoreConfidence" : [
+                -1.0320744348801734,
+                1.9987546377753502
+            ],
+            "scorePercentiles" : {
+                "0.0" : 0.427460794625285,
+                "50.0" : 0.44376739366360846,
+                "90.0" : 0.578792116053872,
+                "95.0" : 0.578792116053872,
+                "99.0" : 0.578792116053872,
+                "99.9" : 0.578792116053872,
+                "99.99" : 0.578792116053872,
+                "99.999" : 0.578792116053872,
+                "99.9999" : 0.578792116053872,
+                "100.0" : 0.578792116053872
+            },
+            "scoreUnit" : "us/op",
+            "rawData" : [
+                [
+                    0.578792116053872,
+                    0.44376739366360846,
+                    0.427460794625285
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionStrategyBenchmark.planMiss",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/home/ubuntu/.gradle/jdks/oracle_corporation-26-amd64-linux.2/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/workspace/libs/native/libraries/build/platform/linux-x64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=26",
+            "-Dplugins.dir=/workspace/benchmarks/build/plugins",
+            "-Dtests.index=/workspace/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "26.0.1",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "26.0.1+8-34",
+        "warmupIterations" : 2,
+        "warmupTime" : "1 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 3,
+        "measurementTime" : "1 s",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "pollute" : "NONE",
+            "shape" : "ADD_MUL_LONG",
+            "strategy" : "SPLICED"
+        },
+        "primaryMetric" : {
+            "score" : 279.77899503523116,
+            "scoreError" : 816.9700040145387,
+            "scoreConfidence" : [
+                -537.1910089793075,
+                1096.74899904977
+            ],
+            "scorePercentiles" : {
+                "0.0" : 229.9132690716912,
+                "50.0" : 292.86346223653396,
+                "90.0" : 316.56025379746836,
+                "95.0" : 316.56025379746836,
+                "99.0" : 316.56025379746836,
+                "99.9" : 316.56025379746836,
+                "99.99" : 316.56025379746836,
+                "99.999" : 316.56025379746836,
+                "99.9999" : 316.56025379746836,
+                "100.0" : 316.56025379746836
+            },
+            "scoreUnit" : "us/op",
+            "rawData" : [
+                [
+                    292.86346223653396,
+                    229.9132690716912,
+                    316.56025379746836
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    }
+]
+
+
