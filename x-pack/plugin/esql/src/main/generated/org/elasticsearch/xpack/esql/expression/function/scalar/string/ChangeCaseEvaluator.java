@@ -4,8 +4,10 @@
 // 2.0.
 package org.elasticsearch.xpack.esql.expression.function.scalar.string;
 
+import java.lang.Object;
 import java.lang.Override;
 import java.lang.String;
+import java.util.List;
 import java.util.Locale;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.RamUsageEstimator;
@@ -17,6 +19,8 @@ import org.elasticsearch.compute.data.OrdinalBytesRefVector;
 import org.elasticsearch.compute.data.Vector;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
+import org.elasticsearch.compute.operator.fusion.FusionAware;
+import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.expression.function.scalar.convert.AbstractConvertFunction;
@@ -138,7 +142,9 @@ public final class ChangeCaseEvaluator extends AbstractConvertFunction.AbstractE
     return baseRamBytesUsed;
   }
 
-  public static class Factory implements ExpressionEvaluator.Factory {
+  public static class Factory implements ExpressionEvaluator.Factory, FusionAware {
+    private static final FusionDescriptor FUSION_DESCRIPTOR = new FusionDescriptor(ChangeCase.class, "process", "(Lorg/apache/lucene/util/BytesRef;Ljava/util/Locale;Lorg/elasticsearch/xpack/esql/expression/function/scalar/string/ChangeCase$Case;)Lorg/apache/lucene/util/BytesRef;", false, true, "", false, true, false, true);
+
     private final Source source;
 
     private final ExpressionEvaluator.Factory val;
@@ -163,6 +169,16 @@ public final class ChangeCaseEvaluator extends AbstractConvertFunction.AbstractE
     @Override
     public String toString() {
       return "ChangeCaseEvaluator[" + "val=" + val + ", locale=" + locale + ", caseType=" + caseType + "]";
+    }
+
+    @Override
+    public FusionDescriptor fusionDescriptor() {
+      return FUSION_DESCRIPTOR;
+    }
+
+    @Override
+    public List<Object> fusionFixedArgs() {
+      return List.of(locale, caseType);
     }
   }
 }

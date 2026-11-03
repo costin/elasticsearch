@@ -128,7 +128,9 @@ public class Concat extends EsqlScalarFunction implements AnyNullIsNull {
         return scratch.bytesRefView();
     }
 
-    private static int checkedTotalLength(BytesRef[] values) {
+    // public (not package-private) so the bytecode-fusion stitcher can splice Concat#process — whose body calls
+    // checkedTotalLength(...) — into a fused hidden class defined in a different package without an IllegalAccessError.
+    public static int checkedTotalLength(BytesRef[] values) {
         int length = 0;
         for (var v : values) {
             length += v.length;

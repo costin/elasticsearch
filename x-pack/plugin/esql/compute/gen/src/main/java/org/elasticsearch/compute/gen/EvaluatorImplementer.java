@@ -30,6 +30,7 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
+import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 
@@ -39,6 +40,7 @@ import static org.elasticsearch.compute.gen.Types.CONSTANT_METHOD_RESULT_SPECIAL
 import static org.elasticsearch.compute.gen.Types.DRIVER_CONTEXT;
 import static org.elasticsearch.compute.gen.Types.EXPRESSION_EVALUATOR;
 import static org.elasticsearch.compute.gen.Types.EXPRESSION_EVALUATOR_FACTORY;
+import static org.elasticsearch.compute.gen.Types.FUSION_AWARE;
 import static org.elasticsearch.compute.gen.Types.PAGE;
 import static org.elasticsearch.compute.gen.Types.RAM_USAGE_ESIMATOR;
 import static org.elasticsearch.compute.gen.Types.SOURCE;
@@ -50,12 +52,16 @@ import static org.elasticsearch.compute.gen.Types.vectorFixedBuilderType;
 import static org.elasticsearch.compute.gen.Types.vectorType;
 
 public class EvaluatorImplementer {
+    private final Elements elements;
     private final TypeElement declarationType;
     private final ProcessFunction processFunction;
     private final ClassName implementation;
     private final boolean processOutputsMultivalued;
     private final boolean vectorsUnsupported;
     private final boolean allNullsIsNull;
+    private final boolean fusable;
+    private final boolean overflowChecked;
+    private final String overflowExceptionType;
 
     public EvaluatorImplementer(
         Elements elements,
@@ -63,8 +69,11 @@ public class EvaluatorImplementer {
         ExecutableElement processFunction,
         String extraName,
         List<TypeMirror> warnExceptions,
-        boolean allNullsIsNull
+        boolean allNullsIsNull,
+        boolean fusable,
+        boolean overflowChecked
     ) {
+        this.elements = elements;
         this.declarationType = (TypeElement) processFunction.getEnclosingElement();
         this.processFunction = new ProcessFunction(types, processFunction, warnExceptions);
 
@@ -77,6 +86,15 @@ public class EvaluatorImplementer {
         boolean returnTypeWithoutVectorSupport = vectorType(elementType(this.processFunction.resultDataType(true))) == null;
         vectorsUnsupported = processOutputsMultivalued || anyParameterNotSupportingVectors || returnTypeWithoutVectorSupport;
         this.allNullsIsNull = allNullsIsNull;
+        this.fusable = fusable;
+        this.overflowChecked = overflowChecked;
+        // The overflow exception type the fused stitcher must catch around this kernel's spliced body (binding
+        // rule #3). It is the FQN of the first declared @Evaluator.warnExceptions entry — for every fusable
+        // overflow-checked kernel that is ArithmeticException — and empty when the kernel is not overflow-checked
+        // (or declares no warn exception), so the stitcher only wraps kernels that can actually throw.
+        this.overflowExceptionType = (fusable && overflowChecked && warnExceptions.isEmpty() == false)
+            ? elements.getBinaryName((TypeElement) ((DeclaredType) warnExceptions.get(0)).asElement()).toString()
+            : "";
     }
 
     public JavaFile sourceFile() {
@@ -384,14 +402,45 @@ public class EvaluatorImplementer {
     private TypeSpec factory() {
         TypeSpec.Builder builder = TypeSpec.classBuilder("Factory");
         builder.addSuperinterface(EXPRESSION_EVALUATOR_FACTORY);
+        // When the kernel is @Fusable the Factory also implements FusionAware so the stitcher can
+        // recover the kernel's bytecode template at plan time. When the kernel is not @Fusable the
+        // emitted Factory must remain byte-for-byte identical to the pre-fusion output (additive
+        // invariant), so every fusion-specific addition below is gated on `fusable`.
+        if (fusable) {
+            builder.addSuperinterface(FUSION_AWARE);
+        }
         builder.addModifiers(Modifier.STATIC);
 
         builder.addField(SOURCE, "source", Modifier.PRIVATE, Modifier.FINAL);
         processFunction.args.forEach(a -> a.declareFactoryField(builder));
 
+        if (fusable) {
+            builder.addField(
+                FusionAwareGen.fusionDescriptorField(
+                    elements,
+                    declarationType,
+                    processFunction.function,
+                    overflowChecked,
+                    allNullsIsNull,
+                    overflowExceptionType,
+                    false,
+                    // warns is independent of overflowChecked: a @Fusable(overflowChecked=false) kernel with
+                    // warnExceptions must still be excluded from the encoding-aware dictionary path.
+                    processFunction.warnExceptions.isEmpty() == false,
+                    // Generated kernels are dictionary-safe: any throw is a declared warnException (caught as a
+                    // warning, encoded in warns) or they do not throw on input content.
+                    true
+                )
+            );
+        }
+
         builder.addMethod(processFunction.factoryCtor());
         builder.addMethod(processFunction.factoryGet(implementation));
         builder.addMethod(processFunction.factoryToStringMethod(implementation));
+
+        if (fusable) {
+            builder.addMethod(FusionAwareGen.fusionDescriptorMethod());
+        }
 
         return builder.build();
     }

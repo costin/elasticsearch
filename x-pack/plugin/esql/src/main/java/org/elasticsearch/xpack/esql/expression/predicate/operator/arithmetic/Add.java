@@ -14,6 +14,7 @@ import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.time.DateUtils;
 import org.elasticsearch.compute.ann.Evaluator;
 import org.elasticsearch.compute.ann.Fixed;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.capabilities.NonFiniteSupport;
 import org.elasticsearch.xpack.esql.core.expression.AnyNullIsNull;
@@ -186,11 +187,13 @@ public class Add extends DateTimeArithmeticOperation implements BinaryComparison
         return true;
     }
 
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Ints", warnExceptions = { ArithmeticException.class })
     static int processInts(int lhs, int rhs) {
         return Math.addExact(lhs, rhs);
     }
 
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Longs", warnExceptions = { ArithmeticException.class })
     static long processLongs(long lhs, long rhs) {
         return Math.addExact(lhs, rhs);
@@ -201,6 +204,9 @@ public class Add extends DateTimeArithmeticOperation implements BinaryComparison
         return unsignedLongAddExact(lhs, rhs);
     }
 
+    // overflowChecked = true: asFiniteNumber throws ArithmeticException on a non-finite (NaN/Inf) result, so the fused
+    // path must keep the per-kernel try/catch boundary.
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Doubles", warnExceptions = { ArithmeticException.class })
     static double processDoubles(double lhs, double rhs, @Fixed(includeInToString = false) boolean allowNonFinite) {
         double result = lhs + rhs;

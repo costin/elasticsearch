@@ -11,6 +11,7 @@ import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.core.expression.AnyNullIsNull;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
@@ -95,6 +96,8 @@ public class Atan2 extends EsqlScalarFunction implements AnyNullIsNull {
         return NodeInfo.create(this, Atan2::new, y, x);
     }
 
+    // overflowChecked = false: Math.atan2 is a total java.base function (never throws; NaN/Inf pass through).
+    @Fusable(overflowChecked = false)
     @Evaluator
     static double process(double y, double x) {
         return Math.atan2(y, x);

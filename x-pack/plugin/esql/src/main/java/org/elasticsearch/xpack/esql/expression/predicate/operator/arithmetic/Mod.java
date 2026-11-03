@@ -13,6 +13,7 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.compute.ann.Evaluator;
 import org.elasticsearch.compute.ann.Fixed;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.xpack.esql.capabilities.NonFiniteSupport;
 import org.elasticsearch.xpack.esql.core.expression.AnyNullIsNull;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
@@ -121,6 +122,10 @@ public class Mod extends EsqlArithmeticOperation implements AnyNullIsNull, NonFi
         return new Mod(source(), left, right, allowNonFinite);
     }
 
+    // overflowChecked = true: this kernel throws ArithmeticException on divide-by-zero, so the fused path must keep
+    // the per-kernel try/catch boundary. MIN_VALUE % -1 is 0 in Java and does not overflow (unlike division). Keep
+    // the kernel = process* (NOT *ByConstant): *ByConstant omits the zero check.
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Ints", warnExceptions = { ArithmeticException.class })
     static int processInts(int lhs, int rhs) {
         if (rhs == 0) {
@@ -129,6 +134,9 @@ public class Mod extends EsqlArithmeticOperation implements AnyNullIsNull, NonFi
         return lhs % rhs;
     }
 
+    // overflowChecked = true: this kernel throws ArithmeticException on divide-by-zero, so the fused path must keep
+    // the per-kernel try/catch boundary. Keep the kernel = process* (NOT *ByConstant).
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Longs", warnExceptions = { ArithmeticException.class })
     static long processLongs(long lhs, long rhs) {
         if (rhs == 0L) {
@@ -145,6 +153,9 @@ public class Mod extends EsqlArithmeticOperation implements AnyNullIsNull, NonFi
         return longToUnsignedLong(Long.remainderUnsigned(longToUnsignedLong(lhs, true), longToUnsignedLong(rhs, true)), true);
     }
 
+    // overflowChecked = true: this kernel throws ArithmeticException on a non-finite remainder (divide-by-zero), so
+    // the fused path must keep the per-kernel try/catch boundary. Keep the kernel = process* (NOT *ByConstant).
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Doubles", warnExceptions = { ArithmeticException.class })
     static double processDoubles(double lhs, double rhs, @Fixed(includeInToString = false) boolean allowNonFinite) {
         double value = lhs % rhs;

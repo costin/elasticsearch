@@ -13,6 +13,7 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.compute.ann.Evaluator;
 import org.elasticsearch.compute.ann.Fixed;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.capabilities.NonFiniteSupport;
 import org.elasticsearch.xpack.esql.core.expression.AnyNullIsNull;
@@ -147,6 +148,9 @@ public class Div extends DenseVectorArithmeticOperation implements BinaryCompari
         return Mul::new;
     }
 
+    // overflowChecked = true: this kernel throws ArithmeticException on divide-by-zero (and integer division can also
+    // overflow on MIN_VALUE / -1), so the fused path must keep the per-kernel try/catch boundary.
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Ints", warnExceptions = { ArithmeticException.class })
     static int processInts(int lhs, int rhs) {
         if (rhs == 0) {
@@ -155,6 +159,9 @@ public class Div extends DenseVectorArithmeticOperation implements BinaryCompari
         return lhs / rhs;
     }
 
+    // overflowChecked = true: this kernel throws ArithmeticException on divide-by-zero (and integer division can also
+    // overflow on MIN_VALUE / -1), so the fused path must keep the per-kernel try/catch boundary.
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Longs", warnExceptions = { ArithmeticException.class })
     static long processLongs(long lhs, long rhs) {
         if (rhs == 0L) {
@@ -171,18 +178,19 @@ public class Div extends DenseVectorArithmeticOperation implements BinaryCompari
         return longToUnsignedLong(Long.divideUnsigned(longToUnsignedLong(lhs, true), longToUnsignedLong(rhs, true)), true);
     }
 
+    // overflowChecked = true: this kernel explicitly throws ArithmeticException on divide-by-zero and asFiniteNumber
+    // throws on a non-finite result, so the fused path must keep the per-kernel try/catch boundary.
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Doubles", warnExceptions = { ArithmeticException.class })
     static double processDoubles(double lhs, double rhs, @Fixed(includeInToString = false) boolean allowNonFinite) {
-        if (allowNonFinite) {
-            // Prometheus defines x / 0 as ±Inf (NaN for 0/0) with the series kept, so skip both the divide-by-zero
-            // guard and the finite-number check and let IEEE-754 division produce the result.
-            return lhs / rhs;
-        }
-        if (rhs == 0.0) {
+        // Prometheus defines x / 0 as ±Inf (NaN for 0/0) with the series kept, so when allowNonFinite is set skip both
+        // the divide-by-zero guard and the finite-number check and let IEEE-754 division produce the result. Phrased
+        // as a single terminal return (the strict branch still reports "/ by zero" for a zero divisor, and
+        // asFiniteNumber still rejects an overflowed-to-Inf result) so the fused loop can inline the kernel body.
+        if (allowNonFinite == false && rhs == 0.0) {
             throw new ArithmeticException("/ by zero");
         }
-
-        return NumericUtils.asFiniteNumber(lhs / rhs);
+        return allowNonFinite ? lhs / rhs : NumericUtils.asFiniteNumber(lhs / rhs);
     }
 
     @Evaluator(extraName = "IntsByConstant")

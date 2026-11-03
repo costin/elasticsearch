@@ -9,6 +9,7 @@ package org.elasticsearch.compute.gen;
 
 import org.elasticsearch.compute.ann.ConvertEvaluator;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.ann.MvEvaluator;
 
 import java.util.List;
@@ -31,6 +32,12 @@ import javax.tools.Diagnostic;
  */
 public class EvaluatorProcessor implements Processor {
     private ProcessingEnvironment env;
+    /**
+     * Enforces the inlinable-kernel contract (a {@code @Fusable} method must have exactly one {@code return}) at
+     * compile time via the javac source-tree API. Isolated in its own class so the (forbidden-API) {@code com.sun
+     * .source} dependency stays narrowly scoped.
+     */
+    private InlinableKernelValidator kernelValidator;
 
     @Override
     public Set<String> getSupportedOptions() {
@@ -50,6 +57,7 @@ public class EvaluatorProcessor implements Processor {
     @Override
     public void init(ProcessingEnvironment processingEnvironment) {
         this.env = processingEnvironment;
+        this.kernelValidator = new InlinableKernelValidator(processingEnvironment);
     }
 
     @Override
@@ -73,6 +81,13 @@ public class EvaluatorProcessor implements Processor {
                 );
                 Evaluator evaluatorAnn = evaluatorMethod.getAnnotation(Evaluator.class);
                 if (evaluatorAnn != null) {
+                    // @Fusable is optional and decoupled from @Evaluator: a kernel that carries both gets
+                    // FusionAware metadata emitted on its generated Factory; a kernel without @Fusable is
+                    // generated exactly as before.
+                    Fusable fusableAnn = evaluatorMethod.getAnnotation(Fusable.class);
+                    if (fusableAnn != null) {
+                        kernelValidator.validate((ExecutableElement) evaluatorMethod);
+                    }
                     try {
                         AggregatorProcessor.write(
                             evaluatorMethod,
@@ -83,7 +98,9 @@ public class EvaluatorProcessor implements Processor {
                                 (ExecutableElement) evaluatorMethod,
                                 evaluatorAnn.extraName(),
                                 warnExceptionsTypes,
-                                evaluatorAnn.allNullsIsNull()
+                                evaluatorAnn.allNullsIsNull(),
+                                fusableAnn != null,
+                                fusableAnn != null && fusableAnn.overflowChecked()
                             ).sourceFile(),
                             env
                         );
@@ -116,6 +133,10 @@ public class EvaluatorProcessor implements Processor {
                 }
                 ConvertEvaluator convertEvaluatorAnn = evaluatorMethod.getAnnotation(ConvertEvaluator.class);
                 if (convertEvaluatorAnn != null) {
+                    Fusable convertFusableAnn = evaluatorMethod.getAnnotation(Fusable.class);
+                    if (convertFusableAnn != null) {
+                        kernelValidator.validate((ExecutableElement) evaluatorMethod);
+                    }
                     try {
                         AggregatorProcessor.write(
                             evaluatorMethod,
@@ -125,7 +146,8 @@ public class EvaluatorProcessor implements Processor {
                                 env.getTypeUtils(),
                                 (ExecutableElement) evaluatorMethod,
                                 convertEvaluatorAnn.extraName(),
-                                warnExceptionsTypes
+                                warnExceptionsTypes,
+                                convertFusableAnn != null
                             ).sourceFile(),
                             env
                         );

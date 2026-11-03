@@ -13,6 +13,7 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.compute.ann.Evaluator;
 import org.elasticsearch.compute.ann.Fixed;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.capabilities.NonFiniteSupport;
 import org.elasticsearch.xpack.esql.core.expression.AnyNullIsNull;
@@ -153,6 +154,9 @@ public class Log extends EsqlScalarFunction implements OptionalArgument, AnyNull
         return (base == null || base.foldable()) && value.foldable();
     }
 
+    // overflowChecked = true: the unary natural-log kernel forwards ArithmeticException (non-positive input) the fused
+    // checked path nulls + warns on, exactly like the unfused chain.
+    @Fusable(overflowChecked = true)
     @Evaluator(extraName = "Constant", warnExceptions = { ArithmeticException.class })
     static double process(double value, @Fixed(includeInToString = false) boolean allowNonFinite) throws ArithmeticException {
         if (allowNonFinite == false && value <= 0d) {
@@ -161,6 +165,9 @@ public class Log extends EsqlScalarFunction implements OptionalArgument, AnyNull
         return Math.log(value);
     }
 
+    // overflowChecked = true: the binary log-to-base kernel forwards ArithmeticException (non-positive input or base 1)
+    // the fused checked path nulls + warns on, exactly like the unfused chain.
+    @Fusable(overflowChecked = true)
     @Evaluator(warnExceptions = { ArithmeticException.class })
     static double process(double base, double value, @Fixed(includeInToString = false) boolean allowNonFinite) throws ArithmeticException {
         if (allowNonFinite == false) {

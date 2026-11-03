@@ -13,6 +13,7 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.compute.ann.Evaluator;
 import org.elasticsearch.compute.ann.Fixed;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.capabilities.NonFiniteSupport;
 import org.elasticsearch.xpack.esql.core.expression.AnyNullIsNull;
@@ -131,6 +132,10 @@ public class Pow extends EsqlScalarFunction implements AnyNullIsNull, NonFiniteS
         return base.foldable() && exponent.foldable();
     }
 
+    // overflowChecked = true: NumericUtils.asFiniteNumber throws ArithmeticException on an overflow-to-Inf/NaN result,
+    // which the fused checked path nulls + warns on, exactly like the unfused chain. NumericUtils is a non-java.base
+    // callee, so this vectorizes via the caller-module lookup on the checked-vector path rather than being block-gated.
+    @Fusable(overflowChecked = true)
     @Evaluator(warnExceptions = { ArithmeticException.class })
     static double process(double base, double exponent, @Fixed(includeInToString = false) boolean allowNonFinite) {
         double result = Math.pow(base, exponent);

@@ -13,6 +13,7 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.compute.ann.Evaluator;
 import org.elasticsearch.compute.ann.Fixed;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.xpack.esql.capabilities.NonFiniteSupport;
 import org.elasticsearch.xpack.esql.core.expression.AnyNullIsNull;
@@ -122,6 +123,9 @@ public class Cosh extends AbstractTrigonometricFunction implements AnyNullIsNull
         return new Cosh(source(), field(), false);
     }
 
+    // overflowChecked = true: forwards ArithmeticException (overflow to NaN/Inf) the fused checked path nulls + warns
+    // on, exactly like the unfused chain.
+    @Fusable(overflowChecked = true)
     @Evaluator(warnExceptions = ArithmeticException.class)
     static double process(double val, @Fixed(includeInToString = false) boolean allowNonFinite) {
         double res = Math.cosh(val);

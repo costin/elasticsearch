@@ -10,6 +10,7 @@ import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.io.stream.NamedWriteableRegistry;
 import org.elasticsearch.common.time.DateUtils;
 import org.elasticsearch.compute.ann.Evaluator;
+import org.elasticsearch.compute.ann.Fusable;
 import org.elasticsearch.compute.data.DoubleRangeBlockBuilder;
 import org.elasticsearch.compute.data.LongRangeBlockBuilder;
 import org.elasticsearch.compute.data.TDigestHolder;
@@ -245,11 +246,15 @@ public class Equals extends EsqlBinaryComparison implements Negatable<EsqlBinary
         return new NotEquals(source(), left(), right(), zoneId());
     }
 
+    // overflowChecked = false: primitive comparison produces a boolean via straight-line code; no throw paths.
+    @Fusable(overflowChecked = false)
     @Evaluator(extraName = "Ints")
     static boolean processInts(int lhs, int rhs) {
         return lhs == rhs;
     }
 
+    // overflowChecked = false: primitive comparison produces a boolean via straight-line code; no throw paths.
+    @Fusable(overflowChecked = false)
     @Evaluator(extraName = "Longs")
     static boolean processLongs(long lhs, long rhs) {
         return lhs == rhs;
@@ -265,11 +270,15 @@ public class Equals extends EsqlBinaryComparison implements Negatable<EsqlBinary
         return DateUtils.compareNanosToMillis(lhs, rhs) == 0;
     }
 
+    // overflowChecked = false: primitive comparison produces a boolean via straight-line code; no throw paths.
+    @Fusable(overflowChecked = false)
     @Evaluator(extraName = "Doubles")
     static boolean processDoubles(double lhs, double rhs) {
         return lhs == rhs;
     }
 
+    // overflowChecked = false: BytesRef.equals is public and throw-free; the fused hidden class can link it.
+    @Fusable(overflowChecked = false)
     @Evaluator(extraName = "BytesRef")
     static boolean processBytesRef(BytesRef lhs, BytesRef rhs) {
         return lhs.equals(rhs);

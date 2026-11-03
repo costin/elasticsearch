@@ -219,6 +219,53 @@ public class ModTests extends AbstractScalarFunctionTestCase {
             );
         }));
 
+        // Java remainder does NOT overflow: MIN_VALUE % -1 is 0 with no ArithmeticException (unlike MIN_VALUE / -1).
+        // Empty warnings: the kernel must not treat this as overflow/warn+null.
+        suppliers.add(new TestCaseSupplier("Int MIN_VALUE % -1", List.of(DataType.INTEGER, DataType.INTEGER), () -> {
+            return new TestCaseSupplier.TestCase(
+                List.of(
+                    new TestCaseSupplier.TypedData(Integer.MIN_VALUE, DataType.INTEGER, "lhs"),
+                    new TestCaseSupplier.TypedData(-1, DataType.INTEGER, "rhs")
+                ),
+                startsWith("ModIntsEvaluator[lhs=Attribute[channel=0], rhs=Attribute[channel=1]]"),
+                DataType.INTEGER,
+                equalTo(0)
+            );
+        }));
+        suppliers.add(new TestCaseSupplier("Long MIN_VALUE % -1", List.of(DataType.LONG, DataType.LONG), () -> {
+            return new TestCaseSupplier.TestCase(
+                List.of(
+                    new TestCaseSupplier.TypedData(Long.MIN_VALUE, DataType.LONG, "lhs"),
+                    new TestCaseSupplier.TypedData(-1L, DataType.LONG, "rhs")
+                ),
+                startsWith("ModLongsEvaluator[lhs=Attribute[channel=0], rhs=Attribute[channel=1]]"),
+                DataType.LONG,
+                equalTo(0L)
+            );
+        }));
+        suppliers.add(new TestCaseSupplier("Int MIN_VALUE % literal -1", List.of(DataType.INTEGER, DataType.INTEGER), () -> {
+            return new TestCaseSupplier.TestCase(
+                List.of(
+                    new TestCaseSupplier.TypedData(Integer.MIN_VALUE, DataType.INTEGER, "lhs"),
+                    new TestCaseSupplier.TypedData(-1, DataType.INTEGER, "rhs").forceLiteral()
+                ),
+                startsWith("ModIntsByConstantEvaluator[lhs=Attribute[channel=0], rhs=-1]"),
+                DataType.INTEGER,
+                equalTo(0)
+            );
+        }));
+        suppliers.add(new TestCaseSupplier("Long MIN_VALUE % literal -1", List.of(DataType.LONG, DataType.LONG), () -> {
+            return new TestCaseSupplier.TestCase(
+                List.of(
+                    new TestCaseSupplier.TypedData(Long.MIN_VALUE, DataType.LONG, "lhs"),
+                    new TestCaseSupplier.TypedData(-1L, DataType.LONG, "rhs").forceLiteral()
+                ),
+                startsWith("ModLongsByConstantEvaluator[lhs=Attribute[channel=0], rhs=-1]"),
+                DataType.LONG,
+                equalTo(0L)
+            );
+        }));
+
         suppliers = anyNullIsNull(true, suppliers);
 
         // Cannot use parameterSuppliersFromTypedDataWithDefaultChecks as error messages are non-trivial
