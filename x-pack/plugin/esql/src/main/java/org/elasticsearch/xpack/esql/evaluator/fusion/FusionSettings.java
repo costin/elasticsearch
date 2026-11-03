@@ -174,6 +174,16 @@ public final class FusionSettings {
     }
 
     /**
+     * Benchmark/test-only PUBLIC hook returning the <b>raw</b> kill switch (the {@code enabled} field alone, without
+     * the {@code esql_fusion} feature-flag conjunction that {@link #isEnabled()} applies). A cross-module fixture that
+     * temporarily disables fusion must save and restore <em>this</em> value, not {@link #isEnabled()}, so a
+     * release-build run (feature flag off) does not leave the raw switch stuck at {@code false}.
+     */
+    public static boolean isEnabledForBenchmarks() {
+        return enabled;
+    }
+
+    /**
      * Benchmark-only PUBLIC hook that resets the process-wide fused-class cache state (drops all cached classes,
      * zeroes telemetry counters, and clears baked-divisor/test hooks) so a JMH cell
      * ({@code FusionStrategyBenchmark.planMiss}) can measure a cold stitch. The {@code :benchmarks} module cannot
