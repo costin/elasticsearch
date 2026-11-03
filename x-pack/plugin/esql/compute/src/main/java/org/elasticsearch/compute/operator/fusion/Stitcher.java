@@ -136,40 +136,36 @@ public final class Stitcher {
 
     /**
      * HotSpot's default {@code HugeMethodLimit} huge-method guard. Mutable — not a
-     * constant — so it is not SCREAMING_CASE: production reads {@code -Desql.fusion.max_method_bytecodes}
-     * (default {@link #DEFAULT_MAX_FUSED_METHOD_BYTECODES}) once at class init; tests flip it via
-     * {@link #maxFusedMethodBytecodesForTests}. A method above this many bytecodes is never JIT-compiled.
+     * constant — so it is not SCREAMING_CASE: production always uses {@link #DEFAULT_MAX_FUSED_METHOD_BYTECODES};
+     * tests flip it via {@link #maxFusedMethodBytecodesForTests}. A method above this many bytecodes is never
+     * JIT-compiled.
      *
      * <p>Every emit path is enforced: {@link #serializeWithBudgetGuard} measures the largest {@code Code}
      * length over <em>all</em> methods of the class via {@link FusedMethodCodeLengths#maxMethodCodeLength} and throws
      * {@link StitchingException} when it exceeds this limit, so the caller falls back unfused (or degrades
-     * to a previously-compiled in-budget block path). Values {@code <= 0} are rejected: a non-positive
-     * limit would refuse every stitch. Not a node setting.
+     * to a previously-compiled in-budget block path). The test setter rejects {@code <= 0}: a non-positive
+     * limit would refuse every stitch. Not a node setting and not a system property.
      */
-    static volatile int maxFusedMethodBytecodes = resolveMaxFusedMethodBytecodes(
-        Integer.getInteger("esql.fusion.max_method_bytecodes", DEFAULT_MAX_FUSED_METHOD_BYTECODES)
-    );
+    static volatile int maxFusedMethodBytecodes = DEFAULT_MAX_FUSED_METHOD_BYTECODES;
 
     /**
      * Current effective fused-method bytecode huge-method limit (the mutable field, possibly overridden by
-     * {@code -Desql.fusion.max_method_bytecodes} or the test setter). Public so tests and diagnostics can read
-     * the live limit instead of hardcoding 8000.
+     * the test setter). Public so tests and diagnostics can read the live limit instead of hardcoding 8000.
      */
     public static int maxFusedMethodBytecodes() {
         return maxFusedMethodBytecodes;
     }
 
     /**
-     * Test-only: sets the fused-method bytecode budget; restore in a finally. Rejects {@code <= 0}. Production reads
-     * the system property once into {@link #maxFusedMethodBytecodes}; this setter exists solely for tests.
+     * Test-only: sets the fused-method bytecode budget; restore in a finally. Rejects {@code <= 0}. Production always
+     * uses {@link #DEFAULT_MAX_FUSED_METHOD_BYTECODES}; this setter exists solely for tests.
      */
     public static void maxFusedMethodBytecodesForTests(int value) {
         maxFusedMethodBytecodes = resolveMaxFusedMethodBytecodes(value);
     }
 
     /**
-     * WHY reject {@code <= 0}: a non-positive limit would refuse every stitch. Shared by
-     * the class-init property and the test setter.
+     * WHY reject {@code <= 0}: a non-positive limit would refuse every stitch. Used by the test setter.
      */
     private static int resolveMaxFusedMethodBytecodes(int value) {
         if (value <= 0) {
