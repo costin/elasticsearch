@@ -129,8 +129,11 @@ public final class FusionSettings {
         return VERIFY_ENABLED;
     }
 
-    /** Test-only: flips the switch so a test can assert both the fused and unfused wiring; restore in a finally. */
-    static void setEnabledForTests(boolean value) {
+    /**
+     * Test-only: flips the switch so a test can assert both the fused and unfused wiring; restore in a finally.
+     * Also used cross-package by the scalar-function toString tests to pin the canonical unfused evaluator.
+     */
+    public static void setEnabledForTests(boolean value) {
         enabled = value;
     }
 

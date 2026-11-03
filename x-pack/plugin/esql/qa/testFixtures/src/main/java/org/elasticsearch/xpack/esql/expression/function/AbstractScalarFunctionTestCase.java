@@ -327,7 +327,7 @@ public abstract class AbstractScalarFunctionTestCase extends AbstractFunctionTes
     public final void testEvaluatorToString() {
         Expression expression = buildFieldExpression(testCase);
         assumeTrue("Can't build evaluator", testCase.canBuildEvaluator());
-        var factory = evaluator(expression);
+        var factory = evaluatorWithoutFusion(expression);
         try (ExpressionEvaluator ev = factory.get(driverContext())) {
             if (testCase.getExpectedBuildEvaluatorWarnings() != null) {
                 assertWarnings(testCase.getExpectedBuildEvaluatorWarnings());
@@ -339,7 +339,7 @@ public abstract class AbstractScalarFunctionTestCase extends AbstractFunctionTes
     public final void testFactoryToString() {
         Expression expression = buildFieldExpression(testCase);
         assumeTrue("Can't build evaluator", testCase.canBuildEvaluator());
-        var factory = evaluator(buildFieldExpression(testCase));
+        var factory = evaluatorWithoutFusion(buildFieldExpression(testCase));
         if (testCase.getExpectedBuildEvaluatorWarnings() != null) {
             assertWarnings(testCase.getExpectedBuildEvaluatorWarnings());
         }

@@ -47,6 +47,7 @@ import org.elasticsearch.xpack.esql.core.type.EsField;
 import org.elasticsearch.xpack.esql.core.util.NumericUtils;
 import org.elasticsearch.xpack.esql.core.util.StringUtils;
 import org.elasticsearch.xpack.esql.evaluator.EvalMapper;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
 import org.elasticsearch.xpack.esql.evaluator.mapper.EvaluatorMapper;
 import org.elasticsearch.xpack.esql.expression.OnlySurrogateExpression;
 import org.elasticsearch.xpack.esql.expression.SurrogateExpression;
@@ -497,6 +498,21 @@ public abstract class AbstractFunctionTestCase extends ESTestCase {
             throw new AssertionError("expected resolved " + resolution.message());
         }
         return EvalMapper.toEvaluator(FoldContext.small(), e, builder.build());
+    }
+
+    /**
+     * Builds the evaluator with fusion disabled so {@code toString()} reflects the canonical unfused evaluator
+     * tree. Fusion rewrites depth>=2 chains (e.g. an implicit cast under a comparison) into a single
+     * {@code Fused[...]} factory whose toString intentionally differs; the toString contract tests assert the
+     * unfused shape. Restores the kill switch in a finally (default is on in unit-test JVMs).
+     */
+    public static ExpressionEvaluator.Factory evaluatorWithoutFusion(Expression e) {
+        FusionSettings.setEnabledForTests(false);
+        try {
+            return evaluator(e);
+        } finally {
+            FusionSettings.setEnabledForTests(true);
+        }
     }
 
     public static Page row(List<Object> values) {
