@@ -504,14 +504,16 @@ public abstract class AbstractFunctionTestCase extends ESTestCase {
      * Builds the evaluator with fusion disabled so {@code toString()} reflects the canonical unfused evaluator
      * tree. Fusion rewrites depth>=2 chains (e.g. an implicit cast under a comparison) into a single
      * {@code Fused[...]} factory whose toString intentionally differs; the toString contract tests assert the
-     * unfused shape. Restores the kill switch in a finally (default is on in unit-test JVMs).
+     * unfused shape. Captures and restores the previous kill-switch state in a finally (default is on in
+     * unit-test JVMs, where the {@code esql_fusion} feature flag is also on so {@code isEnabled()} reflects it).
      */
     public static ExpressionEvaluator.Factory evaluatorWithoutFusion(Expression e) {
+        boolean previous = FusionSettings.isEnabled();
         FusionSettings.setEnabledForTests(false);
         try {
             return evaluator(e);
         } finally {
-            FusionSettings.setEnabledForTests(true);
+            FusionSettings.setEnabledForTests(previous);
         }
     }
 
