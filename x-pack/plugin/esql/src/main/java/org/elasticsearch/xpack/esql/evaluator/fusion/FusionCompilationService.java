@@ -227,6 +227,37 @@ final class FusionCompilationService {
     }
 
     /**
+     * Admission decision for an arithmetic/logical/BytesRef plan {@code tree}: delegates to the cache doorkeeper but
+     * first lets a shape whose primary class is already cached fuse without consulting it (see
+     * {@link FusedClassCache#admit}). The primary {@link FusedClassCache.Shape} is the block (or logical-block) path
+     * that {@link FusedExpressionEvaluatorFactory} always compiles first — the one unconditional cache entry for the
+     * plan — keyed on the plan-level {@link FusionPlanner#shapeOf} string.
+     */
+    boolean admit(FusionNode tree) {
+        return cache.admit(FusionPlanner.shapeOf(tree), shapeKey(tree, primaryPathOf(tree)));
+    }
+
+    /**
+     * Admission decision for a fused WHERE+EVAL pair: the same already-cached short-circuit as {@link #admit(FusionNode)},
+     * keyed on the combined {@link FusionPlanner#filterEvalShapeOf} shape with the always-compiled
+     * {@link FusedClassCache.Path#FILTER_EVAL_BLOCK} class as the primary.
+     */
+    boolean admitFilterEval(FusionNode predicateTree, FusionNode projectionTree) {
+        String planShape = FusionPlanner.filterEvalShapeOf(predicateTree, projectionTree);
+        FusedClassCache.Shape primary = new FusedClassCache.Shape(
+            planShape,
+            rootElement(projectionTree),
+            FusedClassCache.Path.FILTER_EVAL_BLOCK
+        );
+        return cache.admit(planShape, primary);
+    }
+
+    /** The always-compiled primary emit path for {@code tree}: logical-block for a 3VL tree, block otherwise. */
+    private static FusedClassCache.Path primaryPathOf(FusionNode tree) {
+        return FusionNode.isBooleanLogic(tree) ? FusedClassCache.Path.LOGICAL_BLOCK : FusedClassCache.Path.BLOCK;
+    }
+
+    /**
      * Rebuilds the cache with the node-configured byte-weight ceiling and seeds its admission threshold. Called once
      * at node start by {@link FusionSettings#initFromNodeSettings}, before any plan runs; the ES {@link FusedClassCache}
      * fixes its weight ceiling at construction, so changing {@code maxBytes} means a fresh (empty) cache.

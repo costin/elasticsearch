@@ -341,6 +341,44 @@ public class FusedClassCacheTests extends ESTestCase {
         assertThat(cache.size(), is(1));
     }
 
+    /**
+     * A direct-mapped doorkeeper slot collision must never refuse a shape whose class is already cached. With a
+     * 1-slot doorkeeper every plan shape collides, so once A and B are both cached the pre-fix code — which wrote the
+     * colliding slot on every miss and consulted it before the cache — refused each shape forever on alternating
+     * sightings. The already-cached short-circuit in {@link FusedClassCache#admit} fixes this: the second half all
+     * fuse and {@link FusedClassCache#admissionSkips()} stays at the two first-sighting skips.
+     *
+     * <p>Fails before fix: the first {@code A} of the second half (slot last written by {@code B}) is refused, so
+     * {@code plan(...)} returns {@code false} and {@code admissionSkips} reaches 3 instead of 2.
+     */
+    public void testDoorkeeperSlotCollisionDoesNotRefuseCachedShape() {
+        FusedClassCache cache = new FusedClassCache(
+            FusedClassCache.DEFAULT_MAX_WEIGHT_BYTES,
+            FusedClassCache.DEFAULT_EXPIRE_AFTER_ACCESS,
+            1
+        );
+        cache.setMinSightings(2);
+
+        // In production planShape == primaryShape.signature(); mirror that here. With one slot, A and B always collide.
+        String planA = SHAPE_A.signature();
+        String planB = SHAPE_B.signature();
+
+        // Warm-up: the first sighting of each new shape is refused (doorkeeper skip); the second admits and caches it.
+        assertThat("A first sighting refused", plan(cache, planA, SHAPE_A, CLASS_1), is(false));
+        assertThat("A second sighting admitted (and cached)", plan(cache, planA, SHAPE_A, CLASS_1), is(true));
+        assertThat("B first sighting refused", plan(cache, planB, SHAPE_B, CLASS_2), is(false));
+        assertThat("B second sighting admitted (and cached)", plan(cache, planB, SHAPE_B, CLASS_2), is(true));
+        assertThat("exactly two first-sighting skips so far", cache.admissionSkips(), is(2L));
+
+        // Both shapes cached; the colliding 1-slot doorkeeper must not refuse either. Every plan here must fuse.
+        assertThat("cached A fuses despite the collision", plan(cache, planA, SHAPE_A, CLASS_1), is(true));
+        assertThat("cached B fuses despite the collision", plan(cache, planB, SHAPE_B, CLASS_2), is(true));
+        assertThat("cached A fuses again", plan(cache, planA, SHAPE_A, CLASS_1), is(true));
+        assertThat("cached B fuses again", plan(cache, planB, SHAPE_B, CLASS_2), is(true));
+        assertThat("no further admission skips once both shapes are cached", cache.admissionSkips(), is(2L));
+        assertThat("only the two distinct shapes were ever stitched", cache.classesDefined(), is(2L));
+    }
+
     public void testCacheEvictsByWeightCeiling() {
         // A small byte ceiling (~4 classes) with many more distinct shapes than fit must evict LRU entries, keep the
         // retained weight under the ceiling, and still stitch every distinct shape exactly once. A unit obtained
@@ -677,6 +715,19 @@ public class FusedClassCacheTests extends ESTestCase {
             is(afterSetup + 1)
         );
         assertThat(bound.handle().type(), is(typeB));
+    }
+
+    /**
+     * One admission-then-stitch cycle, mirroring {@link FusionPlanner}: consult {@link FusedClassCache#admit} on the
+     * plan shape and, if admitted, stitch (or hit) the primary {@code shape}'s class. Returns whether the plan was
+     * admitted (fused).
+     */
+    private static boolean plan(FusedClassCache cache, String planShape, Shape shape, Class<?> result) {
+        if (cache.admit(planShape, shape) == false) {
+            return false;
+        }
+        getUnchecked(cache, shape, result);
+        return true;
     }
 
     private static Class<?> getUnchecked(FusedClassCache cache, Shape shape, Class<?> result) {

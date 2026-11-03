@@ -83,13 +83,16 @@ import java.util.concurrent.atomic.LongAdder;
  * is wrapped and negatively cached rather than failing the query on every plan.
  *
  * <h2>Admission (doorkeeper)</h2>
- * {@link #admit} is a direct-mapped doorkeeper that lets {@link FusionPlanner} stitch a shape only on its
- * <b>second</b> sighting, so a one-off (e.g. machine-generated) query shape never pays the stitch. The static initial
- * {@link #minSightings} is {@code 1} (admission off — fuse on first sight), so plugin-less unit tests and benchmarks
- * fuse immediately; {@link FusionSettings#initFromNodeSettings} raises it to the production default
+ * {@link #admit} is a direct-mapped doorkeeper that lets {@link FusionPlanner} stitch a <b>new</b> shape only on its
+ * <b>second</b> sighting, so a one-off (e.g. machine-generated) query shape never pays the stitch. A shape whose
+ * primary class is <b>already cached</b> short-circuits the doorkeeper entirely (see {@link #admit}), so a direct-map
+ * slot collision can never refuse a shape that has already been fused. The static initial {@link #minSightings} is
+ * {@code 1} (admission off — fuse on first sight), so plugin-less unit tests and benchmarks fuse immediately;
+ * {@link FusionSettings#initFromNodeSettings} raises it to the production default
  * ({@code esql.fusion.cache.min_sightings}, default {@link #DEFAULT_MIN_SIGHTINGS}). The table is a single
- * {@code long[}{@value #DOORKEEPER_SLOTS}{@code ]} of 64-bit plan-shape hashes; it tracks a single prior sighting, so
- * any {@code min_sightings >= 2} admits on the second sighting (finer thresholds are intentionally not represented).
+ * {@code long[}{@value #DEFAULT_DOORKEEPER_SLOTS}{@code ]} of 64-bit plan-shape hashes (the size is overridable for
+ * tests); it tracks a single prior sighting, so any {@code min_sightings >= 2} admits on the second sighting (finer
+ * thresholds are intentionally not represented).
  */
 final class FusedClassCache {
 
@@ -108,9 +111,8 @@ final class FusedClassCache {
     /** Production default for {@code esql.fusion.cache.min_sightings}; the static {@link #minSightings} starts at 1 (admission off). */
     static final int DEFAULT_MIN_SIGHTINGS = 2;
 
-    /** Doorkeeper table size; a power of two so the index is {@code hash & (slots - 1)}. */
-    private static final int DOORKEEPER_SLOTS = 4096;
-    private static final int DOORKEEPER_MASK = DOORKEEPER_SLOTS - 1;
+    /** Default doorkeeper table size; a power of two so the index is {@code hash & (slots - 1)}. */
+    private static final int DEFAULT_DOORKEEPER_SLOTS = 4096;
 
     /** Which {@link Stitcher} emit shape a cached class is; part of the cache key since one shape yields up to three. */
     enum Path {
@@ -269,9 +271,11 @@ final class FusedClassCache {
     /**
      * Direct-mapped doorkeeper of 64-bit plan-shape hashes (see {@link #admit}). Benign data races on a slot are
      * tolerated: the worst case is one extra admission skip or one early admit, both harmless for an opportunistic
-     * cache, so the plan-time path needs no lock.
+     * cache, so the plan-time path needs no lock. The size is {@link #DEFAULT_DOORKEEPER_SLOTS} in production and
+     * overridable (a power of two) for tests; {@link #doorkeeperMask} is {@code size - 1}.
      */
-    private final long[] doorkeeper = new long[DOORKEEPER_SLOTS];
+    private final long[] doorkeeper;
+    private final int doorkeeperMask;
 
     /**
      * Minimum sightings before a shape is admitted for stitching. Static initial value {@code 1} (admission off, fuse
@@ -296,8 +300,20 @@ final class FusedClassCache {
     }
 
     FusedClassCache(long maxWeightBytes, TimeValue expireAfterAccess) {
+        this(maxWeightBytes, expireAfterAccess, DEFAULT_DOORKEEPER_SLOTS);
+    }
+
+    /**
+     * Test-only full constructor: {@code doorkeeperSlots} must be a power of two. A 1-slot table forces every plan
+     * shape to collide in the doorkeeper, so a test can prove the already-cached short-circuit admits a previously
+     * fused shape despite the collision.
+     */
+    FusedClassCache(long maxWeightBytes, TimeValue expireAfterAccess, int doorkeeperSlots) {
+        assert Integer.bitCount(doorkeeperSlots) == 1 : "doorkeeper slots must be a power of two, got " + doorkeeperSlots;
         this.maxWeightBytes = maxWeightBytes;
         this.expireAfterAccess = expireAfterAccess;
+        this.doorkeeper = new long[doorkeeperSlots];
+        this.doorkeeperMask = doorkeeperSlots - 1;
         this.cache = buildCache();
     }
 
@@ -315,25 +331,43 @@ final class FusedClassCache {
     }
 
     /**
-     * The binding-independent admission decision for a plan-level {@code planShape} string (not a per-{@link Path}
-     * {@link Shape}): returns {@code true} to stitch, {@code false} to leave this plan unfused. With {@link #minSightings}
-     * {@code <= 1} every sighting is admitted; otherwise a shape is admitted only on its second (or later) sighting,
-     * and a refused first sighting increments {@link #admissionSkips}. Keyed on the plan shape so one plan — which may
-     * stitch several per-{@link Path} classes — consumes a single doorkeeper decision. A shape already stitched (and
-     * therefore seen before) is admitted without consulting the skip counter, so a cache hit never looks like a skip.
+     * The admission decision for a plan keyed on its plan-level {@code planShape} string (not a per-{@link Path}
+     * {@link Shape}) plus the {@code primaryShape} — the always-compiled block (or logical-block / filter-eval) class
+     * for that plan: returns {@code true} to stitch, {@code false} to leave this plan unfused.
+     *
+     * <p><b>Already cached short-circuits the doorkeeper.</b> When {@code primaryShape}'s class is already retained,
+     * the plan has been fused before, so it always fuses again without touching the doorkeeper or
+     * {@link #admissionSkips}. This is essential, not merely an optimisation: the doorkeeper is a direct-mapped table,
+     * so two recurring shapes that hash to the same slot overwrite each other; without this check each would refuse
+     * the other forever even though both classes are cached. Only a <b>cache miss</b> consults the doorkeeper.
+     *
+     * <p>On a miss, with {@link #minSightings} {@code <= 1} every sighting is admitted; otherwise a shape is admitted
+     * only on its second (or later) sighting, and a refused first sighting increments {@link #admissionSkips}. Keyed
+     * on the plan shape so one plan — which may stitch several per-{@link Path} classes — consumes a single doorkeeper
+     * decision.
      */
-    boolean admit(String planShape) {
-        if (minSightings <= 1) {
+    boolean admit(String planShape, Shape primaryShape) {
+        if (minSightings <= 1 || containsShape(primaryShape)) {
             return true;
         }
         long hash = hash64(planShape);
-        int idx = (int) (hash & DOORKEEPER_MASK);
+        int idx = (int) (hash & doorkeeperMask);
         if (doorkeeper[idx] == hash) {
             return true;
         }
         doorkeeper[idx] = hash;
         admissionSkips.increment();
         return false;
+    }
+
+    /**
+     * Presence peek for the {@link #admit} already-cached short-circuit: {@code true} when {@code shape}'s stitched
+     * class (or negative-cache marker) is already retained. Uses {@link Cache#get} — which also promotes LRU recency
+     * for a shape about to be reused — so the lookup is counted in {@link Cache#stats()} like any other; admission
+     * runs only when {@code min_sightings >= 2}, so plugin-less unit tests and benchmarks never reach it.
+     */
+    private boolean containsShape(Shape shape) {
+        return cache.get(shape) != null;
     }
 
     /** 64-bit string hash for the doorkeeper; reserves {@code 0} for the empty-slot sentinel. */

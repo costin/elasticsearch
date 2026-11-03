@@ -322,11 +322,12 @@ public final class FusionPlanner {
             // A lone mapping convert (ctx.mapping) is always depth-1, so this refuses it.
             return null;
         }
-        // Admission doorkeeper: on the real stitch path, leave a shape unfused on its first sighting so a one-off
-        // (e.g. machine-generated) query never pays a stitch it will not reuse. Checked before applyBakedDivisorCap so
-        // a refusal consumes no baked-divisor tuple slot, and keyed on the plan-level shapeOf (not a per-Path Shape).
-        // Skipped for the coverage classifier (admit=false), and a no-op when min_sightings<=1 (all unit tests).
-        if (admit && COMPILATION.cache().admit(shapeOf(tree)) == false) {
+        // Admission doorkeeper: on the real stitch path, leave a NEW shape unfused on its first sighting so a one-off
+        // (e.g. machine-generated) query never pays a stitch it will not reuse. A shape already cached fuses without
+        // consulting the doorkeeper (see FusedClassCache.admit). Checked before applyBakedDivisorCap so a refusal
+        // consumes no baked-divisor tuple slot. Skipped for the coverage classifier (admit=false), and a no-op when
+        // min_sightings<=1 (all unit tests).
+        if (admit && COMPILATION.admit(tree) == false) {
             return null;
         }
         // After every plan gate has passed, un-bake over-cap Div/Mod divisor tuples so they share one runtime-param
@@ -408,9 +409,10 @@ public final class FusionPlanner {
         if (containsReferenceConstant(predicateTree) || containsReferenceConstant(projectionTree)) {
             return null;
         }
-        // Admission doorkeeper, keyed on the combined filter+eval plan shape. Before applyBakedDivisorCap so a refused
-        // first sighting consumes no baked-divisor tuple slot; a no-op when min_sightings<=1 (all unit tests).
-        if (COMPILATION.cache().admit(filterEvalShapeOf(predicateTree, projectionTree)) == false) {
+        // Admission doorkeeper, keyed on the combined filter+eval plan shape; a shape already cached fuses without
+        // consulting it (see FusedClassCache.admit). Before applyBakedDivisorCap so a refused first sighting consumes
+        // no baked-divisor tuple slot; a no-op when min_sightings<=1 (all unit tests).
+        if (COMPILATION.admitFilterEval(predicateTree, projectionTree) == false) {
             return null;
         }
         predicateTree = applyBakedDivisorCap(predicateTree, predCtx, true);
