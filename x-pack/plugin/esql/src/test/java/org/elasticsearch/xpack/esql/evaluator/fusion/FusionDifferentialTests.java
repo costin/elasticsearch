@@ -29,6 +29,7 @@ import org.elasticsearch.xpack.esql.planner.Layout;
 import java.util.List;
 
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
@@ -308,5 +309,78 @@ public class FusionDifferentialTests extends FusionDifferentialTestCase {
                 page.releaseBlocks();
             }
         }
+    }
+
+    /**
+     * P0.2 end-to-end eviction-under-a-live-factory proof through the REAL stitch and the shared process-wide cache.
+     * A {@link FusedExpressionEvaluatorFactory} pins its stitched {@link FusedClassCache.CachedFused} units strongly at
+     * construction, so evicting that shape from the weight-bounded cache must NOT break an evaluator later built from
+     * the held factory. This complements {@link FusedClassCacheTests#testCacheEvictsByWeightCeiling} (which uses a
+     * synthetic loader) by driving the whole plan-time path: shrink the live cache to a tiny byte ceiling, fuse and
+     * HOLD a target factory, plan a stream of distinct fusing shapes until the cache evicts the target's classes, then
+     * build an evaluator from the held factory, evaluate a page, and assert it still matches the unfused reference.
+     */
+    public void testEvictedShapeStillEvaluatesFromPinnedFactory() {
+        FusionCompilationService service = FusionPlanner.compilation();
+        // Tiny weight ceiling (min_sightings 1, so the doorkeeper never refuses) so a handful of distinct fused classes
+        // evict the target's class. Restored to the default in the finally so the shrink cannot leak to later tests.
+        service.reconfigureCache(16L * 1024, 1);
+        try {
+            FieldAttribute a = field("a", DataType.LONG);
+            FieldAttribute b = field("b", DataType.LONG);
+            FieldAttribute c = field("c", DataType.LONG);
+            Layout layout = layout(a, b, c);
+            // Mul-rooted target; every filler below is Add-rooted, so no filler can ever re-create a target shape.
+            Expression target = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+
+            // Build and HOLD the fused factory: it stitches and pins its classes at construction, independent of the
+            // cache, so later eviction of those shapes can never break this live factory.
+            ExpressionEvaluator.Factory heldFused = fusedFactory(target, layout);
+            assertFuses(heldFused, "evicted-but-pinned target");
+            List<String> targetSignatures = service.cache()
+                .entriesForTests()
+                .stream()
+                .map(FusedClassCache.Shape::signature)
+                .distinct()
+                .toList();
+            assertThat("the held target must have cached at least its block class", targetSignatures.size(), greaterThan(0));
+
+            // Plan a stream of DISTINCT fusing shapes (all-Add chains of growing depth, each a unique shape and a
+            // different root from the Mul target) until the tiny cache has evicted every one of the target's classes.
+            boolean evicted = false;
+            for (int depth = 2; depth <= 80 && evicted == false; depth++) {
+                fusedFactory(addChain(a, b, c, depth), layout); // not held: free to evict
+                evicted = targetSignatures.stream().noneMatch(signature -> cacheHoldsShape(service, signature));
+            }
+            assertThat("the target's classes must have been evicted by the growing distinct shapes", evicted, is(true));
+            assertThat("the tiny cache must have evicted entries", service.cache().evictions(), is(greaterThan(0L)));
+
+            // The held factory still evaluates correctly from its pinned classes, matching the unfused reference, even
+            // though its shape is no longer in the cache.
+            int positions = 64;
+            Block[] inputs = {
+                denseColumn(ElementKind.LONG, positions, 1),
+                denseColumn(ElementKind.LONG, positions, 2),
+                denseColumn(ElementKind.LONG, positions, 3) };
+            ExpressionEvaluator.Factory unfused = unfusedFactory(target, layout);
+            assertDoesNotFuse(unfused, "evicted-but-pinned reference");
+            runDifferential(heldFused, unfused, ElementKind.LONG, inputs, positions, "evicted-but-pinned");
+        } finally {
+            service.reconfigureCache(FusedClassCache.DEFAULT_MAX_WEIGHT_BYTES, 1);
+        }
+    }
+
+    /** A left-deep all-{@code Add} chain of the given kernel {@code depth} (&ge; 2): {@code (((a+b)+c)+c)+...}. */
+    private static Expression addChain(FieldAttribute a, FieldAttribute b, FieldAttribute c, int depth) {
+        Expression e = new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG);
+        for (int level = 1; level < depth; level++) {
+            e = new Add(Source.EMPTY, e, c, EsqlTestUtils.TEST_CFG);
+        }
+        return e;
+    }
+
+    /** True if the live cache currently holds any entry whose plan shape equals {@code signature} (non-promoting). */
+    private static boolean cacheHoldsShape(FusionCompilationService service, String signature) {
+        return service.cache().entriesForTests().stream().anyMatch(shape -> shape.signature().equals(signature));
     }
 }
