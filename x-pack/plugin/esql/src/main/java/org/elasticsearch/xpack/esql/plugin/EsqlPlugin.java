@@ -305,11 +305,14 @@ public class EsqlPlugin extends Plugin implements ActionPlugin, ExtensiblePlugin
             );
         }
         Settings settings = services.clusterService().getSettings();
-        // Latch the node-level expression-fusion kill switch (esql.fusion.enabled) once at node start; it is not a
-        // dynamic cluster setting, so this single read fixes the node's fusion behavior for its lifetime.
+        // Seed the node-level expression-fusion kill switch (esql.fusion.enabled) at node start, then keep it current
+        // through a dynamic-setting consumer so an operator can toggle fusion on a running node.
         // coverage_report (default off) and verify (default Assertions.ENABLED) are non-Setting diagnostics controlled only via test hooks,
         // not node settings.
         FusionSettings.initFromNodeSettings(settings);
+        services.clusterService()
+            .getClusterSettings()
+            .addSettingsUpdateConsumer(FusionSettings.FUSION_ENABLED_SETTING, FusionSettings::updateEnabled);
         BigArrays bigArrays = services.indicesService().getBigArrays().withCircuitBreaking();
         var blockFactoryProvider = blockFactoryProvider(
             BlockFactory.builder(bigArrays)

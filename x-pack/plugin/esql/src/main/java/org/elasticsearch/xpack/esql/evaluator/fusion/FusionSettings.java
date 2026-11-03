@@ -16,17 +16,19 @@ import org.elasticsearch.core.Assertions;
  * The node-level runtime controls for expression fusion: the kill switch (acceptance criterion #3) and the
  * {@code esql_fusion} {@link FeatureFlag}.
  *
- * <p>{@code esql.fusion.enabled} (default {@code true}) is a {@link Setting.Property#NodeScope} setting — it is read
- * once at node start and is <b>not</b> dynamically updatable, so a node either fuses for its whole lifetime or never
- * does. The {@code esql_fusion} {@link FeatureFlag} sits in front of this kill switch: fusion is attempted only when
+ * <p>{@code esql.fusion.enabled} (default {@code true}) is a {@link Setting.Property#NodeScope},
+ * {@link Setting.Property#Dynamic} setting — it is read at node start and refreshed live (via {@link #updateEnabled})
+ * whenever the cluster setting changes, so an operator can turn fusion off (or back on) on a running node. The
+ * {@code esql_fusion} {@link FeatureFlag} sits in front of this kill switch: fusion is attempted only when
  * both the flag and the setting are on. When either is off, {@link FusionPlanner#maybeFuse} returns {@code null} for
  * every expression, so {@link org.elasticsearch.xpack.esql.evaluator.EvalMapper} produces the ordinary unfused factory
  * tree unchanged and the {@link org.elasticsearch.compute.operator.fusion.Stitcher} is never invoked.
  *
  * <p>Because {@code EvalMapper}/{@code FusionPlanner} are static utilities reached from many call sites that have no
  * {@link Settings} in hand, the resolved values are latched into {@code volatile} fields that
- * {@link org.elasticsearch.xpack.esql.plugin.EsqlPlugin} sets once from the node settings at component creation via
- * {@link #initFromNodeSettings(Settings)}. Tests and benchmarks that never build a plugin flip the same fields via
+ * {@link org.elasticsearch.xpack.esql.plugin.EsqlPlugin} seeds from the node settings at component creation via
+ * {@link #initFromNodeSettings(Settings)} and keeps current through a dynamic-setting consumer bound to
+ * {@link #updateEnabled}. Tests and benchmarks that never build a plugin flip the same fields via
  * {@link #setEnabledForTests} / {@link #setEnabledForBenchmarks}.
  *
  * <p>Verify defaults to {@link Assertions#ENABLED} (on under {@code -ea} test JVMs, off in production / JMH where
@@ -51,17 +53,19 @@ public final class FusionSettings {
      */
     public static final FeatureFlag FUSION_FEATURE_FLAG = new FeatureFlag("esql_fusion");
 
-    /** {@code esql.fusion.enabled}: node-scoped, non-dynamic; default {@code true}. Registered by {@code EsqlPlugin}. */
+    /** {@code esql.fusion.enabled}: node-scoped, dynamic; default {@code true}. Registered by {@code EsqlPlugin}. */
     public static final Setting<Boolean> FUSION_ENABLED_SETTING = Setting.boolSetting(
         "esql.fusion.enabled",
         true,
-        Setting.Property.NodeScope
+        Setting.Property.NodeScope,
+        Setting.Property.Dynamic
     );
 
     /**
-     * The effective switch. Default {@code true}; the effective value is latched from the node Setting by
-     * {@link #initFromNodeSettings} (or flipped by a test/benchmark hook). Read on the cold plan-time path, so a
-     * plain {@code volatile} is sufficient — there is no per-row cost and no need for stronger ordering.
+     * The effective switch. Default {@code true}; the effective value is seeded from the node Setting by
+     * {@link #initFromNodeSettings}, refreshed on dynamic cluster-setting updates via {@link #updateEnabled} (or
+     * flipped by a test/benchmark hook). Read on the cold plan-time path, so a plain {@code volatile} is sufficient
+     * — there is no per-row cost and no need for stronger ordering.
      */
     private static volatile boolean enabled = true;
 
@@ -90,10 +94,20 @@ public final class FusionSettings {
      */
     private static final boolean VERIFY_ENABLED = Assertions.ENABLED;
 
-    /** Latches all fusion dials from the node {@link Settings}. Called once by {@code EsqlPlugin#createComponents}. */
+    /** Seeds all fusion dials from the node {@link Settings}. Called once by {@code EsqlPlugin#createComponents}. */
     public static void initFromNodeSettings(Settings settings) {
         enabled = FUSION_ENABLED_SETTING.get(settings);
         // coverage_report and verify are non-Setting diagnostics (constant defaults; flipped only via test hooks).
+    }
+
+    /**
+     * Dynamic-setting consumer for {@link #FUSION_ENABLED_SETTING}: {@code EsqlPlugin} binds this to the cluster
+     * settings so an operator can toggle {@code esql.fusion.enabled} on a running node. New plans pick up the change
+     * on the next plan-time read; already-compiled fused classes are unaffected (they are only reached when a plan
+     * fuses).
+     */
+    public static void updateEnabled(boolean value) {
+        enabled = value;
     }
 
     /**
