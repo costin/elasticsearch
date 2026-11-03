@@ -36,9 +36,7 @@ public class StitcherCrossModuleTests extends ESTestCase {
     private static final String DOUBLE_BINARY_TYPE = "(DD)D";
     private static final MethodType DOUBLE_BINARY = MethodType.methodType(double.class, double.class, double.class);
 
-    @SuppressForbidden(
-        reason = "test-only reflection: invokes the real package-private Add.processDoubles kernel as the differential oracle; the test lives in esql-proper (not Add's arithmetic package) so the hidden class can link NumericUtils"
-    )
+    @SuppressForbidden(reason = "test-only reflection: invokes the real package-private Add kernel as the differential oracle")
     public void testFuseRealAddProcessDoublesCrossModule() throws Throwable {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
         Stitcher stitcher = new Stitcher(new TemplateRegistry());

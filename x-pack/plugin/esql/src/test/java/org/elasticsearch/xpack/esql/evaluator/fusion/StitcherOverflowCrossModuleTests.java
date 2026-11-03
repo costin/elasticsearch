@@ -310,10 +310,7 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
         assertWarnings(FIRST_EXCEPTION_HEADER, DOUBLE_OVERFLOW_WARNING);
     }
 
-    @SuppressForbidden(
-        reason = "test-only reflection: resolves the real package-private Add kernel as the differential oracle; "
-            + "the test lives in esql-proper (not Add's arithmetic package) so the hidden class can link NumericUtils"
-    )
+    @SuppressForbidden(reason = "test-only reflection: resolves the real package-private Add kernel as the differential oracle")
     private static Method addKernel(String name, Class<?>... parameterTypes) throws Exception {
         Method kernel = Add.class.getDeclaredMethod(name, parameterTypes);
         kernel.setAccessible(true);

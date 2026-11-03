@@ -95,9 +95,7 @@ public class ComparisonFactoryFusionAwareTests extends ESTestCase {
         );
     }
 
-    @SuppressForbidden(
-        reason = "test-only reflection: pins the generated, intentionally-private $Factory.FUSION_DESCRIPTOR constant across many expression packages (no public/same-package path)"
-    )
+    @SuppressForbidden(reason = "test-only reflection: reads the generated, private $Factory.FUSION_DESCRIPTOR constant")
     private static void assertFusionDescriptor(
         String factoryFqn,
         Class<?> expectedKernelClass,

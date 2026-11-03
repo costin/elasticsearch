@@ -77,9 +77,7 @@ public class ChangeCaseFusionDifferentialTests extends FusionDifferentialTestCas
      * descriptor (not a hand-written {@code CHANGE_CASE_DESCRIPTOR}). The mapping flag and {@code fusionFixedArgs}
      * come from the convert Factory. A lone TO_LOWER does not fuse (D4).
      */
-    @SuppressForbidden(
-        reason = "test-only reflection: regression guard asserting the hand-written CHANGE_CASE_DESCRIPTOR field was deleted (absence of a possibly-private field)"
-    )
+    @SuppressForbidden(reason = "test-only reflection: regression guard that CHANGE_CASE_DESCRIPTOR field is gone")
     public void testToLowerFusesThroughGeneratedFusionAwareDescriptor() {
         for (Field field : FusionPlanner.class.getDeclaredFields()) {
             assertThat(

@@ -72,9 +72,7 @@ public class StitcherBlockCrossModuleTests extends ESTestCase {
         assertThat(breaker.getUsed(), is(0L));
     }
 
-    @SuppressForbidden(
-        reason = "test-only reflection: invokes the real package-private Add.processDoubles kernel as the differential oracle; the test lives in esql-proper (not Add's arithmetic package) so the hidden class can link NumericUtils"
-    )
+    @SuppressForbidden(reason = "test-only reflection: invokes the real package-private Add kernel as the differential oracle")
     public void testFuseRealAddProcessDoublesBlockPathCrossModule() throws Throwable {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
         Stitcher stitcher = new Stitcher(new TemplateRegistry());

@@ -104,9 +104,7 @@ public class DictionarySafeClassificationTests extends ESTestCase {
         assertThat(descriptor.warns(), is(false));
     }
 
-    @SuppressForbidden(
-        reason = "test-only reflection: reads the generated, intentionally-private $Factory.FUSION_DESCRIPTOR constant for an evaluator class with no instance in hand"
-    )
+    @SuppressForbidden(reason = "test-only reflection: reads the generated, private $Factory.FUSION_DESCRIPTOR constant")
     private static FusionDescriptor generatedDescriptor(Class<?> evaluatorClass) throws Exception {
         Class<?> factory = Class.forName(evaluatorClass.getName() + "$Factory");
         Field field = factory.getDeclaredField("FUSION_DESCRIPTOR");
