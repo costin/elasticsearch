@@ -279,6 +279,9 @@ public class CsvIT extends ESTestCase {
                     Settings.Builder builder = Settings.builder()
                         .put("xpack.security.enabled", false)
                         .put("xpack.license.self_generated.type", "trial")
+                        // Admit fusion on first sighting so every csv-spec query (each runs once) exercises the fused
+                        // path under the verify A/B comparison; the production default waits for a second sighting.
+                        .put("esql.fusion.cache.min_sightings", 1)
                         .put("ingest.geoip.downloader.enabled", false);
                     // Additive test hook: expression fusion is node-scoped and defaults ON, so the whole corpus already
                     // runs fused. This -D-guarded override lets a corpus run flip fusion off to prove result/warning

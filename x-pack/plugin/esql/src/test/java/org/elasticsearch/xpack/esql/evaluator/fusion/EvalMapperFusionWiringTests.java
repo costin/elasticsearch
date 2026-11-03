@@ -102,6 +102,10 @@ public class EvalMapperFusionWiringTests extends ESTestCase {
         FusionPlanner.compilerForTests = null;
         FusedExpressionEvaluatorFactory.injectEvalLinkageErrorForTests = false;
         FusionSettings.setEnabledForTests(true);
+        // testFusionEnabledSettingWiring calls initFromNodeSettings, which rebuilds the shared singleton cache with the
+        // production default min_sightings (2). Restore the unit-test default so later fusion tests sharing this JVM
+        // still fuse on first sighting.
+        FusionPlanner.classCache().setMinSightings(1);
         assertThat(breaker.getUsed(), is(0L));
     }
 

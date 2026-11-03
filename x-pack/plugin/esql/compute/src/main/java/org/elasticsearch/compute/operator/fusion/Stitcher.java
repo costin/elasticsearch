@@ -231,6 +231,20 @@ public final class Stitcher {
     }
 
     /**
+     * A defined hidden {@link Class} paired with the length of the class file it was defined from. The byte length
+     * is a cheap, representative proxy for the class's retained metaspace footprint, used by the process-wide fused
+     * class cache to weigh entries so a memory ceiling can bound how many stitched classes a node retains. The sized
+     * {@code compile*Sized} entry points return this; the plain {@code compile*} ones (used by test doubles) do not,
+     * so the production cache path alone carries the weight.
+     */
+    public record Fused(Class<?> clazz, int classFileBytes) {}
+
+    /** {@link #defineOrThrow} paired with the class-file byte length, for the weight-aware cache path. */
+    private Fused defineSized(MethodHandles.Lookup caller, byte[] bytecode, String what) throws StitchingException {
+        return new Fused(defineOrThrow(caller, bytecode, what), bytecode.length);
+    }
+
+    /**
      * Fails loud when a {@link FusionNode.Kernel}'s operand count does not match its descriptor's arity — a
      * planner/tree construction bug, not a runtime input condition (so an unchecked exception, caught by no one, is
      * correct). Shared by every emitter that splices a kernel body so the check reads identically on all paths.
@@ -572,6 +586,11 @@ public final class Stitcher {
         return defineOrThrow(caller, vectors.emitVectorLoop(caller, tree), "vector-loop class");
     }
 
+    /** {@link #compileVectorLoop} paired with the class-file byte length, for the weight-aware cache path. */
+    public Fused compileVectorLoopSized(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return defineSized(caller, vectors.emitVectorLoop(caller, tree), "vector-loop class");
+    }
+
     /**
      * Overflow-aware counterpart to {@link #compileVectorLoop}: fuses a tree of no-null single-valued primitive
      * {@code *ArrayVector} inputs whose kernels are <b>overflow-checked</b> into a single counted loop that reads
@@ -606,6 +625,11 @@ public final class Stitcher {
      */
     public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         return defineOrThrow(caller, vectors.emitVectorLoopChecked(caller, tree), "checked vector-loop class");
+    }
+
+    /** {@link #compileVectorLoopChecked} paired with the class-file byte length, for the weight-aware cache path. */
+    public Fused compileVectorLoopCheckedSized(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return defineSized(caller, vectors.emitVectorLoopChecked(caller, tree), "checked vector-loop class");
     }
 
     /**
@@ -668,6 +692,11 @@ public final class Stitcher {
         return defineOrThrow(caller, blocks.emitBlockLoop(caller, tree), "block-loop class");
     }
 
+    /** {@link #compileBlockLoop} paired with the class-file byte length, for the weight-aware cache path. */
+    public Fused compileBlockLoopSized(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return defineSized(caller, blocks.emitBlockLoop(caller, tree), "block-loop class");
+    }
+
     /**
      * Fuses a <b>logical</b> tree — a three-valued-logic (3VL) {@code AND}/{@code OR} tree ({@link FusionNode.Logical})
      * or a Kleene 3VL {@link FusionNode.Not} — whose operands/child are boolean-producing comparison
@@ -722,6 +751,11 @@ public final class Stitcher {
         return defineOrThrow(caller, blocks.emitLogicalBlockLoop(caller, tree), "logical block-loop class");
     }
 
+    /** {@link #compileLogicalBlockLoop} paired with the class-file byte length, for the weight-aware cache path. */
+    public Fused compileLogicalBlockLoopSized(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return defineSized(caller, blocks.emitLogicalBlockLoop(caller, tree), "logical block-loop class");
+    }
+
     /**
      * Fuses a 3VL {@code AND}/{@code OR}/{@code NOT} tree into a <b>dense 2VL vector loop</b>: when every input is a
      * vector (no nulls, no multi-values) the result is a plain boolean, so this path writes {@code boolean[]} and wraps
@@ -743,6 +777,11 @@ public final class Stitcher {
      */
     public Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
         return defineOrThrow(caller, vectors.emitLogicalVectorLoop(caller, tree), "logical vector-loop class");
+    }
+
+    /** {@link #compileLogicalVectorLoop} paired with the class-file byte length, for the weight-aware cache path. */
+    public Fused compileLogicalVectorLoopSized(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return defineSized(caller, vectors.emitLogicalVectorLoop(caller, tree), "logical vector-loop class");
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -793,6 +832,16 @@ public final class Stitcher {
     public Class<?> compileFilterEvalBlockLoop(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
         throws StitchingException {
         return defineOrThrow(
+            caller,
+            filterEval.emitFilterEvalBlockLoop(caller, predicateTree, projectionTree),
+            "filter-eval block-loop class"
+        );
+    }
+
+    /** {@link #compileFilterEvalBlockLoop} paired with the class-file byte length, for the weight-aware cache path. */
+    public Fused compileFilterEvalBlockLoopSized(MethodHandles.Lookup caller, FusionNode predicateTree, FusionNode projectionTree)
+        throws StitchingException {
+        return defineSized(
             caller,
             filterEval.emitFilterEvalBlockLoop(caller, predicateTree, projectionTree),
             "filter-eval block-loop class"

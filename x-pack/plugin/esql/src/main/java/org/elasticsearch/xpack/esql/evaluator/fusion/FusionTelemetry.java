@@ -59,7 +59,7 @@ public final class FusionTelemetry {
 
     /**
      * Number of plans that could not bake a divisor tuple because the per-shape tuple registry outer map was already
-     * at {@link FusedClassCache#MAX_ENTRIES}. Diagnostic side-channel only; not coverage-gated.
+     * at {@link FusionPlanner#BAKED_DIVISOR_SHAPE_CAP}. Diagnostic side-channel only; not coverage-gated.
      */
     private static final LongAdder BAKING_DISABLED_REGISTRY_FULL = new LongAdder();
 
@@ -182,7 +182,7 @@ public final class FusionTelemetry {
 
     /**
      * Records one plan that could not bake a divisor tuple because the per-shape tuple registry outer map was already
-     * at {@link FusedClassCache#MAX_ENTRIES}.
+     * at {@link FusionPlanner#BAKED_DIVISOR_SHAPE_CAP}.
      */
     public static void recordBakingDisabledRegistryFull() {
         BAKING_DISABLED_REGISTRY_FULL.increment();

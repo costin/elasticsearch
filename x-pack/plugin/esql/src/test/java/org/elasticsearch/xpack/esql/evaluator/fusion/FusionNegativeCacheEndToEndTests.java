@@ -98,8 +98,9 @@ public class FusionNegativeCacheEndToEndTests extends FusionDifferentialTestCase
             );
             assertThat("the failing vector path is attempted once on the first plan", cache.failures(), is(1L));
             assertThat("no negative-cache hit yet (first plan is the miss that stored the Failure marker)", cache.negativeHits(), is(0L));
-            long spinsAfterFirst = cache.spins();
-            assertThat("first plan stitches BLOCK (success) and CHECKED_VECTOR (failure) — two spins", spinsAfterFirst, is(2L));
+            // First plan stitches BLOCK (success -> one class defined) and CHECKED_VECTOR (failure -> no class).
+            long classesAfterFirst = cache.classesDefined();
+            assertThat("first plan defines exactly the BLOCK class (the CHECKED_VECTOR stitch failed)", classesAfterFirst, is(1L));
 
             second = assertFuses(fusedFactory(expr, layout), "second plan through production factory");
             assertThat(
@@ -109,7 +110,11 @@ public class FusionNegativeCacheEndToEndTests extends FusionDifferentialTestCase
             );
             assertThat("the failing vector path is still attempted only once across both plans", cache.failures(), is(1L));
             assertThat("the second plan is a negative-cache hit on the vector path", cache.negativeHits(), is(1L));
-            assertThat("the second plan must not invoke the stitcher again", cache.spins(), is(spinsAfterFirst));
+            assertThat(
+                "the second plan must not define a new class (BLOCK was a cache hit)",
+                cache.classesDefined(),
+                is(classesAfterFirst)
+            );
             assertThat("still on the production compiler", FusionPlanner.compilerForTests, nullValue());
 
             mockLog.assertAllExpectationsMatched();

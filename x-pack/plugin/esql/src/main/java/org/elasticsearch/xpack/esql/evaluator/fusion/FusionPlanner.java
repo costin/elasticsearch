@@ -119,11 +119,19 @@ public final class FusionPlanner {
     static final int BAKED_DIVISOR_CAP = 8;
 
     /**
+     * Fail-safe bound on the number of distinct un-baked <em>shapes</em> whose baked-divisor tuples are tracked (not a
+     * cache-entry count). Its own constant rather than the cache's byte ceiling: the two are different grains (shape
+     * keys vs stitched-class bytes), so coupling them was always mixed-grain. A long-lived node cannot accumulate
+     * unbounded shape keys even after cache eviction.
+     */
+    static final int BAKED_DIVISOR_SHAPE_CAP = 512;
+
+    /**
      * Distinct ordered baked-value tuples admitted per un-baked shape (the {@link #shapeOf} string with baked
      * values stripped). One tuple per tree, in deterministic tree-walk order. The inner set is capped at
      * {@link #BAKED_DIVISOR_CAP} so classes-per-shape is bounded at {@code BAKED_DIVISOR_CAP + 1} (≤8 fully-baked
      * tuples + 1 shared fully-unbaked runtime-param class). The outer map is capped at
-     * {@link FusedClassCache#MAX_ENTRIES} so a long-lived node cannot accumulate unbounded shape keys after cache
+     * {@link #BAKED_DIVISOR_SHAPE_CAP} so a long-lived node cannot accumulate unbounded shape keys after cache
      * eviction. Plan-time can be multi-threaded, so both tiers are concurrent: the map is a {@link ConcurrentHashMap}
      * and each inner set is {@link ConcurrentHashMap#newKeySet()}, with admission serialized per shape.
      *
@@ -152,7 +160,7 @@ public final class FusionPlanner {
             MethodType type,
             String... methods
         ) throws Stitcher.StitchingException {
-            return new FusedClassCache.CachedFused(compileBlockLoop(caller, tree), null, Map.of());
+            return new FusedClassCache.CachedFused(compileBlockLoop(caller, tree), 0, null, Map.of());
         }
 
         Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
@@ -164,7 +172,7 @@ public final class FusionPlanner {
             MethodType type,
             String... methods
         ) throws Stitcher.StitchingException {
-            return new FusedClassCache.CachedFused(compileVectorLoop(caller, tree), null, Map.of());
+            return new FusedClassCache.CachedFused(compileVectorLoop(caller, tree), 0, null, Map.of());
         }
 
         Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
@@ -176,7 +184,7 @@ public final class FusionPlanner {
             MethodType type,
             String... methods
         ) throws Stitcher.StitchingException {
-            return new FusedClassCache.CachedFused(compileVectorLoopChecked(caller, tree), null, Map.of());
+            return new FusedClassCache.CachedFused(compileVectorLoopChecked(caller, tree), 0, null, Map.of());
         }
 
         Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException;
@@ -188,7 +196,7 @@ public final class FusionPlanner {
             MethodType type,
             String... methods
         ) throws Stitcher.StitchingException {
-            return new FusedClassCache.CachedFused(compileLogicalBlockLoop(caller, tree), null, Map.of());
+            return new FusedClassCache.CachedFused(compileLogicalBlockLoop(caller, tree), 0, null, Map.of());
         }
 
         /**
@@ -207,7 +215,7 @@ public final class FusionPlanner {
             MethodType type,
             String... methods
         ) throws Stitcher.StitchingException {
-            return new FusedClassCache.CachedFused(compileLogicalVectorLoop(caller, tree), null, Map.of());
+            return new FusedClassCache.CachedFused(compileLogicalVectorLoop(caller, tree), 0, null, Map.of());
         }
 
         /**
@@ -228,7 +236,7 @@ public final class FusionPlanner {
             MethodType type,
             String... methods
         ) throws Stitcher.StitchingException {
-            return new FusedClassCache.CachedFused(compileFilterEvalBlockLoop(caller, predicateTree, projectionTree), null, Map.of());
+            return new FusedClassCache.CachedFused(compileFilterEvalBlockLoop(caller, predicateTree, projectionTree), 0, null, Map.of());
         }
     }
 
@@ -314,6 +322,13 @@ public final class FusionPlanner {
             // A lone mapping convert (ctx.mapping) is always depth-1, so this refuses it (D4).
             return null;
         }
+        // Admission doorkeeper: on the real stitch path, leave a shape unfused on its first sighting so a one-off
+        // (e.g. machine-generated) query never pays a stitch it will not reuse. Checked before applyBakedDivisorCap so
+        // a refusal consumes no baked-divisor tuple slot, and keyed on the plan-level shapeOf (not a per-Path Shape).
+        // Skipped for the coverage classifier (admit=false), and a no-op when min_sightings<=1 (all unit tests).
+        if (admit && COMPILATION.cache().admit(shapeOf(tree)) == false) {
+            return null;
+        }
         // After every plan gate has passed, un-bake over-cap Div/Mod divisor tuples so they share one runtime-param
         // class. Must run before FusionSignature.of: un-baking a constant adds a trailing parameter slot. A refused
         // plan (depth / bytesRefComparisonDepth1) returns above and consumes no slot.
@@ -391,6 +406,11 @@ public final class FusionPlanner {
         // on the unfused chain; the single-expression path handles L constants. Structure-only, so it runs before
         // the cap: every refusal here precedes admission and consumes no baked-tuple slot.
         if (containsReferenceConstant(predicateTree) || containsReferenceConstant(projectionTree)) {
+            return null;
+        }
+        // Admission doorkeeper, keyed on the combined filter+eval plan shape. Before applyBakedDivisorCap so a refused
+        // first sighting consumes no baked-divisor tuple slot; a no-op when min_sightings<=1 (all unit tests).
+        if (COMPILATION.cache().admit(filterEvalShapeOf(predicateTree, projectionTree)) == false) {
             return null;
         }
         predicateTree = applyBakedDivisorCap(predicateTree, predCtx, true);
@@ -1503,14 +1523,14 @@ public final class FusionPlanner {
      * Admits {@code tuple} as a baked divisor tuple of {@code unbakedShape}, or returns {@code false} so the planner
      * un-bakes every divisor in the tree (runtime-parameter form). Already-admitted tuples return {@code true}
      * (reuse the baked class). The inner set is capped at {@link #BAKED_DIVISOR_CAP}; a brand-new un-baked shape is
-     * refused without insertion when the outer map is already at {@link FusedClassCache#MAX_ENTRIES}.
+     * refused without insertion when the outer map is already at {@link #BAKED_DIVISOR_SHAPE_CAP}.
      */
     static boolean tryAdmitBakedTuple(String unbakedShape, List<Object> tuple) {
         List<Object> key = List.copyOf(tuple);
         Set<List<Object>> admitted = BAKED_DIVISOR_TUPLES_BY_UNBAKED_SHAPE.get(unbakedShape);
         if (admitted == null) {
-            // Fail-safe bound on un-baked *shapes* (not cached classes); mixed-grain with MAX_ENTRIES, harmless.
-            if (BAKED_DIVISOR_TUPLES_BY_UNBAKED_SHAPE.size() >= FusedClassCache.MAX_ENTRIES) {
+            // Fail-safe bound on un-baked *shapes* (not cached classes).
+            if (BAKED_DIVISOR_TUPLES_BY_UNBAKED_SHAPE.size() >= BAKED_DIVISOR_SHAPE_CAP) {
                 FusionTelemetry.recordBakingDisabledRegistryFull();
                 return false;
             }

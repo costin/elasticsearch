@@ -36,7 +36,10 @@ import java.lang.invoke.MethodType;
 final class FusionCompilationService {
 
     private final Stitcher stitcher = new Stitcher(new TemplateRegistry());
-    private final FusedClassCache cache = new FusedClassCache();
+
+    // Volatile and rebuilt only by reconfigureCache at node start (the ES Cache weight ceiling is fixed at build time,
+    // so honouring esql.fusion.cache.max_bytes means a fresh cache). Plan-time threads always read the current cache.
+    private volatile FusedClassCache cache = new FusedClassCache();
 
     /**
      * Test-only override of {@link Stitcher#compileBlockLoop}. {@link Stitcher} is final, so tests inject the
@@ -50,9 +53,13 @@ final class FusionCompilationService {
 
     volatile BlockLoopOverride compileBlockLoopForTests;
 
-    private Class<?> stitchBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+    private Stitcher.Fused stitchBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
         BlockLoopOverride override = compileBlockLoopForTests;
-        return override != null ? override.compile(stitcher, caller, tree) : stitcher.compileBlockLoop(caller, tree);
+        if (override != null) {
+            // Test double returns a bare Class with no byte length; weigh it as unknown (see FusedClassCache).
+            return new Stitcher.Fused(override.compile(stitcher, caller, tree), 0);
+        }
+        return stitcher.compileBlockLoopSized(caller, tree);
     }
 
     private static Class<?> requireResolved() {
@@ -91,7 +98,7 @@ final class FusionCompilationService {
         ) throws Stitcher.StitchingException {
             return cached(
                 shapeKey(tree, FusedClassCache.Path.PLAIN_VECTOR),
-                () -> stitcher.compileVectorLoop(caller, tree),
+                () -> stitcher.compileVectorLoopSized(caller, tree),
                 caller,
                 type,
                 methods
@@ -112,7 +119,7 @@ final class FusionCompilationService {
         ) throws Stitcher.StitchingException {
             return cached(
                 shapeKey(tree, FusedClassCache.Path.CHECKED_VECTOR),
-                () -> stitcher.compileVectorLoopChecked(caller, tree),
+                () -> stitcher.compileVectorLoopCheckedSized(caller, tree),
                 caller,
                 type,
                 methods
@@ -133,7 +140,7 @@ final class FusionCompilationService {
         ) throws Stitcher.StitchingException {
             return cached(
                 shapeKey(tree, FusedClassCache.Path.LOGICAL_BLOCK),
-                () -> stitcher.compileLogicalBlockLoop(caller, tree),
+                () -> stitcher.compileLogicalBlockLoopSized(caller, tree),
                 caller,
                 type,
                 methods
@@ -154,7 +161,7 @@ final class FusionCompilationService {
         ) throws Stitcher.StitchingException {
             return cached(
                 shapeKey(tree, FusedClassCache.Path.LOGICAL_VECTOR),
-                () -> stitcher.compileLogicalVectorLoop(caller, tree),
+                () -> stitcher.compileLogicalVectorLoopSized(caller, tree),
                 caller,
                 type,
                 methods
@@ -182,7 +189,13 @@ final class FusionCompilationService {
                 rootElement(projectionTree),
                 FusedClassCache.Path.FILTER_EVAL_BLOCK
             );
-            return cached(shape, () -> stitcher.compileFilterEvalBlockLoop(caller, predicateTree, projectionTree), caller, type, methods);
+            return cached(
+                shape,
+                () -> stitcher.compileFilterEvalBlockLoopSized(caller, predicateTree, projectionTree),
+                caller,
+                type,
+                methods
+            );
         }
 
     };
@@ -195,12 +208,12 @@ final class FusionCompilationService {
      */
     private FusedClassCache.CachedFused cached(
         FusedClassCache.Shape shape,
-        FusedClassCache.ClassStitcher stitch,
+        FusedClassCache.SizedStitch stitch,
         MethodHandles.Lookup caller,
         MethodType type,
         String... methods
     ) throws Stitcher.StitchingException {
-        return cache.getResolved(shape, () -> FusedClassCache.stitchAndResolve(stitch, caller, type, methods));
+        return cache.getResolved(shape, () -> FusedClassCache.stitchAndResolveSized(stitch, caller, type, methods));
     }
 
     /** The production caching compiler consulted by {@link FusionPlanner} when no test override is installed. */
@@ -211,6 +224,17 @@ final class FusionCompilationService {
     /** The process-wide stitched-class cache (package-private so tests can assert reuse and reset counters). */
     FusedClassCache cache() {
         return cache;
+    }
+
+    /**
+     * Rebuilds the cache with the node-configured byte-weight ceiling and seeds its admission threshold. Called once
+     * at node start by {@link FusionSettings#initFromNodeSettings}, before any plan runs; the ES {@link FusedClassCache}
+     * fixes its weight ceiling at construction, so changing {@code maxBytes} means a fresh (empty) cache.
+     */
+    void reconfigureCache(long maxBytes, int minSightings) {
+        FusedClassCache rebuilt = new FusedClassCache(maxBytes);
+        rebuilt.setMinSightings(minSightings);
+        this.cache = rebuilt;
     }
 
     /** The binding-independent cache key for {@code tree} on the given emit {@code path}. */

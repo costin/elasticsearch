@@ -531,7 +531,9 @@ public class EsqlPlugin extends Plugin implements ActionPlugin, ExtensiblePlugin
                 ViewResolver.MAX_VIEW_DEPTH_SETTING,
                 DataSourceService.MAX_DATA_SOURCES_COUNT_SETTING,
                 DatasetService.MAX_DATASETS_COUNT_SETTING,
-                FusionSettings.FUSION_ENABLED_SETTING
+                FusionSettings.FUSION_ENABLED_SETTING,
+                FusionSettings.FUSION_CACHE_MAX_BYTES_SETTING,
+                FusionSettings.FUSION_CACHE_MIN_SIGHTINGS_SETTING
             )
         );
         settings.addAll(PlannerSettings.settings());

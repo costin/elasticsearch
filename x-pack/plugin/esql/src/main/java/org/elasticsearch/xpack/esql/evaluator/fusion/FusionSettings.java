@@ -9,6 +9,7 @@ package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.FeatureFlag;
 import org.elasticsearch.core.Assertions;
 
@@ -66,6 +67,34 @@ public final class FusionSettings {
     );
 
     /**
+     * {@code esql.fusion.cache.max_bytes}: node-scoped byte-weight ceiling for the process-wide
+     * {@link FusedClassCache}. The cache weighs each stitched hidden class by its class-file byte length (a proxy for
+     * retained metaspace), so this bounds retained hidden-class metadata rather than an entry count. Read once at node
+     * start by {@link #initFromNodeSettings}, which rebuilds the cache with it (the backing cache fixes its ceiling at
+     * construction). Default {@link FusedClassCache#DEFAULT_MAX_WEIGHT_BYTES} (~512 classes at 1.2–4.3 KB each).
+     */
+    public static final Setting<ByteSizeValue> FUSION_CACHE_MAX_BYTES_SETTING = Setting.byteSizeSetting(
+        "esql.fusion.cache.max_bytes",
+        ByteSizeValue.ofBytes(FusedClassCache.DEFAULT_MAX_WEIGHT_BYTES),
+        Setting.Property.NodeScope
+    );
+
+    /**
+     * {@code esql.fusion.cache.min_sightings}: node-scoped admission threshold. A shape is stitched only on its
+     * {@code min_sightings}-th sighting (default {@link FusedClassCache#DEFAULT_MIN_SIGHTINGS}, i.e. the second), so a
+     * one-off query shape is never stitched. {@code 1} disables the doorkeeper (fuse on first sight). Seeded at node
+     * start by {@link #initFromNodeSettings}; the cache's static default is {@code 1} so plugin-less unit tests and
+     * benchmarks fuse immediately. The direct-mapped doorkeeper tracks a single prior sighting, so any value {@code >= 2}
+     * admits on the second sighting.
+     */
+    public static final Setting<Integer> FUSION_CACHE_MIN_SIGHTINGS_SETTING = Setting.intSetting(
+        "esql.fusion.cache.min_sightings",
+        FusedClassCache.DEFAULT_MIN_SIGHTINGS,
+        1,
+        Setting.Property.NodeScope
+    );
+
+    /**
      * The effective switch. Default {@code true}; the effective value is seeded from the node Setting by
      * {@link #initFromNodeSettings}, refreshed on dynamic cluster-setting updates via {@link #updateEnabled} (or
      * flipped by a test/benchmark hook). Read on the cold plan-time path, so a plain {@code volatile} is sufficient
@@ -101,6 +130,11 @@ public final class FusionSettings {
     /** Seeds all fusion dials from the node {@link Settings}. Called once by {@code EsqlPlugin#createComponents}. */
     public static void initFromNodeSettings(Settings settings) {
         enabled = FUSION_ENABLED_SETTING.get(settings);
+        // Rebuild the process-wide class cache with the node-configured byte ceiling and seed the admission threshold.
+        // Runs once at node start, before any plan; the cache's static defaults (large ceiling, min_sightings=1) stay
+        // in effect for plugin-less unit tests and benchmarks that never call this.
+        FusionPlanner.compilation()
+            .reconfigureCache(FUSION_CACHE_MAX_BYTES_SETTING.get(settings).getBytes(), FUSION_CACHE_MIN_SIGHTINGS_SETTING.get(settings));
         // coverage_report and verify are non-Setting diagnostics (constant defaults; flipped only via test hooks).
     }
 

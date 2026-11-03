@@ -7,19 +7,22 @@
 
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
+import org.elasticsearch.common.cache.Cache;
+import org.elasticsearch.common.cache.CacheBuilder;
+import org.elasticsearch.common.cache.RemovalNotification;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
+import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
-import java.lang.ref.Reference;
-import java.lang.ref.SoftReference;
-import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -40,99 +43,74 @@ import java.util.concurrent.atomic.LongAdder;
  * The key is the <b>structure</b> of the fused subtree. It deliberately <b>excludes column bindings</b> (which columns a
  * leaf reads) and, since iter 30, also <b>excludes non-baked literal constant values</b> (which arrive as trailing method
  * arguments rather than baked-in bytecode), keeping only the constant's element-typed slot marker. A <b>baked</b>
- * constant (F1: a Div/Mod divisor pushed as a bytecode immediate) <em>does</em> participate in the key:
- * <ul>
- *   <li><b>op-tree structure + kernel set</b> — {@link FusionPlanner#shapeOf} renders every <em>column</em> leaf as
- *       {@code #} and every kernel as {@code KernelClass.method(...)}, so {@code (a+b)*c} and {@code (x+y)*z} collapse to
- *       one signature;</li>
- *   <li><b>literal constants (value-independent unless baked)</b> — a non-baked
- *       {@link org.elasticsearch.compute.operator.fusion.FusionNode.Constant} leaf renders as {@code #C:<element>} (its
- *       element only, <em>no</em> value). Because that constant is passed as a trailing method argument (not pushed as a
- *       bytecode constant), {@code (a+b)>5} and {@code (a+b)>6} stitch to the <em>same</em> class and differ only in the
- *       argument supplied at eval time — so they <em>share</em> one shape and one cached class. A baked constant renders
- *       as {@code #C:<element>:<value>} (e.g. {@code #C:J:1000}), so {@code x/1000} and {@code x/500} stitch to distinct
- *       classes — bounded by {@link FusionPlanner#BAKED_DIVISOR_CAP} distinct values per un-baked shape (plus one
- *       shared runtime-param class). Retaining the element marker keeps a
- *       {@code long} tree distinct from a {@code double} tree (their emit paths and parameter types differ);</li>
- *   <li><b>element type</b> — the uniform primitive of the homogeneous tree (already implied by the kernel method names
- *       such as {@code processLongs} vs {@code processDoubles}, but pinned explicitly for clarity). It also keeps a long
- *       tree with constant {@code 5} distinct from a double tree with constant {@code 5.0};</li>
- *   <li><b>{@link Path}</b> — which of the {@link Stitcher}'s three emit shapes this class is (block / plain-vector /
- *       checked-vector). One shape maps to up to three distinct classes, so the path is part of the key.</li>
- * </ul>
- * Excluding <em>column</em> bindings and non-baked constant <em>values</em> is what makes the cache useful: a dashboard
- * that runs {@code metric_a + metric_b > threshold} against a thousand different column pairs and threshold values
- * stitches once, not a thousand times — the threshold rides in as a method argument, so all values of one element share
- * a hidden class. Baked INT/LONG divisors are the bounded exception: at most
- * {@link FusionPlanner#BAKED_DIVISOR_CAP} distinct values per un-baked shape stitch to distinct classes; further
- * values share one runtime-param class.
+ * constant (F1: a Div/Mod divisor pushed as a bytecode immediate) <em>does</em> participate in the key. See
+ * {@link Shape} for the full key composition.
  *
- * <h2>Reference type — {@link SoftReference} default, {@link WeakReference} toggle</h2>
- * Entries hold the {@link Class} through a {@link Reference}. By default a {@link SoftReference} keeps the class alive
- * across queries (the whole point — cross-query reuse) while still letting the GC reclaim it under heap pressure. A
- * {@link WeakReference} toggle ({@link #setReferenceType}) is provided for memory-stressed deployments that would
- * rather drop-and-restitch aggressively than risk holding class metadata. A reclaimed (cleared) reference is detected
- * on the next access and transparently re-stitched.
+ * <h2>Storage — a weight-bounded {@link Cache}</h2>
+ * Entries are held <b>strongly</b> in an {@link org.elasticsearch.common.cache.Cache}, not through a
+ * {@link java.lang.ref.SoftReference}. A stitched hidden class is costly to materialise and its retained metaspace
+ * footprint is proportional to its class-file byte length, so the cache is bounded by a <b>byte weight ceiling</b>
+ * ({@code esql.fusion.cache.max_bytes}) rather than an entry count: the {@linkplain #buildCache weigher} charges each
+ * {@link CachedFused} its {@link CachedFused#classBytes() class-file byte length} (carried from the {@link Stitcher})
+ * and each negative-cache {@link Failure} a small fixed {@link #FAILURE_WEIGHT}. When the total weight exceeds the
+ * ceiling the {@link Cache} evicts least-recently-used entries; a {@link #evictions eviction counter} is maintained by
+ * a removal listener that fires only on {@link RemovalNotification.RemovalReason#EVICTED} (so an {@link #resetForTests}
+ * {@code invalidateAll} does not inflate it). Entries also expire a fixed {@link #DEFAULT_EXPIRE_AFTER_ACCESS} after
+ * their last access, so a shape that stops recurring is eventually dropped even below the weight ceiling. A factory
+ * that already holds a {@link CachedFused} keeps it alive independently of the cache — eviction never pulls a class
+ * out from under a live query; the query simply re-stitches on its next plan if the shape was evicted meanwhile.
  *
  * <h2>Single-flight</h2>
- * Concurrent misses for the same shape must spin the {@link Stitcher} exactly once. Identity is provided by
- * {@link ConcurrentHashMap#computeIfAbsent} (one {@link Entry} per live shape); the actual stitch is serialised on that
- * entry's monitor, so a stampede of {@code N} threads produces one {@code SPIN} and {@code N-1} {@code HIT}s, and a
- * cleared reference re-stitches once on the next access.
+ * Concurrent misses for the same shape spin the {@link Stitcher} exactly once: {@link Cache#computeIfAbsent} runs the
+ * {@link Loader} on the one thread that wins the put-if-absent race, and every other thread blocks on and observes
+ * that single result. The {@link Cache} does <b>not</b> cache loader exceptions — a thrown exception removes the key
+ * and is re-attempted — so a stitch <em>failure</em> must be turned into a cached {@link Failure} <em>value</em>
+ * (see below) to stay single-flighted; only genuinely transient failures (see {@link #load}) are allowed to escape
+ * uncached.
  *
  * <h2>Negative cache</h2>
- * The wrap covers {@link RuntimeException}, {@link ReflectiveOperationException}, unwrapped {@link LinkageError}, and
- * {@link StackOverflowError} (turned into a {@link Stitcher.StitchingException} by {@link #wrapStitchFailures}) so a
- * failing shape is stored as a lightweight {@link Failure} marker and attempted exactly once per lifetime — bounded by
- * {@link #MAX_ENTRIES} plus eviction, after which it re-attempts once. The thrown {@link Stitcher.StitchingException}
- * carries {@link Stitcher.StitchingException#isFirstFailure()} so the factory — which alone knows whether fusion was
- * lost entirely or only a vector path degraded — can WARN once per shape on full unfused fallback and stay at DEBUG
- * for a degrade-to-block. This cache does not log. Other {@link Error}s, including {@link OutOfMemoryError} and
- * {@link InternalError} (the remaining {@link VirtualMachineError}s) and siblings such as {@link AssertionError}, are
- * treated as transient: they propagate unwrapped and {@link #get} drops the empty slot so a later attempt can succeed.
- * {@link OutOfMemoryError} is a {@link VirtualMachineError}, which is an {@link Error} but <em>not</em> a
- * {@link LinkageError} — wrapping {@code LinkageError} specifically (not {@code Error}) is what keeps those transient
- * failures retryable. {@link StackOverflowError} is also a {@link VirtualMachineError}, but emit recursion on a deep
- * tree is deterministic for that shape, so it is wrapped and negatively cached rather than failing the query on every
- * plan.
+ * {@link #load} catches {@link Stitcher.StitchingException} (and the {@link RuntimeException},
+ * {@link ReflectiveOperationException}, unwrapped {@link LinkageError}, and {@link StackOverflowError} it maps to one)
+ * <em>inside</em> the loader and returns a lightweight {@link Failure} marker as the cached value, so a failing shape
+ * is attempted exactly once per lifetime (until evicted). The thrown {@link Stitcher.StitchingException} carries
+ * {@link Stitcher.StitchingException#isFirstFailure()}{@code ==true} for the thread that produced the failure and
+ * {@code false} for later negative-cache hits, so the factory — which alone knows whether fusion was lost entirely or
+ * only a vector path degraded — can WARN once per shape and stay at DEBUG afterwards. This cache does not log.
+ * {@link OutOfMemoryError}/{@link InternalError} (the remaining {@link VirtualMachineError}s) and other {@link Error}s
+ * such as {@link AssertionError} are treated as <b>transient</b>: {@link #load} rethrows them wrapped in a
+ * {@link TransientStitchError} so the {@link Cache} drops the key (uncached) and a later attempt can succeed.
+ * {@link StackOverflowError} is the exception — emit recursion on a deep tree is deterministic for that shape, so it
+ * is wrapped and negatively cached rather than failing the query on every plan.
  *
- * <p>Caveat: eviction near {@link #MAX_ENTRIES} can drop an {@link Entry} another thread is still resolving, so a
- * failing shape can in theory produce two first-failure WARNs. Rare; not worth extra machinery.
- *
- * <h2>No admission filter (D3)</h2>
- * Every miss stitches immediately; there is no threshold-2 "stitch only on the second sighting" admission gate. See the
- * {@code ## Iter 15 Adjustment} note in the implementation plan and {@code iters/15/implementer-summary.md} for the
- * cost/cardinality reasoning behind dropping the {@code ConstantMethodResultSpecializer} precedent here.
+ * <h2>Admission (doorkeeper)</h2>
+ * {@link #admit} is a direct-mapped doorkeeper that lets {@link FusionPlanner} stitch a shape only on its
+ * <b>second</b> sighting, so a one-off (e.g. machine-generated) query shape never pays the stitch. The static initial
+ * {@link #minSightings} is {@code 1} (admission off — fuse on first sight), so plugin-less unit tests and benchmarks
+ * fuse immediately; {@link FusionSettings#initFromNodeSettings} raises it to the production default
+ * ({@code esql.fusion.cache.min_sightings}, default {@link #DEFAULT_MIN_SIGHTINGS}). The table is a single
+ * {@code long[}{@value #DOORKEEPER_SLOTS}{@code ]} of 64-bit plan-shape hashes; it tracks a single prior sighting, so
+ * any {@code min_sightings >= 2} admits on the second sighting (finer thresholds are intentionally not represented).
  */
 final class FusedClassCache {
 
-    /**
-     * Lightweight negative-cache payload for a shape whose stitch failed with a {@link Stitcher.StitchingException}.
-     * Stored instead of a class so a failing shape is not re-attempted until the entry is evicted. Repeats reconstruct
-     * the exception with a null cause, so {@link #reconstructedMessage()} bakes {@code causeClassName} into the
-     * message (an NPE or {@link LinkageError} with a null message would otherwise leave nothing to diagnose).
-     */
-    private record Failure(String causeClassName, String message) {
-        String reconstructedMessage() {
-            return causeClassName == null ? message : causeClassName + ": " + message;
-        }
-    }
+    /** Default byte-weight ceiling: roughly 512 classes at 1.2–4.3 KB each. Overridden by {@code esql.fusion.cache.max_bytes}. */
+    static final long DEFAULT_MAX_WEIGHT_BYTES = 2L * 1024 * 1024;
 
-    /**
-     * Hard upper bound on distinct shapes retained. The cache is purely <b>opportunistic</b> — it only pays off when a
-     * query shape recurs often enough to reuse its stitched class — so it does not need to grow without bound to be
-     * useful. When a miss would exceed this cap the cache first drops any entries whose class the GC already reclaimed
-     * (free wins) and then, if still over, evicts arbitrary victims (a wrongly-evicted shape simply re-stitches on its
-     * next sighting). Deliberately simple: no LRU bookkeeping, no admission filter — just a size ceiling so a
-     * pathological (e.g. machine-generated) workload cannot accumulate unbounded hidden-class metadata.
-     */
-    static final int MAX_ENTRIES = 512;
+    /** How long an unused shape survives before it is dropped even below the weight ceiling. */
+    static final TimeValue DEFAULT_EXPIRE_AFTER_ACCESS = TimeValue.timeValueHours(1);
 
-    /** Whether cached classes are held {@link RefType#SOFT softly} (default) or {@link RefType#WEAK weakly}. */
-    enum RefType {
-        SOFT,
-        WEAK
-    }
+    /** Nominal weight of a negative-cache {@link Failure} marker — tiny next to a stitched class, but non-zero so markers still age out. */
+    private static final long FAILURE_WEIGHT = 64;
+
+    /** Weight charged when a {@link CachedFused}'s class size is unknown (test-only stitch paths that do not carry the byte length). */
+    private static final int UNKNOWN_CLASS_BYTES = 0;
+
+    /** Production default for {@code esql.fusion.cache.min_sightings}; the static {@link #minSightings} starts at 1 (admission off). */
+    static final int DEFAULT_MIN_SIGHTINGS = 2;
+
+    /** Doorkeeper table size; a power of two so the index is {@code hash & (slots - 1)}. */
+    private static final int DOORKEEPER_SLOTS = 4096;
+    private static final int DOORKEEPER_MASK = DOORKEEPER_SLOTS - 1;
 
     /** Which {@link Stitcher} emit shape a cached class is; part of the cache key since one shape yields up to three. */
     enum Path {
@@ -163,30 +141,24 @@ final class FusedClassCache {
     }
 
     /**
-     * The column-binding- and constant-value-independent identity of a stitched class. Two expressions with the same
-     * operator tree, kernel set, constant element markers, element type, and emit {@link Path} share a {@link Shape}
-     * regardless of which columns they read <em>or</em> which constant values they carry — the values arrive as trailing
-     * method arguments (iter 30), so they no longer change the generated class.
+     * The column-binding- and (non-baked) constant-value-independent identity of a stitched class. Two expressions
+     * with the same operator tree, kernel set, constant element markers, element type, and emit {@link Path} share a
+     * {@link Shape} regardless of which columns they read <em>or</em> which non-baked constant values they carry — the
+     * values arrive as trailing method arguments (iter 30). A baked Div/Mod divisor (F1) does participate in the key.
      *
      * @param signature the {@link FusionPlanner#shapeOf} op-tree + kernel-set signature: column leaves rendered as
-     *                  {@code #}, and literal constants rendered as {@code #C:<element>} (element only, no value) so all
-     *                  values of one element share a class
+     *                  {@code #}, non-baked literal constants as {@code #C:<element>} (element only, no value), and a
+     *                  baked divisor as {@code #C:<element>:<value>}
      * @param element   the uniform primitive element kind of the homogeneous tree
      * @param path      which emit shape this class is
      */
     record Shape(String signature, ElementKind element, Path path) {}
 
     /**
-     * The stitch operation deferred behind the cache; invoked at most once per live shape (single-flight).
-     * {@link ReflectiveOperationException} is declared so a {@code findStatic} failure inside a stitch lambda
-     * (see {@link #stitchAndResolve}) takes the same wrap-and-negative-cache path as emit/{@code LinkageError}
-     * failures. Production compilers must resolve the factory's expected method(s) <em>inside</em> this lambda —
-     * a {@code findStatic} after {@link #get} returns would cache the class as a success and WARN on every plan.
+     * A value stored in the {@link Cache}: either a successfully stitched {@link CachedFused} unit or a negative-cache
+     * {@link Failure} marker. Sealed so {@link #buildCache}'s weigher can pattern-match the two with no catch-all.
      */
-    @FunctionalInterface
-    interface ClassStitcher {
-        Class<?> stitch() throws Stitcher.StitchingException, ReflectiveOperationException;
-    }
+    sealed interface CacheValue permits CachedFused, Failure {}
 
     /**
      * One resolved fused method: the {@code findStatic} handle and its {@code asSpreader(Object[].class, arity)}
@@ -195,57 +167,327 @@ final class FusedClassCache {
     record ResolvedMethod(MethodHandle handle, MethodHandle spreader) {}
 
     /**
-     * The cached unit for one shape: the stitched class plus every method resolved inside {@link #stitchAndResolve}.
-     * Held through a {@link SoftReference} so handles do not pin the class after GC reclaim. {@code type} is the
-     * {@link MethodType} those methods were resolved against (one per unit; {@link #stitchAndResolve} resolves all
-     * methods against the same type), or {@code null} when none were resolved. The factory's bindHandle type-check
-     * compares a requested signature against this field and falls back to {@code findStatic} on mismatch, so a
-     * future shape/type drift fails at plan time rather than as {@code WrongMethodTypeException} at eval.
+     * The cached unit for one shape: the stitched class, its class-file byte length (the cache weight), and every
+     * method resolved inside {@link #stitchAndResolveSized}. {@code classBytes} is a cheap, representative proxy for
+     * the class's retained metaspace footprint — the cache weighs entries by it so the byte ceiling bounds retained
+     * hidden-class metadata rather than a bare entry count. {@code type} is the {@link MethodType} the methods were
+     * resolved against (one per unit), or {@code null} when none were resolved (2-arg compile paths / test units). The
+     * factory's {@code bind} type-check compares a requested signature against this field and falls back to
+     * {@code findStatic} on mismatch, so a future shape/type drift fails at plan time rather than as
+     * {@code WrongMethodTypeException} at eval.
      */
-    record CachedFused(Class<?> fusedClass, MethodType type, Map<String, ResolvedMethod> resolved) {}
+    record CachedFused(Class<?> fusedClass, int classBytes, MethodType type, Map<String, ResolvedMethod> resolved) implements CacheValue {}
 
     /**
-     * Side channel from {@link #stitchAndResolve} to {@link #wrapStitchFailures}: the {@link Class} return of
-     * {@code ClassStitcher} cannot carry the resolved handles, so the richer {@link CachedFused} (handle +
-     * {@code asSpreader}) is stashed here for the same thread. {@link #wrapStitchFailures} always
-     * {@link ThreadLocal#remove() clears} it in {@code finally}.
+     * Lightweight negative-cache payload for a shape whose stitch failed with a {@link Stitcher.StitchingException}.
+     * Stored instead of a class so a failing shape is not re-attempted until the entry is evicted. Repeats reconstruct
+     * the exception with a null cause, so {@link #reconstructedMessage()} bakes {@code causeClassName} into the
+     * message (an NPE or {@link LinkageError} with a null message would otherwise leave nothing to diagnose).
      */
-    private static final ThreadLocal<CachedFused> PENDING_RESOLVED = new ThreadLocal<>();
-
-    /**
-     * Stitches then resolves {@code methods} against {@code type} on the resulting class, still returning the
-     * {@link Class}. Side effect: also stashes a {@link CachedFused} (resolved {@link MethodHandle}s and their
-     * {@code asSpreader} forms) on {@link #PENDING_RESOLVED} so {@link #wrapStitchFailures} can store that unit
-     * on the cache entry and the factory can reuse it — a cache HIT then skips both {@code findStatic} and
-     * {@code asSpreader}. {@link #wrapStitchFailures}' {@code finally} always clears the thread-local.
-     * WHY this lives on the cache and must run inside {@link #get}'s stitcher lambda: a
-     * {@code findStatic} miss is a {@link ReflectiveOperationException}, which {@link #wrapStitchFailures}
-     * turns into a negatively-cached {@link Stitcher.StitchingException}({@code firstFailure=true}). Resolving
-     * <em>after</em> {@link #get} would store the class as a success and WARN on every subsequent plan.
-     * {@code type == null} (or no method names) skips resolution so 2-arg compile entry points stay stitch-only.
-     */
-    static Class<?> stitchAndResolve(ClassStitcher stitcher, MethodHandles.Lookup lookup, MethodType type, String... methods)
-        throws Stitcher.StitchingException, ReflectiveOperationException {
-        Class<?> fused = stitcher.stitch();
-        Map<String, ResolvedMethod> resolved = Map.of();
-        if (type != null && methods.length > 0) {
-            Map<String, ResolvedMethod> map = HashMap.newHashMap(methods.length);
-            int arity = type.parameterCount();
-            for (String method : methods) {
-                MethodHandle handle = findStaticCounted(lookup, fused, method, type);
-                map.put(method, new ResolvedMethod(handle, handle.asSpreader(Object[].class, arity)));
-            }
-            resolved = Map.copyOf(map);
+    record Failure(String causeClassName, String message) implements CacheValue {
+        String reconstructedMessage() {
+            return causeClassName == null ? message : causeClassName + ": " + message;
         }
-        PENDING_RESOLVED.set(new CachedFused(fused, type, resolved));
-        return fused;
     }
+
+    /**
+     * Statistics snapshot for diagnostics/telemetry. {@code hits}/{@code misses} come from {@link Cache#stats()};
+     * {@code evictions} from the {@link RemovalNotification.RemovalReason#EVICTED}-only removal listener; the rest
+     * from {@link LongAdder}s. Immutable; read at most once per stats request, never on the per-row path.
+     */
+    record FusionCacheStats(
+        long hits,
+        long misses,
+        long evictions,
+        long classesDefined,
+        long admissionSkips,
+        long stitchNanos,
+        int count,
+        long weightBytes
+    ) {}
+
+    /**
+     * The stitch-and-resolve operation deferred behind the cache; invoked at most once per live shape (single-flight).
+     * {@link ReflectiveOperationException} is declared so a {@code findStatic} failure inside a stitch lambda
+     * (see {@link #stitchAndResolveSized}) takes the same negative-cache path as emit/{@code LinkageError} failures.
+     */
+    @FunctionalInterface
+    interface Loader {
+        CachedFused load() throws Stitcher.StitchingException, ReflectiveOperationException;
+    }
+
+    /**
+     * A {@link Class}-returning stitch, for the test-only {@link #stitchAndResolve} convenience overload (production
+     * carries class-file byte lengths via {@link SizedStitch}). The returned class is weighed as
+     * {@link #UNKNOWN_CLASS_BYTES}.
+     */
+    @FunctionalInterface
+    interface ClassStitcher {
+        Class<?> stitch() throws Stitcher.StitchingException, ReflectiveOperationException;
+    }
+
+    /** A {@link Stitcher.Fused}-returning stitch — the production path, carrying the class-file byte length for the weigher. */
+    @FunctionalInterface
+    interface SizedStitch {
+        Stitcher.Fused stitch() throws Stitcher.StitchingException;
+    }
+
+    /**
+     * Unchecked wrapper for a <b>transient</b> stitch failure ({@link OutOfMemoryError}, {@link InternalError}, other
+     * non-{@link StackOverflowError} {@link Error}s). It is a {@link RuntimeException} so {@link Cache#computeIfAbsent}
+     * catches it, removes the key (uncached), and rethrows it as an {@link ExecutionException}; {@link #getResolved}
+     * then unwraps and rethrows the original {@link Error}/{@link RuntimeException} so the shape is retried later
+     * rather than poisoned. An {@link Error} thrown directly by the loader would instead escape {@code computeIfAbsent}
+     * <em>without</em> cleaning up the in-flight future, stranding every later caller of that shape on it.
+     */
+    private static final class TransientStitchError extends RuntimeException {
+        TransientStitchError(Throwable cause) {
+            super(cause);
+        }
+    }
+
+    private final long maxWeightBytes;
+    private final TimeValue expireAfterAccess;
+
+    // Rebuilt (never mutated in place) by resetForTests so test counter assertions start from zero; volatile because
+    // resetForTests swaps the reference while plan-time threads may read it. Production never rebuilds after startup.
+    private volatile Cache<Shape, CacheValue> cache;
+
+    private final LongAdder classesDefined = new LongAdder();
+    private final LongAdder stitchNanos = new LongAdder();
+    private final LongAdder evictions = new LongAdder();
+    private final LongAdder failures = new LongAdder();
+    private final LongAdder negativeHits = new LongAdder();
+    private final LongAdder admissionSkips = new LongAdder();
 
     /**
      * Test-only: every fused {@code findStatic} (cache miss resolution and factory fallback) increments this.
      * A cache HIT must leave it unchanged — the resolved handles live on the cached unit.
      */
     static final AtomicInteger findStaticCallsForTests = new AtomicInteger();
+
+    /**
+     * Direct-mapped doorkeeper of 64-bit plan-shape hashes (see {@link #admit}). Benign data races on a slot are
+     * tolerated: the worst case is one extra admission skip or one early admit, both harmless for an opportunistic
+     * cache, so the plan-time path needs no lock.
+     */
+    private final long[] doorkeeper = new long[DOORKEEPER_SLOTS];
+
+    /**
+     * Minimum sightings before a shape is admitted for stitching. Static initial value {@code 1} (admission off, fuse
+     * on first sight) so plugin-less unit tests and benchmarks fuse immediately; {@link FusionSettings#initFromNodeSettings}
+     * raises it to the node setting (default {@link #DEFAULT_MIN_SIGHTINGS}). Plan-time only, so a plain volatile is enough.
+     */
+    private volatile int minSightings = 1;
+
+    /**
+     * Test-only: when non-null, {@link #getResolved} substitutes a failing stitch lambda for this {@link Path} so the
+     * real cache still single-flights and negatively caches the failure. Never set in production; {@link #resetForTests}
+     * clears it.
+     */
+    volatile Path injectFailureForPathForTests;
+
+    FusedClassCache() {
+        this(DEFAULT_MAX_WEIGHT_BYTES, DEFAULT_EXPIRE_AFTER_ACCESS);
+    }
+
+    FusedClassCache(long maxWeightBytes) {
+        this(maxWeightBytes, DEFAULT_EXPIRE_AFTER_ACCESS);
+    }
+
+    FusedClassCache(long maxWeightBytes, TimeValue expireAfterAccess) {
+        this.maxWeightBytes = maxWeightBytes;
+        this.expireAfterAccess = expireAfterAccess;
+        this.cache = buildCache();
+    }
+
+    private Cache<Shape, CacheValue> buildCache() {
+        return CacheBuilder.<Shape, CacheValue>builder()
+            .setMaximumWeight(maxWeightBytes)
+            .weigher((shape, value) -> value instanceof CachedFused cf ? Math.max(1, cf.classBytes()) : FAILURE_WEIGHT)
+            .setExpireAfterAccess(expireAfterAccess)
+            .removalListener(notification -> {
+                if (notification.getRemovalReason() == RemovalNotification.RemovalReason.EVICTED) {
+                    evictions.increment();
+                }
+            })
+            .build();
+    }
+
+    /**
+     * The binding-independent admission decision for a plan-level {@code planShape} string (not a per-{@link Path}
+     * {@link Shape}): returns {@code true} to stitch, {@code false} to leave this plan unfused. With {@link #minSightings}
+     * {@code <= 1} every sighting is admitted; otherwise a shape is admitted only on its second (or later) sighting,
+     * and a refused first sighting increments {@link #admissionSkips}. Keyed on the plan shape so one plan — which may
+     * stitch several per-{@link Path} classes — consumes a single doorkeeper decision. A shape already stitched (and
+     * therefore seen before) is admitted without consulting the skip counter, so a cache hit never looks like a skip.
+     */
+    boolean admit(String planShape) {
+        if (minSightings <= 1) {
+            return true;
+        }
+        long hash = hash64(planShape);
+        int idx = (int) (hash & DOORKEEPER_MASK);
+        if (doorkeeper[idx] == hash) {
+            return true;
+        }
+        doorkeeper[idx] = hash;
+        admissionSkips.increment();
+        return false;
+    }
+
+    /** 64-bit string hash for the doorkeeper; reserves {@code 0} for the empty-slot sentinel. */
+    private static long hash64(String s) {
+        long h = 1125899906842597L;
+        for (int i = 0; i < s.length(); i++) {
+            h = 31 * h + s.charAt(i);
+        }
+        return h == 0 ? 1 : h;
+    }
+
+    /**
+     * Returns the cached class for {@code shape}. Thin wrapper over {@link #getResolved}; callers that only need the
+     * {@link Class} keep compiling.
+     */
+    Class<?> get(Shape shape, Loader loader) throws Stitcher.StitchingException {
+        return getResolved(shape, loader).fusedClass();
+    }
+
+    /**
+     * Returns the cached unit for {@code shape}, stitching it (exactly once across concurrent callers) via
+     * {@code loader} on a miss. A {@link Stitcher.StitchingException} (including a wrapped {@link RuntimeException} /
+     * {@link ReflectiveOperationException} / {@link LinkageError} / {@link StackOverflowError}) is negatively cached as
+     * a lightweight {@link Failure} value and re-thrown; its {@link Stitcher.StitchingException#isFirstFailure()} is
+     * {@code true} for the thread that produced it and {@code false} for later negative-cache hits. Transient
+     * {@link Error}s ({@link OutOfMemoryError}, {@link InternalError}, {@link AssertionError}, ...) propagate and leave
+     * no entry, so a later attempt can succeed.
+     */
+    CachedFused getResolved(Shape shape, Loader loader) throws Stitcher.StitchingException {
+        Path injected = injectFailureForPathForTests;
+        Loader toRun = loader;
+        if (injected != null && injected == shape.path()) {
+            toRun = () -> { throw new Stitcher.StitchingException("injected stitch failure for path [" + injected + "]", null); };
+        }
+        // Single-element holders so the loader (which runs on the winning thread only) can report back to this thread
+        // whether it ran and, if so, the first-failure exception it produced. Losing threads observe the cached value
+        // with ranLoader[0]==false and take the negative-hit path.
+        boolean[] ranLoader = { false };
+        Stitcher.StitchingException[] firstEx = { null };
+        Loader runnable = toRun;
+        CacheValue value;
+        try {
+            value = cache.computeIfAbsent(shape, key -> load(runnable, ranLoader, firstEx));
+        } catch (ExecutionException e) {
+            // The loader completes exceptionally only for a transient (uncached) failure wrapped in TransientStitchError;
+            // the Cache has already removed the key, so rethrow the original so the shape is retried, not poisoned.
+            Throwable cause = e.getCause();
+            if (cause instanceof TransientStitchError transient_) {
+                Throwable original = transient_.getCause();
+                if (original instanceof Error error) {
+                    throw error;
+                }
+                if (original instanceof RuntimeException runtime) {
+                    throw runtime;
+                }
+                throw new AssertionError("unexpected transient stitch cause", original);
+            }
+            throw new AssertionError("unexpected fused-class cache load failure", e);
+        }
+        if (value instanceof Failure failure) {
+            if (ranLoader[0] && firstEx[0] != null) {
+                // This thread produced the first failure: rethrow the original (firstFailure=true, cause preserved).
+                throw firstEx[0];
+            }
+            // A negative-cache hit (another thread stored the marker, or a repeat lookup): reconstruct with
+            // firstFailure=false and a dropped cause so the factory DEBUGs a repeat instead of WARNing again.
+            negativeHits.increment();
+            throw new Stitcher.StitchingException(failure.reconstructedMessage(), null, false);
+        }
+        return (CachedFused) value;
+    }
+
+    /**
+     * Runs {@code loader} once on the winning single-flight thread, timing the stitch and mapping its outcome to a
+     * cached {@link CacheValue}. A success returns the {@link CachedFused} and bumps {@link #classesDefined}; a
+     * deterministic stitch failure ({@link Stitcher.StitchingException} or the {@link RuntimeException} /
+     * {@link ReflectiveOperationException} / unwrapped {@link LinkageError} / {@link StackOverflowError} it maps to)
+     * returns a {@link Failure} value (so the {@link Cache} retains it rather than dropping the key); a transient
+     * {@link Error} is rethrown wrapped in {@link TransientStitchError} so the {@link Cache} drops the key uncached.
+     */
+    private CacheValue load(Loader loader, boolean[] ranLoader, Stitcher.StitchingException[] firstEx) {
+        ranLoader[0] = true;
+        long start = System.nanoTime();
+        try {
+            CachedFused cached = loader.load();
+            classesDefined.increment();
+            return cached;
+        } catch (Stitcher.StitchingException e) {
+            return recordFailure(e, firstEx);
+        } catch (StackOverflowError e) {
+            // Emit recursion on a deep tree is deterministic for that shape, so remember it rather than failing every plan.
+            return recordFailure(new Stitcher.StitchingException(e.getMessage(), e), firstEx);
+        } catch (VirtualMachineError e) {
+            // OutOfMemoryError / InternalError: transient, not a permanent shape failure — drop the key and retry later.
+            throw new TransientStitchError(e);
+        } catch (RuntimeException | LinkageError | ReflectiveOperationException e) {
+            return recordFailure(new Stitcher.StitchingException(e.getMessage(), e), firstEx);
+        } catch (Error e) {
+            // AssertionError and other non-VM, non-Linkage Errors: treat as transient.
+            throw new TransientStitchError(e);
+        } finally {
+            stitchNanos.add(System.nanoTime() - start);
+        }
+    }
+
+    private Failure recordFailure(Stitcher.StitchingException e, Stitcher.StitchingException[] firstEx) {
+        failures.increment();
+        firstEx[0] = e;
+        String causeClassName = e.getCause() == null ? null : e.getCause().getClass().getName();
+        return new Failure(causeClassName, e.getMessage());
+    }
+
+    /**
+     * Stitches via {@code stitch} (carrying the class-file byte length for the weigher) then resolves {@code methods}
+     * against {@code type} on the resulting class, returning the {@link CachedFused} unit. WHY resolution runs here,
+     * inside the cache loader: a {@code findStatic} miss is a {@link ReflectiveOperationException} that {@link #load}
+     * turns into a negatively-cached first-failure, so resolving <em>after</em> the cache returned would instead store
+     * the class as a success and WARN on every plan. {@code type == null} (or no method names) skips resolution so the
+     * 2-arg compile entry points stay stitch-only.
+     */
+    static CachedFused stitchAndResolveSized(SizedStitch stitch, MethodHandles.Lookup lookup, MethodType type, String... methods)
+        throws Stitcher.StitchingException, ReflectiveOperationException {
+        Stitcher.Fused fused = stitch.stitch();
+        return new CachedFused(fused.clazz(), fused.classFileBytes(), type, resolveMethods(lookup, fused.clazz(), type, methods));
+    }
+
+    /**
+     * Test-only convenience: like {@link #stitchAndResolveSized} but takes a {@link Class}-returning stitch whose
+     * byte length is unknown (weighed as {@link #UNKNOWN_CLASS_BYTES}). Used by fallback-hardening tests that inject a
+     * real/failing stitch without constructing a {@link Stitcher.Fused}.
+     */
+    static CachedFused stitchAndResolve(ClassStitcher stitcher, MethodHandles.Lookup lookup, MethodType type, String... methods)
+        throws Stitcher.StitchingException, ReflectiveOperationException {
+        Class<?> fused = stitcher.stitch();
+        return new CachedFused(fused, UNKNOWN_CLASS_BYTES, type, resolveMethods(lookup, fused, type, methods));
+    }
+
+    private static Map<String, ResolvedMethod> resolveMethods(
+        MethodHandles.Lookup lookup,
+        Class<?> fused,
+        MethodType type,
+        String... methods
+    ) throws NoSuchMethodException, IllegalAccessException {
+        if (type == null || methods.length == 0) {
+            return Map.of();
+        }
+        Map<String, ResolvedMethod> map = HashMap.newHashMap(methods.length);
+        int arity = type.parameterCount();
+        for (String method : methods) {
+            MethodHandle handle = findStaticCounted(lookup, fused, method, type);
+            map.put(method, new ResolvedMethod(handle, handle.asSpreader(Object[].class, arity)));
+        }
+        return Map.copyOf(map);
+    }
 
     /**
      * The single fused {@code findStatic} seam. Production resolution and factory fallback both go through here so a
@@ -257,262 +499,31 @@ final class FusedClassCache {
         return lookup.findStatic(cls, name, type);
     }
 
-    /**
-     * Converts a stitch-time {@link RuntimeException}, {@link ReflectiveOperationException}, unwrapped
-     * {@link LinkageError}, or {@link StackOverflowError} into a {@link Stitcher.StitchingException} (cause preserved)
-     * so the failure takes the negative-cache path and the factory's first-failure signal. {@link StackOverflowError}
-     * is caught <em>before</em> the {@link VirtualMachineError} rethrow: emit recursion on a deep tree is deterministic
-     * for that shape, so it must be remembered rather than failing the query on every plan. Remaining
-     * {@link VirtualMachineError}s ({@link OutOfMemoryError}, {@link InternalError}) are rethrown unwrapped — a
-     * transient OOM is not a {@link LinkageError} and must be retried, not remembered as a permanent shape failure.
-     * Other {@link Error}s are not caught here and fall through to {@link #get}'s empty-slot drop. Invoked only from
-     * {@link Entry#resolve} so every cache-backed stitch is covered once.
-     */
-    private static CachedFused wrapStitchFailures(ClassStitcher stitcher) throws Stitcher.StitchingException {
-        try {
-            Class<?> fused = stitcher.stitch();
-            CachedFused pending = PENDING_RESOLVED.get();
-            if (pending != null && pending.fusedClass() == fused) {
-                return pending;
-            }
-            return new CachedFused(fused, null, Map.of());
-        } catch (Stitcher.StitchingException e) {
-            throw e;
-        } catch (StackOverflowError e) {
-            throw new Stitcher.StitchingException(e.getMessage(), e);
-        } catch (VirtualMachineError e) {
-            throw e;
-        } catch (RuntimeException | LinkageError | ReflectiveOperationException e) {
-            throw new Stitcher.StitchingException(e.getMessage(), e);
-        } finally {
-            PENDING_RESOLVED.remove();
-        }
+    /** Raises (or lowers) the admission threshold; seeded from the node setting by {@link FusionSettings#initFromNodeSettings}. */
+    void setMinSightings(int minSightings) {
+        this.minSightings = Math.max(1, minSightings);
     }
 
-    /**
-     * One cache slot. Holds either the stitched class through a {@link Reference}, or a {@link Failure} negative-cache
-     * marker when the stitch failed, both guarded by the entry monitor; the monitor is what serialises concurrent
-     * stitches of the same shape into a single spin (and a single {@code firstFailure=true} exception).
-     */
-    private final class Entry {
-        // Volatile because the lock-free fast path in resolve() (and isEmpty()) reads it outside the monitor; all
-        // writes happen under 'this'. Null until the first successful stitch; a non-null reference whose referent has
-        // been cleared (GC reclaim or an explicit clear) triggers a re-stitch on the next access.
-        private volatile Reference<CachedFused> ref;
-        // Null until a stitch fails with StitchingException; written under the monitor. A non-null marker is a
-        // negative-cache hit: later lookups throw without invoking the stitcher.
-        private volatile Failure failure;
-
-        CachedFused peek() {
-            Reference<CachedFused> current = ref;
-            return current == null ? null : current.get();
-        }
-
-        CachedFused resolve(ClassStitcher stitcher) throws Stitcher.StitchingException {
-            // Fast path: a live class is returned without taking the monitor, so steady-state hits never contend.
-            Reference<CachedFused> current = ref;
-            if (current != null) {
-                CachedFused cached = current.get();
-                if (cached != null) {
-                    hits.increment();
-                    return cached;
-                }
-            }
-            synchronized (this) {
-                current = ref;
-                if (current != null) {
-                    CachedFused cached = current.get();
-                    if (cached != null) {
-                        // A concurrent stitcher populated the entry while we waited for the monitor.
-                        hits.increment();
-                        return cached;
-                    }
-                }
-                if (failure != null) {
-                    negativeHits.increment();
-                    // Reconstruct with firstFailure=false so the factory DEBUGs a repeat instead of WARNing again.
-                    // Cause is dropped (null); bake causeClassName into the message so an NPE / LinkageError with a
-                    // null message still names the failure kind.
-                    throw new Stitcher.StitchingException(failure.reconstructedMessage(), null, false);
-                }
-                if (current != null) {
-                    // The reference existed but its referent was reclaimed/cleared: re-stitch this generation.
-                    softRefCleared.increment();
-                } else {
-                    misses.increment();
-                }
-                spins.increment();
-                try {
-                    CachedFused stitched = wrapStitchFailures(stitcher);
-                    ref = wrap(stitched);
-                    return stitched;
-                } catch (Stitcher.StitchingException e) {
-                    this.failure = new Failure(e.getCause() == null ? null : e.getCause().getClass().getName(), e.getMessage());
-                    failures.increment();
-                    // Do not log here: the factory decides WARN vs DEBUG from e.isFirstFailure() and the consequence
-                    // (full unfused fallback vs degrade-to-block). wrapStitchFailures already produced a
-                    // firstFailure=true StitchingException.
-                    throw e;
-                }
-            }
-        }
-
-        boolean isEmpty() {
-            // Lock-free: reads the volatile failure marker and ref (and the Reference's own referent), all safe
-            // without the monitor. A Failure marker is a retained negative-cache entry, so it is non-empty: the
-            // failure-cleanup guard and the "free wins" eviction pass keep it, while the arbitrary-victim pass can
-            // still drop it when over capacity.
-            return failure == null && (ref == null || ref.get() == null);
-        }
-
-        synchronized void clearReferent() {
-            if (ref != null) {
-                ref.clear();
-            }
-        }
-    }
-
-    private final ConcurrentHashMap<Shape, Entry> classes = new ConcurrentHashMap<>();
-
-    // Reference strategy for newly wrapped classes; reads/writes are rare (plan-time only) so volatile is enough.
-    private volatile RefType refType;
-
-    private final LongAdder hits = new LongAdder();
-    private final LongAdder misses = new LongAdder();
-    private final LongAdder spins = new LongAdder();
-    private final LongAdder softRefCleared = new LongAdder();
-    private final LongAdder failures = new LongAdder();
-    private final LongAdder negativeHits = new LongAdder();
-
-    /**
-     * Test-only: when non-null, {@link #get} substitutes a failing stitch lambda for this {@link Path} so the real
-     * cache still single-flights and negatively caches the failure. WHY this lives on the cache rather than
-     * {@code FusionPlanner.compilerForTests}: that seam bypasses this cache entirely, so a vector-path-only degrade
-     * would not move {@link #failures()} / {@link #negativeHits()}. A natural production over-budget shape no longer
-     * fails only the vector path (plain/checked trees split instead of refusing; a deep logical tree refuses the
-     * <em>block</em> path and loses fusion). Never set in production; {@link #resetForTests} clears it.
-     */
-    volatile Path injectFailureForPathForTests;
-
-    FusedClassCache() {
-        this(RefType.SOFT);
-    }
-
-    FusedClassCache(RefType refType) {
-        this.refType = refType;
-    }
-
-    /**
-     * Returns the cached class for {@code shape}. Thin wrapper over {@link #getResolved}; existing callers that only
-     * need the {@link Class} keep compiling.
-     */
-    Class<?> get(Shape shape, ClassStitcher stitcher) throws Stitcher.StitchingException {
-        return getResolved(shape, stitcher).fusedClass();
-    }
-
-    /**
-     * Returns the cached unit for {@code shape}, stitching it (exactly once across concurrent callers) via
-     * {@code stitcher} on a miss or after a cleared reference. A {@link Stitcher.StitchingException} (including a
-     * {@link RuntimeException} / {@link ReflectiveOperationException} / {@link LinkageError} / {@link StackOverflowError}
-     * wrapped by {@link #wrapStitchFailures}) is negatively cached as a lightweight {@link Failure} marker so a failing
-     * shape is attempted exactly once per lifetime (bounded by {@link #MAX_ENTRIES} + eviction, after which it
-     * re-attempts once). The thrown exception's {@link Stitcher.StitchingException#isFirstFailure()} is {@code true} on
-     * that first attempt and {@code false} on later negative-cache hits, so the factory can WARN once per shape when
-     * fusion is lost. Other {@link Error}s (including {@link OutOfMemoryError} and {@link InternalError}) are treated
-     * as transient: they propagate and the empty slot is dropped so a later attempt can succeed.
-     *
-     * <p>The returned {@link CachedFused} is the cache entry's referent. A factory that holds it strongly pins the
-     * entry against {@link RefType#WEAK} (and soft-reclaim) GC, so a live query cannot lose the unit and re-stitch a
-     * duplicate hidden class.
-     *
-     * <p>Caveat: eviction near {@link #MAX_ENTRIES} can drop an {@link Entry} another thread is still resolving, so a
-     * failing shape can in theory produce two first-failure WARNs. Rare; not worth extra machinery.
-     */
-    CachedFused getResolved(Shape shape, ClassStitcher stitcher) throws Stitcher.StitchingException {
-        // Test hook: replace the caller-supplied stitch lambda for one Path so a vector-path-only failure still
-        // goes through this cache (single-flight + negative marker + failures()/negativeHits()). Production never
-        // sets injectFailureForPathForTests; the extra volatile read is plan-time only.
-        Path injected = injectFailureForPathForTests;
-        ClassStitcher toRun = stitcher;
-        if (injected != null && injected == shape.path()) {
-            toRun = () -> { throw new Stitcher.StitchingException("injected stitch failure for path [" + injected + "]", null); };
-        }
-        Entry entry = classes.computeIfAbsent(shape, unused -> new Entry());
-        try {
-            CachedFused stitched = entry.resolve(toRun);
-            evictIfOverCapacity(shape);
-            return stitched;
-        } catch (Stitcher.StitchingException e) {
-            // The entry now holds the Failure marker, so keep it. Still trim so a flood of failing shapes cannot grow
-            // the cache without bound (an evicted failing shape re-attempts once later).
-            evictIfOverCapacity(shape);
-            throw e;
-        } catch (RuntimeException | Error e) {
-            // Don't leave a poisoned empty slot behind: if the stitch failed with a transient unchecked throwable and
-            // nothing else populated the entry, drop it so the next attempt starts clean (counted as a fresh miss, not
-            // a cleared ref). The check-and-remove is done atomically inside computeIfPresent so a concurrent
-            // single-flight success — which populates this same entry object — is never evicted: we remove only if the
-            // mapping is still this exact, still-empty entry.
-            classes.computeIfPresent(shape, (unused, current) -> (current == entry && current.isEmpty()) ? null : current);
-            throw e;
-        }
-    }
-
-    /**
-     * Keeps the shape count at or below {@link #MAX_ENTRIES} after a miss. First removes entries whose class the GC
-     * already reclaimed (cleared reference — free to drop); if still over, evicts arbitrary victims (this is an
-     * opportunistic cache, so a dropped shape merely re-stitches on its next sighting). Never evicts {@code keep} (the
-     * shape just resolved). {@link ConcurrentHashMap}'s iterator is weakly consistent, so concurrent removal is safe;
-     * a benign race may leave the map transiently a few entries over the cap, which the next miss trims.
-     */
-    private void evictIfOverCapacity(Shape keep) {
-        if (classes.size() <= MAX_ENTRIES) {
-            return;
-        }
-        for (var it = classes.entrySet().iterator(); it.hasNext() && classes.size() > MAX_ENTRIES;) {
-            var mapping = it.next();
-            if (mapping.getKey().equals(keep) == false && mapping.getValue().isEmpty()) {
-                it.remove();
-            }
-        }
-        for (var it = classes.entrySet().iterator(); it.hasNext() && classes.size() > MAX_ENTRIES;) {
-            var mapping = it.next();
-            if (mapping.getKey().equals(keep) == false) {
-                it.remove();
-            }
-        }
-    }
-
-    private Reference<CachedFused> wrap(CachedFused stitched) {
-        return refType == RefType.WEAK ? new WeakReference<>(stitched) : new SoftReference<>(stitched);
-    }
-
-    // I2: resolvedHandle / resolvedSpreader / resolvedMethod scans deleted. The factory now receives the CachedFused
-    // unit from getResolved and reads resolved().get(name) directly (zero table walks, no LRU clock refresh).
-
-    /** Switches the reference strategy for classes wrapped after this call; existing entries keep their current type. */
-    void setReferenceType(RefType type) {
-        this.refType = type;
-    }
-
-    RefType referenceType() {
-        return refType;
+    int minSightings() {
+        return minSightings;
     }
 
     long hits() {
-        return hits.sum();
+        return cache.stats().getHits();
     }
 
     long misses() {
-        return misses.sum();
+        return cache.stats().getMisses();
     }
 
-    long spins() {
-        return spins.sum();
+    /** Evictions by weight/expiry only (a removal listener filters {@link RemovalNotification.RemovalReason#EVICTED}). */
+    long evictions() {
+        return evictions.sum();
     }
 
-    long softRefClearedCount() {
-        return softRefCleared.sum();
+    /** Hidden classes successfully defined (one per successful first-sight stitch). */
+    long classesDefined() {
+        return classesDefined.sum();
     }
 
     long failures() {
@@ -523,36 +534,63 @@ final class FusedClassCache {
         return negativeHits.sum();
     }
 
-    /** Number of shapes currently tracked (live or awaiting re-stitch). */
-    int size() {
-        return classes.size();
+    long admissionSkips() {
+        return admissionSkips.sum();
     }
 
-    /** Test-only: live cache keys, for counting classes per emit path. */
-    Set<Shape> entriesForTests() {
-        return Set.copyOf(classes.keySet());
+    long stitchNanos() {
+        return stitchNanos.sum();
+    }
+
+    /** Number of entries currently retained (stitched classes + negative markers). */
+    int size() {
+        return cache.count();
+    }
+
+    /** Current total entry weight in bytes (class-file lengths + {@link #FAILURE_WEIGHT} per marker). */
+    long weightBytes() {
+        return cache.weight();
+    }
+
+    /** Test-only: a snapshot of the shape keys currently retained in the cache (stitched classes and negative markers). */
+    List<Shape> entriesForTests() {
+        List<Shape> shapes = new ArrayList<>();
+        for (Shape shape : cache.keys()) {
+            shapes.add(shape);
+        }
+        return shapes;
+    }
+
+    /** An immutable snapshot of the cache counters for diagnostics/telemetry. */
+    FusionCacheStats stats() {
+        Cache.Stats s = cache.stats();
+        return new FusionCacheStats(
+            s.getHits(),
+            s.getMisses(),
+            evictions.sum(),
+            classesDefined.sum(),
+            admissionSkips.sum(),
+            stitchNanos.sum(),
+            cache.count(),
+            cache.weight()
+        );
     }
 
     /**
-     * Test-only: clears the {@link Reference} referent for {@code shape} without relying on GC timing, so a test can
-     * deterministically prove the cleared-reference re-stitch path. No-op if the shape is not present.
+     * Test-only: rebuilds the backing {@link Cache} (so hit/miss/weight/count start at zero), zeroes every counter and
+     * the doorkeeper, and clears {@link #injectFailureForPathForTests} plus the planner's test hooks.
+     * {@link #minSightings} is left unchanged so a doorkeeper test can reset counters mid-test without re-arming
+     * admission; the plan-time singleton keeps its static default of {@code 1}.
      */
-    void clearReferentForTests(Shape shape) {
-        Entry entry = classes.get(shape);
-        if (entry != null) {
-            entry.clearReferent();
-        }
-    }
-
-    /** Test-only: drops all entries, zeroes the counters, and clears {@link #injectFailureForPathForTests}. */
     void resetForTests() {
-        classes.clear();
-        hits.reset();
-        misses.reset();
-        spins.reset();
-        softRefCleared.reset();
+        cache = buildCache();
+        classesDefined.reset();
+        stitchNanos.reset();
+        evictions.reset();
         failures.reset();
         negativeHits.reset();
+        admissionSkips.reset();
+        Arrays.fill(doorkeeper, 0L);
         injectFailureForPathForTests = null;
         findStaticCallsForTests.set(0);
         FusionPlanner.compilation().compileBlockLoopForTests = null;
