@@ -47,7 +47,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * with the surviving source positions. Because a 3VL predicate is nullable, this is a block-only path (no vector fast
  * path), mirroring {@link Stitcher#compileLogicalBlockLoop}.
  *
- * <h2>Fallback (criterion #5, kill-switch discipline)</h2>
+ * <h2>Fallback (kill-switch discipline)</h2>
  * If the stitch fails at plan time ({@link Stitcher.StitchingException} / {@link LinkageError} / a resolution failure),
  * {@link #create} records the failure in {@link FusionTelemetry} and returns a fallback factory whose evaluator
  * reproduces {@code Filter → Eval} from the two unfused {@link ExpressionEvaluator.Factory}s — so the
@@ -100,8 +100,8 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
     private final MethodHandle fusedHandle;
     /**
      * Strong hold on the filter-eval cached unit, or {@code null} on stitch failure (same as {@link #fusedHandle}).
-     * I2: pins the {@link FusedClassCache} entry so a WEAK / soft-reclaimed referent cannot be GC'd mid-query and
-     * re-stitched as a duplicate hidden class.
+     * Holding the unit keeps the resolved handles this factory dispatches through alive and consistent with the
+     * {@link FusedClassCache} entry for the lifetime of the factory.
      */
     private final FusedClassCache.CachedFused fusedUnit;
     private final Object[] predicateConstants;
@@ -144,7 +144,7 @@ public final class FusedFilterEvalEvaluatorFactory implements FilterEvalEvaluato
 
     /**
      * Stitches the predicate + projection into a fused factory, or — on any stitch failure — returns a fallback factory
-     * that reproduces {@code Filter → Eval} from {@code unfusedPredicate}/{@code unfusedProjection} (criterion #5).
+     * that reproduces {@code Filter → Eval} from {@code unfusedPredicate}/{@code unfusedProjection}.
      * Always returns a non-null factory so the {@link org.elasticsearch.compute.operator.FilterEvalOperator} can run.
      */
     static FusedFilterEvalEvaluatorFactory create(

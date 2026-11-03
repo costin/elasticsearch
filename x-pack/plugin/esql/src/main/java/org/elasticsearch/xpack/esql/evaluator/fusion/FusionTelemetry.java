@@ -16,7 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
- * Process-wide counters for expression-fusion stitching failures (acceptance criterion #5).
+ * Process-wide counters for expression-fusion stitching failures.
  *
  * <p>When {@link FusionPlanner} tries to stitch a fusable expression subtree and the stitch cannot be verified,
  * linked, or defined — surfacing as a {@link org.elasticsearch.compute.operator.fusion.Stitcher.StitchingException}
@@ -64,15 +64,15 @@ public final class FusionTelemetry {
     private static final LongAdder BAKING_DISABLED_REGISTRY_FULL = new LongAdder();
 
     /**
-     * Opt-in coverage probe (F4/H9). Default {@code false}: every coverage {@code record*} call early-returns, so
+     * Opt-in coverage probe. Default {@code false}: every coverage {@code record*} call early-returns, so
      * production pays nothing. Latched from the {@link FusionSettings} constant default (off) and flipped only via
      * {@link FusionSettings#setCoverageReportEnabledForTests}; not a node Setting. {@link #recordFailure} stays
-     * unconditional — it is the criterion #5 stitch-failure counter, not a coverage bucket.
+     * unconditional — it is the stitch-failure counter, not a coverage bucket.
      */
     static volatile boolean coverageEnabled = false;
 
     /**
-     * F0-comparable coverage category of one top-level expression. See {@link FusionCoverage} for the definitions.
+     * Coverage category of one top-level expression. See {@link FusionCoverage} for the definitions.
      */
     public enum Category {
         FUSED,
@@ -109,7 +109,7 @@ public final class FusionTelemetry {
     private static final LongAdder RUNTIME_FALLBACK = new LongAdder();
 
     /**
-     * Eval-time nested-mapping multi-value/null fallbacks (D3: a non-vector page keeps unfused MV semantics). Counted
+     * Eval-time nested-mapping multi-value/null fallbacks (a non-vector page keeps unfused MV semantics). Counted
      * once per evaluator instance, not per page.
      */
     private static final LongAdder NESTED_MAPPING_MV_FALLBACK = new LongAdder();
@@ -148,7 +148,7 @@ public final class FusionTelemetry {
             FAILURES_BY_SHAPE.computeIfAbsent(shape, unused -> new LongAdder()).increment();
         }
         // Path map + plan-time stitch bucket are coverage-only. With the probe off, recordFailure does exactly what it
-        // did before F4 (aggregate + per-shape). A non-null path is a plan-time site that lost fusion.
+        // did without the coverage probe (aggregate + per-shape). A non-null path is a plan-time site that lost fusion.
         if (coverageEnabled && path != null) {
             FAILURES_BY_PATH.computeIfAbsent(path, unused -> new LongAdder()).increment();
             PLAN_TIME_STITCH.increment();
@@ -234,7 +234,7 @@ public final class FusionTelemetry {
     }
 
     /**
-     * Records one top-level expression's F0 category. Nested {@link org.elasticsearch.xpack.esql.evaluator.EvalMapper}
+     * Records one top-level expression's coverage category. Nested {@link org.elasticsearch.xpack.esql.evaluator.EvalMapper}
      * calls (the two {@code toEvaluator} fallbacks of a declined FilterEval) are ignored so the pair counts once.
      * No-op when coverage is off.
      */
@@ -337,7 +337,7 @@ public final class FusionTelemetry {
     }
 
     /**
-     * Human-readable coverage summary: F0 category counts (FUSED/ISLAND/FRAGMENT/NONE) over top-level expressions,
+     * Human-readable coverage summary: category counts (FUSED/ISLAND/FRAGMENT/NONE) over top-level expressions,
      * top-10 first-refusal reasons, plan-time stitch-failures (plus per-{@link FusedClassCache.Path} breakdown and
      * {@link #snapshot() top shapes}), runtime-fallbacks, and nested-mapping-mv-fallbacks. {@code stitch-failures=}
      * is the coverage plan-time counter, not {@link #totalFailures()} — eval-time LinkageError after a successful fuse

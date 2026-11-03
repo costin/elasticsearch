@@ -14,7 +14,7 @@ import org.elasticsearch.common.util.FeatureFlag;
 import org.elasticsearch.core.Assertions;
 
 /**
- * The node-level runtime controls for expression fusion: the kill switch (acceptance criterion #3) and the
+ * The node-level runtime controls for expression fusion: the kill switch and the
  * {@code esql_fusion} {@link FeatureFlag}.
  *
  * <p>{@code esql.fusion.enabled} (default {@code true}) is a {@link Setting.Property#NodeScope},
@@ -188,9 +188,10 @@ public final class FusionSettings {
 
     /**
      * Test-only: flips the switch so a test can assert both the fused and unfused wiring; restore in a finally.
-     * Also used cross-package by the scalar-function toString tests to pin the canonical unfused evaluator.
+     * Package-private; cross-package callers (the JMH benchmark and the qa/testFixtures scalar-function tests) use
+     * {@link #setEnabledForBenchmarks} instead.
      */
-    public static void setEnabledForTests(boolean value) {
+    static void setEnabledForTests(boolean value) {
         enabled = value;
     }
 

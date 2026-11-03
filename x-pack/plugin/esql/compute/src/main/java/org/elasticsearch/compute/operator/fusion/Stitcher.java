@@ -51,19 +51,19 @@ import java.util.function.Consumer;
  * kernel callees.
  *
  * <p><b>Depth-1 scope.</b> This iteration stitches a single kernel. The seam is post-order-ready for real
- * expression trees (iter 10): fetch the kernel {@link MethodNode} from the {@link TemplateRegistry}, lift its
+ * expression trees: fetch the kernel {@link MethodNode} from the {@link TemplateRegistry}, lift its
  * straight-line {@link Body} with the {@link BodyExtractor}, {@linkplain SlotRemapper#shift shift} the body's
  * local slots into a disjoint range above the host's parameters, then concatenate on a clean stack —
  * <em>push host inputs into the kernel's (shifted) argument slots, run the body, return the result</em>. A tree
  * simply repeats this per node, routing each subtree's result into the next free slot; nothing here is
  * depth-1-specific except that a single node is stitched.
  *
- * <p><b>Failure surface (binding rule #5).</b> A bytecode defect only surfaces when the JVM verifies the class
+ * <p><b>Failure surface.</b> A bytecode defect only surfaces when the JVM verifies the class
  * at {@code defineHiddenClass} time, as a {@link LinkageError} (of which {@link VerifyError} is a subtype). This
  * method catches those (and the access failure) and rethrows a typed {@link StitchingException} after a DEBUG;
  * the single plan-time WARN is emitted once per shape by
  * {@code FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure} (the cache only supplies
- * {@code StitchingException.isFirstFailure()}), so the plan-time caller (iter 13's {@code EvalMapper}) can catch it
+ * {@code StitchingException.isFirstFailure()}), so the plan-time caller ({@code EvalMapper}) can catch it
  * and fall back to the unfused evaluator chain without the query path ever seeing an {@code Error}.
  *
  * <p><b>JIT discipline.</b> The emitted {@code fused} method is primitive-only: host inputs are
@@ -180,10 +180,10 @@ public final class Stitcher {
     private final FilterEvalEmitter filterEval;
 
     /**
-     * Test-only seam (the seed of {@code IMPLEMENTATION_PLAN} iter 18's {@code failureInjector}). When non-null,
+     * Test-only seam (a {@code failureInjector}). When non-null,
      * this hook is invoked on the fully assembled host {@link MethodNode} immediately before it is serialized and
      * defined, letting a test corrupt the emitted bytecode to exercise the {@link StitchingException}
-     * verification-failure fallback (binding rule #5). It is <b>never</b> set in production: the field defaults to
+     * verification-failure fallback. It is <b>never</b> set in production: the field defaults to
      * {@code null} and adds only a single null-check to the cold plan-time path, leaving the hot path untouched.
      */
     Consumer<MethodNode> hostMethodInterceptor = null;
@@ -210,8 +210,8 @@ public final class Stitcher {
      * {@code FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure} (the cache only supplies
      * {@code StitchingException.isFirstFailure()}; this used to WARN here on every attempt),
      * so the plan-time caller falls back to the unfused chain without the query path ever seeing an {@code Error}.
-     * Every {@code compile*} entry point funnels through here, so the define-and-map-failure contract (binding rule
-     * #5's failure surface) lives once rather than being copied per path.
+     * Every {@code compile*} entry point funnels through here, so the define-and-map-failure contract (the failure
+     * surface) lives once rather than being copied per path.
      *
      * @param what names the emit path in the log/message (e.g. {@code "block-loop class"})
      */
@@ -649,7 +649,7 @@ public final class Stitcher {
      * the per-input guard here reproduces (intermediate kernel results are always single-valued, so only the leaves'
      * value counts matter).
      *
-     * <p><b>Overflow semantics (binding rule #3).</b> When the tree contains any overflow-checked kernel, the
+     * <p><b>Overflow semantics.</b> When the tree contains any overflow-checked kernel, the
      * per-position value computation + append is wrapped in a try/catch for each distinct
      * {@link FusionDescriptor#overflowExceptionType()} present (uniformly {@code ArithmeticException} in scope). A
      * caught overflow registers the thrown exception on the {@code Warnings} and appends {@code null} for that
@@ -714,7 +714,7 @@ public final class Stitcher {
      * either side is null, else true; {@code OR} yields true if either side is true, else null if either side is null,
      * else false.
      *
-     * <p><b>Both operands evaluated; only the VALUE short-circuits (B3a).</b> Both operand helpers are always called,
+     * <p><b>Both operands evaluated; only the VALUE short-circuits.</b> Both operand helpers are always called,
      * so each sub-comparison's multi-value warning fires exactly as the unfused {@code BooleanLogicExpressionEvaluator}
      * (which evaluates both sides eagerly over the whole page) would — <b>exact warning parity</b>, matching the
      * arithmetic block path's per-kernel emission rather than the earlier subset. The 3VL result is then a pure
@@ -764,8 +764,8 @@ public final class Stitcher {
      *
      * <p>INTERFACE-only: the hidden class exposes {@link #FUSED_INTERFACE_METHOD_NAME} and not
      * {@link #FUSED_METHOD_NAME}. Each input is narrowed once to its {@code *Vector} interface and the loop does
-     * {@code v.getX(p)}. The logical RAW loop ({@code VectorUnsafe} + {@code a[p]}) was the slow path (iteration-1
-     * M10) and is not emitted; arithmetic plain/checked paths still keep RAW. Comparisons are spliced inline in the
+     * {@code v.getX(p)}. The logical RAW loop ({@code VectorUnsafe} + {@code a[p]}) was the slow path and is not
+     * emitted; arithmetic plain/checked paths still keep RAW. Comparisons are spliced inline in the
      * loop (C1 does not inline helpers &gt; 35 bytes). No {@code Warnings[]} — comparisons do not warn, and dense
      * vectors have no multi-values.
      *
@@ -785,7 +785,7 @@ public final class Stitcher {
     }
 
     // -----------------------------------------------------------------------------------------------------------------
-    // Filter + Eval mega-fusion (S3.2a): fuse a WHERE predicate + a single EVAL projection into ONE per-position pass.
+    // Filter + Eval mega-fusion: fuse a WHERE predicate + a single EVAL projection into ONE per-position pass.
     // -----------------------------------------------------------------------------------------------------------------
 
     /**
@@ -1226,7 +1226,7 @@ public final class Stitcher {
 
     /**
      * Typed, catchable failure for a stitch that could not be verified or defined. Callers catch this to fall
-     * back to the unfused evaluator chain (binding rule #5); it wraps the underlying {@link LinkageError} or
+     * back to the unfused evaluator chain; it wraps the underlying {@link LinkageError} or
      * access failure so the cause is preserved for diagnostics.
      *
      * <p>{@link #isFirstFailure()} is the cache's "attempted this shape once" signal, not a logging decision.

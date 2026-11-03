@@ -51,7 +51,7 @@ import java.util.function.Function;
 
 /**
  * Plan-time entry point that decides whether an expression subtree can be evaluated by a single stitched per-position
- * body (iter 13's "wire fusion into evaluator construction"). It walks the <b>expression</b> tree — not the produced
+ * body. It walks the <b>expression</b> tree — not the produced
  * factory tree, whose child factories are private — and, when the whole subtree is fusable, builds the
  * {@link FusionNode} the {@link Stitcher} consumes and returns a {@link FusedExpressionEvaluatorFactory}. Otherwise it
  * returns {@code null} and {@link org.elasticsearch.xpack.esql.evaluator.EvalMapper} produces the usual unfused
@@ -200,7 +200,7 @@ public final class FusionPlanner {
         }
 
         /**
-         * Compiles the dense 2VL logical vector loop (INTERFACE-only {@code fusedInterface} after B2; no RAW sibling).
+         * Compiles the dense 2VL logical vector loop (INTERFACE-only {@code fusedInterface}; no RAW sibling).
          * Defaulted so existing {@link FusedClassCompiler} test doubles need not override it; the production
          * {@link FusionCompilationService} compiler provides the real, cache-backed implementation.
          */
@@ -219,7 +219,7 @@ public final class FusionPlanner {
         }
 
         /**
-         * Compiles the fused WHERE-predicate + EVAL-projection block loop (S3.2a). Defaulted so existing
+         * Compiles the fused WHERE-predicate + EVAL-projection block loop. Defaulted so existing
          * {@link FusedClassCompiler} test doubles (which only exercise the single-expression paths) need not override it;
          * the production {@link FusionCompilationService} compiler and any filter-eval-specific test double provide a real implementation.
          */
@@ -263,7 +263,7 @@ public final class FusionPlanner {
         Function<Expression, ExpressionEvaluator.Factory> rawFactory
     ) {
         if (FusionSettings.isEnabled() == false) {
-            // Runtime kill switch (criterion #3): the node never fuses; the caller uses the unfused tree unchanged and
+            // Runtime kill switch: the node never fuses; the caller uses the unfused tree unchanged and
             // the Stitcher is never touched. Not an "attempt" — the probe does not count kill-switch skips.
             return null;
         }
@@ -279,7 +279,7 @@ public final class FusionPlanner {
 
     /**
      * True when {@code exp} would pass the plan-time fusion gates (build + depth / encoding-aware exemptions)
-     * and would proceed to a stitch. Does not stitch. Used by the H9 coverage classifier to detect fusable islands
+     * and would proceed to a stitch. Does not stitch. Used by the coverage classifier to detect fusable islands
      * without changing production factories.
      */
     static boolean isFusableAtPlan(Expression exp, Layout layout, Function<Expression, ExpressionEvaluator.Factory> rawFactory) {
@@ -314,12 +314,12 @@ public final class FusionPlanner {
         boolean encodingAware = encodingAware(tree, inputElements);
         // A lone BytesRef comparison (column == literal, column != literal, or literal == column) is depth-1, but
         // the encoding-aware dictionary gather evaluates once per distinct value, so it is the depth-1 exemption.
-        // A converter fuses only as a nested mapping in a depth>=2 chain (D4); a lone TO_LOWER/TO_UPPER is always
+        // A converter fuses only as a nested mapping in a depth>=2 chain; a lone TO_LOWER/TO_UPPER is always
         // depth-1 and is refused here.
         boolean bytesRefComparisonDepth1 = encodingAware && ctx.outputElement == ElementKind.BOOLEAN;
         if (depth(tree) < 2 && bytesRefComparisonDepth1 == false) {
             // A lone kernel is not worth fusing — leave it to the generated evaluator.
-            // A lone mapping convert (ctx.mapping) is always depth-1, so this refuses it (D4).
+            // A lone mapping convert (ctx.mapping) is always depth-1, so this refuses it.
             return null;
         }
         // Admission doorkeeper: on the real stitch path, leave a shape unfused on its first sighting so a one-off
@@ -354,8 +354,8 @@ public final class FusionPlanner {
      * {@link FusedFilterEvalEvaluatorFactory} (the plan-time product consumed by
      * {@link org.elasticsearch.compute.operator.FilterEvalOperator}). Returns the fused factory on success, or
      * {@code null} if either side is not fusable (the caller then builds the ordinary two-operator
-     * {@code Filter → Eval} chain — fusion stays strictly additive). This is S3.2a: it produces the factory but does
-     * <b>not</b> wire it into {@code LocalExecutionPlanner} (that is S3.2b).
+     * {@code Filter → Eval} chain — fusion stays strictly additive). It produces the factory only; wiring it into
+     * {@code LocalExecutionPlanner} is the caller's responsibility.
      *
      * <p>Both sides must be fusable via the same {@link #build} eligibility used by {@link #maybeFuse} (including the
      * delegating-function guard {@code descriptor.kernelClass() == exp.getClass()}), and additionally: the predicate
@@ -396,7 +396,7 @@ public final class FusionPlanner {
             || (projectionTree instanceof FusionNode.Kernel) == false) {
             return null;
         }
-        // Nested mapping (D3) needs a per-page MV fallback that FilterEval does not have; a ROOT mapping projection
+        // Nested mapping needs a per-page MV fallback that FilterEval does not have; a ROOT mapping projection
         // (EVAL TO_LOWER(k)) would be stitched single-value and warn+null on MV instead of mapping. Refuse both so
         // those shapes stay on the unfused Filter→Eval chain. The single-expression path handles them.
         if (containsNestedMapping(predicateTree) || containsNestedMapping(projectionTree) || predCtx.mapping || projCtx.mapping) {
@@ -486,7 +486,7 @@ public final class FusionPlanner {
      * slot: {@code out[slot]} is the source of the kernel assigned that slot. The {@link Stitcher} bakes those same
      * structural slots into the emitted bytecode, so the fused method's {@code warnings[slot].registerException(...)}
      * lands on a {@code Warnings} built from the kernel's real source — matching the unfused chain's per-node
-     * attribution (criterion #1). The assignment is purely structural, so it does not affect the shape-keyed cache.
+     * attribution. The assignment is purely structural, so it does not affect the shape-keyed cache.
      */
     private static Source[] warningSources(Map<FusionNode, Integer> slots, PlanContext ctx) {
         Source[] out = new Source[slots.size()];
@@ -530,7 +530,7 @@ public final class FusionPlanner {
         private boolean overflowChecked;
         /**
          * Set when the root is a mapping convert kernel (TO_LOWER/TO_UPPER). FilterEval refuses a mapping
-         * projection; a lone converter is always depth-1 so {@link #planOrNull} refuses it (D4). Nested mapping
+         * projection; a lone converter is always depth-1 so {@link #planOrNull} refuses it. Nested mapping
          * leaves this false.
          */
         private boolean mapping;
@@ -718,7 +718,7 @@ public final class FusionPlanner {
         List<FusionNode> childNodes = new ArrayList<>(children.size());
         for (int i = 0; i < children.size(); i++) {
             Expression child = children.get(i);
-            // F1/H3: bake ONLY an INT/LONG Literal in the divisor (rhs) of a Div or Mod kernel, so C2 can
+            // Bake ONLY an INT/LONG Literal in the divisor (rhs) of a Div or Mod kernel, so C2 can
             // strength-reduce the division. DOUBLE divisors stay runtime params (C2 does not strength-reduce
             // x/c for doubles). The lhs, and constants of every other kernel, stay runtime params so `a>5` and
             // `a>6` still share a class. Keep the kernel = process* (not *ByConstant). Over-cap distinct INT/LONG
@@ -776,11 +776,11 @@ public final class FusionPlanner {
      * single kernel over its BytesRef field child plus the Factory's {@code @Fixed} SINGLETON constants.
      *
      * <p>At the root {@link PlanContext#mapping} is set so a lone converter is recognized as always depth-1 and
-     * refused by the depth guard (D4: a converter fuses only as a nested mapping kernel). In a
+     * refused by the depth guard (a converter fuses only as a nested mapping kernel). In a
      * <b>non-root</b> position the kernel is admitted only as a child of a single-value parent that consumes
      * {@code BytesRef} (e.g. {@code LENGTH}, {@code Equals}) — the parent compiles via the ordinary block path
      * ({@code ctx.mapping} stays false) and the nested mapping body is spliced as a unary kernel. Multi-value pages
-     * of such a chain fall back to unfused at eval time (D3). A mapping under a LOGICAL root never reaches here
+     * of such a chain fall back to unfused at eval time. A mapping under a LOGICAL root never reaches here
      * ({@link #buildComparisonOperand} refuses non-Attribute/Literal children). A mapping under another mapping is
      * refused by the direct-{@link FusionNode.Input} field restriction (one mapping level only).
      *
@@ -830,7 +830,7 @@ public final class FusionPlanner {
         ctx.kernelSources.put(kernel, exp.source());
         if (root) {
             // Root mapping sets ctx.mapping so FilterEval refuses a mapping projection; maybeFuse then refuses
-            // depth-1 mapping so a lone TO_LOWER stays unfused (D4). Nested mapping does not flip this — the
+            // depth-1 mapping so a lone TO_LOWER stays unfused. Nested mapping does not flip this — the
             // parent single-value kernel (LENGTH→int, Equals→boolean) compiles via the ordinary block path.
             ctx.outputElement = ElementKind.BYTES_REF;
             ctx.mapping = true;
@@ -1185,7 +1185,7 @@ public final class FusionPlanner {
      * Builds a {@link FusionNode.Logical} for an {@code AND}/{@code OR} expression, or {@code null} if either operand is
      * not a fusable comparison/logical/{@code NOT} subtree. Both operands must be either a nested {@code AND}/{@code OR},
      * a {@code NOT}, or a boolean-producing comparison over homogeneous-primitive <b>column</b> and/or
-     * <b>literal-constant</b> inputs (S3.1 scope: no bare boolean-column operands, no arithmetic-under-comparison;
+     * <b>literal-constant</b> inputs (scope: no bare boolean-column operands, no arithmetic-under-comparison;
      * literal constants ARE allowed as comparison children — e.g. {@code a > 5 AND b < 10}).
      */
     private static FusionNode buildLogical(Expression exp, PlanContext ctx) {
@@ -1231,7 +1231,7 @@ public final class FusionPlanner {
      * Returns {@code null} if {@code exp} is not such a comparison — in particular if it is overflow-checked
      * (comparisons never are, but the guard keeps the logical body free of any overflow try/catch), has a non-boolean
      * return, mixes element types, or has a child that is neither a matching column nor a matching-typed literal
-     * (arithmetic children are still out of the S3.1 logical scope).
+     * (arithmetic children are still out of the logical scope).
      */
     private static FusionNode buildComparisonOperand(Expression exp, PlanContext ctx) {
         ExpressionEvaluator.Factory factory = ctx.rawFactory.apply(exp);
@@ -1306,9 +1306,9 @@ public final class FusionPlanner {
      * Builds a {@link FusionNode.Constant} at the {@code expected} element the consuming kernel requires, from a
      * numeric or keyword {@link Literal}, or {@code null} if it cannot be fused. Numeric literals are trailing
      * primitive arguments (with a supported widening into {@code expected}), unless {@code baked} is true — then the
-     * primitive is a bytecode immediate (F1/H3: an INT/LONG Div/Mod divisor, never DOUBLE). A keyword/text literal
-     * is a captured {@link FusionNode.Constant#reference reference} {@code BytesRef} (F3), loaded with {@code ALOAD}
-     * through the D2 reference-constant machinery. A {@code null} literal is <b>refused</b>, so a subtree containing
+     * primitive is a bytecode immediate (an INT/LONG Div/Mod divisor, never DOUBLE). A keyword/text literal
+     * is a captured {@link FusionNode.Constant#reference reference} {@code BytesRef}, loaded with {@code ALOAD}
+     * through the reference-constant machinery. A {@code null} literal is <b>refused</b>, so a subtree containing
      * one falls back to the unfused chain — the correct + simplest handling (ESQL normally folds null literals away,
      * and a per-position "constant is null" would just null every row, which the unfused evaluator already does).
      */
@@ -1642,7 +1642,7 @@ public final class FusionPlanner {
      * map to their primitive element; {@code KEYWORD}/{@code TEXT} map to {@link ElementKind#BYTES_REF} so a string
      * column can feed a {@code BytesRef}-consuming kernel (e.g. {@code LENGTH}) and so a root mapping convert
      * ({@code TO_LOWER}/{@code TO_UPPER}) can type its output {@code BYTES_REF}. The {@code Stitcher} block path
-     * produces that BytesRef output (B3b / D2); nested mapping under a single-value parent (D3) keeps the root's
+     * produces that BytesRef output; nested mapping under a single-value parent keeps the root's
      * own output element (int / boolean).
      */
     private static ElementKind elementOf(DataType type) {
@@ -1692,7 +1692,7 @@ public final class FusionPlanner {
     }
 
     /**
-     * True when a mapping convert kernel sits in a non-root position (D3: {@code LENGTH(TO_LOWER(k))},
+     * True when a mapping convert kernel sits in a non-root position (e.g. {@code LENGTH(TO_LOWER(k))},
      * {@code TO_LOWER(k)=="x"}). The root itself being a mapping kernel (lone {@code TO_LOWER}) is not nested.
      */
     static boolean containsNestedMapping(FusionNode node) {
@@ -1751,7 +1751,7 @@ public final class FusionPlanner {
     }
 
     /**
-     * Plan-time encoding-aware flag (D1): true when the tree has exactly one column input, that input is
+     * Plan-time encoding-aware flag: true when the tree has exactly one column input, that input is
      * {@code BYTES_REF}, every kernel is {@code !warns && dictionarySafe}, and there is a single input leaf.
      * Constants are allowed. Warning-capable or throwing kernels are excluded because evaluating a dictionary
      * can warn or throw for entries no row references.
@@ -1856,7 +1856,7 @@ public final class FusionPlanner {
      * {@link FusedClassCache} key and the {@link FusionTelemetry} failure key. Two expressions with the same operators
      * in the same arrangement share a shape regardless of which columns they read.
      *
-     * <p><b>Correctness contract (iter-15 review).</b> Because this signature keys the {@link FusedClassCache} — i.e. it
+     * <p><b>Correctness contract.</b> Because this signature keys the {@link FusedClassCache} — i.e. it
      * decides which generated bytecode class is reused — each kernel node is encoded by the <b>full identity that
      * determines its stitched bytecode</b>, not a friendly short name: the kernel class {@linkplain Class#getName()
      * fully-qualified name} (not the simple name — two distinct classes can share a simple name and would otherwise
@@ -1874,8 +1874,8 @@ public final class FusionPlanner {
 
     /**
      * {@link #shapeOf} with baked constant values stripped ({@code #C:J:1000} → {@code #C:J}). This is the unit the
-     * H3 cap keys on: all baked values of one operator tree share this string, so the cap bounds classes per
-     * un-baked shape rather than globally.
+     * baked-divisor cap keys on: all baked values of one operator tree share this string, so the cap bounds classes
+     * per un-baked shape rather than globally.
      */
     static String unbakedShapeOf(FusionNode node) {
         StringBuilder sb = new StringBuilder();
@@ -1922,8 +1922,8 @@ public final class FusionPlanner {
             // the argument supplied at eval time. Only the element-typed slot marker (`#C:<element>`) participates, so
             // a long constant and a double constant still key distinct classes (their emit paths differ), while all
             // values of one element share one hidden class — collapsing the former one-class-per-value cardinality.
-            // A baked constant (F1/H3: an INT/LONG Div/Mod divisor, capped per un-baked shape) IS an immediate, so its
-            // value participates (`#C:J:1000`) unless {@code stripBakedValue} (the H3 cap key). (An Input leaf stays
+            // A baked constant (an INT/LONG Div/Mod divisor, capped per un-baked shape) IS an immediate, so its
+            // value participates (`#C:J:1000`) unless {@code stripBakedValue} (the divisor cap key). (An Input leaf stays
             // `#` — its column binding is likewise not in the bytecode.)
             sb.append("#C:").append(constant.element());
             if (constant.isBaked() && stripBakedValue == false) {

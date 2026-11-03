@@ -35,23 +35,23 @@ import java.util.function.Function;
  *       match the kernel's JVM argument descriptor (e.g. a {@code (JJ)J} kernel has exactly two
  *       {@code long}-producing children).</li>
  *   <li>{@link Logical} — a boolean {@code AND}/{@code OR} node with three-valued-logic (3VL)
- *       semantics (iter 20, S3.1). Unlike {@link Kernel} it carries <b>no</b> {@link FusionDescriptor}
+ *       semantics. Unlike {@link Kernel} it carries <b>no</b> {@link FusionDescriptor}
  *       or template: the {@link Stitcher} <em>emits</em> the short-circuit 3VL truth tables directly
  *       (matching {@code BinaryLogicOperation}). Its operands are boolean-producing comparison
- *       {@link Kernel}s (from S3.0), nested {@link Logical}s, or {@link Not}; the output is a nullable
+ *       {@link Kernel}s, nested {@link Logical}s, or {@link Not}; the output is a nullable
  *       boolean, so a {@code Logical}-rooted tree is stitched through the 3VL block path, plus a dense
  *       2VL vector path when every input is a vector (no nulls / multi-values).</li>
  *   <li>{@link Not} — Kleene 3VL negation of one boolean-producing child (a comparison {@link Kernel},
  *       a {@link Logical}, or a nested {@link Not}). Like {@link Logical} it carries <b>no</b>
  *       {@link FusionDescriptor}: the {@link Stitcher} emits the flip directly ({@code 0↔1}, keep
  *       {@code 2} on the 3VL block path; {@code ICONST_1}/{@code IXOR} on the dense 2VL vector path).
- *       A bare boolean column is not a fusable child (S3.1), so {@code NOT(bool_col)} refuses.</li>
+ *       A bare boolean column is not a fusable child, so {@code NOT(bool_col)} refuses.</li>
  * </ul>
  *
  * <p>The stitcher walks this tree in post-order: it evaluates each child before the kernel that
  * consumes it, keeping intermediate results on the operand stack while each kernel body reads its
  * inputs from a disjoint local-slot range. A tree of {@link Kernel} depth &ge; 2 (a kernel whose
- * child is itself a kernel) is the case iter 10 targets — e.g. {@code Mul(Add(in0, in1), in2)} for
+ * child is itself a kernel) is the common case — e.g. {@code Mul(Add(in0, in1), in2)} for
  * {@code (a + b) * c}.
  */
 public sealed interface FusionNode {
@@ -135,7 +135,7 @@ public sealed interface FusionNode {
             } else if (value == null) {
                 throw new IllegalArgumentException("constant value must not be null");
             } else if (element == 'L') {
-                // A reference-typed (object) @Fixed constant (B3b): its value is captured off the expression at plan
+                // A reference-typed (object) @Fixed constant: its value is captured off the expression at plan
                 // time (e.g. a Locale from the query configuration, or an enum) and passed to the fused method as a
                 // reference parameter. refType is the DECLARED parameter type the kernel expects (e.g. java.util.Locale),
                 // which types the fused method's trailing L…; parameter and the factory's MethodType.
@@ -158,7 +158,7 @@ public sealed interface FusionNode {
         }
 
         /**
-         * A reference-typed (object) {@code @Fixed} constant leaf (B3b): {@code value} is the captured object and
+         * A reference-typed (object) {@code @Fixed} constant leaf: {@code value} is the captured object and
          * {@code declaredType} is the parameter type the consuming kernel declares (e.g. {@code Locale.class}). It is
          * passed to the fused method as a reference argument and read with {@code ALOAD} — it is block-path only, since
          * a reference operand never rides the primitive vector fast paths.
@@ -248,7 +248,7 @@ public sealed interface FusionNode {
      * Kleene 3VL negation of one boolean-producing child. It has no {@link FusionDescriptor}: the
      * {@link Stitcher} emits {@code NOT true = false}, {@code NOT false = true}, {@code NOT null = null}
      * directly. The child is a comparison {@link Kernel}, a {@link Logical}, or a nested {@link Not};
-     * a bare boolean {@link Input} is not fusable (S3.1). {@code Not} itself is not a warning source —
+     * a bare boolean {@link Input} is not fusable. {@code Not} itself is not a warning source —
      * multi-value / overflow warnings stay attributed to the child comparison kernels.
      *
      * @param child the boolean-producing subtree to negate

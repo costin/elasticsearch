@@ -70,7 +70,7 @@ import java.util.List;
  *       (or {@code fusedRawInterface}) first (dense {@code *ArrayVector} output); a {@code null} Block means the page
  *       overflowed and the matching builder-based {@code fused}/{@code fusedInterface} method re-runs that page.</li>
  *   <li><b>Dense logical vector path</b> ({@link Stitcher#compileLogicalVectorLoop}) — compiled for a 3VL
- *       {@code AND}/{@code OR}/{@code NOT} tree alongside its block path. INTERFACE-only after B2: a page whose
+ *       {@code AND}/{@code OR}/{@code NOT} tree alongside its block path. INTERFACE-only: a page whose
  *       every input {@code asVector()} is non-null takes {@code fusedInterface}; otherwise the 3VL block path. The
  *       logical RAW loop is not compiled.</li>
  * </ul>
@@ -82,7 +82,7 @@ import java.util.List;
  * the block path. The old {@code double}+overflow hard gate is therefore gone; {@link VectorStrategy#NONE} now applies
  * to BytesRef-in/out trees, mapping kernels, and a vector-path stitch that degraded after the block path succeeded.
  *
- * <h2>Fallback (acceptance criterion #5)</h2>
+ * <h2>Fallback</h2>
  * If any required stitch fails at plan time ({@link Stitcher.StitchingException} / {@link LinkageError}),
  * {@link #tryCreate} records the failure in {@link FusionTelemetry} and returns the unfused factory unchanged —
  * the caller cannot tell fusion was attempted. A first-time full fallback WARNs (the expression is now unfused);
@@ -105,7 +105,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     /**
      * Lookup of <b>this</b> (esql-proper) module. Passed to the {@link Stitcher} so the fused hidden class is defined
      * in a module that can read both {@code compute} (the public block/vector API) and {@code esql-core} (kernel call
-     * targets such as {@code NumericUtils}). See binding rule #1.
+     * targets such as {@code NumericUtils}).
      */
     private static final MethodHandles.Lookup LOOKUP = MethodHandles.lookup();
 
@@ -131,7 +131,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         CHECKED_VECTOR,
         /**
          * {@link Stitcher#compileLogicalVectorLoop}: dense (any vector kind, no nulls / multi-values) 2VL evaluation
-         * of an {@code AND}/{@code OR}/{@code NOT} tree, INTERFACE-only after B2 ({@code fusedInterface}; no RAW
+         * of an {@code AND}/{@code OR}/{@code NOT} tree, INTERFACE-only ({@code fusedInterface}; no RAW
          * sibling). Pages with nulls or multi-values still take the 3VL block path.
          */
         LOGICAL_VECTOR,
@@ -243,23 +243,23 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         /**
          * ALL-RAW: every input was an exact {@code *ArrayVector}. PLAIN invokes {@link Stitcher#FUSED_METHOD_NAME};
          * CHECKED invokes {@link Stitcher#FUSED_RAW_METHOD_NAME} first (builder {@code fused} only on overflow).
-         * LOGICAL_VECTOR never takes this path (INTERFACE-only after B2).
+         * LOGICAL_VECTOR never takes this path (INTERFACE-only).
          */
         RAW,
         /**
          * ALL-INTERFACE: {@link Stitcher#FUSED_INTERFACE_METHOD_NAME}. Arithmetic: at least one input was a non-array
-         * vector. {@link VectorStrategy#LOGICAL_VECTOR} always (INTERFACE-only after B2).
+         * vector. {@link VectorStrategy#LOGICAL_VECTOR} always (INTERFACE-only).
          */
         INTERFACE,
         /** Block path (nulls / multi-values, or no vector strategy). */
         BLOCK,
         /**
-         * Encoding-aware path (D1): a single BYTES_REF column with no warning-capable kernel, evaluated once over
+         * Encoding-aware path: a single BYTES_REF column with no warning-capable kernel, evaluated once over
          * the ordinal dictionary (or once for a constant) so the fused output keeps ordinal/constant encoding.
          */
         ENCODING_AWARE,
         /**
-         * Nested-mapping tree (D3) on a non-vector page (nulls and/or multi-values): the fused single-value block
+         * Nested-mapping tree on a non-vector page (nulls and/or multi-values): the fused single-value block
          * path would warn+null at the parent, so the whole page is evaluated by {@code unfusedFallback()}.
          */
         UNFUSED_FALLBACK
@@ -270,7 +270,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * indexed by the node's structural warning-source slot
      * ({@link org.elasticsearch.compute.operator.fusion.Stitcher#warningsSourceIndices}). At eval time a matching
      * {@code Warnings[]} is built from these so each fused warning is attributed to the SAME node source the unfused
-     * chain's generated evaluator would use — keeping fused warning headers a subset of the unfused ones (criterion #1).
+     * chain's generated evaluator would use — keeping fused warning headers a subset of the unfused ones.
      */
     private final Source[] warningSources;
     private final int[] inputChannels;
@@ -307,14 +307,14 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      */
     private final boolean encodingAware;
     /**
-     * True when a mapping convert kernel sits under a single-value parent (D3). Non-vector pages (nulls and/or
+     * True when a mapping convert kernel sits under a single-value parent. Non-vector pages (nulls and/or
      * multi-values) evaluate via {@code unfusedFallback()} so MV semantics stay exact; dense/ordinal/constant
      * vector pages take the fused + encoding-aware paths.
      */
     private final boolean nestedMapping;
     /**
-     * Strong hold on the block-path cached unit. I2: pins the {@link FusedClassCache} entry so a WEAK / soft-reclaimed
-     * referent cannot be GC'd mid-query and re-stitched as a duplicate hidden class.
+     * Strong hold on the block-path cached unit. Holding the unit keeps the resolved handles this factory dispatches
+     * through alive and consistent with the {@link FusedClassCache} entry for the lifetime of the factory.
      */
     private final FusedClassCache.CachedFused blockUnit;
     /**
@@ -386,7 +386,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     /**
      * Stitches {@code tree} into its runtime path(s) and returns a fused factory, or — on any stitch failure that
      * loses fusion entirely — logs a warning (once per shape), records the failure, and returns {@code unfused}
-     * unchanged (criterion #5). A vector-path-only failure degrades to block-only fusion at DEBUG. This is the
+     * unchanged. A vector-path-only failure degrades to block-only fusion at DEBUG. This is the
      * single place the routing decision (which vector fast path, if any, to compile) is made.
      *
      * @param compiler the stitch entry points; the test seam substitutes a failing implementation here
@@ -422,7 +422,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         String shape = plan.shape();
         List<FusionNode.Constant> constants = plan.constants();
         int arity = inputChannels.length;
-        // Embedded constants are trailing primitive parameters of the fused method now (iter 30): their types are
+        // Embedded constants are trailing primitive parameters of the fused method now: their types are
         // appended to every resolved MethodType and their values are marshalled into the invoke args, both in the
         // Stitcher's single canonical emit order — so one stitched class serves every constant value.
         Class<?>[] constantParamTypes = constantParamTypes(constants);
@@ -450,7 +450,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 Bound logicalHandle = bind(logicalUnit, Stitcher.FUSED_METHOD_NAME, logicalType);
                 try {
                     MethodType vectorType = logicalVectorType(arity, constantParamTypes);
-                    // B2: INTERFACE-only — resolve fusedInterface, not fused. A stitch/findStatic miss still
+                    // INTERFACE-only — resolve fusedInterface, not fused. A stitch/findStatic miss still
                     // degrades to LOGICAL_BLOCK (the block handle already succeeded), not full unfused.
                     FusedClassCache.CachedFused vectorUnit = compiler.compileLogicalVectorLoop(
                         LOOKUP,
@@ -501,7 +501,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
 
             if (hasBytesRefInput(inputElements) || outputElement == ElementKind.BYTES_REF) {
                 // A BytesRef (keyword/text) column may be ordinal-encoded rather than a plain ArrayVector, and a
-                // variable-width BytesRef OUTPUT (B3b) has no dense array vector at all, so this slice deliberately
+                // variable-width BytesRef OUTPUT has no dense array vector at all, so this slice deliberately
                 // does NOT compile a vector fast path for either — the tree always runs the block path (BytesRef inputs
                 // read via getBytesRef into a reusable spare; a BytesRef output appends through the block builder).
                 // Block-only (no vector fast path), like a mapping kernel, but with a real (non-null) block handle.
@@ -612,7 +612,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 vectorUnit
             );
         } catch (Stitcher.StitchingException | ReflectiveOperationException | RuntimeException | LinkageError e) {
-            // Any plan-time stitch failure must fall back to the unfused chain and record the shape (criterion #5):
+            // Any plan-time stitch failure must fall back to the unfused chain and record the shape:
             // - StitchingException / LinkageError: the stitch failed to verify, link, or define.
             // - ReflectiveOperationException (NoSuchMethod / IllegalAccess from findStatic): the emitted method's
             // signature did not match what we resolve for.
@@ -823,7 +823,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     /**
      * The parameter type for each constant (in canonical emit order), for the resolved {@link MethodType}: the
      * primitive class for a primitive constant, or the declared reference type for an object {@code @Fixed} constant
-     * (B3b) — matching the {@code L…;} descriptor the Stitcher emitted for it. Baked constants are not in this list.
+     * matching the {@code L…;} descriptor the Stitcher emitted for it. Baked constants are not in this list.
      */
     private static Class<?>[] constantParamTypes(List<FusionNode.Constant> constants) {
         Class<?>[] types = new Class<?>[constants.size()];
@@ -900,7 +900,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * dispatches to the fused method. Arithmetic {@link VectorStrategy#PLAIN_VECTOR}/{@link VectorStrategy#CHECKED_VECTOR}
      * accept any dense vector kind ({@code Constant*Vector}, {@code *BigArrayVector}, {@code *ArrayVector} —
      * {@code asVector() != null}): exact {@code *ArrayVector} pages take ALL-RAW, other dense pages take ALL-INTERFACE.
-     * {@link VectorStrategy#LOGICAL_VECTOR} is INTERFACE-only after B2 (no RAW sibling). Null / multi-value pages
+     * {@link VectorStrategy#LOGICAL_VECTOR} is INTERFACE-only (no RAW sibling). Null / multi-value pages
      * take the block path.
      */
     private static final class FusedExpressionEvaluator implements ExpressionEvaluator {
@@ -1005,7 +1005,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
          * Snapshot of {@link FusionSettings#isVectorReadsInterface()} (a class-init {@code static final}). WHY an
          * instance {@code final}: {@link #getForTests} must pass a different value without mutating global state.
          * C2 does not constant-fold an instance final field, so this is a test seam rather than a JIT-time constant;
-         * the remaining ADD_MUL_SUB gap vs a static-final read is accepted. A9's per-page volatile is gone.
+         * the remaining ADD_MUL_SUB gap vs a static-final read is accepted. The per-page volatile is gone.
          */
         private final boolean vectorReadsInterface;
 
@@ -1059,7 +1059,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
             for (int i = 0; i < arity; i++) {
                 inputs[i] = page.getBlock(inputChannels[i]);
             }
-            // Nested mapping (D3): a non-vector page (nulls and/or multi-values) must keep unfused MV semantics.
+            // Nested mapping: a non-vector page (nulls and/or multi-values) must keep unfused MV semantics.
             // Fall back when ANY input is a non-vector (not only arity==1) so a refused-but-still-stitched
             // multi-column tree cannot skip the fallback. Dense/ordinal/constant vector pages take the fused
             // + encoding-aware paths below.
@@ -1089,7 +1089,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                 // the pre-bound spreader; the spreader unboxes primitives per the fused method's parameter types.
                 int constCount = constantValues.length;
                 fused = null;
-                // Encoding-aware (D1): a single BYTES_REF column whose every kernel is !warns && dictionarySafe.
+                // Encoding-aware: a single BYTES_REF column whose every kernel is !warns && dictionarySafe.
                 // Dense ordinal vectors (and ordinals whose dictionary is no larger than the page) are evaluated
                 // once over the dictionary; constants once; sparse ordinals (dictionary larger than the page) and
                 // anything else fall through to the normal per-row path.
@@ -1119,7 +1119,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
                     fused = (Block) blockSpreader.invokeExact(args);
                 }
             } catch (LinkageError e) {
-                // Defensive (criterion #5): a stitch that verified at plan time should never fail to link at eval, but
+                // Defensive: a stitch that verified at plan time should never fail to link at eval, but
                 // if it somehow does we must still complete the query. Latch fusion off so subsequent pages skip the
                 // fused handle entirely, record the failure once, and serve this page from the unfused chain.
                 fusionDisabled = true;
@@ -1150,7 +1150,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         }
 
         /**
-         * Encoding-aware fused eval (D1). Returns a result when the input is an ordinal or constant {@code BYTES_REF}
+         * Encoding-aware fused eval. Returns a result when the input is an ordinal or constant {@code BYTES_REF}
          * vector, else {@code null} so the caller falls through to the normal fused path. Detection order matches the
          * unfused convert evaluator: ordinals first, then constant. Ordinal <em>blocks</em> (nulls in the ordinals)
          * have {@code asVector() == null} and stay on the block path.
@@ -1350,7 +1350,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         }
 
         /**
-         * LOGICAL_VECTOR is INTERFACE-only after B2: always {@code fusedInterface}. Does not consult
+         * LOGICAL_VECTOR is INTERFACE-only: always {@code fusedInterface}. Does not consult
          * {@link #allExactArrayVectors} / {@code vectorReadsInterface} — there is no RAW logical spreader to pick.
          */
         private Block evalLogicalVector(Vector[] dense, BlockFactory blockFactory, int positionCount, int arity, int constCount)

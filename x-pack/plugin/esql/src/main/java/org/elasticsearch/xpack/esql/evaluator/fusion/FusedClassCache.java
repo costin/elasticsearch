@@ -41,9 +41,9 @@ import java.util.concurrent.atomic.LongAdder;
  *
  * <h2>Cache key — {@link Shape}</h2>
  * The key is the <b>structure</b> of the fused subtree. It deliberately <b>excludes column bindings</b> (which columns a
- * leaf reads) and, since iter 30, also <b>excludes non-baked literal constant values</b> (which arrive as trailing method
+ * leaf reads) and also <b>excludes non-baked literal constant values</b> (which arrive as trailing method
  * arguments rather than baked-in bytecode), keeping only the constant's element-typed slot marker. A <b>baked</b>
- * constant (F1: a Div/Mod divisor pushed as a bytecode immediate) <em>does</em> participate in the key. See
+ * constant (a Div/Mod divisor pushed as a bytecode immediate) <em>does</em> participate in the key. See
  * {@link Shape} for the full key composition.
  *
  * <h2>Storage — a weight-bounded {@link Cache}</h2>
@@ -129,7 +129,7 @@ final class FusedClassCache {
         LOGICAL_BLOCK,
         /**
          * {@link Stitcher#compileLogicalVectorLoop}: the dense 2VL vector sibling of {@link #LOGICAL_BLOCK}.
-         * INTERFACE-only after B2 ({@code fusedInterface}; no RAW sibling).
+         * INTERFACE-only ({@code fusedInterface}; no RAW sibling).
          */
         LOGICAL_VECTOR,
         /**
@@ -144,7 +144,7 @@ final class FusedClassCache {
      * The column-binding- and (non-baked) constant-value-independent identity of a stitched class. Two expressions
      * with the same operator tree, kernel set, constant element markers, element type, and emit {@link Path} share a
      * {@link Shape} regardless of which columns they read <em>or</em> which non-baked constant values they carry — the
-     * values arrive as trailing method arguments (iter 30). A baked Div/Mod divisor (F1) does participate in the key.
+     * values arrive as trailing method arguments. A baked Div/Mod divisor does participate in the key.
      *
      * @param signature the {@link FusionPlanner#shapeOf} op-tree + kernel-set signature: column leaves rendered as
      *                  {@code #}, non-baked literal constants as {@code #C:<element>} (element only, no value), and a

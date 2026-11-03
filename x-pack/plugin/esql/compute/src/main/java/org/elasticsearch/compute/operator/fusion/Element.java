@@ -107,7 +107,7 @@ record Element(
             // BYTES_REF is a reference element (keyword/text). The VECTOR-path fields (rawValues array + ArrayVector
             // forwarder) stay unset: a variable-width BytesRef has no dense primitive backing array, so a
             // BytesRef-in or BytesRef-OUT tree is always routed through the BLOCK path. As an INPUT it is read via
-            // getBytesRef(int, spare); as an OUTPUT (B3b: BytesRef-returning kernels like TO_LOWER) it is appended
+            // getBytesRef(int, spare); as an OUTPUT (BytesRef-returning kernels like TO_LOWER) it is appended
             // through the BytesRefBlock.Builder — appendBytesRef copies the (reused) spare's bytes into block
             // storage, so the block-builder fields below are now populated for the output path.
             case Type.OBJECT -> {

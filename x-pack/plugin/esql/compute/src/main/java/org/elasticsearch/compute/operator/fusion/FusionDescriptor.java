@@ -21,7 +21,7 @@ package org.elasticsearch.compute.operator.fusion;
  *                              (e.g. {@code java.lang.ArithmeticException}), or the empty string when the
  *                              kernel is not overflow-checked. The stitcher uses this as the exact type to
  *                              catch around a spliced kernel body so an overflowing position becomes a null
- *                              with a registered warning, mirroring the unfused evaluator (binding rule #3).
+ *                              with a registered warning, mirroring the unfused evaluator.
  * @param variadic              whether the kernel's LAST parameter is an array that gathers a variable number of
  *                              operands (e.g. {@code CONCAT}'s {@code BytesRef[] values}). When {@code true} the tree
  *                              supplies the fixed leading operands followed by the array's elements as extra children,

@@ -31,12 +31,10 @@ import org.elasticsearch.xpack.esql.planner.Layout;
 import java.util.function.Function;
 
 /**
- * H9 coverage classifier: one category per <em>top-level</em> expression, using the F0 buckets so a CsvIT run is
- * comparable with F0's FUSED 18.7% / ISLAND 2.9% / FRAGMENT ~1.3% / NONE 68%.
+ * Coverage classifier: one category per <em>top-level</em> expression, so a CsvIT run can be summarized by how many
+ * top-level expressions fused versus refused and why.
  *
- * <p>Addendum X3's original F0 prose is not in this tree ({@code FINAL_ITER4.md} was never committed; the plan only
- * records "Partial codegen / islands / cross-EVAL inlining: still out of scope (F0)"). The definitions used here,
- * matching that F0 decision and the named buckets:
+ * <p>The categories:
  * <ul>
  *   <li>{@link FusionTelemetry.Category#FUSED} — the top-level expression produced a fused factory (eager
  *       {@link FusedExpressionEvaluatorFactory}, or a FilterEval factory with {@code fused()==true}).</li>
