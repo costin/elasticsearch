@@ -8,6 +8,7 @@
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.elasticsearch.common.breaker.CircuitBreaker;
+import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.MockBigArrays;
@@ -46,6 +47,7 @@ import org.junit.Before;
 
 import java.lang.invoke.MethodHandles;
 import java.util.Collections;
+import java.util.Set;
 
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.instanceOf;
@@ -584,6 +586,43 @@ public class EvalMapperFusionWiringTests extends ESTestCase {
             assertThat(FusionSettings.isEnabled(), is(false));
             FusionSettings.initFromNodeSettings(Settings.EMPTY);
             assertThat(FusionSettings.isEnabled(), is(true));
+        } finally {
+            FusionSettings.setEnabledForTests(original);
+        }
+    }
+
+    // The esql.fusion.enabled dynamic consumer, wired exactly as EsqlPlugin wires it: a live ClusterSettings update to
+    // false must flip the kill switch so a normally-fusable tree stays unfused (maybeFuse returns null), and a later
+    // update back to true must re-enable fusion on the next plan.
+    public void testFusionEnabledDynamicUpdateFlipsKillSwitch() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression expr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+
+        ClusterSettings clusterSettings = new ClusterSettings(Settings.EMPTY, Set.of(FusionSettings.FUSION_ENABLED_SETTING));
+        clusterSettings.addSettingsUpdateConsumer(FusionSettings.FUSION_ENABLED_SETTING, FusionSettings::updateEnabled);
+
+        boolean original = FusionSettings.isEnabledForBenchmarks();
+        try {
+            // Operator turns fusion OFF on a running node via a dynamic cluster-settings update.
+            clusterSettings.applySettings(Settings.builder().put("esql.fusion.enabled", false).build());
+            ExpressionEvaluator.Factory offFactory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+            assertThat(
+                "esql.fusion.enabled=false via the dynamic consumer must produce the unfused factory",
+                offFactory,
+                not(instanceOf(FusedExpressionEvaluatorFactory.class))
+            );
+
+            // Operator turns fusion back ON; the next plan must fuse again.
+            clusterSettings.applySettings(Settings.builder().put("esql.fusion.enabled", true).build());
+            ExpressionEvaluator.Factory onFactory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+            assertThat(
+                "esql.fusion.enabled=true via the dynamic consumer must fuse again",
+                onFactory,
+                instanceOf(FusedExpressionEvaluatorFactory.class)
+            );
         } finally {
             FusionSettings.setEnabledForTests(original);
         }

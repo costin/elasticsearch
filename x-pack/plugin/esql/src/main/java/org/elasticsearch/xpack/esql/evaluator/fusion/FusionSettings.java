@@ -53,12 +53,16 @@ public final class FusionSettings {
      */
     public static final FeatureFlag FUSION_FEATURE_FLAG = new FeatureFlag("esql_fusion");
 
-    /** {@code esql.fusion.enabled}: node-scoped, dynamic; default {@code true}. Registered by {@code EsqlPlugin}. */
+    /**
+     * {@code esql.fusion.enabled}: node-scoped, operator-dynamic; default {@code true}. Registered by
+     * {@code EsqlPlugin}. {@link Setting.Property#OperatorDynamic} rather than plain {@code Dynamic} so that in
+     * serverless only an operator (not an end user) can flip the kill switch.
+     */
     public static final Setting<Boolean> FUSION_ENABLED_SETTING = Setting.boolSetting(
         "esql.fusion.enabled",
         true,
         Setting.Property.NodeScope,
-        Setting.Property.Dynamic
+        Setting.Property.OperatorDynamic
     );
 
     /**
@@ -109,6 +113,11 @@ public final class FusionSettings {
     public static void updateEnabled(boolean value) {
         enabled = value;
     }
+
+    // The kill switch is a JVM-wide static, not per-node state. In a multi-node integration test that runs several
+    // nodes inside one JVM, every node's consumer writes this same field, so the last update applied wins regardless
+    // of which node triggered it. That is fine for a boolean kill switch (production nodes are separate JVMs); tests
+    // that assert fusion on/off must not rely on per-node divergence of this flag.
 
     /**
      * Whether eval should treat exact {@code *ArrayVector} inputs as non-exact and take ALL-INTERFACE.
