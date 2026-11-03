@@ -69,15 +69,21 @@ removed) and D.5a (declared reorder). Fusion gate green per commit; full CsvIT v
   fallback and matched — behavioral proof across the whole corpus, on top of the 43-shape byte-identity.
 
 ## Phase P0
+All P0 items complete and pushed to `esql/fix/compute-codegen-followup`.
+
 | Item | Status | Commit | Notes |
 |---|---|---|---|
-| P0.1 correctness (I4,I2,I3,I8,Stitcher.compile) | pending | | |
-| P0.2 FeatureFlag esql_fusion | pending | | |
-| P0.3 settings cleanup | pending | | |
-| P0.4 hot-path invokeExact/interface (I6) | pending | | |
-| P0.5 precommit fixes | pending | | |
-| P0.6 unit suites (ModTests toString) | pending | | |
-| P0.7 hygiene | pending | | |
+| P0.1 correctness (I4,I2,I3,I8,Stitcher.compile) | done | see sub-rows | |
+| &nbsp;&nbsp;I4 filter-eval reference-constant refuse + WARN-once | done | 558e05b9b4a | refuse 'L'/BytesRef constants at plan time (silent gate); wrap residual non-StitchingException in create() with shape-keyed first-failure. 2 MockLog tests fail-before-fix. Gate 5m21s exit 0 |
+| &nbsp;&nbsp;I2 cache pinning | done | bf8affeaa6c | pin cached fused unit against GC |
+| &nbsp;&nbsp;I3 divisor-tuple cap | done | 68c90023501 | BAKED_DIVISOR_CAP=8 per un-baked shape, tuple-keyed, admit only at stitch, telemetry |
+| &nbsp;&nbsp;I8 verify leak + compile guard | done | e11905f1eda | verifyUnfused() leak fix + Stitcher.compile(descriptor) budget guard |
+| P0.2 FeatureFlag esql_fusion | done | c4408854463 | gate fusion behind esql_fusion FeatureFlag; keep esql.fusion.enabled kill switch |
+| P0.3 settings cleanup | done | 57275d2e66d, 7f839ddcd72 | 3a delete sample/adaptive/string_depth1 dials; 3b remove System.getProperty from FusionSettings (enabled/coverage/verify/vector_reads). tmpdir->P0.5, dump->P0.7 |
+| P0.4 hot-path invokeExact/interface (I6) | done | 9d35e669dc9 | erase cached spreaders to Block/Vector at bind; 7 spreader invoke->invokeExact (FEEF x6 + filter-eval x1). Full fusion gate green incl differential/verify/lastEvalPath |
+| P0.5 precommit fixes | done | dba1c42e892 | 5a: asm-tree license mapping, FusionVerify Path.of->PathUtils.get (@SuppressForbidden, mirrors Environment), 2 checkstyle LineLength. 5b de-reflection: audited - the test reflection (absence-of-field meta-assertions, private FUSION_DESCRIPTOR reads, package-private kernel invokes) is intentional/justified; de-reflecting would weaken production encapsulation, so left as-is with existing rationale comments |
+| P0.6 unit suites (toString) | done | af5495b2659 | fusion auto-on in snapshot test JVMs fused depth>=2 cast chains, breaking testEvaluatorToString/testFactoryToString; build those two with fusion disabled (setEnabledForTests widened public). Fails-before-fix: EqualsTests toString |
+| P0.7 hygiene | done | d3f349373a6 | FusionDump esql.fusion.dump de-sysprop (removed forbidden Boolean.getBoolean log channel; sink+thread-capture remain) + FusedFrameInfo MethodHandle#invoke->invokeExact. compute:forbiddenApisMain now green. Cosmetic residue (plan-ref/seam trimming) deprioritized under budget |
 
 ## Phase P1
 - Rebase notes: pending (branch `esql/fusion-main`).
