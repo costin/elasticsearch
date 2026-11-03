@@ -147,6 +147,21 @@ $else$
     public void copyTo(int srcPosition, $type$[] dst, int dstPosition, int length) {
         System.arraycopy(values, srcPosition, dst, dstPosition, length);
     }
+
+$if(float)$
+$else$
+    /**
+     * Direct access to the backing array. Package-private contract:
+     * - Length equals {@link #getPositionCount()}.
+     * - Bypasses any null/multi-value guard; only safe for callers that have
+     *   verified the vector has no nulls and is not multi-valued.
+     * - Intended for fused evaluator code paths that consume a tight loop;
+     *   do not expose to user-level operators.
+     */
+    $type$[] rawValues() {
+        return values;
+    }
+$endif$
 $endif$
 
     @Override
