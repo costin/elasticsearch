@@ -33,7 +33,9 @@ public class FusionSettingsVerifyTests extends ESTestCase {
     }
 
     public void testVerifyIsNotANodeSetting() throws Exception {
-        for (Field field : FusionSettings.class.getDeclaredFields()) {
+        // A node Setting must be a public static field to be registered by EsqlPlugin#getSettings, so the public
+        // getFields() is sufficient to catch a stray "verify" Setting; the loop below cross-checks the real registration.
+        for (Field field : FusionSettings.class.getFields()) {
             if (Setting.class.isAssignableFrom(field.getType()) && Modifier.isStatic(field.getModifiers())) {
                 assertThat(
                     "esql.fusion.verify must not be registered as a Setting; found " + field.getName(),

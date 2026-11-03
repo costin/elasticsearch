@@ -13,6 +13,7 @@ import org.elasticsearch.compute.data.BytesRefBlock;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.fusion.FusionAware;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
+import org.elasticsearch.core.SuppressForbidden;
 import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
@@ -76,6 +77,9 @@ public class ChangeCaseFusionDifferentialTests extends FusionDifferentialTestCas
      * descriptor (not a hand-written {@code CHANGE_CASE_DESCRIPTOR}). The mapping flag and {@code fusionFixedArgs}
      * come from the convert Factory. A lone TO_LOWER does not fuse (D4).
      */
+    @SuppressForbidden(
+        reason = "test-only reflection: regression guard asserting the hand-written CHANGE_CASE_DESCRIPTOR field was deleted (absence of a possibly-private field)"
+    )
     public void testToLowerFusesThroughGeneratedFusionAwareDescriptor() {
         for (Field field : FusionPlanner.class.getDeclaredFields()) {
             assertThat(

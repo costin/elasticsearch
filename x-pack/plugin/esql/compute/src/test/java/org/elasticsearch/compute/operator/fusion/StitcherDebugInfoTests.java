@@ -256,7 +256,8 @@ public class StitcherDebugInfoTests extends ESTestCase {
         classNode.accept(writer);
         byte[] bytecode = writer.toByteArray();
         Class<?> defined = lookup.defineHiddenClass(bytecode, true).lookupClass();
-        String kernelMap = (String) defined.getDeclaredField(Stitcher.KERNEL_MAP_FIELD_NAME).get(null);
+        // KERNEL_MAP is emitted ACC_PUBLIC (see FusedClassDebugInfo#kernelMapField), so the public getField reaches it.
+        String kernelMap = (String) defined.getField(Stitcher.KERNEL_MAP_FIELD_NAME).get(null);
         assertCappedUtf8("defined KERNEL_MAP", kernelMap);
     }
 

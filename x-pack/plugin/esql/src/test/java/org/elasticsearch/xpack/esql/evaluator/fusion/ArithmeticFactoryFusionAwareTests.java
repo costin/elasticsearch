@@ -9,6 +9,7 @@ package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.elasticsearch.compute.operator.fusion.FusionAware;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
+import org.elasticsearch.core.SuppressForbidden;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.Abs;
@@ -144,6 +145,9 @@ public class ArithmeticFactoryFusionAwareTests extends ESTestCase {
         );
     }
 
+    @SuppressForbidden(
+        reason = "test-only reflection: pins the generated, intentionally-private $Factory.FUSION_DESCRIPTOR constant across many expression packages (no public/same-package path)"
+    )
     private static void assertFusionDescriptor(
         String factoryFqn,
         Class<?> expectedKernelClass,
@@ -182,6 +186,7 @@ public class ArithmeticFactoryFusionAwareTests extends ESTestCase {
         assertEquals(expectedOverflowChecked, descriptor.hasOverflowException());
     }
 
+    @SuppressForbidden(reason = "test-only reflection: reads the generated, intentionally-private $Factory.FUSION_DESCRIPTOR constant")
     private static FusionDescriptor readFusionDescriptor(String factoryFqn) throws Exception {
         Field field = Class.forName(factoryFqn).getDeclaredField("FUSION_DESCRIPTOR");
         field.setAccessible(true);

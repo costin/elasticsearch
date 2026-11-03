@@ -13,6 +13,7 @@ import org.elasticsearch.compute.operator.fusion.StitcherBudgetTests.ArithmeticK
 import org.elasticsearch.compute.operator.fusion.StitcherBudgetTests.CastKernels;
 import org.elasticsearch.compute.operator.fusion.StitcherBudgetTests.ComparisonKernels;
 import org.elasticsearch.compute.operator.fusion.StitcherBudgetTests.StringKernels;
+import org.elasticsearch.core.PathUtils;
 import org.elasticsearch.test.ESTestCase;
 
 import java.lang.invoke.MethodHandles;
@@ -315,7 +316,7 @@ public class FusionClassDumpTests extends ESTestCase {
         assumeFalse("set -Desql.fusion.dump.list to write the E1 sha256 list", listProp == null || listProp.isBlank());
 
         String dirProp = System.getProperty("esql.fusion.dump.dir");
-        dumpDir = (dirProp == null || dirProp.isBlank()) ? null : Path.of(dirProp);
+        dumpDir = (dirProp == null || dirProp.isBlank()) ? null : PathUtils.get(dirProp);
         if (dumpDir != null) {
             Files.createDirectories(dumpDir);
         }
@@ -384,7 +385,7 @@ public class FusionClassDumpTests extends ESTestCase {
         for (var e : hashes.entrySet()) {
             out.append(e.getValue()).append("  ").append(e.getKey()).append('\n');
         }
-        Path list = Path.of(listProp);
+        Path list = PathUtils.get(listProp);
         Files.createDirectories(list.getParent());
         Files.writeString(list, out.toString(), StandardCharsets.UTF_8);
         logger.info("wrote {} fusion sha256 lines to {}", hashes.size(), list.toAbsolutePath());

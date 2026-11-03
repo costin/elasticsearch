@@ -8,6 +8,7 @@
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
+import org.elasticsearch.core.SuppressForbidden;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.AbsLongEvaluator;
 import org.elasticsearch.xpack.esql.expression.function.scalar.math.CastIntToLongEvaluator;
@@ -103,6 +104,9 @@ public class DictionarySafeClassificationTests extends ESTestCase {
         assertThat(descriptor.warns(), is(false));
     }
 
+    @SuppressForbidden(
+        reason = "test-only reflection: reads the generated, intentionally-private $Factory.FUSION_DESCRIPTOR constant for an evaluator class with no instance in hand"
+    )
     private static FusionDescriptor generatedDescriptor(Class<?> evaluatorClass) throws Exception {
         Class<?> factory = Class.forName(evaluatorClass.getName() + "$Factory");
         Field field = factory.getDeclaredField("FUSION_DESCRIPTOR");

@@ -19,6 +19,7 @@ import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.compute.operator.fusion.TemplateRegistry;
 import org.elasticsearch.core.Releasables;
+import org.elasticsearch.core.SuppressForbidden;
 import org.elasticsearch.indices.breaker.CircuitBreakerService;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
@@ -71,6 +72,9 @@ public class StitcherBlockCrossModuleTests extends ESTestCase {
         assertThat(breaker.getUsed(), is(0L));
     }
 
+    @SuppressForbidden(
+        reason = "test-only reflection: invokes the real package-private Add.processDoubles kernel as the differential oracle; the test lives in esql-proper (not Add's arithmetic package) so the hidden class can link NumericUtils"
+    )
     public void testFuseRealAddProcessDoublesBlockPathCrossModule() throws Throwable {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
         Stitcher stitcher = new Stitcher(new TemplateRegistry());

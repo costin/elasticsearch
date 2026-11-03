@@ -10,6 +10,7 @@ package org.elasticsearch.xpack.esql.evaluator.fusion;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.compute.operator.fusion.TemplateRegistry;
+import org.elasticsearch.core.SuppressForbidden;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
 
@@ -35,6 +36,9 @@ public class StitcherCrossModuleTests extends ESTestCase {
     private static final String DOUBLE_BINARY_TYPE = "(DD)D";
     private static final MethodType DOUBLE_BINARY = MethodType.methodType(double.class, double.class, double.class);
 
+    @SuppressForbidden(
+        reason = "test-only reflection: invokes the real package-private Add.processDoubles kernel as the differential oracle; the test lives in esql-proper (not Add's arithmetic package) so the hidden class can link NumericUtils"
+    )
     public void testFuseRealAddProcessDoublesCrossModule() throws Throwable {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
         Stitcher stitcher = new Stitcher(new TemplateRegistry());

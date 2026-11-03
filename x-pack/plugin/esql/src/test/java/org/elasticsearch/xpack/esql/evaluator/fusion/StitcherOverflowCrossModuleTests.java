@@ -22,6 +22,7 @@ import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.compute.operator.fusion.TemplateRegistry;
 import org.elasticsearch.compute.test.TestWarningsSource;
 import org.elasticsearch.core.Releasables;
+import org.elasticsearch.core.SuppressForbidden;
 import org.elasticsearch.indices.breaker.CircuitBreakerService;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
@@ -128,8 +129,7 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
         MethodHandle handle = lookup.findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);
         Warnings warnings = collectingWarnings();
 
-        Method unfused = Add.class.getDeclaredMethod("processLongs", long.class, long.class);
-        unfused.setAccessible(true);
+        Method unfused = addKernel("processLongs", long.class, long.class);
 
         // p0: MAX + 1 overflows. p1: clean. p2: MAX + 10 overflows. p3: clean negative.
         long[] lhs = { Long.MAX_VALUE, 100, Long.MAX_VALUE, -50 };
@@ -195,8 +195,7 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
         MethodHandle handle = lookup.findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);
         Warnings warnings = collectingWarnings();
 
-        Method unfused = Add.class.getDeclaredMethod("processDoubles", double.class, double.class);
-        unfused.setAccessible(true);
+        Method unfused = addKernel("processDoubles", double.class, double.class);
 
         // p0: MAX + MAX = Infinity -> asFiniteNumber throws. p1: clean. p2: Infinity again. p3: clean.
         double[] lhs = { Double.MAX_VALUE, 1.5, Double.MAX_VALUE, -2.0 };
@@ -275,8 +274,7 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
         MethodHandle handle = lookup.findStatic(fused, Stitcher.FUSED_METHOD_NAME, type);
         Warnings warnings = collectingWarnings();
 
-        Method unfused = Add.class.getDeclaredMethod("processDoubles", double.class, double.class);
-        unfused.setAccessible(true);
+        Method unfused = addKernel("processDoubles", double.class, double.class);
 
         // p0: MAX + MAX = Infinity -> asFiniteNumber throws -> null. p1/p2: clean.
         double[] lhs = { Double.MAX_VALUE, 1.5, 3.0 };
@@ -310,6 +308,16 @@ public class StitcherOverflowCrossModuleTests extends ESTestCase {
             Releasables.closeExpectNoException(va, vb, result);
         }
         assertWarnings(FIRST_EXCEPTION_HEADER, DOUBLE_OVERFLOW_WARNING);
+    }
+
+    @SuppressForbidden(
+        reason = "test-only reflection: resolves the real package-private Add kernel as the differential oracle; "
+            + "the test lives in esql-proper (not Add's arithmetic package) so the hidden class can link NumericUtils"
+    )
+    private static Method addKernel(String name, Class<?>... parameterTypes) throws Exception {
+        Method kernel = Add.class.getDeclaredMethod(name, parameterTypes);
+        kernel.setAccessible(true);
+        return kernel;
     }
 
     private static Long refLong(Method unfused, long a, long b) throws Exception {

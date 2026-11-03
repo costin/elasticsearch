@@ -290,7 +290,9 @@ public class StitcherArithmeticVectorInterfaceTests extends ESTestCase {
 
     private static List<String> methodNames(Class<?> fused) {
         List<String> names = new ArrayList<>();
-        for (var method : fused.getDeclaredMethods()) {
+        // Fused methods are emitted ACC_PUBLIC (see Stitcher), so getMethods() surfaces them (plus inherited
+        // Object methods, which are harmless for the hasItem assertions).
+        for (var method : fused.getMethods()) {
             names.add(method.getName());
         }
         return names;

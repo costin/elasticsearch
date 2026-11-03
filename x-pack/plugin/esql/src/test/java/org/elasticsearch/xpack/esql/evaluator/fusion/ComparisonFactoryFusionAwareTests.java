@@ -9,6 +9,7 @@ package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.elasticsearch.compute.operator.fusion.FusionAware;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
+import org.elasticsearch.core.SuppressForbidden;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.Equals;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
@@ -94,6 +95,9 @@ public class ComparisonFactoryFusionAwareTests extends ESTestCase {
         );
     }
 
+    @SuppressForbidden(
+        reason = "test-only reflection: pins the generated, intentionally-private $Factory.FUSION_DESCRIPTOR constant across many expression packages (no public/same-package path)"
+    )
     private static void assertFusionDescriptor(
         String factoryFqn,
         Class<?> expectedKernelClass,
