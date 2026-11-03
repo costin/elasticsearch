@@ -1,0 +1,577 @@
+/*
+ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
+ */
+
+package org.elasticsearch.xpack.esql.evaluator.fusion;
+
+import org.apache.lucene.util.BytesRef;
+import org.elasticsearch.compute.data.Block;
+import org.elasticsearch.compute.data.BytesRefBlock;
+import org.elasticsearch.compute.data.BytesRefVector;
+import org.elasticsearch.compute.data.IntVector;
+import org.elasticsearch.compute.data.LongBlock;
+import org.elasticsearch.compute.data.OrdinalBytesRefVector;
+import org.elasticsearch.compute.data.Page;
+import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.compute.operator.DriverContext;
+import org.elasticsearch.compute.operator.EvalOperator;
+import org.elasticsearch.compute.operator.fusion.FusionAware;
+import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
+import org.elasticsearch.compute.operator.fusion.FusionNode;
+import org.elasticsearch.compute.operator.fusion.Stitcher;
+import org.elasticsearch.compute.operator.fusion.TemplateRegistry;
+import org.elasticsearch.core.Releasables;
+import org.elasticsearch.xpack.esql.EsqlTestUtils;
+import org.elasticsearch.xpack.esql.core.expression.Expression;
+import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
+import org.elasticsearch.xpack.esql.core.expression.FoldContext;
+import org.elasticsearch.xpack.esql.core.tree.Source;
+import org.elasticsearch.xpack.esql.core.type.DataType;
+import org.elasticsearch.xpack.esql.evaluator.EvalMapper;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.LastEvalPath;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.VectorStrategy;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
+import org.elasticsearch.xpack.esql.planner.Layout;
+import org.junit.After;
+
+import java.lang.invoke.MethodHandles;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Function;
+
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.instanceOf;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.nullValue;
+
+/** C2: build-time A/B verification of fused vs unfused results. A compilerForTests-injected fused class */
+public class FusionVerifyTests extends FusionDifferentialTestCase {
+
+    /** Kernel body the Stitcher splices in place of {@link Add#processLongs}: same {@code (JJ)J} overflow-checked */
+    public static long processLongs(long lhs, long rhs) {
+        return Math.addExact(Math.addExact(lhs, rhs), 1L);
+    }
+
+    /** Kernel body that throws; spliced in place of {@link Add#processLongs} so the exception escapes fused code. */
+    public static long throwingProcessLongs(long lhs, long rhs) {
+        throwDeliberateFusedKernelException();
+        return Math.addExact(lhs, rhs);
+    }
+
+    public static void throwDeliberateFusedKernelException() {
+        throw new IllegalStateException("deliberate fused kernel throw");
+    }
+
+    @After
+    public void resetVerifySkip() {
+        FusionVerify.skipForTests = false;
+        FusionVerify.dumpDirectoryForTests = null;
+    }
+
+    public void testDeliberatelyWrongFusedClassThrowsAssertionErrorUnderVerify() throws Exception {
+        assumeTrue("verify is on by default in test JVMs (-ea); skip when verify is off", FusionSettings.isVerifyEnabled());
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression expr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+
+        FusionPlanner.compilerForTests = plusOneAddCompiler();
+        ExpressionEvaluator.Factory factory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+        assertThat(factory, instanceOf(FusedExpressionEvaluatorFactory.class));
+        FusedExpressionEvaluatorFactory fusedFactory = (FusedExpressionEvaluatorFactory) factory;
+        assertThat(fusedFactory.vectorStrategy(), is(VectorStrategy.CHECKED_VECTOR));
+
+        int n = 4;
+        long[] av = { 1, 2, 3, 4 };
+        long[] bv = { 10, 20, 30, 40 };
+        long[] cv = { 2, 2, 2, 2 };
+        Page page = longPage(n, av, bv, cv);
+        ExpressionEvaluator evaluator = fusedFactory.get(driverContext);
+        Block result = null;
+        try {
+            AssertionError error = expectThrows(AssertionError.class, () -> evaluator.eval(page));
+            String message = error.getMessage();
+            assertThat(message, containsString("shape="));
+            assertThat(message, containsString("strategy=" + VectorStrategy.CHECKED_VECTOR));
+            assertThat(message, containsString("path=" + LastEvalPath.RAW));
+            assertThat(message, containsString("positionCount=" + n));
+            assertThat(message, containsString("firstDiff@0"));
+            assertThat(message, containsString("24"));
+            assertThat(message, containsString("22"));
+            assertThat(message, containsString("esql-fusion-dumps"));
+            Path dump = FusionVerify.dumpPath(fusedFactory.shape());
+            assertThat(message, containsString(dump.toString()));
+            assertThat("mismatch must dump fused class bytes", Files.isRegularFile(dump), is(true));
+            assertThat(Files.size(dump), greaterThan(0L));
+        } finally {
+            Releasables.closeExpectNoException(result, evaluator);
+            page.releaseBlocks();
+        }
+    }
+
+    public void testDeliberatelyWrongFusedClassPassesWhenVerifyForcedOff() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression expr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+
+        FusionPlanner.compilerForTests = plusOneAddCompiler();
+        ExpressionEvaluator.Factory factory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+        assertThat(factory, instanceOf(FusedExpressionEvaluatorFactory.class));
+
+        int n = 4;
+        Page page = longPage(n, new long[] { 1, 2, 3, 4 }, new long[] { 10, 20, 30, 40 }, new long[] { 2, 2, 2, 2 });
+        ExpressionEvaluator evaluator = factory.get(driverContext);
+        FusionVerify.skipForTests = true;
+        Block result = null;
+        try {
+            result = evaluator.eval(page);
+            assertThat(result, instanceOf(LongBlock.class));
+            assertThat(((LongBlock) result).getLong(0), is(24L));
+            assertThat(FusedExpressionEvaluatorFactory.lastEvalPath(evaluator), is(LastEvalPath.RAW));
+        } finally {
+            FusionVerify.skipForTests = false;
+            Releasables.closeExpectNoException(result, evaluator);
+            page.releaseBlocks();
+        }
+    }
+
+    public void testEvalOperatorBreakerReturnsToZeroWithVerifyOn() {
+        assumeTrue("verify is on by default in test JVMs (-ea); skip when verify is off", FusionSettings.isVerifyEnabled());
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression expr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+        ExpressionEvaluator.Factory factory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+        assertThat(factory, instanceOf(FusedExpressionEvaluatorFactory.class));
+
+        int pageSize = 8;
+        ExpressionEvaluator evaluator = factory.get(driverContext);
+        try (EvalOperator operator = new EvalOperator(driverContext, evaluator)) {
+            for (int i = 0; i < 3; i++) {
+                Page page = longPage(pageSize, boundedLongs(pageSize), boundedLongs(pageSize), boundedLongs(pageSize));
+                operator.addInput(page);
+                Page output = operator.getOutput();
+                assertThat(output, notNullValue());
+                output.releaseBlocks();
+            }
+            operator.finish();
+        }
+        assertThat(breaker.getUsed(), is(0L));
+    }
+
+    /** if verify-mode's lazy {@code unfusedFactory.get(ignoringWarnings)} throws, the already-computed fused */
+    public void testVerifyUnfusedGetFailureClosesFusedBlock() {
+        assumeTrue("verify is on by default in test JVMs (-ea); skip when verify is off", FusionSettings.isVerifyEnabled());
+        FusionVerify.skipForTests = false;
+        FusionSettings.setEnabledForTests(true);
+
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression expr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+        Function<Expression, ExpressionEvaluator.Factory> rawFactory = e -> new ThrowingOnGetFactory(unfusedFactory(e, layout));
+        ExpressionEvaluator.Factory factory = FusionPlanner.maybeFuse(expr, layout, rawFactory);
+        assertThat(factory, instanceOf(FusedExpressionEvaluatorFactory.class));
+
+        int n = 4;
+        Page page = longPage(n, new long[] { 1, 2, 3, 4 }, new long[] { 10, 20, 30, 40 }, new long[] { 2, 2, 2, 2 });
+        ExpressionEvaluator evaluator = factory.get(driverContext);
+        try {
+            IllegalStateException thrown = expectThrows(IllegalStateException.class, () -> evaluator.eval(page));
+            assertThat(thrown.getMessage(), containsString("deliberate unfused get failure"));
+        } finally {
+            Releasables.closeExpectNoException(evaluator);
+            page.releaseBlocks();
+        }
+        assertThat(breaker.getUsed(), is(0L));
+    }
+
+    /** Direct {@link FusionVerify#describeMismatch} coverage: encoding fast-path, numeric constant lost encoding, */
+    public void testDescribeMismatchTable() {
+        List<Block> toClose = new ArrayList<>();
+        try {
+            Block ordinal = ordinalBytes(new String[] { "Hello", "World" }, new int[] { 0, 1, 0 });
+            toClose.add(ordinal);
+            Block ordinalArray = bytesArray("Hello", "World", "Hello");
+            toClose.add(ordinalArray);
+            String ordinalMismatch = FusionVerify.describeMismatch(ordinalArray, ordinal);
+            assertThat(ordinalMismatch, containsString("ordinal-encoded"));
+            assertThat(ordinalMismatch, containsString("lost encoding fast path"));
+            assertThat(ordinalMismatch, containsString("values equal"));
+
+            Block constantBytes = blockFactory.newConstantBytesRefBlockWith(new BytesRef("Hi"), 4);
+            toClose.add(constantBytes);
+            Block constantArray = bytesArray("Hi", "Hi", "Hi", "Hi");
+            toClose.add(constantArray);
+            String constantMismatch = FusionVerify.describeMismatch(constantArray, constantBytes);
+            assertThat(constantMismatch, containsString("constant-encoded"));
+            assertThat(constantMismatch, containsString("lost encoding fast path"));
+            assertThat(constantMismatch, containsString("values equal"));
+
+            Block constLong = blockFactory.newConstantLongVector(7L, 3).asBlock();
+            toClose.add(constLong);
+            Block arrayLong = blockFactory.newLongArrayVector(new long[] { 7, 7, 7 }, 3).asBlock();
+            toClose.add(arrayLong);
+            String numericConstantMismatch = FusionVerify.describeMismatch(arrayLong, constLong);
+            assertThat(numericConstantMismatch, containsString("constant-encoded"));
+            assertThat(numericConstantMismatch, containsString("lost encoding fast path"));
+
+            Block nan = blockFactory.newDoubleArrayVector(new double[] { Double.NaN }, 1).asBlock();
+            toClose.add(nan);
+            Block finite = blockFactory.newDoubleArrayVector(new double[] { 1.0 }, 1).asBlock();
+            toClose.add(finite);
+            String nanMismatch = FusionVerify.describeMismatch(nan, finite);
+            assertThat(nanMismatch, containsString("firstDiff@0"));
+            assertThat(nanMismatch, containsString("positionCount=1"));
+
+            Block negZero = blockFactory.newDoubleArrayVector(new double[] { -0.0 }, 1).asBlock();
+            toClose.add(negZero);
+            Block posZero = blockFactory.newDoubleArrayVector(new double[] { 0.0 }, 1).asBlock();
+            toClose.add(posZero);
+            String signMismatch = FusionVerify.describeMismatch(negZero, posZero);
+            assertThat(signMismatch, containsString("firstDiff@0"));
+            assertThat(signMismatch, containsString("positionCount=1"));
+
+            Block left = blockFactory.newLongArrayVector(new long[] { 1, 2, 3 }, 3).asBlock();
+            toClose.add(left);
+            Block right = blockFactory.newLongArrayVector(new long[] { 1, 2, 3 }, 3).asBlock();
+            toClose.add(right);
+            assertThat(FusionVerify.describeMismatch(left, right), nullValue());
+            assertThat(FusionVerify.describeMismatch(left, left), nullValue());
+
+            Block shortBlock = blockFactory.newLongArrayVector(new long[] { 1, 2 }, 2).asBlock();
+            toClose.add(shortBlock);
+            Block longBlock = blockFactory.newLongArrayVector(new long[] { 1, 2, 3 }, 3).asBlock();
+            toClose.add(longBlock);
+            String countMismatch = FusionVerify.describeMismatch(shortBlock, longBlock);
+            assertThat(countMismatch, containsString("positionCount=2 vs 3"));
+            assertThat(countMismatch, containsString("firstDiff@"));
+            Block v1 = blockFactory.newLongArrayVector(new long[] { 1, 2 }, 2).asBlock();
+            toClose.add(v1);
+            Block v2 = blockFactory.newLongArrayVector(new long[] { 1, 9 }, 2).asBlock();
+            toClose.add(v2);
+            String valueMismatch = FusionVerify.describeMismatch(v1, v2);
+            assertThat(valueMismatch, containsString("firstDiff@1"));
+            assertThat(valueMismatch, containsString("2"));
+            assertThat(valueMismatch, containsString("9"));
+        } finally {
+            Releasables.closeExpectNoException(toClose.toArray(Block[]::new));
+        }
+    }
+
+    /** Non-UTF-8 BytesRef values (IP/VERSION bytes, 0xFF 0xFE) must stringify as Lucene hex ({@code [ff fe]}) so a */
+    public void testNonUtf8BytesRefMismatchReportsHexAndClosesBlocks() {
+        Block fused = bytesFrom(new byte[] { (byte) 0xFF, (byte) 0xFE });
+        Block unfused = bytesFrom(new byte[] { 0x00 });
+        try {
+            AssertionError error = expectThrows(
+                AssertionError.class,
+                () -> FusionVerify.compareAndReturn(fused, unfused, "non-utf8-bytesref", "NONE", "BLOCK")
+            );
+            String message = error.getMessage();
+            assertThat("mismatch (not Lucene utf8 assert) must be the thrown error", message, containsString("fused vs unfused mismatch"));
+            assertThat(message, containsString("[ff fe]"));
+            assertThat(message, containsString("[0]"));
+            assertThat("Lucene utf8ToString must not hide the mismatch", message.contains("invalid UTF"), is(false));
+            assertThat("both blocks released even on a BytesRef stringify path", breaker.getUsed(), is(0L));
+        } finally {
+            if (breaker.getUsed() != 0L) {
+                Releasables.closeExpectNoException(fused, unfused);
+            }
+        }
+    }
+
+    /** A dump that cannot write (directory path is a regular file) must still close both blocks, and the mismatch */
+    public void testDumpFailureStillClosesBothBlocksAndSaysDumpFailed() throws Exception {
+        Path notADirectory = createTempFile();
+        FusionVerify.dumpDirectoryForTests = notADirectory;
+        Block fused = blockFactory.newLongArrayVector(new long[] { 1L }, 1).asBlock();
+        Block unfused = blockFactory.newLongArrayVector(new long[] { 2L }, 1).asBlock();
+        try {
+            AssertionError error = expectThrows(
+                AssertionError.class,
+                () -> FusionVerify.compareAndReturn(fused, unfused, "dump-throws", "NONE", "BLOCK")
+            );
+            String message = error.getMessage();
+            assertThat(message, containsString("fused vs unfused mismatch"));
+            assertThat(message, containsString("dump failed"));
+            assertThat("dump exception must not replace the mismatch AssertionError", error.getClass(), is(AssertionError.class));
+            assertThat("both blocks released even when the dump throws", breaker.getUsed(), is(0L));
+        } finally {
+            FusionVerify.dumpDirectoryForTests = null;
+            if (breaker.getUsed() != 0L) {
+                Releasables.closeExpectNoException(fused, unfused);
+            }
+        }
+    }
+
+    /** Encoding: a numeric {@code Constant*Vector} unfused output vs a plain array fused output is lost encoding (the */
+    public void testNumericConstantLostEncodingAndConstantBeatsOrdinal() {
+        List<Block> toClose = new ArrayList<>();
+        try {
+            Block constLong = blockFactory.newConstantLongVector(7L, 3).asBlock();
+            toClose.add(constLong);
+            Block arrayLong = blockFactory.newLongArrayVector(new long[] { 7, 7, 7 }, 3).asBlock();
+            toClose.add(arrayLong);
+            String lost = FusionVerify.describeMismatch(arrayLong, constLong);
+            assertThat(lost, containsString("constant-encoded"));
+            assertThat(lost, containsString("lost encoding fast path"));
+            assertThat(
+                "production verify arm tolerates numeric-constant-vs-array (fused arithmetic writes arrays)",
+                FusionVerify.describeMismatch(arrayLong, constLong, false),
+                nullValue()
+            );
+
+            Block constantBytes = blockFactory.newConstantBytesRefBlockWith(new BytesRef("Hi"), 3);
+            toClose.add(constantBytes);
+            Block ordinal = ordinalBytes(new String[] { "Hi" }, new int[] { 0, 0, 0 });
+            toClose.add(ordinal);
+            assertThat(
+                "constant fused vs ordinal unfused is a stronger encoding, not a mismatch",
+                FusionVerify.describeMismatch(constantBytes, ordinal),
+                nullValue()
+            );
+        } finally {
+            Releasables.closeExpectNoException(toClose.toArray(Block[]::new));
+        }
+    }
+
+    private Block bytesFrom(byte[] raw) {
+        try (BytesRefBlock.Builder builder = blockFactory.newBytesRefBlockBuilder(1)) {
+            builder.appendBytesRef(new BytesRef(raw));
+            return builder.build();
+        }
+    }
+
+    /** an exception escaping fused code carries a suppressed {@code FusedFrameInfo} naming the shape and kernels */
+    public void testThrownKernelExceptionCarriesFusedFrameInfo() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression expr = new Mul(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+
+        FusionPlanner.compilerForTests = throwingAddCompiler();
+        ExpressionEvaluator.Factory factory = EvalMapper.toEvaluator(FoldContext.small(), expr, layout);
+        assertThat(factory, instanceOf(FusedExpressionEvaluatorFactory.class));
+        FusedExpressionEvaluatorFactory fusedFactory = (FusedExpressionEvaluatorFactory) factory;
+
+        Page page = longPage(2, new long[] { 1, 2 }, new long[] { 10, 20 }, new long[] { 2, 2 });
+        ExpressionEvaluator evaluator = fusedFactory.get(driverContext);
+        Block leaked = null;
+        try {
+            leaked = evaluator.eval(page);
+            fail("fused kernel must throw IllegalStateException, got " + leaked);
+        } catch (IllegalStateException thrown) {
+            assertThat(thrown.getMessage(), containsString("deliberate fused kernel throw"));
+            Throwable[] suppressed = thrown.getSuppressed();
+            assertThat("fused exception must carry a suppressed FusedFrameInfo (no ShowHiddenFrames)", suppressed.length, greaterThan(0));
+            Throwable frame = suppressed[0];
+            assertThat(frame.getClass().getSimpleName(), is("FusedFrameInfo"));
+            assertThat(frame.getMessage(), containsString(fusedFactory.shape()));
+            assertThat(frame.getMessage(), containsString(FusionVerifyTests.class.getName() + "#throwingProcessLongs"));
+        } finally {
+            Releasables.closeExpectNoException(leaked, evaluator);
+            page.releaseBlocks();
+        }
+    }
+
+    public void testDumpWithoutCapturedBytesWritesTxtNotClass() throws Exception {
+        FusionVerify.dumpDirectoryForTests = createTempDir();
+        Path dumped = FusionVerify.dumpOnMismatch("no-bytes-captured-shape", "BLOCK");
+        assertThat(dumped.toString(), containsString(".txt"));
+        assertThat(dumped.toString().endsWith(".class"), is(false));
+        assertThat(Files.isRegularFile(dumped), is(true));
+        assertThat(Files.readString(dumped), containsString("no fused class bytes captured"));
+    }
+
+    /** Without {@code -ea}, {@code lastEvalPath} is unset and {@link FusionVerify#verifyPage} must label the path */
+    public void testVerifyPageNullPathLabelsQuestionMark() {
+        Block fused = blockFactory.newLongArrayVector(new long[] { 1L, 2L }, 2).asBlock();
+        Block reference = blockFactory.newLongArrayVector(new long[] { 9L, 9L }, 2).asBlock();
+        Block pageBlock = blockFactory.newLongArrayVector(new long[] { 0L, 0L }, 2).asBlock();
+        Page page = new Page(pageBlock);
+        ExpressionEvaluator unfused = new ExpressionEvaluator() {
+            @Override
+            public Block eval(Page p) {
+                return reference;
+            }
+
+            @Override
+            public long baseRamBytesUsed() {
+                return 0;
+            }
+
+            @Override
+            public void close() {}
+        };
+        try {
+            AssertionError error = expectThrows(
+                AssertionError.class,
+                () -> FusionVerify.verifyPage(() -> unfused, page, fused, "null-path-label", VectorStrategy.CHECKED_VECTOR, null)
+            );
+            assertThat(error.getMessage(), containsString("path=?"));
+            assertThat(error.getMessage(), not(containsString("path=BLOCK")));
+        } finally {
+            page.releaseBlocks();
+            unfused.close();
+        }
+        assertThat(breaker.getUsed(), is(0L));
+    }
+
+    /** Unfused factory that still reports the real {@link FusionAware} descriptor (so planning/stitching succeed) */
+    private static final class ThrowingOnGetFactory implements ExpressionEvaluator.Factory, FusionAware {
+        private final ExpressionEvaluator.Factory real;
+
+        ThrowingOnGetFactory(ExpressionEvaluator.Factory real) {
+            this.real = real;
+        }
+
+        @Override
+        public ExpressionEvaluator get(DriverContext context) {
+            throw new IllegalStateException("deliberate unfused get failure");
+        }
+
+        @Override
+        public FusionDescriptor fusionDescriptor() {
+            return ((FusionAware) real).fusionDescriptor();
+        }
+
+        @Override
+        public List<Object> fusionFixedArgs() {
+            return real instanceof FusionAware fusionAware ? fusionAware.fusionFixedArgs() : List.of();
+        }
+    }
+
+    private static FusionPlanner.FusedClassCompiler throwingAddCompiler() {
+        return rewritingAddCompiler("throwingProcessLongs");
+    }
+
+    private static FusionPlanner.FusedClassCompiler plusOneAddCompiler() {
+        return rewritingAddCompiler("processLongs");
+    }
+
+    private static FusionPlanner.FusedClassCompiler rewritingAddCompiler(String replacementMethod) {
+        Stitcher real = new Stitcher(new TemplateRegistry());
+        return new FusionPlanner.FusedClassCompiler() {
+            @Override
+            public Class<?> compileBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return real.compileBlockLoop(caller, rewriteAddLongs(tree, replacementMethod));
+            }
+
+            @Override
+            public Class<?> compileVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return real.compileVectorLoop(caller, rewriteAddLongs(tree, replacementMethod));
+            }
+
+            @Override
+            public Class<?> compileVectorLoopChecked(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return real.compileVectorLoopChecked(caller, rewriteAddLongs(tree, replacementMethod));
+            }
+
+            @Override
+            public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return real.compileLogicalBlockLoop(caller, rewriteAddLongs(tree, replacementMethod));
+            }
+
+            @Override
+            public Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return real.compileLogicalVectorLoop(caller, rewriteAddLongs(tree, replacementMethod));
+            }
+        };
+    }
+
+    /** Replaces every {@link Add#processLongs} kernel with {@code FusionVerifyTests#replacementMethod} (same */
+    private static FusionNode rewriteAddLongs(FusionNode node, String replacementMethod) {
+        if (node instanceof FusionNode.Kernel kernel) {
+            List<FusionNode> children = kernel.children().stream().map(child -> rewriteAddLongs(child, replacementMethod)).toList();
+            FusionDescriptor descriptor = kernel.descriptor();
+            if (descriptor.kernelClass() == Add.class
+                && "processLongs".equals(descriptor.kernelMethod())
+                && "(JJ)J".equals(descriptor.kernelType())) {
+                FusionDescriptor swapped = new FusionDescriptor(
+                    FusionVerifyTests.class,
+                    replacementMethod,
+                    "(JJ)J",
+                    true,
+                    true,
+                    "java.lang.ArithmeticException",
+                    false,
+                    false,
+                    true,
+                    true
+                );
+                return new FusionNode.Kernel(swapped, children);
+            }
+            return new FusionNode.Kernel(descriptor, children);
+        }
+        if (node instanceof FusionNode.Logical logical) {
+            return new FusionNode.Logical(
+                logical.op(),
+                rewriteAddLongs(logical.left(), replacementMethod),
+                rewriteAddLongs(logical.right(), replacementMethod)
+            );
+        }
+        if (node instanceof FusionNode.Not not) {
+            return new FusionNode.Not(rewriteAddLongs(not.child(), replacementMethod));
+        }
+        return node;
+    }
+
+    private Block bytesArray(String... values) {
+        try (BytesRefBlock.Builder builder = blockFactory.newBytesRefBlockBuilder(values.length)) {
+            for (String value : values) {
+                builder.appendBytesRef(new BytesRef(value));
+            }
+            return builder.build();
+        }
+    }
+
+    private Block ordinalBytes(String[] dictionary, int[] ordinals) {
+        BytesRefVector dict = null;
+        IntVector ords = null;
+        try (BytesRefVector.Builder dictBuilder = blockFactory.newBytesRefVectorBuilder(dictionary.length)) {
+            for (String entry : dictionary) {
+                dictBuilder.appendBytesRef(new BytesRef(entry));
+            }
+            dict = dictBuilder.build();
+            ords = blockFactory.newIntArrayVector(ordinals, ordinals.length);
+            Block block = new OrdinalBytesRefVector(ords, dict).asBlock();
+            dict = null;
+            ords = null;
+            return block;
+        } finally {
+            Releasables.closeExpectNoException(dict, ords);
+        }
+    }
+
+    private Page longPage(int positionCount, long[] a, long[] b, long[] c) {
+        return new Page(
+            blockFactory.newLongArrayVector(a, positionCount).asBlock(),
+            blockFactory.newLongArrayVector(b, positionCount).asBlock(),
+            blockFactory.newLongArrayVector(c, positionCount).asBlock()
+        );
+    }
+
+    private long[] boundedLongs(int positionCount) {
+        long[] values = new long[positionCount];
+        for (int p = 0; p < positionCount; p++) {
+            values[p] = randomLongBetween(-1000, 1000);
+        }
+        return values;
+    }
+}

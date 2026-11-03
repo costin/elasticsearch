@@ -18,10 +18,18 @@ import org.elasticsearch.xpack.esql.core.QlIllegalArgumentException;
 import org.elasticsearch.xpack.esql.core.expression.Attribute;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
 import org.elasticsearch.xpack.esql.core.expression.FoldContext;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusionCoverage;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusionPlanner;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusionTelemetry;
 import org.elasticsearch.xpack.esql.evaluator.mapper.EvaluatorMapper;
 import org.elasticsearch.xpack.esql.planner.EsPhysicalOperationProviders.ShardContext;
 import org.elasticsearch.xpack.esql.planner.Layout;
 import org.elasticsearch.xpack.esql.planner.PlannerUtils;
+
+import java.util.IdentityHashMap;
+import java.util.Map;
+import java.util.function.Function;
 
 public final class EvalMapper {
     private EvalMapper() {}
@@ -76,13 +84,101 @@ public final class EvalMapper {
         IndexedByShardId<? extends ShardContext> shardContexts,
         @Nullable AnalysisRegistry analysisRegistry
     ) {
-        if (exp instanceof EvaluatorMapper m) {
-            return m.toEvaluator(toEvaluatorContext(foldCtx, layout, shardContexts, analysisRegistry));
+        return new Builder(foldCtx, layout, shardContexts, analysisRegistry).toEvaluator(exp);
+    }
+
+    /**
+     * A single {@link #toEvaluator} invocation. Holds the per-call state — most importantly the {@code unfusedMemo},
+     * which guarantees each expression node's generated factory is built <b>exactly once</b> even though fusion
+     * inspects the same nodes it may fall back to.
+     *
+     * <h2>Why the memo matters (additive fold-budget invariant)</h2>
+     * Building a generated factory is <b>not</b> side-effect-free: operators such as {@code EsqlArithmeticOperation}
+     * constant-fold a foldable operand against the shared {@link FoldContext} budget while constructing their
+     * evaluator. If fusion probed a node by building its factory and then a separate fall-through rebuilt it, every
+     * foldable subexpression would fold twice — doubling plan-time fold-budget consumption and risking a spurious
+     * {@code FoldTooMuchMemoryException} on queries that previously succeeded. Memoizing by expression identity keeps
+     * total folds and factory constructions identical to the pre-fusion baseline whenever nothing fuses, and no worse
+     * when something does.
+     *
+     * <h2>Where fusion is attempted</h2>
+     * Fusion is attempted at {@code exp} (the expression a caller hands to {@link #toEvaluator}, e.g. an EVAL/WHERE
+     * value). If the maximal subtree fuses, the fused factory is returned; otherwise the memoized unfused factory is
+     * returned unchanged. The unfused factory the {@link FusionPlanner} reads for descriptor probing and passes as the
+     * fusion fallback is the very same object returned when nothing fuses, so the invariant holds by construction.
+     */
+    private static final class Builder {
+        private final FoldContext foldCtx;
+        private final Layout layout;
+        private final IndexedByShardId<? extends ShardContext> shardContexts;
+        @Nullable
+        private final AnalysisRegistry analysisRegistry;
+
+        /** Identity-keyed cache of the <b>unfused</b> generated factory per expression node; each is built at most once. */
+        private final Map<Expression, ExpressionEvaluator.Factory> unfusedMemo = new IdentityHashMap<>();
+
+        Builder(
+            FoldContext foldCtx,
+            Layout layout,
+            IndexedByShardId<? extends ShardContext> shardContexts,
+            @Nullable AnalysisRegistry analysisRegistry
+        ) {
+            this.foldCtx = foldCtx;
+            this.layout = layout;
+            this.shardContexts = shardContexts;
+            this.analysisRegistry = analysisRegistry;
         }
-        if (exp instanceof Attribute attr) {
-            return new LoadFromPageEvaluator.Factory(layout.get(attr.id()).channel());
+
+        /**
+         * Builds the factory for {@code exp}, fusing the maximal fusable subtree rooted here when possible. The unfused
+         * factory is built first (once, memoized) so the {@link FusionPlanner}'s descriptor probes and fusion fallback
+         * are all served from the memo — never rebuilt — keeping fold-budget consumption additive.
+         */
+        ExpressionEvaluator.Factory toEvaluator(Expression exp) {
+            boolean probe = FusionSettings.isCoverageReportEnabled();
+            ExpressionEvaluator.Factory unfused = unfused(exp);
+            ExpressionEvaluator.Factory fused = FusionPlanner.maybeFuse(exp, layout, this::unfused);
+            if (probe) {
+                recordCoverage(exp, fused);
+            }
+            return fused != null ? fused : unfused;
         }
-        throw new QlIllegalArgumentException("Unsupported expression [{}]", exp);
+
+        /** Returns the memoized unfused factory for {@code exp}, building it (and its subtree) once on first request. */
+        private ExpressionEvaluator.Factory unfused(Expression exp) {
+            ExpressionEvaluator.Factory cached = unfusedMemo.get(exp);
+            if (cached != null) {
+                return cached;
+            }
+            ExpressionEvaluator.Factory built = buildUnfused(exp);
+            // Children are populated by the recursive unfused() calls above before we reach here, so a simple
+            // put (rather than computeIfAbsent, which forbids re-entrant modification) is correct and single-threaded.
+            unfusedMemo.put(exp, built);
+            return built;
+        }
+
+        private ExpressionEvaluator.Factory buildUnfused(Expression exp) {
+            if (exp instanceof EvaluatorMapper m) {
+                // Same ToEvaluator context as the public toEvaluatorContext, differing only in how a child is turned
+                // into a factory: here through this builder's memoized unfused walk, not the fusing toEvaluator.
+                return m.toEvaluator(toEvaluatorContext(foldCtx, shardContexts, analysisRegistry, this::unfused));
+            }
+            if (exp instanceof Attribute attr) {
+                return new LoadFromPageEvaluator.Factory(layout.get(attr.id()).channel());
+            }
+            throw new QlIllegalArgumentException("Unsupported expression [{}]", exp);
+        }
+
+        /** Coverage is diagnostic-only: never fail a query because the classifier hit an unexpected node. */
+        private void recordCoverage(Expression exp, ExpressionEvaluator.Factory fused) {
+            try {
+                FusionCoverage.Result classified = FusionCoverage.classify(exp, layout, this::unfused, fused);
+                FusionTelemetry.recordTopLevel(classified.category(), classified.refusalReason());
+            } catch (Exception ignored) {
+                // probe must stay additive
+            }
+        }
+
     }
 
     /**
@@ -96,10 +192,31 @@ public final class EvalMapper {
         IndexedByShardId<? extends ShardContext> shardContexts,
         @Nullable AnalysisRegistry analysisRegistry
     ) {
+        return toEvaluatorContext(
+            foldCtx,
+            shardContexts,
+            analysisRegistry,
+            expression -> toEvaluator(foldCtx, expression, layout, shardContexts, analysisRegistry)
+        );
+    }
+
+    /**
+     * The single {@link EvaluatorMapper.ToEvaluator} implementation shared by the fusing public entry point and the
+     * {@link Builder}'s unfused subtree walk. The two paths differ only in how a child expression becomes a factory —
+     * the fusing path recurses through {@link #toEvaluator}, the unfused path through the Builder's memoized
+     * {@code unfused} — so that sole difference is {@code childFactory}; {@code foldCtx}, {@code shardContexts} and
+     * {@code getAnalyzer} are identical either way.
+     */
+    static EvaluatorMapper.ToEvaluator toEvaluatorContext(
+        FoldContext foldCtx,
+        IndexedByShardId<? extends ShardContext> shardContexts,
+        @Nullable AnalysisRegistry analysisRegistry,
+        Function<Expression, ExpressionEvaluator.Factory> childFactory
+    ) {
         return new EvaluatorMapper.ToEvaluator() {
             @Override
             public ExpressionEvaluator.Factory apply(Expression expression) {
-                return toEvaluator(foldCtx, expression, layout, shardContexts, analysisRegistry);
+                return childFactory.apply(expression);
             }
 
             @Override

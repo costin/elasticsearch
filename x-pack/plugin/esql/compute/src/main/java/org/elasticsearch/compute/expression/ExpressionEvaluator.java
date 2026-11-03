@@ -72,6 +72,11 @@ import org.elasticsearch.core.Releasable;
  * use {@link DriverContext#blockFactory()} to build results.
  * </p>
  * <p>
+ * A fused evaluator reports a constant shallow instance size. {@link EvalOperator} snapshots
+ * {@link ExpressionEvaluator#baseRamBytesUsed} once at construction and releases that amount
+ * at close, rather than re-reading it, to avoid circuit-breaker drift.
+ * </p>
+ * <p>
  * Implementations that <strong>do</strong> allocate memory should use {@link BreakingBytesRefBuilder}
  * or {@link BigArrays} or some other safe allocation mechanism. If that isn't possible
  * they should communicate with the {@link CircuitBreaker} directly via {@link DriverContext#breaker}.

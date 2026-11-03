@@ -147,6 +147,8 @@ import org.elasticsearch.xpack.esql.datasources.spi.FormatSpec;
 import org.elasticsearch.xpack.esql.enrich.EnrichLookupOperator;
 import org.elasticsearch.xpack.esql.enrich.LookupFromIndexOperator;
 import org.elasticsearch.xpack.esql.enrich.StreamingLookupFromIndexOperator;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusionTelemetry;
 import org.elasticsearch.xpack.esql.execution.PlanExecutor;
 import org.elasticsearch.xpack.esql.expression.ExpressionWritables;
 import org.elasticsearch.xpack.esql.expression.function.EsqlFunctionRegistry;
@@ -387,12 +389,30 @@ public class EsqlPlugin extends Plugin implements ActionPlugin, ExtensiblePlugin
 
     @Override
     public void close() throws IOException {
+        try {
+            // Coverage counters are process-wide statics: a multi-node JVM logs the same cumulative report
+            // once per node close, not a per-node split. Diagnostic-only.
+            if (FusionSettings.isCoverageReportEnabled()) {
+                logger.info("{}", FusionTelemetry.coverageReport());
+            }
+        } catch (Exception e) {
+            // Coverage is diagnostic-only; never fail node shutdown because the report could not be built.
+            logger.debug("fusion coverage report failed to emit", e);
+        }
         IOUtils.close(dataSourceModule);
     }
 
     @Override
     public Collection<?> createComponents(PluginServices services) {
         Settings settings = services.clusterService().getSettings();
+        // Seed the node-level expression-fusion kill switch (esql.fusion.enabled) at node start, then keep it current
+        // through a dynamic-setting consumer so an operator can toggle fusion on a running node.
+        // coverage_report (default off) and verify (default Assertions.ENABLED) are non-Setting diagnostics controlled only via test hooks,
+        // not node settings.
+        FusionSettings.initFromNodeSettings(settings);
+        services.clusterService()
+            .getClusterSettings()
+            .addSettingsUpdateConsumer(FusionSettings.FUSION_ENABLED_SETTING, FusionSettings::updateEnabled);
         BigArrays bigArrays = services.indicesService().getBigArrays().withCircuitBreaking();
         var blockFactoryProvider = blockFactoryProvider(
             BlockFactory.builder(bigArrays)
@@ -748,7 +768,10 @@ public class EsqlPlugin extends Plugin implements ActionPlugin, ExtensiblePlugin
                 ViewService.MAX_VIEWS_COUNT_SETTING,
                 ViewService.MAX_VIEW_LENGTH_SETTING,
                 ViewResolver.MAX_VIEW_DEPTH_SETTING,
-                GROK_WATCHDOG_MAX_EXECUTION_TIME
+                GROK_WATCHDOG_MAX_EXECUTION_TIME,
+                FusionSettings.FUSION_ENABLED_SETTING,
+                FusionSettings.FUSION_CACHE_MAX_BYTES_SETTING,
+                FusionSettings.FUSION_CACHE_MIN_SIGHTINGS_SETTING
             )
         );
         settings.addAll(PlannerSettings.settings());

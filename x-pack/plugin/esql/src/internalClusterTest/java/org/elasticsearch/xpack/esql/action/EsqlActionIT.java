@@ -65,6 +65,7 @@ import org.elasticsearch.xpack.core.esql.action.ColumnInfo;
 import org.elasticsearch.xpack.esql.VerificationException;
 import org.elasticsearch.xpack.esql.analysis.AnalyzerSettings;
 import org.elasticsearch.xpack.esql.core.type.DataType;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
 import org.elasticsearch.xpack.esql.parser.ParsingException;
 import org.elasticsearch.xpack.esql.plan.logical.Explain;
 import org.elasticsearch.xpack.esql.planner.PlannerSettings;
@@ -135,6 +136,7 @@ import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
+import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.nullValue;
 
 public class EsqlActionIT extends AbstractEsqlIntegTestCase {
@@ -2651,6 +2653,46 @@ public class EsqlActionIT extends AbstractEsqlIntegTestCase {
             HashAggregationOperator.Status partialAgg = (HashAggregationOperator.Status) hashOperator.get(0).status();
             assertThat(partialAgg.emitCount(), equalTo(1L));
         }
+    }
+
+    public void testProfileShowsFusedEval() {
+        assumeTrue("expression fusion is snapshot-gated", FusionSettings.FUSION_FEATURE_FLAG.isEnabled());
+        String index = "fusion-profile-idx";
+        assertAcked(
+            client().admin()
+                .indices()
+                .prepareCreate(index)
+                .setSettings(indexSettings(1, 0).build())
+                .setMapping("a", "type=long", "b", "type=long", "c", "type=long")
+        );
+        index(index, "1", Map.of("a", 2L, "b", 3L, "c", 4L));
+        refresh(index);
+
+        EsqlQueryRequest request = syncEsqlQueryRequest("FROM " + index + " | EVAL v = (a + b) * c | STATS SUM(v)");
+        request.profile(true);
+        // Production min_sightings is 2: first plan is a miss, second must fuse.
+        try (EsqlQueryResponse ignored = run(request)) {}
+        try (EsqlQueryResponse result = run(request)) {
+            assertThat(profileOperatorNames(result), hasItem(containsString("Fused[")));
+            assertThat(((Number) getValuesList(result).get(0).get(0)).longValue(), equalTo(20L));
+        }
+
+        try {
+            updateClusterSettings(Settings.builder().put(FusionSettings.FUSION_ENABLED_SETTING.getKey(), false));
+            try (EsqlQueryResponse result = run(request)) {
+                List<String> names = profileOperatorNames(result);
+                assertThat(names, not(empty()));
+                assertThat(names, not(hasItem(containsString("Fused["))));
+            }
+        } finally {
+            updateClusterSettings(Settings.builder().putNull(FusionSettings.FUSION_ENABLED_SETTING.getKey()));
+        }
+    }
+
+    private static List<String> profileOperatorNames(EsqlQueryResponse result) {
+        EsqlQueryResponse.Profile profile = result.profile();
+        assertNotNull(profile);
+        return profile.drivers().stream().flatMap(d -> d.operators().stream()).map(OperatorStatus::operator).toList();
     }
 
     public void testPushTopNToAggregate() {

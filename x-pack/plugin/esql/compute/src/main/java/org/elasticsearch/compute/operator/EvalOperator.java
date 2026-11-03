@@ -83,6 +83,13 @@ public class EvalOperator extends AbstractPageMappingOperator {
     private final DriverContext ctx;
     private final ExpressionEvaluator evaluator;
     /**
+     * Bytes reserved on the circuit breaker at construction, released unchanged at close.
+     * A fused evaluator reports a constant shallow instance size; fuse does not grow
+     * {@link ExpressionEvaluator#baseRamBytesUsed()}. The breaker does not reserve lazily
+     * created {@code unfusedFallback} or assertion-only {@code verifyUnfused}.
+     */
+    private final long reservedBytes;
+    /**
      * Cached {@link #toString()} representation. The evaluator tree is immutable after construction,
      * so its string form is deterministic. {@link Driver} reads this on every status update; caching
      * avoids walking the evaluator tree per call.
@@ -93,7 +100,8 @@ public class EvalOperator extends AbstractPageMappingOperator {
         this.ctx = ctx;
         this.evaluator = evaluator;
         this.description = getClass().getSimpleName() + "[evaluator=" + evaluator + "]";
-        ctx.breaker().addEstimateBytesAndMaybeBreak(BASE_RAM_BYTES_USED + evaluator.baseRamBytesUsed(), "ESQL");
+        this.reservedBytes = BASE_RAM_BYTES_USED + evaluator.baseRamBytesUsed();
+        ctx.breaker().addEstimateBytesAndMaybeBreak(reservedBytes, "ESQL");
     }
 
     @Override
@@ -109,10 +117,6 @@ public class EvalOperator extends AbstractPageMappingOperator {
 
     @Override
     public void close() {
-        Releasables.closeExpectNoException(
-            evaluator,
-            () -> ctx.breaker().addWithoutBreaking(-BASE_RAM_BYTES_USED - evaluator.baseRamBytesUsed()),
-            super::close
-        );
+        Releasables.closeExpectNoException(evaluator, () -> ctx.breaker().addWithoutBreaking(-reservedBytes), super::close);
     }
 }

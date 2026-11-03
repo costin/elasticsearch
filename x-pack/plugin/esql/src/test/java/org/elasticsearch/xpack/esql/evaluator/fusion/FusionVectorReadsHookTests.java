@@ -1,0 +1,99 @@
+/*
+ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
+ */
+
+package org.elasticsearch.xpack.esql.evaluator.fusion;
+
+import org.elasticsearch.compute.data.Block;
+import org.elasticsearch.compute.data.Page;
+import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.core.Releasables;
+import org.elasticsearch.xpack.esql.core.expression.Expression;
+import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
+import org.elasticsearch.xpack.esql.core.tree.Source;
+import org.elasticsearch.xpack.esql.core.type.DataType;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.LastEvalPath;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.VectorStrategy;
+import org.elasticsearch.xpack.esql.expression.function.scalar.math.Abs;
+import org.elasticsearch.xpack.esql.planner.Layout;
+
+import java.util.List;
+
+import static org.hamcrest.Matchers.is;
+
+/**
+ * Vector-reads hook: default {@code auto} keeps ALL-RAW over exact {@code *ArrayVector} inputs; the ALL-INTERFACE
+ * path treats those same inputs as non-exact so eval takes ALL-INTERFACE, with unchanged values. The production
+ * flag is a class-init {@code static final} constant ({@code false}), so both paths are forced here via
+ * {@link FusedExpressionEvaluatorFactory#getForTests} rather than mutating global state.
+ */
+public class FusionVectorReadsHookTests extends FusionDifferentialTestCase {
+
+    public void testVectorReadsInterfaceTreatsExactArrayVectorsAsNonExact() {
+        assertThat("default auto is not the interface force", FusionSettings.isVectorReadsInterface(), is(false));
+
+        FieldAttribute x = field("x", DataType.DOUBLE);
+        Layout layout = layout(x);
+        Expression expr = new Abs(Source.EMPTY, new Abs(Source.EMPTY, x));
+        FusedExpressionEvaluatorFactory fused = assertFuses(fusedFactory(expr, layout), "Abs(Abs(x))");
+        assertThat(fused.vectorStrategy(), is(VectorStrategy.PLAIN_VECTOR));
+        ExpressionEvaluator.Factory unfused = unfusedFactory(expr, layout);
+
+        int n = 8;
+        runDifferentialAssertingPath(
+            fused,
+            false,
+            unfused,
+            denseColumn(ElementKind.DOUBLE, n, 0),
+            n,
+            LastEvalPath.RAW,
+            "auto: exact DoubleArrayVector -> RAW"
+        );
+        runDifferentialAssertingPath(
+            fused,
+            true,
+            unfused,
+            denseColumn(ElementKind.DOUBLE, n, 0),
+            n,
+            LastEvalPath.INTERFACE,
+            "interface: exact DoubleArrayVector -> INTERFACE"
+        );
+    }
+
+    private void runDifferentialAssertingPath(
+        FusedExpressionEvaluatorFactory fusedFactory,
+        boolean vectorReadsInterface,
+        ExpressionEvaluator.Factory unfusedFactory,
+        Block input,
+        int positionCount,
+        LastEvalPath expectedPath,
+        String ctx
+    ) {
+        var fusedContext = freshDriverContext();
+        var referenceContext = freshDriverContext();
+        ExpressionEvaluator fused = fusedFactory.getForTests(fusedContext, vectorReadsInterface);
+        ExpressionEvaluator reference = unfusedFactory.get(referenceContext);
+        Page page = null;
+        Block fusedResult = null;
+        Block referenceResult = null;
+        try {
+            page = new Page(positionCount, input);
+            fusedResult = fused.eval(page);
+            List<String> fusedWarnings = warningsOf(fusedContext);
+            referenceResult = reference.eval(page);
+            List<String> referenceWarnings = warningsOf(referenceContext);
+
+            assertThat(ctx + " lastEvalPath", FusedExpressionEvaluatorFactory.lastEvalPath(fused), is(expectedPath));
+            assertResultsEqual(ElementKind.DOUBLE, fusedResult, referenceResult, positionCount, ctx);
+            assertWarningsSubset(fusedWarnings, referenceWarnings, ctx);
+        } finally {
+            Releasables.closeExpectNoException(fusedResult, referenceResult, fused, reference);
+            if (page != null) {
+                page.releaseBlocks();
+            }
+        }
+    }
+}
