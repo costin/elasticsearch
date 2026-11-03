@@ -34,7 +34,7 @@ public final class FusedFrameInfo extends RuntimeException {
         try {
             Class<?> fusedClass = lookup.revealDirect(handle).getDeclaringClass();
             MethodHandle getter = lookup.findStaticGetter(fusedClass, Stitcher.KERNEL_MAP_FIELD_NAME, String.class);
-            String value = (String) getter.invoke();
+            String value = (String) getter.invokeExact();
             return value != null ? value : "";
         } catch (Throwable ignored) {
             return "";
