@@ -152,10 +152,78 @@ fused page A/B'd against the unfused fallback) — see the Phase D end section. 
 supplied (`e1/D5a.txt`, 10 shapes changed from D.4e by the reorder, 33 identical).
 
 ## Phase P1
-- Rebase notes: pending (branch `esql/fusion-main`).
-- `allowNonFinite` decision: pending.
-- Kernel contract table: `rebase.md` (pending).
-- Gates after rebase: pending.
+
+Branch `esql/fix/fusion-main-bf28` = `main` `174890c2e3a` + the four fusion commits
+`71add8b5aa0` / `04809350d0d` / `37b2eeaf901` / `0d795360da8`.
+
+### P1.A — squash into four commits
+The P0 series was squashed on the old base `0bd981523a66` into the four commits above
+(metadata / stitcher / planner / WHERE+EVAL). Each passed the four-project precommit on
+that base before the rebase.
+
+### P1.B — rebase onto `main` + per-commit bisectability
+Rebased onto fetched `main` `174890c2e3a`; conflicts resolved keeping `main`'s behaviour
+and re-applying the fusion hooks (full write-up in `rebase.md`). Every commit compiles
+`:x-pack:plugin:esql[:compute]` standalone (bisectable):
+
+| commit | summary | `compileJava`+`compileTestJava` |
+|---|---|---|
+| `71add8b5aa0` | Fusion metadata: `@Fusable` and descriptors | exit 0 |
+| `04809350d0d` | Fusion stitcher and bytecode emitters | exit 0 |
+| `37b2eeaf901` | Fusion planner for EVAL expressions | exit 0 |
+| `0d795360da8` | Fuse WHERE combined with a following EVAL | exit 0 |
+
+### P1.C — `allowNonFinite` decision
+`main`'s PromQL double path adds a trailing `@Fixed boolean allowNonFinite` to the five
+arithmetic kernels and the non-finite math functions (descriptor drift `(DD)D`→`(DDZ)D`,
+`(D)D`→`(DZ)D`; see `rebase.md`). Decision: **bake the flag as a planner constant**
+(`FusionNode.Constant.baked(allowNonFinite(), 'Z')`, pushed as `iconst 0/1`) and append it
+as the kernel's trailing operand — **fusion is not refused when it is `true`**. The flag
+enters the fused-class cache **shape key** as `#C:Z:true` / `#C:Z:false`, so the strict and
+lenient variants never share a fused class. Covered by new differential tests
+`testDoubleArithmeticAllowNonFiniteMatchesUnfused` (fused-vs-unfused over ADD/SUB/MUL/DIV/MOD
+× {false,true} with NaN / ±Inf / overflow-to-Inf inputs, asserting values, nulls and the
+warning set) and `testAllowNonFiniteVariantsResolveToDistinctClasses` (the two variants
+resolve to distinct fused classes via the `#C:Z:…` shape key).
+
+### P1.D — kernel contract table
+`rebase.md` (committed on this evidence branch, `97a745f68c3`): per-`@Fusable` `@Evaluator`
+descriptor drift base vs `main`, the type/symbol moves (`NonFiniteSupport`,
+`*NonFiniteDoublesByConstant`), and every non-trivial conflict resolution (Div single-return,
+the `Z` baking, the ASM `ComputeLimits` wrap, the `StackOverflowError` catch removal + depth
+cap, the per-driver `DriverContext` warnings harness, the cross-module descriptor tests, and
+the structural rebase conflicts).
+
+### P1.E — gates after rebase (tip `0d795360da8`)
+All green at the rebased tip:
+
+| gate | result |
+|---|---|
+| four-project precommit (`:esql` + `:esql:compute` + `:esql:compute:gen` + `:benchmarks`) | `BUILD SUCCESSFUL`, exit 0 |
+| fusion gate (gen test + spotless, compute test, `:esql --tests *fusion*`, all three spotless) | `BUILD SUCCESSFUL` (5m4s), exit 0 |
+| `:x-pack:plugin:esql:test` | 716030 tests, 0 failures, 0 errors, 52328 skipped |
+| `:x-pack:plugin:esql:compute:test` | 13018 tests, 0 failures, 0 errors, 349 skipped |
+| CsvIT verify-on (fusion on, `-ea` A/B each page vs unfused, `min_sightings=1`) | 10889 tests, 0 failures, 184 skipped |
+| CsvIT fusion-off (`-Dtests.jvm.argline=-Desql.fusion.enabled=false`, unfused baseline, `min_sightings=1`) | 10889 tests, 0 failures, 184 skipped |
+
+Note on "verify on/off": on `main` `esql.fusion.verify` is **no longer a system property** —
+verify-mode A/B is `Assertions.ENABLED` (on under the `-ea` test JVM, folded away in
+production/JMH; the in-process off hook is `FusionVerify.skipForTests`). The two corpus passes
+above are the designed CsvIT A/B (`CsvIT.nodeSettings` pins `min_sightings=1` and the
+`-D`-guarded `esql.fusion.enabled` flip): the verify-on pass A/Bs every fused page against its
+unfused shadow across the whole corpus, and the fusion-off pass anchors that unfused side to
+the committed `.csv-spec` outputs — together strictly stronger than the old property pair.
+
+E1 corpus regenerated at the rebased tip (`FusionClassDumpTests` with
+`-Desql.fusion.dump.list`) → `e1/P1.txt`: **43 / 43 shapes byte-identical to `e1/D5d.txt`,
+0 changed**. Expected: the rebase's semantic changes live in the ESQL planner (the
+`allowNonFinite` `Z` baking) and the Stitcher error path (the ASM budget wrap); neither
+perturbs the compute-level emitter bytecode for the existing `FusionNode` shapes, so the
+emitter corpus is unchanged — confirming the rebase introduced no bytecode-emission drift.
+
+### P1.F
+Code branch `esql/fix/fusion-main-bf28` pushed (base `main`); this evidence branch updated;
+PR created/updated.
 
 ## iter5 item map
 | iter5 | Lands in | Status |
