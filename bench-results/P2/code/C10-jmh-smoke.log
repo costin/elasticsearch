@@ -1,0 +1,40 @@
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE      ADD_MUL_LONG     N/A          UNFUSED  avgt          6.746          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE      ADD_MUL_LONG     N/A          SPLICED  avgt          1.392          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE      ADD_MUL_LONG     N/A      HANDWRITTEN  avgt          3.215          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE      ADD_MUL_LONG     N/A  HANDWRITTEN_RAW  avgt          3.133          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE  ADD_MUL_SUB_LONG     N/A          UNFUSED  avgt         11.278          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE  ADD_MUL_SUB_LONG     N/A          SPLICED  avgt          1.896          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE  ADD_MUL_SUB_LONG     N/A      HANDWRITTEN  avgt          3.349          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE  ADD_MUL_SUB_LONG     N/A  HANDWRITTEN_RAW  avgt          1.911          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE       CHAIN8_LONG     N/A          UNFUSED  avgt         25.760          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE       CHAIN8_LONG     N/A          SPLICED  avgt          5.160          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE       CHAIN8_LONG     N/A      HANDWRITTEN  avgt          7.403          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE       CHAIN8_LONG     N/A  HANDWRITTEN_RAW  avgt          5.115          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE  LIT_ADD_MUL_LONG     N/A          UNFUSED  avgt          5.918          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE  LIT_ADD_MUL_LONG     N/A          SPLICED  avgt          1.141          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE  LIT_ADD_MUL_LONG     N/A      HANDWRITTEN  avgt          2.949          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE  LIT_ADD_MUL_LONG     N/A  HANDWRITTEN_RAW  avgt          2.881          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE    ADD_MUL_DOUBLE     N/A          UNFUSED  avgt          7.568          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE    ADD_MUL_DOUBLE     N/A          SPLICED  avgt          2.176          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE    ADD_MUL_DOUBLE     N/A      HANDWRITTEN  avgt          3.319          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE    ADD_MUL_DOUBLE     N/A  HANDWRITTEN_RAW  avgt          3.364          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE       ADD_GT_LONG     N/A          UNFUSED  avgt          4.043          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE       ADD_GT_LONG     N/A          SPLICED  avgt          0.767          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE       ADD_GT_LONG     N/A      HANDWRITTEN  avgt          0.712          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE       ADD_GT_LONG     N/A  HANDWRITTEN_RAW  avgt          0.711          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE      AND_CMP_LONG     N/A          UNFUSED  avgt          2.219          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE      AND_CMP_LONG     N/A          SPLICED  avgt          1.184          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE      AND_CMP_LONG     N/A      HANDWRITTEN  avgt          1.029          ns/op
+FusionStrategyBenchmark.run                               N/A       N/A  N/A       NONE      AND_CMP_LONG     N/A  HANDWRITTEN_RAW  avgt          1.055          ns/op
+
+[Incubating] Problems report is available at: file:///Users/costin/dev/work/es/main/build/reports/problems/problems-report.html
+
+BUILD SUCCESSFUL in 5m 1s
+380 actionable tasks: 3 executed, 377 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.7.1/userguide/configuration_cache_enabling.html
+
+---
+exit_code: 0
+elapsed_ms: 303078
+ended_at: 2026-11-04T20:28:42.166Z
+---

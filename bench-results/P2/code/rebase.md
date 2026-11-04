@@ -55,3 +55,20 @@ Result: clean, 4/4, no conflicts.
 New base: `dd00717db9f7` (`Mapper.Builder implements ToXContentFragment (#164463)`).
 New tip after rebase: see READY.md.
 
+## C12 rebase
+
+`git fetch upstream main && git rebase upstream/main` — clean, 4/4, no conflicts.
+
+`upstream/main` was 9 commits ahead of C8/C11 base `dd00717db9f7`. Intersection of main-touched files vs fusion-touched files: `EsqlPlugin.java` only (main added `LookupQueryOperator.Status.ENTRY` + import; fusion's FusionSettings hunks are elsewhere). No `@Fusable` kernel body changes on main.
+
+Likely conflict files from the plan (`LocalExecutionPlanner`, `EvalMapper`, `EvalOperator`, `@Fusable` kernels): none among the 9.
+
+New base: `251d667d2d77` (`[ESQL] Truncate bytes decoded for error (#164505)`).
+New tip: `a9de22c68949` (after leftover-tag fixup into commit 3).
+
+4 commits:
+1. `cb2df865d7e2` `[ESQL] Fusion metadata: @Fusable and descriptors`
+2. `85eca33263ed` `[ESQL] Fusion stitcher and bytecode emitters`
+3. `b4ca3a7e9bee` `[ESQL] Fusion planner for EVAL expressions`
+4. `a9de22c68949` `[ESQL] Fuse WHERE combined with a following EVAL`
+
