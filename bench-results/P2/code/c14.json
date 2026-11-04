@@ -1,0 +1,760 @@
+[
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27",
+            "-Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins",
+            "-Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "--add-modules=jdk.incubator.vector",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "27-ea",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "27-ea+28-2279",
+        "warmupIterations" : 0,
+        "warmupTime" : "10 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "100 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "mode" : "OFF",
+            "shape" : "LONG_WHERE_EVAL",
+            "size" : "1024"
+        },
+        "primaryMetric" : {
+            "score" : 49.01506519317627,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 49.01506519317627,
+                "50.0" : 49.01506519317627,
+                "90.0" : 49.01506519317627,
+                "95.0" : 49.01506519317627,
+                "99.0" : 49.01506519317627,
+                "99.9" : 49.01506519317627,
+                "99.99" : 49.01506519317627,
+                "99.999" : 49.01506519317627,
+                "99.9999" : 49.01506519317627,
+                "100.0" : 49.01506519317627
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    49.01506519317627
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27",
+            "-Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins",
+            "-Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "--add-modules=jdk.incubator.vector",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "27-ea",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "27-ea+28-2279",
+        "warmupIterations" : 0,
+        "warmupTime" : "10 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "100 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "mode" : "OFF",
+            "shape" : "LONG_WHERE_EVAL",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 33.74785868326823,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 33.74785868326823,
+                "50.0" : 33.74785868326823,
+                "90.0" : 33.74785868326823,
+                "95.0" : 33.74785868326823,
+                "99.0" : 33.74785868326823,
+                "99.9" : 33.74785868326823,
+                "99.99" : 33.74785868326823,
+                "99.999" : 33.74785868326823,
+                "99.9999" : 33.74785868326823,
+                "100.0" : 33.74785868326823
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    33.74785868326823
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27",
+            "-Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins",
+            "-Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "--add-modules=jdk.incubator.vector",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "27-ea",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "27-ea+28-2279",
+        "warmupIterations" : 0,
+        "warmupTime" : "10 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "100 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "mode" : "OFF",
+            "shape" : "DOUBLE_SQRT",
+            "size" : "1024"
+        },
+        "primaryMetric" : {
+            "score" : 25.811036348342896,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 25.811036348342896,
+                "50.0" : 25.811036348342896,
+                "90.0" : 25.811036348342896,
+                "95.0" : 25.811036348342896,
+                "99.0" : 25.811036348342896,
+                "99.9" : 25.811036348342896,
+                "99.99" : 25.811036348342896,
+                "99.999" : 25.811036348342896,
+                "99.9999" : 25.811036348342896,
+                "100.0" : 25.811036348342896
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    25.811036348342896
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27",
+            "-Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins",
+            "-Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "--add-modules=jdk.incubator.vector",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "27-ea",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "27-ea+28-2279",
+        "warmupIterations" : 0,
+        "warmupTime" : "10 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "100 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "mode" : "OFF",
+            "shape" : "DOUBLE_SQRT",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 26.753723621368408,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 26.753723621368408,
+                "50.0" : 26.753723621368408,
+                "90.0" : 26.753723621368408,
+                "95.0" : 26.753723621368408,
+                "99.0" : 26.753723621368408,
+                "99.9" : 26.753723621368408,
+                "99.99" : 26.753723621368408,
+                "99.999" : 26.753723621368408,
+                "99.9999" : 26.753723621368408,
+                "100.0" : 26.753723621368408
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    26.753723621368408
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27",
+            "-Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins",
+            "-Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "--add-modules=jdk.incubator.vector",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "27-ea",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "27-ea+28-2279",
+        "warmupIterations" : 0,
+        "warmupTime" : "10 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "100 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "mode" : "SEPARATE",
+            "shape" : "LONG_WHERE_EVAL",
+            "size" : "1024"
+        },
+        "primaryMetric" : {
+            "score" : 8.120316725510817,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 8.120316725510817,
+                "50.0" : 8.120316725510817,
+                "90.0" : 8.120316725510817,
+                "95.0" : 8.120316725510817,
+                "99.0" : 8.120316725510817,
+                "99.9" : 8.120316725510817,
+                "99.99" : 8.120316725510817,
+                "99.999" : 8.120316725510817,
+                "99.9999" : 8.120316725510817,
+                "100.0" : 8.120316725510817
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    8.120316725510817
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27",
+            "-Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins",
+            "-Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "--add-modules=jdk.incubator.vector",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "27-ea",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "27-ea+28-2279",
+        "warmupIterations" : 0,
+        "warmupTime" : "10 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "100 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "mode" : "SEPARATE",
+            "shape" : "LONG_WHERE_EVAL",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 8.99594835801558,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 8.99594835801558,
+                "50.0" : 8.99594835801558,
+                "90.0" : 8.99594835801558,
+                "95.0" : 8.99594835801558,
+                "99.0" : 8.99594835801558,
+                "99.9" : 8.99594835801558,
+                "99.99" : 8.99594835801558,
+                "99.999" : 8.99594835801558,
+                "99.9999" : 8.99594835801558,
+                "100.0" : 8.99594835801558
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    8.99594835801558
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27",
+            "-Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins",
+            "-Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "--add-modules=jdk.incubator.vector",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "27-ea",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "27-ea+28-2279",
+        "warmupIterations" : 0,
+        "warmupTime" : "10 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "100 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "mode" : "SEPARATE",
+            "shape" : "DOUBLE_SQRT",
+            "size" : "1024"
+        },
+        "primaryMetric" : {
+            "score" : 8.503645658493042,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 8.503645658493042,
+                "50.0" : 8.503645658493042,
+                "90.0" : 8.503645658493042,
+                "95.0" : 8.503645658493042,
+                "99.0" : 8.503645658493042,
+                "99.9" : 8.503645658493042,
+                "99.99" : 8.503645658493042,
+                "99.999" : 8.503645658493042,
+                "99.9999" : 8.503645658493042,
+                "100.0" : 8.503645658493042
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    8.503645658493042
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27",
+            "-Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins",
+            "-Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "--add-modules=jdk.incubator.vector",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "27-ea",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "27-ea+28-2279",
+        "warmupIterations" : 0,
+        "warmupTime" : "10 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "100 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "mode" : "SEPARATE",
+            "shape" : "DOUBLE_SQRT",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 7.751040018521822,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 7.751040018521822,
+                "50.0" : 7.751040018521822,
+                "90.0" : 7.751040018521822,
+                "95.0" : 7.751040018521822,
+                "99.0" : 7.751040018521822,
+                "99.9" : 7.751040018521822,
+                "99.99" : 7.751040018521822,
+                "99.999" : 7.751040018521822,
+                "99.9999" : 7.751040018521822,
+                "100.0" : 7.751040018521822
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    7.751040018521822
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27",
+            "-Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins",
+            "-Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "--add-modules=jdk.incubator.vector",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "27-ea",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "27-ea+28-2279",
+        "warmupIterations" : 0,
+        "warmupTime" : "10 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "100 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "mode" : "FILTER_EVAL",
+            "shape" : "LONG_WHERE_EVAL",
+            "size" : "1024"
+        },
+        "primaryMetric" : {
+            "score" : 11.252509223090279,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 11.252509223090279,
+                "50.0" : 11.252509223090279,
+                "90.0" : 11.252509223090279,
+                "95.0" : 11.252509223090279,
+                "99.0" : 11.252509223090279,
+                "99.9" : 11.252509223090279,
+                "99.99" : 11.252509223090279,
+                "99.999" : 11.252509223090279,
+                "99.9999" : 11.252509223090279,
+                "100.0" : 11.252509223090279
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    11.252509223090279
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27",
+            "-Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins",
+            "-Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "--add-modules=jdk.incubator.vector",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "27-ea",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "27-ea+28-2279",
+        "warmupIterations" : 0,
+        "warmupTime" : "10 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "100 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "mode" : "FILTER_EVAL",
+            "shape" : "LONG_WHERE_EVAL",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 18.58913246790568,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 18.58913246790568,
+                "50.0" : 18.58913246790568,
+                "90.0" : 18.58913246790568,
+                "95.0" : 18.58913246790568,
+                "99.0" : 18.58913246790568,
+                "99.9" : 18.58913246790568,
+                "99.99" : 18.58913246790568,
+                "99.999" : 18.58913246790568,
+                "99.9999" : 18.58913246790568,
+                "100.0" : 18.58913246790568
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    18.58913246790568
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27",
+            "-Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins",
+            "-Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "--add-modules=jdk.incubator.vector",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "27-ea",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "27-ea+28-2279",
+        "warmupIterations" : 0,
+        "warmupTime" : "10 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "100 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "mode" : "FILTER_EVAL",
+            "shape" : "DOUBLE_SQRT",
+            "size" : "1024"
+        },
+        "primaryMetric" : {
+            "score" : 12.510428786277771,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 12.510428786277771,
+                "50.0" : 12.510428786277771,
+                "90.0" : 12.510428786277771,
+                "95.0" : 12.510428786277771,
+                "99.0" : 12.510428786277771,
+                "99.9" : 12.510428786277771,
+                "99.99" : 12.510428786277771,
+                "99.999" : 12.510428786277771,
+                "99.9999" : 12.510428786277771,
+                "100.0" : 12.510428786277771
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    12.510428786277771
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    },
+    {
+        "jmhVersion" : "1.37",
+        "benchmark" : "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run",
+        "mode" : "avgt",
+        "threads" : 1,
+        "forks" : 1,
+        "jvm" : "/Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java",
+        "jvmArgs" : [
+            "-Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64",
+            "-Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27",
+            "-Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins",
+            "-Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--enable-native-access=ALL-UNNAMED",
+            "--add-modules=jdk.incubator.vector",
+            "-Dfile.encoding=UTF-8",
+            "-Duser.country=US",
+            "-Duser.language=en",
+            "-Duser.variant"
+        ],
+        "jdkVersion" : "27-ea",
+        "vmName" : "OpenJDK 64-Bit Server VM",
+        "vmVersion" : "27-ea+28-2279",
+        "warmupIterations" : 0,
+        "warmupTime" : "10 s",
+        "warmupBatchSize" : 1,
+        "measurementIterations" : 1,
+        "measurementTime" : "100 ms",
+        "measurementBatchSize" : 1,
+        "params" : {
+            "mode" : "FILTER_EVAL",
+            "shape" : "DOUBLE_SQRT",
+            "size" : "8192"
+        },
+        "primaryMetric" : {
+            "score" : 11.21664047241211,
+            "scoreError" : "NaN",
+            "scoreConfidence" : [
+                "NaN",
+                "NaN"
+            ],
+            "scorePercentiles" : {
+                "0.0" : 11.21664047241211,
+                "50.0" : 11.21664047241211,
+                "90.0" : 11.21664047241211,
+                "95.0" : 11.21664047241211,
+                "99.0" : 11.21664047241211,
+                "99.9" : 11.21664047241211,
+                "99.99" : 11.21664047241211,
+                "99.999" : 11.21664047241211,
+                "99.9999" : 11.21664047241211,
+                "100.0" : 11.21664047241211
+            },
+            "scoreUnit" : "ns/op",
+            "rawData" : [
+                [
+                    11.21664047241211
+                ]
+            ]
+        },
+        "secondaryMetrics" : {
+        }
+    }
+]
+
+

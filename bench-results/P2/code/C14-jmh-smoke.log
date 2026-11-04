@@ -1,0 +1,909 @@
+> Task :build-conventions:compileJava UP-TO-DATE
+> Task :build-conventions:pluginDescriptors UP-TO-DATE
+> Task :build-conventions:processResources UP-TO-DATE
+> Task :build-conventions:classes UP-TO-DATE
+> Task :build-conventions:jar UP-TO-DATE
+> Task :build-tools-internal:extractPluginRequests UP-TO-DATE
+> Task :build-tools-internal:generatePluginAdapters UP-TO-DATE
+> Task :build-tools-internal:pluginDescriptors UP-TO-DATE
+> Task :build-tools:reaper:compileJava UP-TO-DATE
+> Task :build-tools:reaper:processResources NO-SOURCE
+> Task :build-tools:reaper:classes UP-TO-DATE
+> Task :build-tools:reaper:jar UP-TO-DATE
+> Task :build-tools-internal:processResources UP-TO-DATE
+> Task :build-tools:compileJava UP-TO-DATE
+> Task :build-tools:compileGroovy NO-SOURCE
+> Task :build-tools:generateVersionProperties UP-TO-DATE
+> Task :build-tools:pluginDescriptors UP-TO-DATE
+> Task :build-tools:processResources UP-TO-DATE
+> Task :build-tools:classes UP-TO-DATE
+> Task :build-tools:jar UP-TO-DATE
+> Task :build-tools-internal:compileJava UP-TO-DATE
+> Task :build-tools-internal:compileGroovy NO-SOURCE
+> Task :build-tools-internal:compileGroovyPlugins UP-TO-DATE
+> Task :build-tools-internal:classes UP-TO-DATE
+> Task :build-tools-internal:jar UP-TO-DATE
+=======================================
+Elasticsearch Build Hamster says Hello!
+  Gradle Version        : 9.7.1
+  OS Info               : Mac OS X 26.7.1 (aarch64)
+  JDK Version           : 21.0.7+6-LTS (Eclipse Temurin)
+  JAVA_HOME             : /Users/costin/.gradle/jdks/eclipse_adoptium-21-aarch64-os_x.2/jdk-21.0.7+6/Contents/Home
+  Random Testing Seed   : 3653089632A9439B
+  In FIPS 140 mode      : false
+=======================================
+> Task :libs:foreign-library:extractForeignApiJar UP-TO-DATE
+> Task :server:extractForeignApiJar UP-TO-DATE
+> Task :libs:columnar:extractForeignApiJar UP-TO-DATE
+> Task :libs:zstd:extractForeignApiJar UP-TO-DATE
+> Task :libs:core:extractForeignApiJar UP-TO-DATE
+> Task :libs:lucene-store:extractForeignApiJar UP-TO-DATE
+> Task :libs:native:extractForeignApiJar UP-TO-DATE
+> Task :libs:simdvec:extractForeignApiJar UP-TO-DATE
+> Task :libs:foreign-adapter:compileJava UP-TO-DATE
+> Task :libs:simdjson:extractForeignApiJar UP-TO-DATE
+> Task :libs:entitlement:bridge:compileJava UP-TO-DATE
+> Task :libs:logging:compileJava UP-TO-DATE
+> Task :libs:cli-terminal:compileJava UP-TO-DATE
+> Task :libs:plugin-api:compileJava UP-TO-DATE
+> Task :libs:dissect:compileJava UP-TO-DATE
+> Task :benchmarks:processor:compileJava UP-TO-DATE
+> Task :libs:geo:compileJava UP-TO-DATE
+> Task :benchmarks:processor:processResources UP-TO-DATE
+> Task :x-pack:plugin:blob-cache:extractForeignApiJar UP-TO-DATE
+> Task :benchmarks:processor:classes UP-TO-DATE
+> Task :libs:core:processResources NO-SOURCE
+> Task :x-pack:plugin:core:template-resources:compileJava UP-TO-DATE
+> Task :libs:grok:compileJava UP-TO-DATE
+> Task :libs:h3:compileJava UP-TO-DATE
+> Task :test:framework:extractForeignApiJar UP-TO-DATE
+> Task :client:rest:compileJava UP-TO-DATE
+> Task :benchmarks:processor:jar UP-TO-DATE
+> Task :x-pack:plugin:esql:stringTemplates UP-TO-DATE
+> Task :libs:cli-terminal:processResources NO-SOURCE
+> Task :libs:columnar:processResources UP-TO-DATE
+> Task :libs:entitlement:asm-provider:processResources UP-TO-DATE
+> Task :x-pack:plugin:esql:compute:gen:processResources UP-TO-DATE
+> Task :libs:cli-terminal:classes UP-TO-DATE
+> Task :libs:cli:processResources NO-SOURCE
+> Task :libs:core:compileJava UP-TO-DATE
+> Task :libs:plugin-analysis-api:compileJava UP-TO-DATE
+> Task :libs:foreign-adapter:processResources NO-SOURCE
+> Task :libs:exponential-histogram:processResources NO-SOURCE
+> Task :x-pack:plugin:esql:compute:ann:compileJava UP-TO-DATE
+> Task :libs:core:classes UP-TO-DATE
+> Task :benchmarks:common:compileJava UP-TO-DATE
+> Task :libs:ip-location-api:compileJava UP-TO-DATE
+> Task :libs:x-content:compileJava UP-TO-DATE
+> Task :test:test-clusters:compileJava UP-TO-DATE
+> Task :libs:user-agent-api:compileJava UP-TO-DATE
+> Task :libs:foreign-library:compileJava UP-TO-DATE
+> Task :libs:cli:compileJava UP-TO-DATE
+> Task :x-pack:plugin:esql:compute:ann:processResources NO-SOURCE
+> Task :libs:cli:classes UP-TO-DATE
+> Task :libs:lucene-store:compileJava UP-TO-DATE
+> Task :libs:web-utils:compileJava UP-TO-DATE
+> Task :libs:cli-terminal:compileMain22Java UP-TO-DATE
+> Task :libs:cli-terminal:processMain22Resources NO-SOURCE
+> Task :x-pack:plugin:esql:compute:ann:classes UP-TO-DATE
+> Task :libs:cli-terminal:main22Classes UP-TO-DATE
+> Task :libs:arrow:compileJava UP-TO-DATE
+> Task :libs:foreign-adapter:classes UP-TO-DATE
+> Task :libs:lz4:compileJava UP-TO-DATE
+> Task :x-pack:plugin:esql:compute:gen:compileJava UP-TO-DATE
+> Task :libs:tdigest:compileJava UP-TO-DATE
+> Task :libs:foreign-adapter:compileMain22Java UP-TO-DATE
+> Task :libs:entitlement:compileJava UP-TO-DATE
+> Task :x-pack:plugin:esql:compute:gen:classes UP-TO-DATE
+> Task :libs:exponential-histogram:compileJava UP-TO-DATE
+> Task :libs:native:compileJava UP-TO-DATE
+> Task :libs:zstd:compileJava UP-TO-DATE
+> Task :libs:simdjson:compileJava UP-TO-DATE
+> Task :libs:exponential-histogram:classes UP-TO-DATE
+> Task :libs:ssl-config:compileJava UP-TO-DATE
+> Task :libs:entitlement:processResources NO-SOURCE
+> Task :libs:foreign-adapter:processMain22Resources NO-SOURCE
+> Task :libs:foreign-adapter:main22Classes UP-TO-DATE
+> Task :libs:foreign-library:processResources NO-SOURCE
+> Task :libs:foreign-library:classes UP-TO-DATE
+> Task :libs:entitlement:processMain25Resources NO-SOURCE
+> Task :libs:entitlement:processMain26Resources NO-SOURCE
+> Task :libs:entitlement:asm-provider:compileJava UP-TO-DATE
+> Task :libs:entitlement:asm-provider:classes UP-TO-DATE
+> Task :libs:simdvec:compileJava UP-TO-DATE
+> Task :libs:entitlement:processMain27Resources NO-SOURCE
+> Task :libs:geo:processResources NO-SOURCE
+> Task :libs:geo:classes UP-TO-DATE
+> Task :x-pack:plugin:esql:compute:ann:jar UP-TO-DATE
+> Task :libs:grok:processResources UP-TO-DATE
+> Task :libs:grok:classes UP-TO-DATE
+> Task :libs:columnar:compileJava UP-TO-DATE
+> Task :x-pack:plugin:esql:compute:gen:jar UP-TO-DATE
+> Task :libs:columnar:classes UP-TO-DATE
+> Task :x-pack:plugin:esql:compute:stringTemplates UP-TO-DATE
+> Task :libs:ip-location-api:processResources NO-SOURCE
+> Task :libs:ip-location-api:classes UP-TO-DATE
+> Task :libs:core:jar UP-TO-DATE
+> Task :libs:logging:processResources NO-SOURCE
+> Task :libs:logging:classes UP-TO-DATE
+> Task :libs:cli:jar UP-TO-DATE
+> Task :libs:lucene-store:processResources NO-SOURCE
+> Task :libs:lucene-store:classes UP-TO-DATE
+> Task :libs:cli-terminal:jar UP-TO-DATE
+> Task :libs:lz4:processResources NO-SOURCE
+> Task :libs:lz4:classes UP-TO-DATE
+> Task :server:compileJava UP-TO-DATE
+> Task :libs:exponential-histogram:jar UP-TO-DATE
+> Task :modules:lang-painless:spi:compileJava UP-TO-DATE
+> Task :modules:transport-netty4:compileJava UP-TO-DATE
+> Task :modules:aggregations:compileJava UP-TO-DATE
+> Task :libs:foreign-adapter:jar UP-TO-DATE
+> Task :modules:mapper-extras:compileJava UP-TO-DATE
+> Task :modules:bitmap:compileJava UP-TO-DATE
+> Task :test:framework:compileJava UP-TO-DATE
+> Task :libs:foreign-library:jar UP-TO-DATE
+> Task :libs:simdvec:compileTestFixturesJava UP-TO-DATE
+> Task :x-pack:plugin:blob-cache:compileJava UP-TO-DATE
+> Task :x-pack:plugin:encryption:spi:compileJava UP-TO-DATE
+> Task :modules:data-streams:compileJava UP-TO-DATE
+> Task :modules:lang-mustache:compileJava UP-TO-DATE
+> Task :libs:native:processResources NO-SOURCE
+> Task :libs:plugin-analysis-api:processResources NO-SOURCE
+> Task :libs:plugin-analysis-api:classes UP-TO-DATE
+> Task :libs:entitlement:asm-provider:jar UP-TO-DATE
+> Task :libs:foreign-library:processor:compileJava UP-TO-DATE
+> Task :libs:swisshash:compileJava UP-TO-DATE
+> Task :libs:foreign-library:processor:processResources UP-TO-DATE
+> Task :libs:foreign-library:processor:classes UP-TO-DATE
+> Task :libs:plugin-api:processResources NO-SOURCE
+> Task :libs:plugin-api:classes UP-TO-DATE
+> Task :libs:entitlement:generateAsm-providerProviderManifest UP-TO-DATE
+> Task :libs:entitlement:generateAsm-providerProviderImpl UP-TO-DATE
+> Task :libs:entitlement:classes UP-TO-DATE
+> Task :libs:entitlement:compileMain25Java UP-TO-DATE
+> Task :libs:entitlement:main25Classes UP-TO-DATE
+> Task :libs:entitlement:compileMain26Java UP-TO-DATE
+> Task :libs:entitlement:main26Classes UP-TO-DATE
+> Task :libs:geo:jar UP-TO-DATE
+> Task :libs:entitlement:compileMain27Java UP-TO-DATE
+> Task :libs:entitlement:main27Classes UP-TO-DATE
+> Task :libs:simdjson:processResources NO-SOURCE
+> Task :libs:simdvec:processResources NO-SOURCE
+> Task :libs:tdigest:processResources NO-SOURCE
+> Task :libs:tdigest:classes UP-TO-DATE
+> Task :libs:grok:jar UP-TO-DATE
+> Task :libs:user-agent-api:processResources NO-SOURCE
+> Task :libs:user-agent-api:classes UP-TO-DATE
+> Task :libs:columnar:jar UP-TO-DATE
+> Task :libs:x-content:impl:compileJava UP-TO-DATE
+> Task :libs:x-content:impl:processResources UP-TO-DATE
+> Task :libs:x-content:impl:classes UP-TO-DATE
+> Task :libs:ip-location-api:jar UP-TO-DATE
+> Task :libs:x-content:processResources NO-SOURCE
+> Task :libs:zstd:processResources NO-SOURCE
+> Task :server:generateTransportVersionManifest UP-TO-DATE
+> Task :server:generateModulesList UP-TO-DATE
+> Task :server:generatePluginsList UP-TO-DATE
+> Task :libs:exponential-histogram:compileTestJava UP-TO-DATE
+> Task :libs:logging:jar UP-TO-DATE
+> Task :modules:health-shards-availability:compileJava UP-TO-DATE
+> Task :modules:analysis-common:compileJava UP-TO-DATE
+> Task :libs:lucene-store:jar UP-TO-DATE
+> Task :modules:parent-join:compileJava UP-TO-DATE
+> Task :modules:reindex:compileJava UP-TO-DATE
+> Task :libs:ssl-config:processResources NO-SOURCE
+> Task :libs:ssl-config:classes UP-TO-DATE
+> Task :modules:rest-root:compileJava UP-TO-DATE
+> Task :distribution:tools:cli-launcher:compileJava UP-TO-DATE
+> Task :x-pack:plugin:searchable-snapshots:extractForeignApiJar UP-TO-DATE
+> Task :x-pack:plugin:core:template-resources:processResources UP-TO-DATE
+> Task :x-pack:plugin:core:template-resources:classes UP-TO-DATE
+> Task :libs:lz4:jar UP-TO-DATE
+> Task :x-pack:plugin:stateless:extractForeignApiJar UP-TO-DATE
+> Task :x-pack:plugin:core:template-resources:jar UP-TO-DATE
+> Task :modules:reindex-management:compileJava UP-TO-DATE
+> Task :libs:plugin-analysis-api:jar UP-TO-DATE
+> Task :libs:foreign-library:processor:jar UP-TO-DATE
+> Task :libs:native:processForeignAnnotations UP-TO-DATE
+> Task :libs:native:augmentForeignModuleInfo UP-TO-DATE
+> Task :libs:native:classes UP-TO-DATE
+> Task :modules:repository-gcs:compileJava UP-TO-DATE
+> Task :libs:simdjson:processForeignAnnotations UP-TO-DATE
+> Task :libs:plugin-api:jar UP-TO-DATE
+> Task :libs:simdjson:augmentForeignModuleInfo UP-TO-DATE
+> Task :libs:simdjson:classes UP-TO-DATE
+> Task :modules:repository-s3:compileJava UP-TO-DATE
+> Task :libs:simdvec:processForeignAnnotations UP-TO-DATE
+> Task :libs:simdvec:augmentForeignModuleInfo UP-TO-DATE
+> Task :libs:simdvec:classes UP-TO-DATE
+> Task :libs:zstd:processForeignAnnotations UP-TO-DATE
+> Task :libs:zstd:augmentForeignModuleInfo UP-TO-DATE
+> Task :libs:zstd:classes UP-TO-DATE
+> Task :libs:tdigest:jar UP-TO-DATE
+> Task :modules:repository-azure:compileJava UP-TO-DATE
+> Task :libs:entitlement:jar UP-TO-DATE
+> Task :test:fixtures:aws-fixture-utils:compileJava UP-TO-DATE
+> Task :test:fixtures:tls-utils:compileJava UP-TO-DATE
+> Task :libs:user-agent-api:jar UP-TO-DATE
+> Task :test:fixtures:s3-fixture:compileJava UP-TO-DATE
+> Task :test:fixtures:azure-fixture:compileJava UP-TO-DATE
+> Task :test:fixtures:gcs-fixture:compileJava UP-TO-DATE
+> Task :benchmarks:processResources UP-TO-DATE
+> Task :modules:lang-painless:spi:processResources NO-SOURCE
+> Task :modules:lang-painless:spi:classes UP-TO-DATE
+> Task :modules:ip-location:compileJava UP-TO-DATE
+> Task :modules:lang-expression:compileJava UP-TO-DATE
+> Task :modules:lang-painless:compileJava UP-TO-DATE
+> Task :server:processTestResources UP-TO-DATE
+> Task :libs:x-content:impl:jar UP-TO-DATE
+> Task :benchmarks:common:processResources NO-SOURCE
+> Task :benchmarks:common:classes UP-TO-DATE
+> Task :libs:x-content:generateImplProviderManifest UP-TO-DATE
+> Task :libs:x-content:generateImplProviderImpl UP-TO-DATE
+> Task :libs:x-content:classes UP-TO-DATE
+> Task :benchmarks:common:jar UP-TO-DATE
+> Task :client:rest:processResources UP-TO-DATE
+> Task :client:rest:classes UP-TO-DATE
+> Task :libs:ssl-config:jar UP-TO-DATE
+> Task :libs:arrow:processResources NO-SOURCE
+> Task :libs:arrow:classes UP-TO-DATE
+> Task :x-pack:plugin:core:compileJava UP-TO-DATE
+> Task :libs:native:jar UP-TO-DATE
+> Task :libs:simdjson:jar UP-TO-DATE
+> Task :x-pack:plugin:analytics:compileJava UP-TO-DATE
+> Task :x-pack:plugin:mapper-aggregate-metric:compileJava UP-TO-DATE
+> Task :libs:simdvec:jar UP-TO-DATE
+> Task :x-pack:plugin:kql:compileJava UP-TO-DATE
+> Task :x-pack:plugin:mapper-version:compileJava UP-TO-DATE
+> Task :libs:zstd:jar UP-TO-DATE
+> Task :x-pack:plugin:autoscaling:compileJava UP-TO-DATE
+> Task :x-pack:plugin:downsample:compileJava UP-TO-DATE
+> Task :modules:lang-expression:generateTestBuildInfo UP-TO-DATE
+> Task :x-pack:plugin:blob-cache:generateTestBuildInfo UP-TO-DATE
+> Task :x-pack:plugin:esql-core:compileJava UP-TO-DATE
+> Task :x-pack:plugin:ml-package-loader:compileJava UP-TO-DATE
+> Task :x-pack:plugin:core:generateTestBuildInfo UP-TO-DATE
+> Task :x-pack:plugin:esql-core:pluginProperties UP-TO-DATE
+> Task :x-pack:plugin:core:pluginProperties UP-TO-DATE
+> Task :x-pack:plugin:blob-cache:pluginProperties UP-TO-DATE
+> Task :x-pack:plugin:core:processResources UP-TO-DATE
+> Task :x-pack:plugin:core:classes UP-TO-DATE
+> Task :x-pack:plugin:blob-cache:processResources UP-TO-DATE
+> Task :x-pack:plugin:blob-cache:classes UP-TO-DATE
+> Task :x-pack:plugin:logsdb:compileJava UP-TO-DATE
+> Task :x-pack:plugin:searchable-snapshots:compileJava UP-TO-DATE
+> Task :modules:lang-expression:pluginProperties UP-TO-DATE
+> Task :x-pack:license-tools:compileJava UP-TO-DATE
+> Task :x-pack:plugin:blob-cache:compileTestJava UP-TO-DATE
+> Task :libs:exponential-histogram:processTestResources NO-SOURCE
+> Task :libs:exponential-histogram:testClasses UP-TO-DATE
+> Task :libs:dissect:processResources NO-SOURCE
+> Task :modules:lang-expression:processResources UP-TO-DATE
+> Task :modules:lang-expression:classes UP-TO-DATE
+> Task :libs:dissect:classes UP-TO-DATE
+> Task :modules:lang-painless:spi:jar UP-TO-DATE
+> Task :modules:lang-painless:generateTestBuildInfo UP-TO-DATE
+> Task :libs:h3:processResources NO-SOURCE
+> Task :libs:h3:classes UP-TO-DATE
+> Task :x-pack:plugin:mapper-version:generateTestBuildInfo UP-TO-DATE
+> Task :x-pack:plugin:searchable-snapshots:generateTestBuildInfo UP-TO-DATE
+> Task :modules:lang-painless:pluginProperties UP-TO-DATE
+> Task :x-pack:plugin:mapper-version:pluginProperties UP-TO-DATE
+> Task :x-pack:plugin:searchable-snapshots:pluginProperties UP-TO-DATE
+> Task :x-pack:plugin:stateless:compileJava UP-TO-DATE
+> Task :modules:lang-painless:processResources UP-TO-DATE
+> Task :x-pack:plugin:mapper-version:processResources UP-TO-DATE
+> Task :x-pack:plugin:searchable-snapshots:processResources UP-TO-DATE
+> Task :modules:lang-painless:classes UP-TO-DATE
+> Task :x-pack:plugin:searchable-snapshots:classes UP-TO-DATE
+> Task :x-pack:plugin:mapper-version:classes UP-TO-DATE
+> Task :x-pack:plugin:searchable-snapshots:compileTestJava UP-TO-DATE
+> Task :libs:x-content:jar UP-TO-DATE
+> Task :x-pack:plugin:stateless:generateTestBuildInfo UP-TO-DATE
+> Task :x-pack:plugin:stateless:pluginProperties UP-TO-DATE
+> Task :server:generateTestBuildInfo UP-TO-DATE
+> Task :libs:simdvec:processTestFixturesForeignAnnotations UP-TO-DATE
+> Task :x-pack:plugin:stateless:processResources UP-TO-DATE
+> Task :libs:simdvec:processTestFixturesResources NO-SOURCE
+> Task :libs:simdvec:testFixturesClasses UP-TO-DATE
+> Task :x-pack:plugin:stateless:classes UP-TO-DATE
+> Task :x-pack:plugin:mapper-version:jar UP-TO-DATE
+> Task :libs:swisshash:processResources NO-SOURCE
+> Task :libs:swisshash:classes UP-TO-DATE
+> Task :x-pack:plugin:esql-core:generateTestBuildInfo UP-TO-DATE
+> Task :x-pack:plugin:esql-core:processResources UP-TO-DATE
+> Task :x-pack:plugin:esql-core:classes UP-TO-DATE
+> Task :libs:web-utils:processResources NO-SOURCE
+> Task :client:rest:jar UP-TO-DATE
+> Task :libs:web-utils:classes UP-TO-DATE
+> Task :server:processResources UP-TO-DATE
+> Task :server:classes UP-TO-DATE
+> Task :modules:aggregations:generateTestBuildInfo UP-TO-DATE
+> Task :modules:aggregations:pluginProperties UP-TO-DATE
+> Task :modules:aggregations:processResources UP-TO-DATE
+> Task :modules:aggregations:classes UP-TO-DATE
+> Task :libs:arrow:jar UP-TO-DATE
+> Task :modules:analysis-common:generateTestBuildInfo UP-TO-DATE
+> Task :modules:analysis-common:pluginProperties UP-TO-DATE
+> Task :modules:analysis-common:processResources UP-TO-DATE
+> Task :modules:analysis-common:classes UP-TO-DATE
+> Task :server:compileTestJava UP-TO-DATE
+> Task :x-pack:plugin:core:compileTestJava UP-TO-DATE
+> Task :x-pack:plugin:esql-core:compileTestJava UP-TO-DATE
+> Task :x-pack:plugin:stateless:compileTestJava UP-TO-DATE
+> Task :x-pack:plugin:ml:compileJava UP-TO-DATE
+> Task :modules:lang-expression:jar UP-TO-DATE
+> Task :modules:lang-expression:bundlePlugin UP-TO-DATE
+> Task :libs:dissect:jar UP-TO-DATE
+> Task :benchmarks:copyExpression UP-TO-DATE
+> Task :modules:bitmap:generateTestBuildInfo UP-TO-DATE
+> Task :modules:bitmap:pluginProperties UP-TO-DATE
+> Task :modules:bitmap:processResources UP-TO-DATE
+> Task :modules:bitmap:classes UP-TO-DATE
+> Task :libs:exponential-histogram:testJar UP-TO-DATE
+> Task :modules:data-streams:generateTestBuildInfo UP-TO-DATE
+> Task :modules:data-streams:pluginProperties UP-TO-DATE
+> Task :modules:data-streams:processResources UP-TO-DATE
+> Task :modules:data-streams:classes UP-TO-DATE
+> Task :modules:health-shards-availability:generateTestBuildInfo UP-TO-DATE
+> Task :modules:health-shards-availability:pluginProperties UP-TO-DATE
+> Task :modules:health-shards-availability:processResources UP-TO-DATE
+> Task :modules:health-shards-availability:classes UP-TO-DATE
+> Task :libs:h3:jar UP-TO-DATE
+> Task :modules:ip-location:generateTestBuildInfo UP-TO-DATE
+> Task :modules:ip-location:pluginProperties UP-TO-DATE
+> Task :modules:ip-location:processResources UP-TO-DATE
+> Task :modules:ip-location:classes UP-TO-DATE
+> Task :modules:lang-painless:jar UP-TO-DATE
+> Task :x-pack:plugin:esql:compute:compileJava UP-TO-DATE
+> Task :modules:lang-painless:bundlePlugin UP-TO-DATE
+> Task :x-pack:plugin:esql:compute:test:compileJava UP-TO-DATE
+> Task :libs:swisshash:jar UP-TO-DATE
+> Task :benchmarks:copyPainless UP-TO-DATE
+> Task :modules:lang-mustache:generateTestBuildInfo UP-TO-DATE
+> Task :modules:lang-mustache:pluginProperties UP-TO-DATE
+> Task :modules:lang-mustache:processResources UP-TO-DATE
+> Task :modules:lang-mustache:classes UP-TO-DATE
+> Task :libs:simdvec:testFixturesJar UP-TO-DATE
+> Task :modules:mapper-extras:generateTestBuildInfo UP-TO-DATE
+> Task :modules:mapper-extras:pluginProperties UP-TO-DATE
+> Task :modules:mapper-extras:processResources UP-TO-DATE
+> Task :modules:mapper-extras:classes UP-TO-DATE
+> Task :modules:parent-join:generateTestBuildInfo UP-TO-DATE
+> Task :modules:parent-join:pluginProperties UP-TO-DATE
+> Task :modules:parent-join:processResources UP-TO-DATE
+> Task :modules:parent-join:classes UP-TO-DATE
+> Task :libs:web-utils:jar UP-TO-DATE
+> Task :modules:reindex:generateTestBuildInfo UP-TO-DATE
+> Task :modules:reindex:pluginProperties UP-TO-DATE
+> Task :modules:reindex:processResources UP-TO-DATE
+> Task :modules:reindex:classes UP-TO-DATE
+> Task :modules:aggregations:jar UP-TO-DATE
+> Task :modules:analysis-common:jar UP-TO-DATE
+> Task :modules:transport-netty4:generateTestBuildInfo UP-TO-DATE
+> Task :modules:transport-netty4:pluginProperties UP-TO-DATE
+> Task :modules:transport-netty4:processResources UP-TO-DATE
+> Task :modules:transport-netty4:classes UP-TO-DATE
+> Task :server:jar UP-TO-DATE
+> Task :server:testClasses UP-TO-DATE
+> Task :modules:bitmap:jar UP-TO-DATE
+> Task :modules:repository-azure:pluginProperties UP-TO-DATE
+> Task :modules:data-streams:jar UP-TO-DATE
+> Task :modules:repository-gcs:generateTestBuildInfo UP-TO-DATE
+> Task :modules:health-shards-availability:jar UP-TO-DATE
+> Task :modules:repository-gcs:pluginProperties UP-TO-DATE
+> Task :modules:repository-gcs:processResources UP-TO-DATE
+> Task :modules:repository-gcs:classes UP-TO-DATE
+> Task :modules:repository-s3:generateTestBuildInfo UP-TO-DATE
+> Task :modules:rest-root:generateTestBuildInfo UP-TO-DATE
+> Task :modules:repository-s3:pluginProperties UP-TO-DATE
+> Task :modules:rest-root:pluginProperties UP-TO-DATE
+> Task :modules:repository-s3:processResources UP-TO-DATE
+> Task :modules:repository-s3:classes UP-TO-DATE
+> Task :modules:rest-root:processResources UP-TO-DATE
+> Task :modules:rest-root:classes UP-TO-DATE
+> Task :modules:ip-location:jar UP-TO-DATE
+> Task :test:framework:processResources UP-TO-DATE
+> Task :test:framework:classes UP-TO-DATE
+> Task :modules:lang-mustache:jar UP-TO-DATE
+> Task :test:test-clusters:processResources UP-TO-DATE
+> Task :test:test-clusters:classes UP-TO-DATE
+> Task :test:test-clusters:jar UP-TO-DATE
+> Task :x-pack:license-tools:processResources UP-TO-DATE
+> Task :x-pack:license-tools:classes UP-TO-DATE
+> Task :modules:mapper-extras:jar UP-TO-DATE
+> Task :libs:entitlement:bridge:processResources NO-SOURCE
+> Task :libs:entitlement:bridge:classes UP-TO-DATE
+> Task :x-pack:license-tools:jar UP-TO-DATE
+> Task :modules:parent-join:jar UP-TO-DATE
+> Task :libs:simdjson:buildNativeLibrary UP-TO-DATE
+> Task :libs:zstd:buildNativeLibrary UP-TO-DATE
+> Task :test:fixtures:aws-fixture-utils:processResources NO-SOURCE
+> Task :test:fixtures:aws-fixture-utils:classes UP-TO-DATE
+> Task :test:fixtures:aws-fixture-utils:jar UP-TO-DATE
+> Task :test:fixtures:azure-fixture:processResources NO-SOURCE
+> Task :libs:simdvec:buildNativeLibrary UP-TO-DATE
+> Task :test:fixtures:azure-fixture:classes UP-TO-DATE
+> Task :modules:reindex:jar UP-TO-DATE
+> Task :modules:reindex-management:generateTestBuildInfo UP-TO-DATE
+> Task :test:fixtures:gcs-fixture:processResources NO-SOURCE
+> Task :libs:native:native-libraries:extractLibs UP-TO-DATE
+> Task :test:fixtures:gcs-fixture:classes UP-TO-DATE
+> Task :modules:reindex-management:pluginProperties UP-TO-DATE
+> Task :modules:reindex-management:processResources UP-TO-DATE
+> Task :test:fixtures:azure-fixture:jar UP-TO-DATE
+> Task :test:fixtures:s3-fixture:processResources NO-SOURCE
+> Task :modules:reindex-management:classes UP-TO-DATE
+> Task :test:fixtures:s3-fixture:classes UP-TO-DATE
+> Task :test:fixtures:tls-utils:processResources NO-SOURCE
+> Task :test:fixtures:tls-utils:classes UP-TO-DATE
+> Task :test:fixtures:gcs-fixture:jar UP-TO-DATE
+> Task :test:fixtures:s3-fixture:jar UP-TO-DATE
+> Task :test:fixtures:tls-utils:jar UP-TO-DATE
+> Task :x-pack:plugin:analytics:generateTestBuildInfo UP-TO-DATE
+> Task :x-pack:plugin:analytics:pluginProperties UP-TO-DATE
+> Task :x-pack:plugin:analytics:processResources UP-TO-DATE
+> Task :x-pack:plugin:analytics:classes UP-TO-DATE
+> Task :modules:transport-netty4:jar UP-TO-DATE
+> Task :x-pack:plugin:blob-cache:jar UP-TO-DATE
+> Task :x-pack:plugin:blob-cache:processTestResources UP-TO-DATE
+> Task :x-pack:plugin:blob-cache:testClasses UP-TO-DATE
+> Task :x-pack:plugin:core:jar UP-TO-DATE
+> Task :x-pack:plugin:core:copyYamlTestsTask NO-SOURCE
+> Task :modules:repository-azure:generateTestBuildInfo UP-TO-DATE
+> Task :modules:repository-azure:processResources UP-TO-DATE
+> Task :modules:repository-azure:classes UP-TO-DATE
+> Task :x-pack:plugin:analytics:jar UP-TO-DATE
+> Task :server:testJar UP-TO-DATE
+> Task :x-pack:plugin:core:copyRestApiSpecsTask UP-TO-DATE
+> Task :x-pack:plugin:esql:compileJava UP-TO-DATE
+> Task :x-pack:plugin:esql:compute:processResources NO-SOURCE
+> Task :x-pack:plugin:blob-cache:testJar UP-TO-DATE
+> Task :x-pack:plugin:kql:generateTestBuildInfo UP-TO-DATE
+> Task :x-pack:plugin:core:processTestResources UP-TO-DATE
+> Task :modules:repository-gcs:jar UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-gzip:compileJava UP-TO-DATE
+> Task :x-pack:plugin:core:testClasses UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-csv:compileJava UP-TO-DATE
+> Task :x-pack:plugin:kql:pluginProperties UP-TO-DATE
+> Task :x-pack:plugin:kql:processResources UP-TO-DATE
+> Task :x-pack:plugin:kql:classes UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-compression-libs:compileJava UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-ndjson:compileJava UP-TO-DATE
+> Task :x-pack:plugin:esql:compute:classes UP-TO-DATE
+> Task :modules:rest-root:jar UP-TO-DATE
+> Task :x-pack:plugin:esql:pluginProperties UP-TO-DATE
+> Task :x-pack:plugin:esql:qa:testFixtures:compileJava UP-TO-DATE
+> Task :x-pack:plugin:core:testJar UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-orc:compileJava UP-TO-DATE
+> Task :x-pack:plugin:kql:jar UP-TO-DATE
+> Task :x-pack:plugin:esql-core:jar UP-TO-DATE
+> Task :modules:repository-s3:jar UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-parquet:compileJava UP-TO-DATE
+> Task :x-pack:plugin:esql-core:processTestResources NO-SOURCE
+> Task :x-pack:plugin:esql-core:testClasses UP-TO-DATE
+> Task :x-pack:plugin:esql:compute:jar UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-ndjson:generateTestBuildInfo UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-csv:generateTestBuildInfo UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-gzip:generateTestBuildInfo UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-csv:pluginProperties UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-ndjson:pluginProperties UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-gzip:pluginProperties UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-csv:processResources UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-csv:classes UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-ndjson:processResources UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-ndjson:classes UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-orc:generateTestBuildInfo UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-gzip:processResources UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-gzip:classes UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-parquet:generateTestBuildInfo UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-parquet:pluginProperties UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-orc:pluginProperties UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-parquet:processResources UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-parquet:classes UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-orc:processResources UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-orc:classes UP-TO-DATE
+> Task :test:framework:jar UP-TO-DATE
+> Task :x-pack:plugin:esql:generateTestBuildInfo UP-TO-DATE
+> Task :x-pack:plugin:esql:processResources UP-TO-DATE
+> Task :x-pack:plugin:esql:classes UP-TO-DATE
+> Task :x-pack:plugin:logsdb:generateTestBuildInfo UP-TO-DATE
+> Task :x-pack:plugin:logsdb:pluginProperties UP-TO-DATE
+> Task :x-pack:plugin:logsdb:processResources UP-TO-DATE
+> Task :x-pack:plugin:logsdb:classes UP-TO-DATE
+> Task :libs:entitlement:bridge:jar UP-TO-DATE
+> Task :modules:reindex-management:jar UP-TO-DATE
+> Task :modules:repository-azure:jar UP-TO-DATE
+> Task :x-pack:plugin:encryption:spi:processResources NO-SOURCE
+> Task :x-pack:plugin:encryption:spi:classes UP-TO-DATE
+> Task :x-pack:plugin:esql-core:testJar UP-TO-DATE
+> Task :x-pack:plugin:esql:compute:test:processResources NO-SOURCE
+> Task :x-pack:plugin:esql:compute:test:classes UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-ndjson:jar UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-gzip:jar UP-TO-DATE
+> Task :benchmarks:compileJava UP-TO-DATE
+> Task :benchmarks:classes UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-orc:jar UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-csv:jar UP-TO-DATE
+> Task :x-pack:plugin:esql-datasource-parquet:jar UP-TO-DATE
+> Task :x-pack:plugin:esql:qa:testFixtures:processResources UP-TO-DATE
+> Task :x-pack:plugin:esql:qa:testFixtures:classes UP-TO-DATE
+> Task :x-pack:plugin:esql:jar UP-TO-DATE
+> Task :x-pack:plugin:esql:qa:testFixtures:jar UP-TO-DATE
+> Task :x-pack:plugin:logsdb:jar UP-TO-DATE
+> Task :x-pack:plugin:searchable-snapshots:jar UP-TO-DATE
+> Task :x-pack:plugin:searchable-snapshots:processTestResources UP-TO-DATE
+> Task :x-pack:plugin:searchable-snapshots:testClasses UP-TO-DATE
+> Task :x-pack:plugin:stateless:jar UP-TO-DATE
+> Task :x-pack:plugin:stateless:copyYamlTestsTask NO-SOURCE
+> Task :x-pack:plugin:stateless:copyRestApiSpecsTask UP-TO-DATE
+> Task :x-pack:plugin:encryption:spi:jar UP-TO-DATE
+> Task :x-pack:plugin:stateless:processTestResources NO-SOURCE
+> Task :x-pack:plugin:stateless:testClasses UP-TO-DATE
+> Task :x-pack:plugin:esql:compute:test:jar UP-TO-DATE
+> Task :x-pack:plugin:searchable-snapshots:testJar UP-TO-DATE
+> Task :x-pack:plugin:stateless:testJar UP-TO-DATE
+
+> Task :benchmarks:run
+WARNING: Using incubator modules: jdk.incubator.vector
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/Users/costin/.gradle/caches/modules-2/files-2.1/org.openjdk.jmh/jmh-core/1.37/896f27e49105b35ea1964319c83d12082e7a79ef/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# JMH version: 1.37
+# VM version: JDK 27-ea, OpenJDK 64-Bit Server VM, 27-ea+28-2279
+# VM invoker: /Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java
+# VM options: -Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64 -Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27 -Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins -Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED --add-modules=jdk.incubator.vector -Dfile.encoding=UTF-8 -Duser.country=US -Duser.language=en -Duser.variant
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 100 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run
+# Parameters: (mode = OFF, shape = LONG_WHERE_EVAL, size = 1024)
+
+# Run progress: 0.00% complete, ETA 00:00:01
+# Fork: 1 of 1
+WARNING: Using incubator modules: jdk.incubator.vector
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/Users/costin/.gradle/caches/modules-2/files-2.1/org.openjdk.jmh/jmh-core/1.37/896f27e49105b35ea1964319c83d12082e7a79ef/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+Iteration   1: 49.015 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run":
+  49.015 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 27-ea, OpenJDK 64-Bit Server VM, 27-ea+28-2279
+# VM invoker: /Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java
+# VM options: -Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64 -Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27 -Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins -Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED --add-modules=jdk.incubator.vector -Dfile.encoding=UTF-8 -Duser.country=US -Duser.language=en -Duser.variant
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 100 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run
+# Parameters: (mode = OFF, shape = LONG_WHERE_EVAL, size = 8192)
+
+# Run progress: 8.33% complete, ETA 00:00:14
+# Fork: 1 of 1
+WARNING: Using incubator modules: jdk.incubator.vector
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/Users/costin/.gradle/caches/modules-2/files-2.1/org.openjdk.jmh/jmh-core/1.37/896f27e49105b35ea1964319c83d12082e7a79ef/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+Iteration   1: 33.748 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run":
+  33.748 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 27-ea, OpenJDK 64-Bit Server VM, 27-ea+28-2279
+# VM invoker: /Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java
+# VM options: -Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64 -Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27 -Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins -Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED --add-modules=jdk.incubator.vector -Dfile.encoding=UTF-8 -Duser.country=US -Duser.language=en -Duser.variant
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 100 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run
+# Parameters: (mode = OFF, shape = DOUBLE_SQRT, size = 1024)
+
+# Run progress: 16.67% complete, ETA 00:00:11
+# Fork: 1 of 1
+WARNING: Using incubator modules: jdk.incubator.vector
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/Users/costin/.gradle/caches/modules-2/files-2.1/org.openjdk.jmh/jmh-core/1.37/896f27e49105b35ea1964319c83d12082e7a79ef/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+Iteration   1: 25.811 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run":
+  25.811 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 27-ea, OpenJDK 64-Bit Server VM, 27-ea+28-2279
+# VM invoker: /Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java
+# VM options: -Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64 -Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27 -Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins -Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED --add-modules=jdk.incubator.vector -Dfile.encoding=UTF-8 -Duser.country=US -Duser.language=en -Duser.variant
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 100 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run
+# Parameters: (mode = OFF, shape = DOUBLE_SQRT, size = 8192)
+
+# Run progress: 25.00% complete, ETA 00:00:10
+# Fork: 1 of 1
+WARNING: Using incubator modules: jdk.incubator.vector
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/Users/costin/.gradle/caches/modules-2/files-2.1/org.openjdk.jmh/jmh-core/1.37/896f27e49105b35ea1964319c83d12082e7a79ef/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+Iteration   1: 26.754 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run":
+  26.754 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 27-ea, OpenJDK 64-Bit Server VM, 27-ea+28-2279
+# VM invoker: /Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java
+# VM options: -Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64 -Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27 -Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins -Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED --add-modules=jdk.incubator.vector -Dfile.encoding=UTF-8 -Duser.country=US -Duser.language=en -Duser.variant
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 100 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run
+# Parameters: (mode = SEPARATE, shape = LONG_WHERE_EVAL, size = 1024)
+
+# Run progress: 33.33% complete, ETA 00:00:08
+# Fork: 1 of 1
+WARNING: Using incubator modules: jdk.incubator.vector
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/Users/costin/.gradle/caches/modules-2/files-2.1/org.openjdk.jmh/jmh-core/1.37/896f27e49105b35ea1964319c83d12082e7a79ef/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+Iteration   1: 8.120 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run":
+  8.120 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 27-ea, OpenJDK 64-Bit Server VM, 27-ea+28-2279
+# VM invoker: /Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java
+# VM options: -Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64 -Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27 -Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins -Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED --add-modules=jdk.incubator.vector -Dfile.encoding=UTF-8 -Duser.country=US -Duser.language=en -Duser.variant
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 100 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run
+# Parameters: (mode = SEPARATE, shape = LONG_WHERE_EVAL, size = 8192)
+
+# Run progress: 41.67% complete, ETA 00:00:07
+# Fork: 1 of 1
+WARNING: Using incubator modules: jdk.incubator.vector
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/Users/costin/.gradle/caches/modules-2/files-2.1/org.openjdk.jmh/jmh-core/1.37/896f27e49105b35ea1964319c83d12082e7a79ef/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+Iteration   1: 8.996 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run":
+  8.996 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 27-ea, OpenJDK 64-Bit Server VM, 27-ea+28-2279
+# VM invoker: /Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java
+# VM options: -Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64 -Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27 -Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins -Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED --add-modules=jdk.incubator.vector -Dfile.encoding=UTF-8 -Duser.country=US -Duser.language=en -Duser.variant
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 100 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run
+# Parameters: (mode = SEPARATE, shape = DOUBLE_SQRT, size = 1024)
+
+# Run progress: 50.00% complete, ETA 00:00:06
+# Fork: 1 of 1
+WARNING: Using incubator modules: jdk.incubator.vector
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/Users/costin/.gradle/caches/modules-2/files-2.1/org.openjdk.jmh/jmh-core/1.37/896f27e49105b35ea1964319c83d12082e7a79ef/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+Iteration   1: 8.504 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run":
+  8.504 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 27-ea, OpenJDK 64-Bit Server VM, 27-ea+28-2279
+# VM invoker: /Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java
+# VM options: -Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64 -Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27 -Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins -Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED --add-modules=jdk.incubator.vector -Dfile.encoding=UTF-8 -Duser.country=US -Duser.language=en -Duser.variant
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 100 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run
+# Parameters: (mode = SEPARATE, shape = DOUBLE_SQRT, size = 8192)
+
+# Run progress: 58.33% complete, ETA 00:00:05
+# Fork: 1 of 1
+WARNING: Using incubator modules: jdk.incubator.vector
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/Users/costin/.gradle/caches/modules-2/files-2.1/org.openjdk.jmh/jmh-core/1.37/896f27e49105b35ea1964319c83d12082e7a79ef/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+Iteration   1: 7.751 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run":
+  7.751 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 27-ea, OpenJDK 64-Bit Server VM, 27-ea+28-2279
+# VM invoker: /Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java
+# VM options: -Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64 -Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27 -Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins -Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED --add-modules=jdk.incubator.vector -Dfile.encoding=UTF-8 -Duser.country=US -Duser.language=en -Duser.variant
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 100 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run
+# Parameters: (mode = FILTER_EVAL, shape = LONG_WHERE_EVAL, size = 1024)
+
+# Run progress: 66.67% complete, ETA 00:00:04
+# Fork: 1 of 1
+WARNING: Using incubator modules: jdk.incubator.vector
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/Users/costin/.gradle/caches/modules-2/files-2.1/org.openjdk.jmh/jmh-core/1.37/896f27e49105b35ea1964319c83d12082e7a79ef/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+Iteration   1: 11.253 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run":
+  11.253 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 27-ea, OpenJDK 64-Bit Server VM, 27-ea+28-2279
+# VM invoker: /Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java
+# VM options: -Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64 -Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27 -Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins -Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED --add-modules=jdk.incubator.vector -Dfile.encoding=UTF-8 -Duser.country=US -Duser.language=en -Duser.variant
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 100 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run
+# Parameters: (mode = FILTER_EVAL, shape = LONG_WHERE_EVAL, size = 8192)
+
+# Run progress: 75.00% complete, ETA 00:00:03
+# Fork: 1 of 1
+WARNING: Using incubator modules: jdk.incubator.vector
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/Users/costin/.gradle/caches/modules-2/files-2.1/org.openjdk.jmh/jmh-core/1.37/896f27e49105b35ea1964319c83d12082e7a79ef/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+Iteration   1: 18.589 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run":
+  18.589 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 27-ea, OpenJDK 64-Bit Server VM, 27-ea+28-2279
+# VM invoker: /Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java
+# VM options: -Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64 -Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27 -Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins -Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED --add-modules=jdk.incubator.vector -Dfile.encoding=UTF-8 -Duser.country=US -Duser.language=en -Duser.variant
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 100 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run
+# Parameters: (mode = FILTER_EVAL, shape = DOUBLE_SQRT, size = 1024)
+
+# Run progress: 83.33% complete, ETA 00:00:02
+# Fork: 1 of 1
+WARNING: Using incubator modules: jdk.incubator.vector
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/Users/costin/.gradle/caches/modules-2/files-2.1/org.openjdk.jmh/jmh-core/1.37/896f27e49105b35ea1964319c83d12082e7a79ef/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+Iteration   1: 12.510 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run":
+  12.510 ns/op
+
+
+# JMH version: 1.37
+# VM version: JDK 27-ea, OpenJDK 64-Bit Server VM, 27-ea+28-2279
+# VM invoker: /Users/costin/.gradle/jdks/oracle_corporation-27-aarch64-os_x.2/jdk-27.jdk/Contents/Home/bin/java
+# VM options: -Des.nativelibs.path=/Users/costin/dev/work/es/main/libs/native/libraries/build/platform/darwin-aarch64 -Dorg.apache.lucene.vectorization.upperJavaFeatureVersion=27 -Dplugins.dir=/Users/costin/dev/work/es/main/benchmarks/build/plugins -Dtests.index=/Users/costin/dev/work/es/main/benchmarks/build/index --add-opens=java.base/java.nio=ALL-UNNAMED --enable-native-access=ALL-UNNAMED --add-modules=jdk.incubator.vector -Dfile.encoding=UTF-8 -Duser.country=US -Duser.language=en -Duser.variant
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: <none>
+# Measurement: 1 iterations, 100 ms each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run
+# Parameters: (mode = FILTER_EVAL, shape = DOUBLE_SQRT, size = 8192)
+
+# Run progress: 91.67% complete, ETA 00:00:01
+# Fork: 1 of 1
+WARNING: Using incubator modules: jdk.incubator.vector
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/Users/costin/.gradle/caches/modules-2/files-2.1/org.openjdk.jmh/jmh-core/1.37/896f27e49105b35ea1964319c83d12082e7a79ef/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+Iteration   1: 11.217 ns/op
+
+
+Result "org.elasticsearch.benchmark.compute.operator.FusionOperatorBenchmark.FilterEval.run":
+  11.217 ns/op
+
+
+# Run complete. Total time: 00:00:13
+
+REMEMBER: The numbers below are just data. To gain reusable insights, you need to follow up on
+why the numbers are the way they are. Use profilers (see -prof, -lprof), design factorial
+experiments, perform baseline and negative tests that provide experimental control, make sure
+the benchmarking environment is safe on JVM/OS/HW level, ask for reviews from the domain experts.
+Do not assume the numbers tell you what you want them to tell.
+
+NOTE: Current JVM experimentally supports Compiler Blackholes, and they are in use. Please exercise
+extra caution when trusting the results, look into the generated code to check the benchmark still
+works, and factor in a small probability of new VM bugs. Additionally, while comparisons between
+different JVMs are already problematic, the performance difference caused by different Blackhole
+modes can be very significant. Please make sure you use the consistent Blackhole mode for comparisons.
+
+Benchmark                                    (mode)          (shape)  (size)  Mode  Cnt   Score   Error  Units
+FusionOperatorBenchmark.FilterEval.run          OFF  LONG_WHERE_EVAL    1024  avgt       49.015          ns/op
+FusionOperatorBenchmark.FilterEval.run          OFF  LONG_WHERE_EVAL    8192  avgt       33.748          ns/op
+FusionOperatorBenchmark.FilterEval.run          OFF      DOUBLE_SQRT    1024  avgt       25.811          ns/op
+FusionOperatorBenchmark.FilterEval.run          OFF      DOUBLE_SQRT    8192  avgt       26.754          ns/op
+FusionOperatorBenchmark.FilterEval.run     SEPARATE  LONG_WHERE_EVAL    1024  avgt        8.120          ns/op
+FusionOperatorBenchmark.FilterEval.run     SEPARATE  LONG_WHERE_EVAL    8192  avgt        8.996          ns/op
+FusionOperatorBenchmark.FilterEval.run     SEPARATE      DOUBLE_SQRT    1024  avgt        8.504          ns/op
+FusionOperatorBenchmark.FilterEval.run     SEPARATE      DOUBLE_SQRT    8192  avgt        7.751          ns/op
+FusionOperatorBenchmark.FilterEval.run  FILTER_EVAL  LONG_WHERE_EVAL    1024  avgt       11.253          ns/op
+FusionOperatorBenchmark.FilterEval.run  FILTER_EVAL  LONG_WHERE_EVAL    8192  avgt       18.589          ns/op
+FusionOperatorBenchmark.FilterEval.run  FILTER_EVAL      DOUBLE_SQRT    1024  avgt       12.510          ns/op
+FusionOperatorBenchmark.FilterEval.run  FILTER_EVAL      DOUBLE_SQRT    8192  avgt       11.217          ns/op
+
+Benchmark result is saved to build/c14.json
+
+BUILD SUCCESSFUL in 21s
+380 actionable tasks: 1 executed, 379 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.7.1/userguide/configuration_cache_enabling.html
