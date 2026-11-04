@@ -172,3 +172,40 @@ signatures). Each was resolved by taking `main`'s code and re-applying the fusio
 hook on top (the `@Fusable` annotation, the `FusionPlanner.maybeFuse` entry point
 in `EvalMapper`, the fusion compilation-service wiring in `EsqlPlugin`/
 `LocalExecutionPlanner`), never reverting a `main` behaviour change.
+
+## P1B fix-up — re-check of the base and drift (F8)
+
+The P1B fix-up re-checked whether a newer `main` exists to rebase onto. It does
+not: `origin/main` is `a42903a9e04`, which is an **ancestor** of the current base
+`174890c2e3a` (the base is **151 commits ahead** of `origin/main`;
+`git merge-base origin/main 174890c2e3a == a42903a9e04`). Rebasing onto
+`origin/main` would move the stack *backwards* and drop 151 commits, so the base
+stays `174890c2e3a` — it is already the newest `main` reachable in this
+environment. The F8 rebase is therefore a no-op and the recorded base hash is
+unchanged.
+
+Because the base did not move, there is **no new upstream drift** to absorb since
+`174890c2e3a`. The surfaces F8 calls out were re-inspected against the base at the
+P1B tip and are unchanged from the resolutions recorded above:
+
+- `allowNonFinite` / `NonFiniteSupport` wiring on the double kernels (Add/Sub/Mul/
+  Div/Mod + the math functions) — still baked as a planner
+  `FusionNode.Constant.baked(value,'Z')` and still part of the `FusedClassCache`
+  shape key (`#C:Z:true` / `#C:Z:false`); re-verified by
+  `testAllowNonFiniteVariantsResolveToDistinctClasses` and the new table-driven
+  `testDoubleMathFunctionsAllowNonFiniteMatchUnfused` (F6).
+- `EvalMapper` — the `toEvaluator`/`toFilterEvalEvaluator` fusion entry points are
+  unchanged; the P1B edit only de-duplicated the two identical anonymous
+  `ToEvaluator` builders behind one `toEvaluatorContext(..., Function)` overload
+  (F7.2), no behaviour change.
+- `LocalExecutionPlanner` — `planFilter`'s unscored-path guard is unchanged; the
+  P1B edit extracted it into `filterNeedsScoring(FilterExec, context)` and reused
+  the exact same condition in both `planFilter` and the WHERE+EVAL hook, and gated
+  the hook on `FusionSettings.isEnabled()` so an off node follows `main`'s path
+  exactly (F1).
+- `EsqlPlugin` — fusion compilation-service wiring unchanged.
+- every `@Fusable` kernel — bodies unchanged; the P1B work added a compile-time
+  single-return check in the annotation processor (F5) that all current kernels
+  already satisfy, and the regenerated fusion class-dump corpus is **43/43
+  byte-identical** to `e1/P1.txt` (md5 `ac36a0964b7c59f2969f08bdc2907a2b`),
+  proving no fused bytecode changed.
