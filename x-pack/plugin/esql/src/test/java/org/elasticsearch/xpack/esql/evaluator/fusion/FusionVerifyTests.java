@@ -18,6 +18,7 @@ import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.EvalOperator;
+import org.elasticsearch.compute.operator.FilterOperator;
 import org.elasticsearch.compute.operator.fusion.FusionAware;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
@@ -35,6 +36,7 @@ import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFac
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.VectorStrategy;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
 import org.elasticsearch.xpack.esql.planner.Layout;
 import org.junit.After;
 
@@ -53,10 +55,19 @@ import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 
-/** C2: build-time A/B verification of fused vs unfused results. A compilerForTests-injected fused class */
+/**
+ * C2: build-time A/B verification of fused vs unfused results. A compilerForTests-injected fused class
+ * that adds 1 to every {@code Add.processLongs} must fail under verify (the test-JVM default) and pass
+ * silently when the comparison helper is forced off. Breaker-to-zero is asserted on both fused operator
+ * paths (EVAL and the WHERE positions filter) with verify ON.
+ */
 public class FusionVerifyTests extends FusionDifferentialTestCase {
 
-    /** Kernel body the Stitcher splices in place of {@link Add#processLongs}: same {@code (JJ)J} overflow-checked */
+    /**
+     * Kernel body the Stitcher splices in place of {@link Add#processLongs}: same {@code (JJ)J} overflow-checked
+     * descriptor, but the result is 1 larger. Used by {@link #plusOneAddCompiler()} so the fused class is still
+     * Stitcher-generated (no hand-rolled bytecode) while being deliberately wrong.
+     */
     public static long processLongs(long lhs, long rhs) {
         return Math.addExact(Math.addExact(lhs, rhs), 1L);
     }
@@ -172,7 +183,11 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
         assertThat(breaker.getUsed(), is(0L));
     }
 
-    /** if verify-mode's lazy {@code unfusedFactory.get(ignoringWarnings)} throws, the already-computed fused */
+    /**
+     *: if verify-mode's lazy {@code unfusedFactory.get(ignoringWarnings())} throws, the already-computed fused
+     * Block must still be closed. Pre-fix {@code verifyUnfused()} runs as an argument to {@code verifyPage}, outside
+     * its try, so the fused block leaks and the breaker stays non-zero.
+     */
     public void testVerifyUnfusedGetFailureClosesFusedBlock() {
         assumeTrue("verify is on by default in test JVMs (-ea); skip when verify is off", FusionSettings.isVerifyEnabled());
         FusionVerify.skipForTests = false;
@@ -200,7 +215,67 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
         assertThat(breaker.getUsed(), is(0L));
     }
 
-    /** Direct {@link FusionVerify#describeMismatch} coverage: encoding fast-path, numeric constant lost encoding, */
+    /** A {@link FilterOperator} over a fused WHERE predicate releases everything with verify on, rows kept or not. */
+    public void testFilterOperatorPositionsBreakerReturnsToZeroWithVerifyOn() {
+        assumeTrue("verify is on by default in test JVMs (-ea); skip when verify is off", FusionSettings.isVerifyEnabled());
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression predicate = new GreaterThan(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+        ExpressionEvaluator.Factory factory = EvalMapper.toFilterEvaluator(FoldContext.small(), predicate, layout);
+        assertThat(factory, instanceOf(FusedFilterEvaluatorFactory.class));
+
+        int pageSize = 8;
+        try (FilterOperator operator = new FilterOperator(factory.get(driverContext))) {
+            for (int i = 0; i < 3; i++) {
+                Page page = longPage(pageSize, boundedLongs(pageSize), boundedLongs(pageSize), boundedLongs(pageSize));
+                operator.addInput(page);
+                Page output = operator.getOutput();
+                if (output != null) {
+                    output.releaseBlocks();
+                }
+            }
+            operator.finish();
+        }
+        assertThat(breaker.getUsed(), is(0L));
+    }
+
+    /**
+     * A deliberately wrong fused WHERE predicate (every {@code Add} one larger) selects rows the unfused predicate does
+     * not: verify mode must fail the page with the selected-position mismatch and dump the fused class.
+     */
+    public void testDeliberatelyWrongWherePredicateThrowsAssertionErrorUnderVerify() {
+        assumeTrue("verify is on by default in test JVMs (-ea); skip when verify is off", FusionSettings.isVerifyEnabled());
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression predicate = new GreaterThan(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+
+        FusionPlanner.compilerForTests = plusOneAddCompiler();
+        ExpressionEvaluator.Factory factory = EvalMapper.toFilterEvaluator(FoldContext.small(), predicate, layout);
+        assertThat(factory, instanceOf(FusedFilterEvaluatorFactory.class));
+        FusedFilterEvaluatorFactory fusedFactory = (FusedFilterEvaluatorFactory) factory;
+
+        // a + b == c on every row, so the correct predicate keeps nothing and the off-by-one one keeps everything.
+        Page page = longPage(2, new long[] { 1, 2 }, new long[] { 1, 1 }, new long[] { 2, 3 });
+        try (FilterOperator operator = new FilterOperator(fusedFactory.get(driverContext))) {
+            operator.addInput(page);
+            AssertionError error = expectThrows(AssertionError.class, operator::getOutput);
+            String message = error.getMessage();
+            assertThat(message, containsString("strategy=" + VectorStrategy.CHECKED_VECTOR));
+            assertThat(message, containsString("path=" + LastEvalPath.RAW));
+            assertThat(message, containsString("survivorCount=2 vs 0"));
+            assertThat(message, containsString(FusionVerify.dumpPath(fusedFactory.shape()).toString()));
+        }
+        assertThat(breaker.getUsed(), is(0L));
+    }
+
+    /**
+     * Direct {@link FusionVerify#describeMismatch} coverage: encoding fast-path, numeric constant lost encoding,
+     * NaN vs finite, sign-of-zero, identical blocks, and firstDiff for count/value divergence.
+     */
     public void testDescribeMismatchTable() {
         List<Block> toClose = new ArrayList<>();
         try {
@@ -273,7 +348,11 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
         }
     }
 
-    /** Non-UTF-8 BytesRef values (IP/VERSION bytes, 0xFF 0xFE) must stringify as Lucene hex ({@code [ff fe]}) so a */
+    /**
+     * Non-UTF-8 BytesRef values (IP/VERSION bytes, 0xFF 0xFE) must stringify as Lucene hex ({@code [ff fe]}) so a
+     * mismatch reports the real values. {@code BytesRef#utf8ToString} asserts on invalid UTF-8, which would hide the
+     * mismatch and leak both blocks (breaker not back to zero).
+     */
     public void testNonUtf8BytesRefMismatchReportsHexAndClosesBlocks() {
         Block fused = bytesFrom(new byte[] { (byte) 0xFF, (byte) 0xFE });
         Block unfused = bytesFrom(new byte[] { 0x00 });
@@ -295,7 +374,10 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
         }
     }
 
-    /** A dump that cannot write (directory path is a regular file) must still close both blocks, and the mismatch */
+    /**
+     * A dump that cannot write (directory path is a regular file) must still close both blocks, and the mismatch
+     * {@link AssertionError} must say {@code dump failed} rather than propagating the dump exception.
+     */
     public void testDumpFailureStillClosesBothBlocksAndSaysDumpFailed() throws Exception {
         Path notADirectory = createTempFile();
         FusionVerify.dumpDirectoryForTests = notADirectory;
@@ -319,7 +401,11 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
         }
     }
 
-    /** Encoding: a numeric {@code Constant*Vector} unfused output vs a plain array fused output is lost encoding (the */
+    /**
+     * Encoding: a numeric {@code Constant*Vector} unfused output vs a plain array fused output is lost encoding (the
+     * unfused constant-input short-circuit). A constant fused output vs an ordinal unfused output is accepted —
+     * constant is a stronger encoding than ordinal.
+     */
     public void testNumericConstantLostEncodingAndConstantBeatsOrdinal() {
         List<Block> toClose = new ArrayList<>();
         try {
@@ -357,7 +443,10 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
         }
     }
 
-    /** an exception escaping fused code carries a suppressed {@code FusedFrameInfo} naming the shape and kernels */
+    /**
+     *: an exception escaping fused code carries a suppressed {@code FusedFrameInfo} naming the shape and kernels
+     * on the default stack (no {@code -XX:+ShowHiddenFrames}).
+     */
     public void testThrownKernelExceptionCarriesFusedFrameInfo() {
         FieldAttribute a = field("a", DataType.LONG);
         FieldAttribute b = field("b", DataType.LONG);
@@ -399,7 +488,22 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
         assertThat(Files.readString(dumped), containsString("no fused class bytes captured"));
     }
 
-    /** Without {@code -ea}, {@code lastEvalPath} is unset and {@link FusionVerify#verifyPage} must label the path */
+    public void testDescribeSurvivorMismatch() {
+        assertThat(FusionVerify.describeSurvivorMismatch(new int[] { 0, 2, 5 }, 3, new int[] { 0, 2, 5 }, 3), nullValue());
+        String indexMismatch = FusionVerify.describeSurvivorMismatch(new int[] { 0, 2 }, 2, new int[] { 0, 1 }, 2);
+        assertThat(indexMismatch, containsString("survivorCount=2 vs 2"));
+        assertThat(indexMismatch, containsString("firstDiff@1"));
+        assertThat(indexMismatch, containsString("fused=2"));
+        assertThat(indexMismatch, containsString("unfused=1"));
+        String countMismatch = FusionVerify.describeSurvivorMismatch(new int[] { 0, 1 }, 2, new int[] { 0 }, 1);
+        assertThat(countMismatch, containsString("survivorCount=2 vs 1"));
+        assertThat(countMismatch, containsString("firstDiff@1"));
+    }
+
+    /**
+     * Without {@code -ea}, {@code lastEvalPath} is unset and {@link FusionVerify#verifyPage} must label the path
+     * {@code ?} rather than pretending the block path ran.
+     */
     public void testVerifyPageNullPathLabelsQuestionMark() {
         Block fused = blockFactory.newLongArrayVector(new long[] { 1L, 2L }, 2).asBlock();
         Block reference = blockFactory.newLongArrayVector(new long[] { 9L, 9L }, 2).asBlock();
@@ -492,10 +596,24 @@ public class FusionVerifyTests extends FusionDifferentialTestCase {
             public Class<?> compileLogicalVectorLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
                 return real.compileLogicalVectorLoop(caller, rewriteAddLongs(tree, replacementMethod));
             }
+
+            @Override
+            public Class<?> compileBlockPositionsLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return real.compileBlockPositionsLoop(caller, rewriteAddLongs(tree, replacementMethod));
+            }
+
+            @Override
+            public Class<?> compileVectorPositionsLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                return real.compileVectorPositionsLoop(caller, rewriteAddLongs(tree, replacementMethod));
+            }
         };
     }
 
-    /** Replaces every {@link Add#processLongs} kernel with {@code FusionVerifyTests#replacementMethod} (same */
+    /**
+     * Replaces every {@link Add#processLongs} kernel with {@code FusionVerifyTests#replacementMethod} (same
+     * {@code (JJ)J} signature). Children, constants and the fused method's trailing-parameter list are unchanged, so
+     * {@code findStatic} against the original plan's MethodType still binds.
+     */
     private static FusionNode rewriteAddLongs(FusionNode node, String replacementMethod) {
         if (node instanceof FusionNode.Kernel kernel) {
             List<FusionNode> children = kernel.children().stream().map(child -> rewriteAddLongs(child, replacementMethod)).toList();

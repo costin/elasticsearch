@@ -33,7 +33,8 @@ import java.util.function.Consumer;
 /**
  * Emits the dense vector-loop fused classes: the plain-vector loop (ALL-RAW {@code fused} plus ALL-INTERFACE
  * {@code fusedInterface}), the overflow-checked vector loop (builder {@code fused}/{@code fusedInterface} plus
- * raw-array {@code fusedRaw}/{@code fusedRawInterface}), and the dense logical-vector INTERFACE loop.
+ * raw-array {@code fusedRaw}/{@code fusedRawInterface}), the dense logical-vector INTERFACE loop, and the POSITIONS
+ * loop of a boolean predicate ({@link #emitVectorPositionsLoop}).
  * {@link Stitcher} owns the public {@code compile*} façade and define boundary; this class is the vector-path
  * seam those entry points delegate to.
  */
@@ -65,11 +66,26 @@ final class VectorLoopEmitter {
         enum Output {
             VECTOR,
             BLOCK,
-            BUILDER
+            BUILDER,
+            /**
+             * A boolean predicate writes the positions where it is {@code true} into an {@code int[] positions}
+             * parameter and returns their count, instead of materialising a {@code BooleanBlock}. A checked
+             * (overflow-capable) tree abandons the page with {@code -1} on the first overflow, like the raw-array
+             * output's {@code null}; the caller re-runs it on the block path, which nulls the row and warns.
+             */
+            POSITIONS
         }
 
         boolean raw() {
             return reads == Reads.RAW;
+        }
+
+        /**
+         * Whether the method takes the {@code Warnings[]} parameter. Every checked value output does, so the raw-array
+         * and builder siblings share one descriptor; POSITIONS never warns (it abandons on overflow instead).
+         */
+        boolean withWarnings() {
+            return checked && output != Output.POSITIONS;
         }
     }
 
@@ -155,7 +171,7 @@ final class VectorLoopEmitter {
     static String vectorMethodName(LoopSpec spec) {
         boolean raw = spec.raw();
         return switch (spec.output()) {
-            case BUILDER, VECTOR -> raw ? Stitcher.FUSED_METHOD_NAME : Stitcher.FUSED_INTERFACE_METHOD_NAME;
+            case BUILDER, VECTOR, POSITIONS -> raw ? Stitcher.FUSED_METHOD_NAME : Stitcher.FUSED_INTERFACE_METHOD_NAME;
             case BLOCK -> spec.checked()
                 ? (raw ? Stitcher.FUSED_RAW_METHOD_NAME : Stitcher.FUSED_RAW_INTERFACE_METHOD_NAME)
                 : (raw ? Stitcher.FUSED_METHOD_NAME : Stitcher.FUSED_INTERFACE_METHOD_NAME);
@@ -168,14 +184,19 @@ final class VectorLoopEmitter {
         for (int i = 0; i < arity; i++) {
             inputDescriptors[i] = vector;
         }
+        if (spec.output() == LoopSpec.Output.POSITIONS) {
+            return Stitcher.fusedMethodDescriptor(spec.withWarnings(), "[I", inputDescriptors, constants, "I");
+        }
         String ret = spec.output() == LoopSpec.Output.VECTOR ? spec.outElement().vectorDescriptor() : spec.outElement().blockDescriptor();
-        return Stitcher.fusedMethodDescriptor(spec.checked(), inputDescriptors, constants, ret);
+        return Stitcher.fusedMethodDescriptor(spec.withWarnings(), "", inputDescriptors, constants, ret);
     }
 
     /**
      * Array-output vector loop: write {@code T[]}, return {@code new*ArrayVector} ({@link LoopSpec.Output#VECTOR})
      * or {@code new*ArrayVector.asBlock()} ({@link LoopSpec.Output#BLOCK}). Covers the plain-vector methods, the
-     * checked-raw methods (overflow → {@code return null}) and the logical-vector INTERFACE method.
+     * checked-raw methods (overflow → {@code return null}) and the logical-vector INTERFACE method. With
+     * {@link LoopSpec.Output#POSITIONS} the same loop instead writes {@code positions[n] = p; n += <predicate>} and
+     * returns {@code n} (overflow → {@code return -1}).
      */
     private MethodNode emitArrayVectorMethod(
         FusionNode tree,
@@ -187,19 +208,20 @@ final class VectorLoopEmitter {
         FusedClassDebugInfo debug
     ) {
         boolean raw = spec.raw();
+        boolean positions = spec.output() == LoopSpec.Output.POSITIONS;
         Element outputElement = spec.outElement();
         int arity = inputElements.length;
-        // Frame layout: [0] BlockFactory, then an unused Warnings[] when {@code checked} (uniform binding with
-        // the builder sibling), then int positionCount, then input Vectors, then trailing constant parameters.
-        // The per-input extracted refs (raw arrays OR typed *Vector), the output array, and the loop counter
-        // sit ABOVE the parameters.
+        // Frame layout: [0] BlockFactory, then an unused Warnings[] when {@code spec.withWarnings()} (uniform binding
+        // with the builder sibling), then int positionCount, then int[] positions for POSITIONS, then input Vectors, then
+        // trailing constant parameters. The per-input extracted refs (raw arrays OR typed *Vector), the output array
+        // (the selected-position count for POSITIONS), and the loop counter sit ABOVE the parameters.
         FrameLayout frame = new FrameLayout();
-        FrameLayout.FusedParams params = frame.fusedParams(spec.checked(), arity, constants);
+        FrameLayout.FusedParams params = frame.fusedParams(spec.withWarnings(), positions, arity, constants);
         int pcSlot = params.pcSlot();
         int inputBase = params.inputBase();
         Map<FusionNode.Constant, Integer> constantSlots = params.constantSlots();
         int extractedBase = frame.slots(arity);                             // per-input raw array OR typed *Vector
-        int outSlot = frame.slot();
+        int outSlot = frame.slot();                                         // out[], or the POSITIONS count n
         int pSlot = frame.slot();
         int kernelBase = frame.mark();
 
@@ -218,10 +240,16 @@ final class VectorLoopEmitter {
             insns.add(tryStart);
         }
 
-        // out = new T[positionCount]; T is the OUTPUT element (boolean[] for a comparison/logical root).
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
-        insns.add(new IntInsnNode(Opcodes.NEWARRAY, outputElement.newArrayType()));
-        insns.add(new VarInsnNode(Opcodes.ASTORE, outSlot));
+        if (positions) {
+            // n = 0;
+            insns.add(new InsnNode(Opcodes.ICONST_0));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, outSlot));
+        } else {
+            // out = new T[positionCount]; T is the OUTPUT element (boolean[] for a comparison/logical root).
+            insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
+            insns.add(new IntInsnNode(Opcodes.NEWARRAY, outputElement.newArrayType()));
+            insns.add(new VarInsnNode(Opcodes.ASTORE, outSlot));
+        }
 
         // int p = 0;
         insns.add(new InsnNode(Opcodes.ICONST_0));
@@ -234,10 +262,17 @@ final class VectorLoopEmitter {
         insns.add(new VarInsnNode(Opcodes.ILOAD, pcSlot));
         insns.add(new JumpInsnNode(Opcodes.IF_ICMPGE, loopEnd));
 
-        // out[p] = <stitched expression>; the array ref and index are pushed first, then the fused kernel bodies
-        // leave the computed value on top, so a single array-store consumes all three.
-        insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
-        insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        if (positions) {
+            // positions[n] = p; n = n + <stitched predicate>; — branch-free: every position is recorded and the count
+            // only moves past a true one (the predicate leaves an int 0/1 on top of n).
+            PositionLoop.emitRecordPosition(insns, params.positionsSlot(), outSlot, pSlot);
+            insns.add(new VarInsnNode(Opcodes.ILOAD, outSlot));
+        } else {
+            // out[p] = <stitched expression>; the array ref and index are pushed first, then the fused kernel bodies
+            // leave the computed value on top, so a single array-store consumes all three.
+            insns.add(new VarInsnNode(Opcodes.ALOAD, outSlot));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, pSlot));
+        }
         StackKernelEmitter emitter = new StackKernelEmitter(
             insns,
             constantSlots,
@@ -248,9 +283,14 @@ final class VectorLoopEmitter {
             debug
         );
         emitter.emit(tree, outputElement);
-        // The computed value (an int 0/1 for a comparison/logical root) is stored with the OUTPUT element's
-        // array-store opcode (BASTORE for boolean).
-        insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
+        if (positions) {
+            insns.add(new InsnNode(Opcodes.IADD));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, outSlot));
+        } else {
+            // The computed value (an int 0/1 for a comparison/logical root) is stored with the OUTPUT element's
+            // array-store opcode (BASTORE for boolean).
+            insns.add(new InsnNode(outputElement.type().getOpcode(Opcodes.IASTORE)));
+        }
 
         insns.add(new IincInsnNode(pSlot, 1));
         insns.add(new JumpInsnNode(Opcodes.GOTO, loopStart));
@@ -260,7 +300,10 @@ final class VectorLoopEmitter {
             insns.add(tryEnd);
         }
 
-        if (spec.output() == LoopSpec.Output.BLOCK) {
+        if (positions) {
+            insns.add(new VarInsnNode(Opcodes.ILOAD, outSlot));
+            insns.add(new InsnNode(Opcodes.IRETURN));
+        } else if (spec.output() == LoopSpec.Output.BLOCK) {
             emitReturnNewArrayVectorAsBlock(insns, outSlot, pcSlot, outputElement);
         } else {
             emitNewArrayVector(insns, outSlot, pcSlot, outputElement);
@@ -268,10 +311,17 @@ final class VectorLoopEmitter {
         }
 
         if (handler != null) {
+            // Overflow abandons the page: null for an array output, -1 for POSITIONS (whose partially written
+            // positions the caller's block-path re-run overwrites).
             insns.add(handler);
             insns.add(new InsnNode(Opcodes.POP));
-            insns.add(new InsnNode(Opcodes.ACONST_NULL));
-            insns.add(new InsnNode(Opcodes.ARETURN));
+            if (positions) {
+                insns.add(new InsnNode(Opcodes.ICONST_M1));
+                insns.add(new InsnNode(Opcodes.IRETURN));
+            } else {
+                insns.add(new InsnNode(Opcodes.ACONST_NULL));
+                insns.add(new InsnNode(Opcodes.ARETURN));
+            }
             for (String exType : overflowTypes) {
                 host.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, handler, exType));
             }
@@ -686,4 +736,48 @@ final class VectorLoopEmitter {
         );
     }
 
+    /**
+     * Builds the class bytes for the dense POSITIONS loop of a boolean predicate {@code tree}: each method writes the
+     * positions where the predicate is {@code true} into its {@code int[] positions} parameter and returns their count
+     * (see {@link LoopSpec.Output#POSITIONS}). The body is branch-free per position — {@code positions[n] = p;
+     * n += <predicate 0/1>} — so a page pays no BooleanBlock and no second scan over it. A comparison-rooted tree gets
+     * the ALL-RAW {@code fused} and ALL-INTERFACE {@code fusedInterface} methods like {@link #emitVectorLoop}; a logical
+     * tree gets {@code fusedInterface} only, like {@link #emitLogicalVectorLoop}. An overflow-checked tree returns
+     * {@code -1} on the first overflow so the caller re-runs the page on the block path, which nulls the row and warns.
+     */
+    byte[] emitVectorPositionsLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+        Element outputElement = Element.of(Stitcher.rootReturnType(tree));
+        if (outputElement.type().getSort() != Type.BOOLEAN) {
+            throw new IllegalArgumentException("fused positions loop requires a boolean predicate root, not " + tree);
+        }
+        FusionSignature signature = FusionSignature.of(tree);
+        int[] consumed = signature.consumedInputs();
+        Element[] inputElements = Stitcher.inputElements(signature);
+        List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
+        Set<String> overflowTypes = signature.overflowExceptionInternalNames();
+        boolean checked = overflowTypes.isEmpty() == false;
+        boolean logical = FusionNode.isBooleanLogic(tree);
+
+        String simpleName = logical ? "Fused$$LogicalVectorPositionsLoop" : "Fused$$VectorPositionsLoop";
+        FusedClassDebugInfo debug = FusedClassDebugInfo.of(simpleName, tree);
+        List<LoopSpec> specs = logical
+            ? List.of(new LoopSpec(LoopSpec.Reads.INTERFACE, LoopSpec.Output.POSITIONS, checked, outputElement))
+            : List.of(
+                new LoopSpec(LoopSpec.Reads.RAW, LoopSpec.Output.POSITIONS, checked, outputElement),
+                new LoopSpec(LoopSpec.Reads.INTERFACE, LoopSpec.Output.POSITIONS, checked, outputElement)
+            );
+        List<MethodNode> methods = new ArrayList<>(specs.size());
+        for (LoopSpec spec : specs) {
+            methods.add(emitVectorMethod(tree, spec, inputElements, constants, consumed, overflowTypes, Map.of(), debug));
+        }
+        return Stitcher.finishFusedClass(
+            caller,
+            Stitcher.fusedClassName(caller, simpleName),
+            debug,
+            logical ? "logical vector positions loop" : "vector positions loop",
+            methods,
+            List.of(),
+            hostMethodInterceptor
+        );
+    }
 }

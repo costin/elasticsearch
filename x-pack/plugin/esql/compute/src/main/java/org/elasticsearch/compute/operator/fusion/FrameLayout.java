@@ -70,18 +70,28 @@ final class FrameLayout {
      * {@code warningsSlot} is {@code -1} when {@code withWarnings} is false.
      */
     FusedParams fusedParams(boolean withWarnings, int arity, List<FusionNode.Constant> constants) {
+        return fusedParams(withWarnings, false, arity, constants);
+    }
+
+    /**
+     * As {@link #fusedParams(boolean, int, List)}, with an {@code int[] positions} parameter right after positionCount
+     * when {@code withPositions} (the POSITIONS output of a fused predicate). {@code positionsSlot} is {@code -1}
+     * when {@code withPositions} is false, so the value-output layouts are unchanged.
+     */
+    FusedParams fusedParams(boolean withWarnings, boolean withPositions, int arity, List<FusionNode.Constant> constants) {
         slot(); // [0] BlockFactory
         int warningsSlot = withWarnings ? slot() : -1;
         int pcSlot = slot();
+        int positionsSlot = withPositions ? slot() : -1;
         int inputBase = slots(arity);
-        return new FusedParams(warningsSlot, pcSlot, inputBase, Stitcher.allocConstantSlots(constants, this));
+        return new FusedParams(warningsSlot, pcSlot, positionsSlot, inputBase, Stitcher.allocConstantSlots(constants, this));
     }
 
     /**
      * Slots of the fused host parameter region reserved by {@link #fusedParams}. The {@link FrameLayout}
      * that produced this continues as the scratch allocator.
      */
-    record FusedParams(int warningsSlot, int pcSlot, int inputBase, Map<FusionNode.Constant, Integer> constantSlots) {}
+    record FusedParams(int warningsSlot, int pcSlot, int positionsSlot, int inputBase, Map<FusionNode.Constant, Integer> constantSlots) {}
 
     /** The next free slot: the base a per-kernel body's own (disjoint) local range starts at. */
     int mark() {

@@ -105,9 +105,10 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     /**
      * Lookup of <b>this</b> (esql-proper) module. Passed to the {@link Stitcher} so the fused hidden class is defined
      * in a module that can read both {@code compute} (the public block/vector API) and {@code esql-core} (kernel call
-     * targets such as {@code NumericUtils}).
+     * targets such as {@code NumericUtils}). {@link FusedFilterEvaluatorFactory} defines through the same lookup, so
+     * every cached class lives in one runtime package.
      */
-    private static final MethodHandles.Lookup LOOKUP = MethodHandles.lookup();
+    static final MethodHandles.Lookup LOOKUP = MethodHandles.lookup();
 
     /**
      * Test-only: when {@code true}, the <b>first</b> {@link FusedExpressionEvaluator#eval} on a fresh evaluator throws a
@@ -749,7 +750,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     }
 
     /** Whether any input column is a {@code BYTES_REF} (keyword/text), which forces the block-only route (no vector fast path). */
-    private static boolean hasBytesRefInput(ElementKind[] inputElements) {
+    static boolean hasBytesRefInput(ElementKind[] inputElements) {
         for (ElementKind element : inputElements) {
             if (element == ElementKind.BYTES_REF) {
                 return true;
@@ -814,7 +815,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
     }
 
     /** Appends the trailing constant primitive parameter types (in canonical emit order) to a MethodType param list. */
-    private static void appendConstantParams(List<Class<?>> params, Class<?>[] constantParamTypes) {
+    static void appendConstantParams(List<Class<?>> params, Class<?>[] constantParamTypes) {
         for (Class<?> constantParamType : constantParamTypes) {
             params.add(constantParamType);
         }
@@ -836,7 +837,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * primitive class for a primitive constant, or the declared reference type for an object {@code @Fixed} constant
      * matching the {@code L…;} descriptor the Stitcher emitted for it. Baked constants are not in this list.
      */
-    private static Class<?>[] constantParamTypes(List<FusionNode.Constant> constants) {
+    static Class<?>[] constantParamTypes(List<FusionNode.Constant> constants) {
         Class<?>[] types = new Class<?>[constants.size()];
         for (int i = 0; i < constants.size(); i++) {
             FusionNode.Constant constant = constants.get(i);
@@ -852,7 +853,7 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
      * (matching the {@code THREAD_LOCAL} {@code @Fixed} contract) and concurrent drivers never share one. Baked
      * constants are not in this list. Called once per {@code get(DriverContext)}, never per row.
      */
-    private static Object[] resolveConstantValues(List<FusionNode.Constant> constants, DriverContext context) {
+    static Object[] resolveConstantValues(List<FusionNode.Constant> constants, DriverContext context) {
         Object[] values = new Object[constants.size()];
         for (int i = 0; i < constants.size(); i++) {
             FusionNode.Constant constant = constants.get(i);
@@ -903,6 +904,11 @@ final class FusedExpressionEvaluatorFactory implements ExpressionEvaluator.Facto
         /** The concrete {@code *Block} class for this element, for resolving fused {@link MethodType}s in sibling factories. */
         Class<? extends Block> blockClass() {
             return blockClass;
+        }
+
+        /** The exact {@code *ArrayVector} class an ALL-RAW read requires, for sibling factories' per-page dispatch. */
+        Class<? extends Vector> arrayVectorClass() {
+            return arrayVectorClass;
         }
     }
 

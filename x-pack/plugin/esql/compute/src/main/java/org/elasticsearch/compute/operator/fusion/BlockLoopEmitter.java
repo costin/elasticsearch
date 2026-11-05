@@ -29,8 +29,10 @@ import java.util.function.Consumer;
 
 /**
  * Emits the nullable/multi-valued block-loop fused classes: the arithmetic block loop and the 3VL logical-block
- * loop (with one {@code cmpN} helper per comparison operand). {@link Stitcher} owns the public {@code compile*}
- * façade and define boundary; this class is the block-path seam those entry points delegate to.
+ * loop (with one {@code cmpN} helper per comparison operand), each either building the result {@code *Block} or, for a
+ * boolean predicate, writing the positions where it is true (POSITIONS output, see {@link #emitBlockPositionsLoop}).
+ * {@link Stitcher} owns the public {@code compile*} façade and define boundary; this class is the block-path seam
+ * those entry points delegate to.
  * {@link BlockDfsEmitter} lives beside it for the arithmetic DFS walk. A lone TO_LOWER/TO_UPPER does not use a
  * dedicated mapping loop (it is refused at plan time); nested mapping kernels splice on this ordinary block path.
  */
@@ -54,6 +56,28 @@ final class BlockLoopEmitter {
      * manipulation on cloned kernel bodies.
      */
     byte[] emitBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+        return emitBlockLoop(caller, tree, false);
+    }
+
+    /**
+     * Builds the class bytes for the POSITIONS output of a boolean predicate {@code tree}: the same per-position
+     * evaluation (and so the same nulls, multi-value handling and warnings) as {@link #emitBlockLoop} or
+     * {@link #emitLogicalBlockLoop}, but instead of building a {@code BooleanBlock} the {@code fused} method writes the
+     * positions where the predicate is {@code true} into its {@code int[] positions} parameter and returns their count.
+     * A null, {@code false} or multi-valued result selects nothing, matching how {@code FilterOperator} reads the block.
+     * Nothing is allocated, so there is no builder and no builder-safety try/finally.
+     */
+    byte[] emitBlockPositionsLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+        if (FusionNode.isBooleanLogic(tree)) {
+            return emitLogicalBlockLoop(caller, tree, true);
+        }
+        if (Stitcher.rootReturnType(tree).getSort() != Type.BOOLEAN) {
+            throw new IllegalArgumentException("fused positions loop requires a boolean predicate root, not " + tree);
+        }
+        return emitBlockLoop(caller, tree, true);
+    }
+
+    private byte[] emitBlockLoop(MethodHandles.Lookup caller, FusionNode tree, boolean positions) throws Stitcher.StitchingException {
         // One walk derives arity, constants-in-emit-order and warning-source indices for this emit path.
         FusionSignature signature = FusionSignature.of(tree);
         int arity = signature.arity();
@@ -74,11 +98,13 @@ final class BlockLoopEmitter {
         // inline into the enclosing kernel's operand slots, so there are no separate pre-read leaf value slots.
         // One trailing primitive parameter per embedded constant (canonical emit order) sits between the input *Blocks
         // and the scratch region, so every scratch base is shifted up by the constant parameters' total slot size.
+        // POSITIONS output adds an int[] positions parameter right after positionCount.
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
         FrameLayout frame = new FrameLayout();
-        FrameLayout.FusedParams params = frame.fusedParams(true, arity, constants);
-        // Scratch region above the parameters: the builder, loop counter, a scratch value-count slot, the built result
-        // slot, the caught-throwable slot (builder-safety), the per-kernel overflow-exception slot, then:
+        FrameLayout.FusedParams params = frame.fusedParams(true, positions, arity, constants);
+        // Scratch region above the parameters: the builder (the selected-position count for POSITIONS), loop counter, a
+        // scratch value-count slot, the built result slot, the caught-throwable slot (builder-safety), the per-kernel
+        // overflow-exception slot, then:
         int builderSlot = frame.slot();
         int pSlot = frame.slot();
         int countSlot = frame.slot();
@@ -110,7 +136,9 @@ final class BlockLoopEmitter {
         for (int i = 0; i < arity; i++) {
             inputDescriptors[i] = inputElements[i].blockDescriptor();
         }
-        String desc = Stitcher.fusedMethodDescriptor(true, inputDescriptors, constants, outputElement.blockDescriptor());
+        String desc = positions
+            ? Stitcher.fusedMethodDescriptor(true, "[I", inputDescriptors, constants, "I")
+            : Stitcher.fusedMethodDescriptor(true, "", inputDescriptors, constants, outputElement.blockDescriptor());
 
         MethodNode host = Stitcher.newFusedMethod(Stitcher.FUSED_METHOD_NAME, desc);
         InsnList insns = host.instructions;
@@ -121,8 +149,11 @@ final class BlockLoopEmitter {
 
         // out = bf.new*BlockBuilder(positionCount); the builder is the OUTPUT element. The builder is a resource:
         // everything up to and including build() runs inside a try whose catch-all handler closes it before
-        // rethrowing, so a break part-way through does not leak breaker bytes.
-        PositionLoop loop = PositionLoop.open(insns, params.pcSlot(), pSlot, builderSlot, outputElement);
+        // rethrowing, so a break part-way through does not leak breaker bytes. POSITIONS output allocates nothing:
+        // it counts the selected positions in the builder slot instead.
+        PositionLoop loop = positions
+            ? PositionLoop.openPositions(insns, params.pcSlot(), pSlot, builderSlot)
+            : PositionLoop.open(insns, params.pcSlot(), pSlot, builderSlot, outputElement);
         LabelNode appendNull = new LabelNode();
 
         // Per-position DFS evaluation. Each node computes a {@code present} flag (did this node produce a value at
@@ -141,7 +172,8 @@ final class BlockLoopEmitter {
         // and caught silently otherwise. {@code live} is reset true here for each position.
         insns.add(new InsnNode(Opcodes.ICONST_1));
         insns.add(new VarInsnNode(Opcodes.ISTORE, liveSlot));
-        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$BlockLoop", tree);
+        String simpleName = positions ? "Fused$$BlockPositionsLoop" : "Fused$$BlockLoop";
+        FusedClassDebugInfo debug = FusedClassDebugInfo.of(simpleName, tree);
         BlockDfsEmitter emitter = new BlockDfsEmitter(
             templates,
             insns,
@@ -160,20 +192,34 @@ final class BlockLoopEmitter {
             debug
         );
         NodeSlots root = emitter.emit(tree, outputElement);
-        // if (root not present) appendNull; else append the root value.
-        insns.add(new VarInsnNode(Opcodes.ILOAD, root.present()));
-        insns.add(new JumpInsnNode(Opcodes.IFEQ, appendNull));
-        // out.appendNull(); reached when the root is not present (a null / multi-value leaf or an overflow on the value
-        // path short-circuited the position; any warning was already registered inline by the emitter).
-        FusedBuilderEmit.emitAppendOrNull(insns, builderSlot, root.value(), outputElement, appendNull, loop.next());
+        if (positions) {
+            // A position the root is not present at (null / multi-value leaf, or an overflow on the value path) is
+            // null, which does not select it; any warning was already registered inline by the emitter. Otherwise
+            // record p and advance the count only past a true root value.
+            insns.add(new VarInsnNode(Opcodes.ILOAD, root.present()));
+            insns.add(new JumpInsnNode(Opcodes.IFEQ, loop.next()));
+            PositionLoop.emitRecordPosition(insns, params.positionsSlot(), builderSlot, pSlot);
+            insns.add(new VarInsnNode(Opcodes.ILOAD, builderSlot));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, root.value()));
+            insns.add(new InsnNode(Opcodes.IADD));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, builderSlot));
+            loop.closePositions(insns, builderSlot);
+        } else {
+            // if (root not present) appendNull; else append the root value.
+            insns.add(new VarInsnNode(Opcodes.ILOAD, root.present()));
+            insns.add(new JumpInsnNode(Opcodes.IFEQ, appendNull));
+            // out.appendNull(); reached when the root is not present (a null / multi-value leaf or an overflow on the
+            // value path short-circuited the position; any warning was already registered inline by the emitter).
+            FusedBuilderEmit.emitAppendOrNull(insns, builderSlot, root.value(), outputElement, appendNull, loop.next());
 
-        // result = out.build(); build() transfers the builder's breaker accounting to the produced block.
-        loop.close(host, insns, resultSlot, excSlot, outputElement);
+            // result = out.build(); build() transfers the builder's breaker accounting to the produced block.
+            loop.close(host, insns, resultSlot, excSlot, outputElement);
+        }
         return Stitcher.finishFusedClass(
             caller,
-            Stitcher.fusedClassName(caller, "Fused$$BlockLoop"),
+            Stitcher.fusedClassName(caller, simpleName),
             debug,
-            "block loop",
+            positions ? "block positions loop" : "block loop",
             List.of(host),
             List.of(),
             hostMethodInterceptor
@@ -186,6 +232,11 @@ final class BlockLoopEmitter {
      * short-circuit 3VL truth tables.
      */
     byte[] emitLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+        return emitLogicalBlockLoop(caller, tree, false);
+    }
+
+    private byte[] emitLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree, boolean positions)
+        throws Stitcher.StitchingException {
         if (FusionNode.isBooleanLogic(tree) == false) {
             throw new IllegalArgumentException("fused logical block loop requires a Logical or Not root, not " + tree);
         }
@@ -196,8 +247,9 @@ final class BlockLoopEmitter {
         Element inputElement = Element.of(logicalInputType(tree));
         Element outputElement = Element.of(Type.BOOLEAN_TYPE);
 
-        String internalName = Stitcher.fusedClassName(caller, "Fused$$LogicalBlockLoop");
-        FusedClassDebugInfo debug = FusedClassDebugInfo.of("Fused$$LogicalBlockLoop", tree);
+        String simpleName = positions ? "Fused$$LogicalBlockPositionsLoop" : "Fused$$LogicalBlockLoop";
+        String internalName = Stitcher.fusedClassName(caller, simpleName);
+        FusedClassDebugInfo debug = FusedClassDebugInfo.of(simpleName, tree);
 
         // One helper per comparison operand, in DFS order; the map lets the loop emitter resolve each comparison's call.
         Map<FusionNode, String> helperNames = new IdentityHashMap<>();
@@ -212,11 +264,12 @@ final class BlockLoopEmitter {
         // result, and caught-throwable slots sit above (their bases shifted up by the constant parameters' slot size);
         // the tri-state node slots start at workBase. The top-level loop loads each constant from its parameter slot
         // and threads it into the relevant cmpN helper call.
+        // POSITIONS output adds an int[] positions parameter right after positionCount.
         List<FusionNode.Constant> constants = signature.constantsInEmitOrder();
         FrameLayout frame = new FrameLayout();
-        FrameLayout.FusedParams params = frame.fusedParams(true, arity, constants);
-        // Scratch region above the parameters: builder, loop counter, built result, caught-throwable; the tri-state
-        // node slots start at workBase.
+        FrameLayout.FusedParams params = frame.fusedParams(true, positions, arity, constants);
+        // Scratch region above the parameters: builder (the selected-position count for POSITIONS), loop counter, built
+        // result, caught-throwable; the tri-state node slots start at workBase.
         int builderSlot = frame.slot();
         int pSlot = frame.slot();
         int resultSlot = frame.slot();
@@ -227,13 +280,17 @@ final class BlockLoopEmitter {
         for (int i = 0; i < arity; i++) {
             inputDescriptors[i] = inputElement.blockDescriptor();
         }
-        String desc = Stitcher.fusedMethodDescriptor(true, inputDescriptors, constants, outputElement.blockDescriptor());
+        String desc = positions
+            ? Stitcher.fusedMethodDescriptor(true, "[I", inputDescriptors, constants, "I")
+            : Stitcher.fusedMethodDescriptor(true, "", inputDescriptors, constants, outputElement.blockDescriptor());
 
         MethodNode host = Stitcher.newFusedMethod(Stitcher.FUSED_METHOD_NAME, desc);
         InsnList insns = host.instructions;
 
-        // out = bf.newBooleanBlockBuilder(positionCount);
-        PositionLoop loop = PositionLoop.open(insns, params.pcSlot(), pSlot, builderSlot, outputElement);
+        // out = bf.newBooleanBlockBuilder(positionCount); POSITIONS output counts selected positions instead.
+        PositionLoop loop = positions
+            ? PositionLoop.openPositions(insns, params.pcSlot(), pSlot, builderSlot)
+            : PositionLoop.open(insns, params.pcSlot(), pSlot, builderSlot, outputElement);
         LabelNode doNull = new LabelNode();
 
         // Evaluate the logical tree for position p into a tri-state (0 false / 1 true / 2 null) in tRoot.
@@ -252,16 +309,37 @@ final class BlockLoopEmitter {
         int tRoot = emitter.alloc(1);
         emitter.emit(tree, tRoot);
 
-        insns.add(new VarInsnNode(Opcodes.ILOAD, tRoot));
-        insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
-        insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, doNull));
-        FusedBuilderEmit.emitAppendOrNull(insns, builderSlot, tRoot, outputElement, doNull, loop.next());
+        if (positions) {
+            // positions[n] = p; n += tRoot & 1; — the tri-state is 0 false / 1 true / 2 null, so its low bit is 1 exactly
+            // when the predicate is true: null and false select nothing, without a branch.
+            PositionLoop.emitRecordPosition(insns, params.positionsSlot(), builderSlot, pSlot);
+            insns.add(new VarInsnNode(Opcodes.ILOAD, builderSlot));
+            insns.add(new VarInsnNode(Opcodes.ILOAD, tRoot));
+            insns.add(new InsnNode(Opcodes.ICONST_1));
+            insns.add(new InsnNode(Opcodes.IAND));
+            insns.add(new InsnNode(Opcodes.IADD));
+            insns.add(new VarInsnNode(Opcodes.ISTORE, builderSlot));
+            loop.closePositions(insns, builderSlot);
+        } else {
+            insns.add(new VarInsnNode(Opcodes.ILOAD, tRoot));
+            insns.add(new IntInsnNode(Opcodes.BIPUSH, 2));
+            insns.add(new JumpInsnNode(Opcodes.IF_ICMPEQ, doNull));
+            FusedBuilderEmit.emitAppendOrNull(insns, builderSlot, tRoot, outputElement, doNull, loop.next());
 
-        loop.close(host, insns, resultSlot, excSlot, outputElement);
+            loop.close(host, insns, resultSlot, excSlot, outputElement);
+        }
         // Enforce the budget on every method: the loop within the huge-method limit, each helper within the inlining
         // limit. The helpers keep the top-level loop small even for nested trees; if any method exceeds its limit we
         // refuse to fuse (→ unfused fallback) rather than emit a method HotSpot will not JIT-compile or inline.
-        return Stitcher.finishFusedClass(caller, internalName, debug, "logical block loop", List.of(host), helpers, hostMethodInterceptor);
+        return Stitcher.finishFusedClass(
+            caller,
+            internalName,
+            debug,
+            positions ? "logical block positions loop" : "logical block loop",
+            List.of(host),
+            helpers,
+            hostMethodInterceptor
+        );
     }
 
     /**

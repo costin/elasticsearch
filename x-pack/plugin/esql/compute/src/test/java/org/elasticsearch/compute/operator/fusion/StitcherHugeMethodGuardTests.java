@@ -40,7 +40,8 @@ import static org.hamcrest.Matchers.nullValue;
  * <p>The per-path tests drop the live limit to {@link #TINY_LIMIT} so a representative tree is over-budget
  * without walking to depth thousands. Previously, LOGICAL_VECTOR measures only {@code fused} (absent → size 0) and
  * CHECKED/block compile with {@code enforce=false}, so those cases must fail on code.
- * Plain-vector and logical-block already enforced the named {@code fused} method.
+ * Plain-vector and logical-block already enforced the named {@code fused} method. The POSITIONS paths of a WHERE
+ * predicate go through the same guard.
  */
 public class StitcherHugeMethodGuardTests extends ESTestCase {
 
@@ -286,6 +287,21 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
         assertTinyLimitRefuses("logical vector loop", () -> emitters.vectors.emitLogicalVectorLoop(MethodHandles.lookup(), andGtLt()));
     }
 
+    /** The POSITIONS block and vector paths of a comparison and a logical predicate are refused like their siblings. */
+    public void testTinyLimitRefusesPositions() throws Exception {
+        FusionNode comparison = new FusionNode.Kernel(GT, List.of(arithmeticTree(), new FusionNode.Input(3)));
+        assertTinyLimitRefuses("block positions loop", () -> emitters.blocks.emitBlockPositionsLoop(MethodHandles.lookup(), comparison));
+        assertTinyLimitRefuses("vector positions loop", () -> emitters.vectors.emitVectorPositionsLoop(MethodHandles.lookup(), comparison));
+        assertTinyLimitRefuses(
+            "logical block positions loop",
+            () -> emitters.blocks.emitBlockPositionsLoop(MethodHandles.lookup(), andGtLt())
+        );
+        assertTinyLimitRefuses(
+            "logical vector positions loop",
+            () -> emitters.vectors.emitVectorPositionsLoop(MethodHandles.lookup(), andGtLt())
+        );
+    }
+
     /**
      * LOGICAL_VECTOR's only loop method is {@code fusedInterface}: {@link FusedMethodCodeLengths#fusedMethodCodeLength} is 0,
      * {@link FusedMethodCodeLengths#maxMethodCodeLength} is the INTERFACE body (the size the huge-method guard must use).
@@ -337,6 +353,25 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
         );
         assertThat(
             "deep logical-vector body must stay within HugeMethodLimit so it fuses",
+            size,
+            lessThanOrEqualTo(Stitcher.DEFAULT_MAX_FUSED_METHOD_BYTECODES)
+        );
+    }
+
+    /**
+     * a comparison over a 16-add chain emits a block POSITIONS class whose {@code fused} method is between 325 and
+     * 8000: past FreqInlineSize, but a root is only JIT-compiled, never inlined, so a deep WHERE predicate fuses.
+     */
+    public void testDeepPositionsLargestMethodBetween325And8000() throws Exception {
+        FusionNode predicate = new FusionNode.Kernel(GT, List.of(leftChain(ADD, 16), new FusionNode.Input(1)));
+        byte[] bytecode = emitters.blocks.emitBlockPositionsLoop(MethodHandles.lookup(), predicate);
+        int size = FusedMethodCodeLengths.maxMethodCodeLength(bytecode);
+        logger.info("gt(16-add) block positions max method = {} bytecodes", size);
+        assertThat("the only method is the fused positions loop", size, is(FusedMethodCodeLengths.fusedMethodCodeLength(bytecode)));
+        assertThat("a comparison-rooted positions class has no helpers", FusedMethodCodeLengths.largest(bytecode, true), nullValue());
+        assertThat("a deep positions root past FreqInlineSize is accepted", size, greaterThan(Stitcher.DEFAULT_MAX_FUSED_HELPER_BYTECODES));
+        assertThat(
+            "deep positions body must stay within HugeMethodLimit so it fuses",
             size,
             lessThanOrEqualTo(Stitcher.DEFAULT_MAX_FUSED_METHOD_BYTECODES)
         );
@@ -427,6 +462,45 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
         }
     }
 
+    /** A logical WHERE predicate's block POSITIONS class carries the same {@code cmpN} helpers and the same limit. */
+    public void testLogicalBlockPositionsHelperBetween325And8000IsRefused() throws Exception {
+        FusionNode tree = new FusionNode.Logical(
+            FusionNode.BoolOp.AND,
+            new FusionNode.Kernel(MIXED_GT, List.of(new FusionNode.Input(0), new FusionNode.Input(1))),
+            new FusionNode.Kernel(LT, List.of(new FusionNode.Input(2), new FusionNode.Input(3)))
+        );
+        Stitcher.maxFusedHelperBytecodesForTests(Stitcher.DEFAULT_MAX_FUSED_HELPER_BYTECODES);
+        try {
+            Stitcher.StitchingException refused = expectThrows(
+                Stitcher.StitchingException.class,
+                () -> emitters.blocks.emitBlockPositionsLoop(MethodHandles.lookup(), tree)
+            );
+            assertHelperRefusal(refused, "logical block positions loop", "cmp0");
+            // The dense POSITIONS loop inlines the comparison into its root, which may exceed FreqInlineSize.
+            emitters.vectors.emitVectorPositionsLoop(MethodHandles.lookup(), tree);
+        } finally {
+            Stitcher.maxFusedHelperBytecodesForTests(Stitcher.FREQ_INLINE_SIZE);
+        }
+    }
+
+    /** Under a tiny helper limit only the logical block POSITIONS class (it has helpers) is refused. */
+    public void testTinyHelperLimitRefusesOnlyPositionsClassesWithHelpers() throws Exception {
+        FusionNode comparison = new FusionNode.Kernel(GT, List.of(arithmeticTree(), new FusionNode.Input(3)));
+        Stitcher.maxFusedHelperBytecodesForTests(1);
+        try {
+            Stitcher.StitchingException refused = expectThrows(
+                Stitcher.StitchingException.class,
+                () -> emitters.blocks.emitBlockPositionsLoop(MethodHandles.lookup(), andGtLt())
+            );
+            assertHelperRefusal(refused, "logical block positions loop", "cmp");
+            emitters.blocks.emitBlockPositionsLoop(MethodHandles.lookup(), comparison);
+            emitters.vectors.emitVectorPositionsLoop(MethodHandles.lookup(), comparison);
+            emitters.vectors.emitVectorPositionsLoop(MethodHandles.lookup(), andGtLt());
+        } finally {
+            Stitcher.maxFusedHelperBytecodesForTests(Stitcher.FREQ_INLINE_SIZE);
+        }
+    }
+
     // -----------------------------------------------------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------------------------------------------------
@@ -453,6 +527,15 @@ public class StitcherHugeMethodGuardTests extends ESTestCase {
             FusionDescriptor cmp = i % 2 == 0 ? GT : LT;
             FusionNode next = new FusionNode.Kernel(cmp, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
             node = new FusionNode.Logical(FusionNode.BoolOp.AND, node, next);
+        }
+        return node;
+    }
+
+    /** A left-leaning chain of {@code depth} binary kernels reusing two inputs. */
+    private static FusionNode leftChain(FusionDescriptor descriptor, int depth) {
+        FusionNode node = new FusionNode.Kernel(descriptor, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
+        for (int i = 1; i < depth; i++) {
+            node = new FusionNode.Kernel(descriptor, List.of(node, new FusionNode.Input(1)));
         }
         return node;
     }

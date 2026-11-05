@@ -14,6 +14,7 @@ import org.elasticsearch.compute.data.BytesRefBlock;
 import org.elasticsearch.compute.data.BytesRefVector;
 import org.elasticsearch.compute.data.IntVector;
 import org.elasticsearch.compute.data.OrdinalBytesRefVector;
+import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.fusion.FusionDescriptor;
 import org.elasticsearch.compute.operator.fusion.FusionDump;
@@ -28,6 +29,7 @@ import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Left;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.Right;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.Trim;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.Equals;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.NotEquals;
 import org.elasticsearch.xpack.esql.planner.Layout;
@@ -45,7 +47,12 @@ import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 
-/** a fused BLOCK loop that reads two BytesRef columns into one shared spare BytesRef silently overwrites the */
+/**
+ *: a fused BLOCK loop that reads two BytesRef columns into one shared spare BytesRef silently overwrites the
+ * first operand. {@code k1 == LEFT(k2, 2)} then computes {@code k2 == LEFT(k2, 2)}. These differentials pin the
+ * per-column spare: the three two-column shapes must still fuse, and fused values must match the unfused chain
+ * over plain / ordinal / constant / null / multi-value pages, both as EVAL values and as WHERE positions.
+ */
 public class FusionBytesRefAliasingTests extends FusionDifferentialTestCase {
 
     private static final String[] K1_EQ_LEFT = { "ab", "xy", "ab", "zz" };
@@ -71,17 +78,33 @@ public class FusionBytesRefAliasingTests extends FusionDifferentialTestCase {
         return new Equals(Source.EMPTY, new Left(Source.EMPTY, k1, intLit(1)), new Left(Source.EMPTY, k2, intLit(1)));
     }
 
-    /** {@code k1 == LEFT(k2, 2)} over keyword columns. A shared spare computes {@code k2 == LEFT(k2, 2)} (all false */
+    private static Expression equalsTrim(FieldAttribute k1, FieldAttribute k2) {
+        return new Equals(Source.EMPTY, k1, new Trim(Source.EMPTY, k2));
+    }
+
+    /**
+     * {@code k1 == LEFT(k2, 2)} over keyword columns. A shared spare computes {@code k2 == LEFT(k2, 2)} (all false
+     * on the pinned page); per-column spares match the unfused chain: true, true, false, true.
+     */
     public void testEqualsLeftOfOtherColumn() {
         assertBlockShape("k1 == LEFT(k2, 2)", FusionBytesRefAliasingTests::equalsLeft, K1_EQ_LEFT, K2_EQ_LEFT);
     }
 
-    /** {@code k1 != RIGHT(k2, 1)} over keyword columns. A shared spare computes {@code k2 != RIGHT(k2, 1)}; */
+    /**
+     * {@code k1 != RIGHT(k2, 1)} over keyword columns. A shared spare computes {@code k2 != RIGHT(k2, 1)};
+     * per-column spares match the unfused chain on a page where those two answers diverge.
+     */
     public void testNotEqualsRightOfOtherColumn() {
         assertBlockShape("k1 != RIGHT(k2, 1)", FusionBytesRefAliasingTests::notEqualsRight, K1_NE_RIGHT, K2_NE_RIGHT);
     }
 
-    /** {@code LEFT(k1, 1) == LEFT(k2, 1)} over two keyword columns. Coverage-only: this shape does NOT reproduce the */
+    /**
+     * {@code LEFT(k1, 1) == LEFT(k2, 1)} over two keyword columns. Coverage-only: this shape does NOT reproduce the
+     * aliasing bug and passes both before and after the fix. Neither Equals operand is the raw per-column spare —
+     * each is a distinct {@code LEFT} output whose {@code @Fixed out} scratch aliases into its own column's block
+     * backing array, so repointing the shared spare never corrupts an operand. Kept to pin that two-column
+     * BytesRef-kernel trees keep fusing and matching unfused values.
+     */
     public void testEqualsLeftLeftOfTwoColumns() {
         assertBlockShape("LEFT(k1,1) == LEFT(k2,1)", FusionBytesRefAliasingTests::equalsLeftLeft, K1_EQ_LEFT, K2_EQ_LEFT);
     }
@@ -100,6 +123,51 @@ public class FusionBytesRefAliasingTests extends FusionDifferentialTestCase {
         for (BytesRefEncoding encoding : BytesRefEncoding.values()) {
             Block[] inputs = columns(k1vals, k2vals, encoding);
             runDifferential(fused, unfused, ElementKind.BOOLEAN, inputs, inputs[0].getPositionCount(), ctx + " " + encoding);
+        }
+    }
+
+    /** {@code WHERE k1 == LEFT(k2, 2)}: the positions path reads both columns through per-column spares too. */
+    public void testEqualsLeftOfOtherColumnWhere() {
+        assertWhereShape("WHERE k1 == LEFT(k2, 2)", FusionBytesRefAliasingTests::equalsLeft, K1_EQ_LEFT, K2_EQ_LEFT);
+    }
+
+    /** {@code WHERE k1 != RIGHT(k2, 1)} over a page where the aliased answer would select different rows. */
+    public void testNotEqualsRightOfOtherColumnWhere() {
+        assertWhereShape("WHERE k1 != RIGHT(k2, 1)", FusionBytesRefAliasingTests::notEqualsRight, K1_NE_RIGHT, K2_NE_RIGHT);
+    }
+
+    /** {@code WHERE k1 == TRIM(k2)}: a unary string kernel over the second column. */
+    public void testEqualsTrimOfOtherColumnWhere() {
+        assertWhereShape("WHERE k1 == TRIM(k2)", FusionBytesRefAliasingTests::equalsTrim, K1_EQ_LEFT, K2_EQ_LEFT);
+    }
+
+    private void assertWhereShape(String ctx, ShapeBuilder shape, String[] k1vals, String[] k2vals) {
+        FieldAttribute k1 = field("k1", DataType.KEYWORD);
+        FieldAttribute k2 = field("k2", DataType.KEYWORD);
+        Layout layout = layout(k1, k2);
+        Expression predicate = shape.build(k1, k2);
+
+        ExpressionEvaluator.Factory fused = filterFactory(predicate, layout);
+        assertFilterFuses(fused, ctx);
+        ExpressionEvaluator.Factory unfused = unfusedFactory(predicate, layout);
+
+        for (BytesRefEncoding encoding : BytesRefEncoding.values()) {
+            Page page = new Page(columns(k1vals, k2vals, encoding));
+            CapturedFilter actual = null;
+            CapturedFilter expected = null;
+            try {
+                actual = filterCapturing(fused, page);
+                expected = filterCapturing(unfused, page);
+                assertPagesEqual(actual.page(), expected.page(), ctx + " " + encoding);
+                assertWarningsSubset(actual.warnings(), expected.warnings(), ctx + " " + encoding);
+            } finally {
+                page.releaseBlocks();
+                for (CapturedFilter captured : new CapturedFilter[] { actual, expected }) {
+                    if (captured != null && captured.page() != null) {
+                        captured.page().releaseBlocks();
+                    }
+                }
+            }
         }
     }
 

@@ -309,11 +309,7 @@ public class FusionClassDumpTests extends ESTestCase {
             put(hashes, shape.getKey(), shape.getValue().emit());
         }
 
-        assertEquals(
-            "TE corpus minus deleted mapping_append_suffix plus shapes minus Vector-API comparison shapes is 38",
-            38,
-            hashes.size()
-        );
+        assertEquals("38 value-output shapes plus 10 POSITIONS shapes", 48, hashes.size());
 
         StringBuilder out = new StringBuilder();
         for (var e : hashes.entrySet()) {
@@ -428,6 +424,18 @@ public class FusionClassDumpTests extends ESTestCase {
         shapes.put("plain_int_add_gt", () -> emitters.vectors.emitVectorLoop(lookup, intAddGt()));
         shapes.put("plain_cast_int_to_double_add", () -> emitters.vectors.emitVectorLoop(lookup, castIntToDoubleAdd()));
         shapes.put("block_warn_only", () -> emitters.blocks.emitBlockLoop(lookup, warnOnly()));
+
+        // POSITIONS output of WHERE predicates: separate classes from the value-output shapes above.
+        shapes.put("positions_block_gt_over_add", () -> emitters.blocks.emitBlockPositionsLoop(lookup, gtOverAdd()));
+        shapes.put("positions_vector_gt_over_add", () -> emitters.vectors.emitVectorPositionsLoop(lookup, gtOverAdd()));
+        shapes.put("positions_vector_int_add_gt", () -> emitters.vectors.emitVectorPositionsLoop(lookup, intAddGt()));
+        shapes.put("positions_logical_block_and", () -> emitters.blocks.emitBlockPositionsLoop(lookup, andTree()));
+        shapes.put("positions_logical_vector_and", () -> emitters.vectors.emitVectorPositionsLoop(lookup, andTree()));
+        shapes.put("positions_logical_block_not_and", () -> emitters.blocks.emitBlockPositionsLoop(lookup, notAnd()));
+        shapes.put("positions_logical_vector_not_and", () -> emitters.vectors.emitVectorPositionsLoop(lookup, notAnd()));
+        shapes.put("positions_block_k1_eq_k2", () -> emitters.blocks.emitBlockPositionsLoop(lookup, eqBytes()));
+        shapes.put("positions_block_k1_eq_left_k2", () -> emitters.blocks.emitBlockPositionsLoop(lookup, eqLeft()));
+        shapes.put("positions_block_bytesref_length_gt", () -> emitters.blocks.emitBlockPositionsLoop(lookup, lengthGtConst()));
         return shapes;
     }
 
@@ -518,6 +526,13 @@ public class FusionClassDumpTests extends ESTestCase {
         return new FusionNode.Logical(FusionNode.BoolOp.AND, orTree(), notTree());
     }
 
+    private static FusionNode gtOverAdd() {
+        return new FusionNode.Kernel(
+            GT,
+            List.of(new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
+        );
+    }
+
     /** {@code k1 == LEFT(k2, 2)}: two BytesRef columns, LEFT scratch, block-loop spares. */
     private static FusionNode eqLeft() {
         return new FusionNode.Kernel(
@@ -534,6 +549,11 @@ public class FusionClassDumpTests extends ESTestCase {
                 )
             )
         );
+    }
+
+    /** {@code k1 == k2} over two BytesRef columns. */
+    private static FusionNode eqBytes() {
+        return new FusionNode.Kernel(EQ_BYTES, List.of(new FusionNode.Input(0), new FusionNode.Input(1)));
     }
 
     /** {@code d / 3.0}: double constant is a trailing param, not a baked immediate. */
@@ -587,6 +607,15 @@ public class FusionClassDumpTests extends ESTestCase {
                 )
             ),
             new FusionNode.Kernel(EQ, List.of(new FusionNode.Input(2), new FusionNode.Constant(3L, 'J')))
+        );
+    }
+
+    /** {@code NOT (a > 1) AND b < 2} with constant operands — a logical WHERE predicate. */
+    private static FusionNode notAnd() {
+        return new FusionNode.Logical(
+            FusionNode.BoolOp.AND,
+            new FusionNode.Not(new FusionNode.Kernel(GT, List.of(new FusionNode.Input(0), new FusionNode.Constant(1L, 'J')))),
+            new FusionNode.Kernel(LT, List.of(new FusionNode.Input(1), new FusionNode.Constant(2L, 'J')))
         );
     }
 

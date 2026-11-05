@@ -86,6 +86,9 @@ import java.util.function.Function;
  * every input is a no-null single-valued vector, else a null/multi-value-aware block loop; both are per-node typed
  * (each leaf reads its own element; each kernel's arguments and result are its descriptor's types).
  *
+ * <p>A WHERE condition goes through {@link #maybeFuseFilter} instead: the same eligibility, but the stitched loops write
+ * the positions where the predicate is {@code true} rather than a {@code BooleanBlock}, which is all the filter reads.
+ *
  * <p>Descriptors are read by building each node's <b>unfused</b> factory through {@code rawFactory} (supplied by
  * {@code EvalMapper}) and inspecting {@link FusionAware#fusionDescriptor()} — including the synthetic cast kernels,
  * whose descriptor is read from the very {@link Cast#cast} evaluator the unfused chain would splice. This avoids
@@ -227,6 +230,43 @@ public final class FusionPlanner {
         ) throws Stitcher.StitchingException {
             return new FusedClassCache.CachedFused(compileLogicalVectorLoop(caller, tree), 0, null, Map.of());
         }
+
+        /**
+         * Compiles the block POSITIONS loop of a WHERE predicate ({@link Stitcher#compileBlockPositionsLoop}). Defaulted
+         * so test doubles that only exercise value outputs need not override it; the production
+         * {@link FusionCompilationService} compiler provides the real, cache-backed implementation.
+         */
+        default Class<?> compileBlockPositionsLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+            throw new UnsupportedOperationException("compileBlockPositionsLoop not implemented by this compiler");
+        }
+
+        /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
+        default FusedClassCache.CachedFused compileBlockPositionsLoop(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
+            return new FusedClassCache.CachedFused(compileBlockPositionsLoop(caller, tree), 0, null, Map.of());
+        }
+
+        /**
+         * Compiles the dense-vector POSITIONS loop of a WHERE predicate ({@link Stitcher#compileVectorPositionsLoop}).
+         * Defaulted for the same reason as {@link #compileBlockPositionsLoop(MethodHandles.Lookup, FusionNode)}.
+         */
+        default Class<?> compileVectorPositionsLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+            throw new UnsupportedOperationException("compileVectorPositionsLoop not implemented by this compiler");
+        }
+
+        /** See {@link #compileBlockLoop(MethodHandles.Lookup, FusionNode, MethodType, String...)}. */
+        default FusedClassCache.CachedFused compileVectorPositionsLoop(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
+            return new FusedClassCache.CachedFused(compileVectorPositionsLoop(caller, tree), 0, null, Map.of());
+        }
     }
 
     /**
@@ -256,7 +296,7 @@ public final class FusionPlanner {
             // the Stitcher is never touched. Not an "attempt" — the probe does not count kill-switch skips.
             return null;
         }
-        FusionPlan plan = planOrNull(exp, layout, rawFactory, true);
+        FusionPlan plan = planOrNull(exp, layout, rawFactory, true, FusedClassCache.Output.VALUES);
         if (plan == null) {
             return null;
         }
@@ -267,12 +307,37 @@ public final class FusionPlanner {
     }
 
     /**
+     * Attempts to fuse a WHERE condition {@code exp} for a {@code FilterOperator}. Same eligibility and fallback as
+     * {@link #maybeFuse}, but the stitched loops write the positions where the predicate is {@code true} (a
+     * {@link FusedFilterEvaluatorFactory} whose evaluators are {@link org.elasticsearch.compute.expression.PositionsEvaluator}s)
+     * instead of a {@code BooleanBlock} the filter would scan again. Returns {@code null} when {@code exp} is not a
+     * fusable boolean predicate; the caller then uses the unfused factory unchanged.
+     */
+    public static ExpressionEvaluator.Factory maybeFuseFilter(
+        Expression exp,
+        Layout layout,
+        Function<Expression, ExpressionEvaluator.Factory> rawFactory
+    ) {
+        if (FusionSettings.isEnabled() == false) {
+            // Runtime kill switch, as in maybeFuse.
+            return null;
+        }
+        FusionPlan plan = planOrNull(exp, layout, rawFactory, true, FusedClassCache.Output.POSITIONS);
+        if (plan == null) {
+            return null;
+        }
+        ExpressionEvaluator.Factory unfused = rawFactory.apply(exp);
+        FusedClassCompiler compiler = compilerForTests != null ? compilerForTests : COMPILATION.compiler();
+        return FusedFilterEvaluatorFactory.tryCreate(plan, unfused, compiler);
+    }
+
+    /**
      * True when {@code exp} would pass the plan-time fusion gates (build + depth / encoding-aware exemptions)
      * and would proceed to a stitch. Does not stitch. Used by the coverage classifier to detect fusable islands
      * without changing production factories.
      */
     static boolean isFusableAtPlan(Expression exp, Layout layout, Function<Expression, ExpressionEvaluator.Factory> rawFactory) {
-        return planOrNull(exp, layout, rawFactory, false) != null;
+        return planOrNull(exp, layout, rawFactory, false, FusedClassCache.Output.VALUES) != null;
     }
 
     /**
@@ -280,16 +345,23 @@ public final class FusionPlanner {
      * ineligible (build failed, empty inputs, or a lone kernel with no depth-1 exemption). Does not stitch and does
      * not consult the kill switch — that stays in {@link #maybeFuse}. {@code admit} is {@code true} on the
      * real stitch path and {@code false} for the coverage classifier, which must not consume a baked-tuple slot.
+     * {@code output} is what the stitched loops will produce: {@link FusedClassCache.Output#POSITIONS} admits only a
+     * boolean predicate and keys admission and the plan shape apart from the same expression's value output.
      */
     private static FusionPlan planOrNull(
         Expression exp,
         Layout layout,
         Function<Expression, ExpressionEvaluator.Factory> rawFactory,
-        boolean admit
+        boolean admit,
+        FusedClassCache.Output output
     ) {
         PlanContext ctx = new PlanContext(layout, rawFactory);
         FusionNode tree = build(exp, ctx, null, null, true);
         if (tree == null || ctx.outputElement == null || ctx.inputElements.isEmpty()) {
+            return null;
+        }
+        if (output == FusedClassCache.Output.POSITIONS && ctx.outputElement != ElementKind.BOOLEAN) {
+            // Only a boolean predicate selects positions. A WHERE condition always is one; refuse defensively.
             return null;
         }
         int[] channels = toIntArray(ctx.channels);
@@ -321,7 +393,7 @@ public final class FusionPlanner {
         // consulting the doorkeeper (see FusedClassCache.admit). Checked before applyBakedDivisorCap so a refusal
         // consumes no baked-divisor tuple slot. Skipped for the coverage classifier (admit=false), and a no-op when
         // min_sightings<=1 (all unit tests).
-        if (admit && COMPILATION.admit(tree) == false) {
+        if (admit && COMPILATION.admit(tree, output) == false) {
             return null;
         }
         // After every plan gate has passed, un-bake over-cap Div/Mod divisor tuples so they share one runtime-param
@@ -339,7 +411,7 @@ public final class FusionPlanner {
             ctx.outputElement,
             ctx.overflowChecked,
             warningSources(signature.warningSourceIndices(), ctx),
-            shapeOf(tree),
+            shapeOf(tree, output),
             encodingAware
         );
     }
@@ -1762,6 +1834,19 @@ public final class FusionPlanner {
         StringBuilder sb = new StringBuilder();
         appendShape(node, sb, false);
         return sb.toString();
+    }
+
+    /**
+     * The plan-level shape of {@code node} for {@code output}: {@link #shapeOf(FusionNode)} for value output, and the
+     * same prefixed with {@code POSITIONS:} for a WHERE predicate's positions, so admission, failure telemetry, logs
+     * and verify-mode class capture keep a predicate's two compilations apart. The {@link FusedClassCache.Shape} key
+     * carries {@link FusedClassCache.Output} separately and keeps the unprefixed {@link #shapeOf(FusionNode)}.
+     */
+    static String shapeOf(FusionNode node, FusedClassCache.Output output) {
+        return switch (output) {
+            case VALUES -> shapeOf(node);
+            case POSITIONS -> "POSITIONS:" + shapeOf(node);
+        };
     }
 
     /**

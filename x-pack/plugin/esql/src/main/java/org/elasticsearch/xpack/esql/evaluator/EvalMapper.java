@@ -10,8 +10,10 @@ package org.elasticsearch.xpack.esql.evaluator;
 import org.apache.lucene.analysis.Analyzer;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.expression.LoadFromPageEvaluator;
+import org.elasticsearch.compute.expression.PositionsEvaluator;
 import org.elasticsearch.compute.lucene.EmptyIndexedByShardId;
 import org.elasticsearch.compute.lucene.IndexedByShardId;
+import org.elasticsearch.compute.operator.FilterOperator;
 import org.elasticsearch.core.Nullable;
 import org.elasticsearch.index.analysis.AnalysisRegistry;
 import org.elasticsearch.xpack.esql.core.QlIllegalArgumentException;
@@ -84,7 +86,28 @@ public final class EvalMapper {
         IndexedByShardId<? extends ShardContext> shardContexts,
         @Nullable AnalysisRegistry analysisRegistry
     ) {
-        return new Builder(foldCtx, layout, shardContexts, analysisRegistry).toEvaluator(exp);
+        return new Builder(foldCtx, layout, shardContexts, analysisRegistry).toEvaluator(exp, false);
+    }
+
+    /** {@link #toFilterEvaluator(FoldContext, Expression, Layout, IndexedByShardId, AnalysisRegistry)} without shard contexts. */
+    public static ExpressionEvaluator.Factory toFilterEvaluator(FoldContext foldCtx, Expression condition, Layout layout) {
+        return toFilterEvaluator(foldCtx, condition, layout, EmptyIndexedByShardId.instance(), null);
+    }
+
+    /**
+     * Provides the factory for a WHERE {@code condition} that a {@link FilterOperator} consumes. Identical to
+     * {@link #toEvaluator(FoldContext, Expression, Layout, IndexedByShardId, AnalysisRegistry)} except when the condition
+     * fuses: its evaluators then also write the selected row positions directly ({@link PositionsEvaluator}), sparing
+     * the filter an intermediate {@code BooleanBlock} and a second pass over it. The unfused factory is unchanged.
+     */
+    public static ExpressionEvaluator.Factory toFilterEvaluator(
+        FoldContext foldCtx,
+        Expression condition,
+        Layout layout,
+        IndexedByShardId<? extends ShardContext> shardContexts,
+        @Nullable AnalysisRegistry analysisRegistry
+    ) {
+        return new Builder(foldCtx, layout, shardContexts, analysisRegistry).toEvaluator(condition, true);
     }
 
     /**
@@ -102,9 +125,10 @@ public final class EvalMapper {
      * when something does.
      *
      * <h2>Where fusion is attempted</h2>
-     * Fusion is attempted at {@code exp} (the expression a caller hands to {@link #toEvaluator}, e.g. an EVAL/WHERE
-     * value). If the maximal subtree fuses, the fused factory is returned; otherwise the memoized unfused factory is
-     * returned unchanged. The unfused factory the {@link FusionPlanner} reads for descriptor probing and passes as the
+     * Fusion is attempted at {@code exp} (the expression a caller hands to {@link #toEvaluator} or
+     * {@link #toFilterEvaluator}, e.g. an EVAL/WHERE value). If the maximal subtree fuses, the fused factory is
+     * returned; otherwise the memoized unfused factory is returned unchanged. The unfused factory the
+     * {@link FusionPlanner} reads for descriptor probing and passes as the
      * fusion fallback is the very same object returned when nothing fuses, so the invariant holds by construction.
      */
     private static final class Builder {
@@ -132,12 +156,15 @@ public final class EvalMapper {
         /**
          * Builds the factory for {@code exp}, fusing the maximal fusable subtree rooted here when possible. The unfused
          * factory is built first (once, memoized) so the {@link FusionPlanner}'s descriptor probes and fusion fallback
-         * are all served from the memo — never rebuilt — keeping fold-budget consumption additive.
+         * are all served from the memo — never rebuilt — keeping fold-budget consumption additive. A {@code filter}
+         * condition fuses through {@link FusionPlanner#maybeFuseFilter} so its fused evaluators select positions.
          */
-        ExpressionEvaluator.Factory toEvaluator(Expression exp) {
+        ExpressionEvaluator.Factory toEvaluator(Expression exp, boolean filter) {
             boolean probe = FusionSettings.isCoverageReportEnabled();
             ExpressionEvaluator.Factory unfused = unfused(exp);
-            ExpressionEvaluator.Factory fused = FusionPlanner.maybeFuse(exp, layout, this::unfused);
+            ExpressionEvaluator.Factory fused = filter
+                ? FusionPlanner.maybeFuseFilter(exp, layout, this::unfused)
+                : FusionPlanner.maybeFuse(exp, layout, this::unfused);
             if (probe) {
                 recordCoverage(exp, fused);
             }

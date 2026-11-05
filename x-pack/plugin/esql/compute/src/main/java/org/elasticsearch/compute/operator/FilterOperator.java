@@ -10,6 +10,7 @@ package org.elasticsearch.compute.operator;
 import org.elasticsearch.compute.data.BooleanBlock;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.compute.expression.PositionsEvaluator;
 import org.elasticsearch.core.Releasables;
 
 /**
@@ -62,10 +63,20 @@ import org.elasticsearch.core.Releasables;
  * │ 5000 │ Safe     │ 2020-12-04 │    └──────┴──────────┴────────────┘
  * └──────┴──────────┴────────────┘
  * }
+ * <p>
+ *     An evaluator that implements {@link PositionsEvaluator} writes the selected positions
+ *     itself. Any other evaluator returns a {@link BooleanBlock} that is scanned for its
+ *     {@code true} positions.
+ * </p>
  */
 public class FilterOperator extends AbstractPageMappingOperator {
 
     private final ExpressionEvaluator evaluator;
+    /**
+     * {@link #evaluator} as a {@link PositionsEvaluator}, or {@code null} when it can only
+     * {@link ExpressionEvaluator#eval}. Resolved once here rather than with an {@code instanceof} per page.
+     */
+    private final PositionsEvaluator positionsEvaluator;
     /**
      * Cached {@link #toString()} representation. The evaluator tree is immutable after construction,
      * so its string form is deterministic. {@link Driver} reads this on every status update; for
@@ -89,41 +100,36 @@ public class FilterOperator extends AbstractPageMappingOperator {
 
     public FilterOperator(ExpressionEvaluator evaluator) {
         this.evaluator = evaluator;
+        this.positionsEvaluator = evaluator instanceof PositionsEvaluator positions ? positions : null;
         this.description = "FilterOperator[evaluator=" + evaluator + ']';
     }
 
     @Override
     protected Page process(Page page) {
-        int rowCount = 0;
-        int[] positions = new int[page.getPositionCount()];
-
-        try (BooleanBlock test = (BooleanBlock) evaluator.eval(page)) {
-            if (test.areAllValuesNull()) {
-                // All results are null which is like false. No values selected.
-                return null;
-            }
-            // TODO we can detect constant true or false from the type
-            // TODO or we could make a new method in bool-valued evaluators that returns a list of numbers
-            for (int p = 0; p < page.getPositionCount(); p++) {
-                if (test.isNull(p) || test.getValueCount(p) != 1) {
-                    // Null is like false
-                    // And, for now, multivalued results are like false too
-                    continue;
-                }
-                if (test.getBoolean(test.getFirstValueIndex(p))) {
-                    positions[rowCount++] = p;
-                }
-            }
-
+        try {
+            int positionCount = page.getPositionCount();
+            int[] positions = new int[positionCount];
+            int rowCount = positionsEvaluator != null
+                ? positionsEvaluator.filterPositions(page, positions)
+                : evalPositions(page, positions);
             if (rowCount == 0) {
+                // Also covers a predicate that is null everywhere: null is like false, so no values are selected.
                 return null;
             }
-            if (rowCount == page.getPositionCount()) {
+            if (rowCount == positionCount) {
                 return page.shallowCopy();
             }
             return page.filter(false, positions, 0, rowCount);
         } finally {
             page.releaseBlocks();
+        }
+    }
+
+    /** Evaluates the predicate into a {@link BooleanBlock} and scans it for the selected positions. */
+    private int evalPositions(Page page, int[] positions) {
+        try (BooleanBlock test = (BooleanBlock) evaluator.eval(page)) {
+            // TODO we can detect constant true or false from the type
+            return PositionsEvaluator.selectedPositions(test, positions);
         }
     }
 

@@ -8,6 +8,7 @@
 package org.elasticsearch.xpack.esql.evaluator.fusion;
 
 import org.elasticsearch.compute.operator.fusion.FusionNode;
+import org.elasticsearch.compute.operator.fusion.FusionSignature;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.compute.operator.fusion.TemplateRegistry;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
@@ -28,10 +29,12 @@ import java.lang.invoke.MethodType;
  * factory's expected {@code fused*} methods <em>inside</em> that cached unit via
  * {@link FusedClassCache#stitchAndResolve}, so a {@code findStatic} miss is negatively cached (WARN once) rather than
  * storing the class as a success. The 2-arg compile entry points throw
- * {@link UnsupportedOperationException}: production always resolves. The caller {@link MethodHandles.Lookup}
- * is deliberately excluded from the cache key: production always uses the single {@link FusedExpressionEvaluatorFactory}
- * module lookup, so keying by shape alone is safe. Test-injected compilers ({@code FusionPlanner.compilerForTests})
- * bypass this service entirely, keeping the raw stitch/fallback seams uncached and order-independent across tests.
+ * {@link UnsupportedOperationException}: production always resolves. A WHERE predicate's POSITIONS classes are keyed
+ * with {@link FusedClassCache.Output#POSITIONS}, so they never collide with the same expression's value-output
+ * classes. The caller {@link MethodHandles.Lookup} is deliberately excluded from the cache key: production always
+ * uses the single {@link FusedExpressionEvaluatorFactory} module lookup, so keying by shape alone is safe.
+ * Test-injected compilers ({@code FusionPlanner.compilerForTests}) bypass this service entirely, keeping the raw
+ * stitch/fallback seams uncached and order-independent across tests.
  */
 final class FusionCompilationService {
 
@@ -167,6 +170,48 @@ final class FusionCompilationService {
                 methods
             );
         }
+
+        @Override
+        public Class<?> compileBlockPositionsLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+            return requireResolved();
+        }
+
+        @Override
+        public FusedClassCache.CachedFused compileBlockPositionsLoop(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
+            return cached(
+                shapeKey(tree, primaryPathOf(tree), FusedClassCache.Output.POSITIONS),
+                () -> stitcher.compileBlockPositionsLoopSized(caller, tree),
+                caller,
+                type,
+                methods
+            );
+        }
+
+        @Override
+        public Class<?> compileVectorPositionsLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+            return requireResolved();
+        }
+
+        @Override
+        public FusedClassCache.CachedFused compileVectorPositionsLoop(
+            MethodHandles.Lookup caller,
+            FusionNode tree,
+            MethodType type,
+            String... methods
+        ) throws Stitcher.StitchingException {
+            return cached(
+                shapeKey(tree, vectorPathOf(tree), FusedClassCache.Output.POSITIONS),
+                () -> stitcher.compileVectorPositionsLoopSized(caller, tree),
+                caller,
+                type,
+                methods
+            );
+        }
     };
 
     /**
@@ -196,19 +241,34 @@ final class FusionCompilationService {
     }
 
     /**
-     * Admission decision for an arithmetic/logical/BytesRef plan {@code tree}: delegates to the cache doorkeeper but
-     * first lets a shape whose primary class is already cached fuse without consulting it (see
+     * Admission decision for an arithmetic/logical/BytesRef plan {@code tree} in the given {@code output}: delegates to
+     * the cache doorkeeper but first lets a shape whose primary class is already cached fuse without consulting it (see
      * {@link FusedClassCache#admit}). The primary {@link FusedClassCache.Shape} is the block (or logical-block) path
-     * that {@link FusedExpressionEvaluatorFactory} always compiles first — the one unconditional cache entry for the
-     * plan — keyed on the plan-level {@link FusionPlanner#shapeOf} string.
+     * that {@link FusedExpressionEvaluatorFactory} or {@link FusedFilterEvaluatorFactory} always compiles first — the
+     * one unconditional cache entry for the plan — keyed on the plan-level {@link FusionPlanner#shapeOf(FusionNode,
+     * FusedClassCache.Output)} string.
      */
-    boolean admit(FusionNode tree) {
-        return cache.admit(FusionPlanner.shapeOf(tree), shapeKey(tree, primaryPathOf(tree)));
+    boolean admit(FusionNode tree, FusedClassCache.Output output) {
+        return cache.admit(FusionPlanner.shapeOf(tree, output), shapeKey(tree, primaryPathOf(tree), output));
     }
 
     /** The always-compiled primary emit path for {@code tree}: logical-block for a 3VL tree, block otherwise. */
-    private static FusedClassCache.Path primaryPathOf(FusionNode tree) {
+    static FusedClassCache.Path primaryPathOf(FusionNode tree) {
         return FusionNode.isBooleanLogic(tree) ? FusedClassCache.Path.LOGICAL_BLOCK : FusedClassCache.Path.BLOCK;
+    }
+
+    /**
+     * The path a POSITIONS vector class for {@code tree} is keyed under: the one its value-output sibling would use —
+     * logical-vector for a 3VL tree, checked-vector when a kernel can overflow (the class then abandons a page on
+     * overflow), plain-vector otherwise.
+     */
+    static FusedClassCache.Path vectorPathOf(FusionNode tree) {
+        if (FusionNode.isBooleanLogic(tree)) {
+            return FusedClassCache.Path.LOGICAL_VECTOR;
+        }
+        return FusionSignature.of(tree).overflowExceptionInternalNames().isEmpty()
+            ? FusedClassCache.Path.PLAIN_VECTOR
+            : FusedClassCache.Path.CHECKED_VECTOR;
     }
 
     /**
@@ -222,9 +282,14 @@ final class FusionCompilationService {
         this.cache = rebuilt;
     }
 
-    /** The binding-independent cache key for {@code tree} on the given emit {@code path}. */
+    /** The binding-independent cache key for {@code tree}'s value-output class on the given emit {@code path}. */
     private static FusedClassCache.Shape shapeKey(FusionNode tree, FusedClassCache.Path path) {
-        return new FusedClassCache.Shape(FusionPlanner.shapeOf(tree), rootElement(tree), path);
+        return shapeKey(tree, path, FusedClassCache.Output.VALUES);
+    }
+
+    /** The binding-independent cache key for {@code tree} on the given emit {@code path} and {@code output}. */
+    private static FusedClassCache.Shape shapeKey(FusionNode tree, FusedClassCache.Path path, FusedClassCache.Output output) {
+        return new FusedClassCache.Shape(FusionPlanner.shapeOf(tree), rootElement(tree), path, output);
     }
 
     /**

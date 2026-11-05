@@ -428,8 +428,8 @@ public final class Stitcher {
 
     /**
      * A fused hidden-class {@link ClassNode}: {@code public final}, class-file {@code V21}, {@code Object}
-     * superclass, carrying {@code host} as its (initial) method. The logical-block path adds its {@code cmpN} helper
-     * methods afterwards.
+     * superclass, carrying {@code host} as its (initial) method. The helper-emitting logical-block paths add their
+     * {@code cmpN} helper methods afterwards.
      *
      * <p>{@code debug} supplies diagnostic-only class metadata: a {@code SourceFile} naming the fused shape
      * and a {@link #KERNEL_MAP_FIELD_NAME} ConstantValue field. Neither adds instructions to the per-row
@@ -851,6 +851,65 @@ public final class Stitcher {
         return defineSized(caller, vectors.emitLogicalVectorLoop(caller, tree), "logical vector-loop class");
     }
 
+    // -----------------------------------------------------------------------------------------------------------------
+    // POSITIONS output: a WHERE predicate writes the positions where it is true instead of a BooleanBlock.
+    // -----------------------------------------------------------------------------------------------------------------
+
+    /**
+     * Fuses a boolean predicate {@code tree} (a comparison-rooted kernel tree, or a 3VL {@code AND}/{@code OR}/{@code NOT}
+     * tree) into a block loop whose {@link #FUSED_METHOD_NAME} writes the positions where the predicate is {@code true}
+     * and returns their count: {@code int fused(BlockFactory, Warnings[], int positionCount, int[] positions, <*Block
+     * inputs>, <constants>)}.
+     *
+     * <p><b>Why.</b> A filter only needs the selected positions. The value-output loops ({@link #compileBlockLoop},
+     * {@link #compileLogicalBlockLoop}) materialise a {@code BooleanBlock} that the filter then scans a second time,
+     * checking nulls and value counts per row; writing the positions directly drops both. The per-position evaluation
+     * is the value-output loop's own — same null and multi-value handling, same overflow handling, same warnings — and
+     * only the sink differs: a position is selected iff the value-output loop would have produced exactly {@code true}
+     * there, so a null, {@code false} or multi-valued result selects nothing.
+     *
+     * <p>Like the value-output block loops, the class is defined into the caller's module and held to the same budget:
+     * roots to {@link #maxFusedMethodBytecodes}, the logical predicate's {@code cmpN} helpers to
+     * {@link #maxFusedHelperBytecodes}. It is a distinct class from the value-output one (different descriptor), so a
+     * cache keyed by expression shape must also key on the output.
+     *
+     * @throws StitchingException if the caller lacks the access to define the hidden class, the emitted class fails JVM
+     *                            verification/linking, or a method exceeds the huge-method limit — the caller should fall
+     *                            back to the unfused predicate
+     */
+    public Class<?> compileBlockPositionsLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return defineOrThrow(caller, blocks.emitBlockPositionsLoop(caller, tree), "block positions-loop class");
+    }
+
+    /** {@link #compileBlockPositionsLoop} paired with the class-file byte length, for the weight-aware cache path. */
+    public Fused compileBlockPositionsLoopSized(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return defineSized(caller, blocks.emitBlockPositionsLoop(caller, tree), "block positions-loop class");
+    }
+
+    /**
+     * The dense-vector sibling of {@link #compileBlockPositionsLoop}, for pages whose every input is a vector (no nulls,
+     * no multi-values): {@code int fused*(BlockFactory, int positionCount, int[] positions, <Vector inputs>,
+     * <constants>)}. The per-position body is branch-free, {@code positions[n] = p; n += <predicate 0/1>}. A
+     * comparison-rooted tree exposes ALL-RAW {@link #FUSED_METHOD_NAME} and ALL-INTERFACE
+     * {@link #FUSED_INTERFACE_METHOD_NAME} (as {@link #compileVectorLoop}); a logical tree only
+     * {@link #FUSED_INTERFACE_METHOD_NAME} (as {@link #compileLogicalVectorLoop}). There is no {@code Warnings[]}:
+     * comparisons do not warn on dense vectors, and an overflow-checked tree returns {@code -1} on the first overflow
+     * (as the raw-array {@code fusedRaw} returns {@code null}) so the caller re-runs the page through
+     * {@link #compileBlockPositionsLoop}, which nulls the row and registers the warning.
+     *
+     * @throws StitchingException if the caller lacks the access to define the hidden class, the emitted class fails JVM
+     *                            verification/linking, or a method exceeds the huge-method limit — the caller should keep
+     *                            the block positions path
+     */
+    public Class<?> compileVectorPositionsLoop(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return defineOrThrow(caller, vectors.emitVectorPositionsLoop(caller, tree), "vector positions-loop class");
+    }
+
+    /** {@link #compileVectorPositionsLoop} paired with the class-file byte length, for the weight-aware cache path. */
+    public Fused compileVectorPositionsLoopSized(MethodHandles.Lookup caller, FusionNode tree) throws StitchingException {
+        return defineSized(caller, vectors.emitVectorPositionsLoop(caller, tree), "vector positions-loop class");
+    }
+
     /** Type-correct {@code xLOAD} of a constant argument (by its {@code J}/{@code I}/{@code D} element) from {@code slot}. */
     static void pushConstantArg(InsnList insns, char element, int slot) {
         int opcode = switch (element) {
@@ -1007,12 +1066,14 @@ public final class Stitcher {
     }
 
     /**
-     * Host method descriptor: {@code (LBlockFactory; [Warnings[] if withWarnings] I <inputs> <constants>)<return>}.
-     * Input descriptors are supplied already rendered so a block host can pass per-element {@code *Block} types
-     * while a vector host repeats {@code LVector;}.
+     * Host method descriptor: {@code (LBlockFactory; [Warnings[] if withWarnings] I extraParams <inputs> <constants>)<return>}.
+     * {@code extraParams} is inserted after positionCount (empty on the value-output hosts; {@code [I} for the
+     * POSITIONS hosts' positions array). Input descriptors are supplied already rendered so a block host can pass
+     * per-element {@code *Block} types while a vector host repeats {@code LVector;}.
      */
     static String fusedMethodDescriptor(
         boolean withWarnings,
+        String extraParams,
         String[] inputDescriptors,
         List<FusionNode.Constant> constants,
         String returnDescriptor
@@ -1021,7 +1082,7 @@ public final class Stitcher {
         if (withWarnings) {
             desc.append(WARNINGS_ARRAY_DESCRIPTOR);
         }
-        desc.append("I");
+        desc.append("I").append(extraParams);
         for (String input : inputDescriptors) {
             desc.append(input);
         }
@@ -1209,8 +1270,8 @@ public final class Stitcher {
      *   <li>helpers (logical-block {@code cmpN}) are held to {@link #maxFusedHelperBytecodes} (the live
      *       {@code -XX:FreqInlineSize}): above it C2 does not inline the per-row call.</li>
      * </ul>
-     * Either refusal throws {@link StitchingException}. Every emit path is enforced. An oversize body is logged at
-     * DEBUG; the single plan-time WARN is emitted once per shape by
+     * Either refusal throws {@link StitchingException}. Every emit path is enforced, including the POSITIONS classes.
+     * An oversize body is logged at DEBUG; the single plan-time WARN is emitted once per shape by
      * {@code FusedExpressionEvaluatorFactory.logPlanTimeStitchFailure}.
      */
     static byte[] serializeWithBudgetGuard(ClassNode classNode, ClassWriter writer, String pathName) throws StitchingException {

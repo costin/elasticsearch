@@ -48,7 +48,11 @@ import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 
-/** D1: fused trees with a single BYTES_REF column and no warn kernel are encoding-aware. Ordinal and constant pages */
+/**
+ * D1: fused trees with a single BYTES_REF column and no warn kernel are encoding-aware. Ordinal and constant pages
+ * are evaluated by the fused handle over the dictionary / one position. A lone TO_LOWER/TO_UPPER does not fuse
+ * (D4); encoding-preservation coverage lives on the chain tests ({@code LENGTH(TO_LOWER)}, {@code TO_LOWER==literal}).
+ */
 public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
 
     private static final Configuration CFG = EsqlTestUtils.TEST_CFG;
@@ -86,7 +90,10 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
         evalLoneMappingDoesNotFuse(new ToLower(Source.EMPTY, s, CFG), layout(s), input, values.length, "toLower(plain keyword)");
     }
 
-    /** A lone {@code TO_LOWER} does not fuse (D4). Multi-value / null structure still matches the unfused convert */
+    /**
+     * A lone {@code TO_LOWER} does not fuse. Multi-value / null structure still matches the unfused convert
+     * evaluator (mapped values, not warn+null).
+     */
     public void testLoneToLowerMultiValueAndNullsMatchUnfused() {
         FieldAttribute s = field("s", DataType.KEYWORD);
         int positionCount = 5;
@@ -128,7 +135,10 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
         evalLoneMappingDoesNotFuse(new ToUpper(Source.EMPTY, s, CFG), layout(s), input, positionCount, "toUpper(constant keyword)");
     }
 
-    /** Primitive/boolean gather: {@code LENGTH(x) > 5} is a single BYTES_REF column with no warn kernel, so ordinal */
+    /**
+     * Primitive/boolean gather: {@code LENGTH(x) > 5} is a single BYTES_REF column with no warn kernel, so ordinal
+     * pages take the encoding-aware path and gather booleans from the dictionary result. Values match unfused.
+     */
     public void testLengthGreaterThanConstantOrdinalTakesEncodingAwarePath() {
         FieldAttribute s = field("s", DataType.KEYWORD);
         Layout layout = layout(s);
@@ -192,7 +202,10 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
         });
     }
 
-    /** Nested mapping on a multi-value / null block must fall back to the unfused chain so MV semantics stay exact */
+    /**
+     * Nested mapping on a multi-value / null block must fall back to the unfused chain so MV semantics stay exact
+     * (the single-value block path would warn+null at the parent).
+     */
     public void testLengthToLowerMultiValueFallsBackToUnfused() {
         FieldAttribute s = field("s", DataType.KEYWORD);
         Expression expr = new Length(Source.EMPTY, new ToLower(Source.EMPTY, s, CFG));
@@ -230,7 +243,12 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
         assertDoesNotFuse(fusedFactory(and, layout(s, n)), "TO_LOWER(k)==\"x\" AND n>0");
     }
 
-    /** Two BytesRef columns with a nested mapping ({@code k1 == TO_LOWER(k2)}) fuse now that each column has its own */
+    /**
+     * Two BytesRef columns with a nested mapping ({@code k1 == TO_LOWER(k2)}) fuse now that each column has its own
+     * BytesRef spare. A dense page chosen so a shared-spare overwrite would flip the boolean ({@code k1==TO_LOWER(k2)}
+     * is true, {@code k2==TO_LOWER(k2)} is false) must match the unfused chain. An MV page takes the nested-mapping
+     * non-vector fallback (unfused MV semantics) and still matches.
+     */
     public void testEqualsColumnToLowerOtherColumnFuses() {
         FieldAttribute k1 = field("k1", DataType.KEYWORD);
         FieldAttribute k2 = field("k2", DataType.KEYWORD);
@@ -449,7 +467,11 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
         );
     }
 
-    /** {@code LENGTH(CONCAT(k, "x"))} must not be encoding-aware. CONCAT can throw on input content (over-length), */
+    /**
+     *: {@code LENGTH(CONCAT(k, "x"))} must not be encoding-aware. CONCAT can throw on input content (over-length),
+     * so evaluating an unreferenced dictionary entry would fail a query no row would have failed. The planner reads
+     * that from the CONCAT descriptor ({@code dictionarySafe=false}), not from {@code overflowChecked}.
+     */
     public void testLengthConcatIsNotEncodingAware() {
         FieldAttribute k = field("k", DataType.KEYWORD);
         Expression expr = new Length(Source.EMPTY, new Concat(Source.EMPTY, k, List.of(keywordLit("x"))));
@@ -484,7 +506,11 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
         );
     }
 
-    /** an ordinal page whose dictionary holds an entry that would make CONCAT throw (BytesRef past 1MB), but which */
+    /**
+     *: an ordinal page whose dictionary holds an entry that would make CONCAT throw (BytesRef past 1MB), but which
+     * no row references, must evaluate without exception and match unfused. The encoding-aware dictionary path is
+     * forbidden for CONCAT; the per-row path never sees the unreferenced entry.
+     */
     public void testLengthConcatUnusedHugeDictionaryEntryDoesNotThrow() {
         FieldAttribute k = field("k", DataType.KEYWORD);
         Expression expr = new Length(Source.EMPTY, new Concat(Source.EMPTY, k, List.of(keywordLit("x"))));
@@ -612,7 +638,11 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
         );
     }
 
-    /** a fused encoding-aware BytesRef-output shape over a DENSE ordinal page rewraps as */
+    /**
+     *: a fused encoding-aware BytesRef-output shape over a DENSE ordinal page rewraps as
+     * {@link OrdinalBytesRefVector}. Lone {@code TO_LOWER} does not fuse; {@code TRIM(TO_LOWER(k))} is a nested
+     * mapping under a unary string parent, fuses, and is encoding-aware-eligible (single BYTES_REF column, no warn).
+     */
     public void testTrimToLowerDenseOrdinalPreservesOrdinalEncoding() {
         FieldAttribute k = field("k", DataType.KEYWORD);
         Expression expr = new Trim(Source.EMPTY, new ToLower(Source.EMPTY, k, CFG));
@@ -663,7 +693,10 @@ public class MappingEncodingAwareTests extends FusionDifferentialTestCase {
         );
     }
 
-    /** A BytesRef literal whose {@link DataType} is not KEYWORD/TEXT must not be treated as a fusable keyword */
+    /**
+     * A BytesRef literal whose {@link DataType} is not KEYWORD/TEXT must not be treated as a fusable keyword
+     * constant. {@code LENGTH(CONCAT(k, IP-literal))} refuses rather than hitching a ride on the keyword path.
+     */
     public void testIpTypedBytesRefLiteralDoesNotFuseAsKeywordConstant() {
         FieldAttribute k = field("k", DataType.KEYWORD);
         Literal ipLit = new Literal(Source.EMPTY, new BytesRef("x"), DataType.IP);

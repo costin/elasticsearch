@@ -31,6 +31,7 @@ import org.elasticsearch.compute.data.OrdinalBytesRefVector;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
+import org.elasticsearch.compute.operator.FilterOperator;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.indices.breaker.CircuitBreakerService;
 import org.elasticsearch.test.ESTestCase;
@@ -156,6 +157,57 @@ public abstract class FusionDifferentialTestCase extends ESTestCase {
     /** Asserts the OFF-switch factory did NOT fuse (the unfused reference is the ordinary generated chain). */
     protected static void assertDoesNotFuse(ExpressionEvaluator.Factory factory, String ctx) {
         assertThat(ctx + " must NOT fuse with the kill switch OFF", factory, not(instanceOf(FusedExpressionEvaluatorFactory.class)));
+    }
+
+    /**
+     * Builds a WHERE condition's factory through the real plan-time path ({@link EvalMapper#toFilterEvaluator}) with the
+     * kill switch ON, so a fusable predicate becomes a positions-writing {@link FusedFilterEvaluatorFactory}.
+     */
+    protected ExpressionEvaluator.Factory filterFactory(Expression condition, Layout layout) {
+        FusionSettings.setEnabledForTests(true);
+        return EvalMapper.toFilterEvaluator(FoldContext.small(), condition, layout);
+    }
+
+    /** Asserts (and returns) that a WHERE factory fused into the positions-writing {@link FusedFilterEvaluatorFactory}. */
+    protected static FusedFilterEvaluatorFactory assertFilterFuses(ExpressionEvaluator.Factory factory, String ctx) {
+        assertThat(ctx + " must fuse as a WHERE predicate", factory, instanceOf(FusedFilterEvaluatorFactory.class));
+        return (FusedFilterEvaluatorFactory) factory;
+    }
+
+    /** One {@link FilterOperator} run: its output page ({@code null} when every row was dropped) and its warnings. */
+    protected record CapturedFilter(Page page, List<String> warnings) {}
+
+    /**
+     * Runs a {@link FilterOperator} built from {@code factory} over {@code page} on a fresh driver context and returns the
+     * output with the warnings that context collected. The operator releases its input, so it gets a
+     * {@link Page#shallowCopy()} (which keeps ordinal / constant encodings, unlike a deep copy); the caller still owns
+     * {@code page} and must release the returned page.
+     */
+    protected CapturedFilter filterCapturing(ExpressionEvaluator.Factory factory, Page page) {
+        DriverContext dc = freshDriverContext();
+        Page out;
+        try (FilterOperator filter = new FilterOperator(factory.get(dc))) {
+            filter.addInput(page.shallowCopy());
+            out = filter.getOutput();
+            if (out != null && out.getPositionCount() == 0) {
+                // An empty page passes through unprocessed and stays owned (and released on close) by the operator.
+                out = null;
+            }
+        }
+        return new CapturedFilter(out, warningsOf(dc));
+    }
+
+    /** Two filter outputs hold the same rows: both {@code null}, or equal position counts and block-by-block values. */
+    protected static void assertPagesEqual(Page fused, Page reference, String ctx) {
+        if (fused == null || reference == null) {
+            assertThat(ctx + " both filters must drop every row (null page); fused=" + fused, fused == null && reference == null, is(true));
+            return;
+        }
+        assertThat(ctx + " positionCount", fused.getPositionCount(), is(reference.getPositionCount()));
+        assertThat(ctx + " blockCount", fused.getBlockCount(), is(reference.getBlockCount()));
+        for (int b = 0; b < fused.getBlockCount(); b++) {
+            assertThat(ctx + " block" + b, fused.getBlock(b), equalTo(reference.getBlock(b)));
+        }
     }
 
     /** The fused and unfused warning lists drained separately for one differential run (see {@link #runDifferentialWarnings}). */

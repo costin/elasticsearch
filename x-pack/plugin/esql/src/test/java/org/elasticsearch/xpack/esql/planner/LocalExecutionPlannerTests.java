@@ -36,6 +36,8 @@ import org.elasticsearch.compute.data.BytesRefBlock;
 import org.elasticsearch.compute.data.DoubleBlock;
 import org.elasticsearch.compute.data.LongBlock;
 import org.elasticsearch.compute.data.Page;
+import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.compute.expression.PositionsEvaluator;
 import org.elasticsearch.compute.lucene.EmptyIndexedByShardId;
 import org.elasticsearch.compute.lucene.IndexedByShardIdFromList;
 import org.elasticsearch.compute.lucene.query.DataPartitioning;
@@ -45,6 +47,7 @@ import org.elasticsearch.compute.lucene.read.ValuesSourceReaderOperator;
 import org.elasticsearch.compute.operator.ColumnLoadOperator;
 import org.elasticsearch.compute.operator.DistinctByOperator;
 import org.elasticsearch.compute.operator.DriverContext;
+import org.elasticsearch.compute.operator.EvalOperator;
 import org.elasticsearch.compute.operator.FilterOperator;
 import org.elasticsearch.compute.operator.LocalSourceOperator;
 import org.elasticsearch.compute.operator.Operator;
@@ -110,6 +113,7 @@ import org.elasticsearch.xpack.esql.datasources.spi.SourceOperatorContext;
 import org.elasticsearch.xpack.esql.datasources.spi.SourceOperatorFactoryProvider;
 import org.elasticsearch.xpack.esql.datasources.spi.StoragePath;
 import org.elasticsearch.xpack.esql.datasources.spi.TableCatalog;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
 import org.elasticsearch.xpack.esql.expression.Order;
 import org.elasticsearch.xpack.esql.expression.function.aggregate.Count;
 import org.elasticsearch.xpack.esql.expression.function.fulltext.Match;
@@ -118,6 +122,7 @@ import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
 import org.elasticsearch.xpack.esql.expression.predicate.logical.Or;
 import org.elasticsearch.xpack.esql.expression.predicate.nulls.IsNotNull;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
 import org.elasticsearch.xpack.esql.index.EsIndexGenerator;
 import org.elasticsearch.xpack.esql.inference.InferenceService;
 import org.elasticsearch.xpack.esql.inference.InferenceSettings;
@@ -1591,6 +1596,118 @@ public class LocalExecutionPlannerTests extends MapperServiceTestCase {
             }
         }
         return scores;
+    }
+
+    /**
+     * With fusion on, a fusable WHERE plans the usual single {@link FilterOperator}, but its evaluator writes the selected
+     * positions itself ({@link PositionsEvaluator}) and the filter keeps the right rows.
+     */
+    public void testFusedWhereFilterSelectsPositions() throws IOException {
+        List<List<Long>> rows = withFusion(true, () -> {
+            var operation = planWhereThenEval(whereInput(), greaterThanOf(add(WHERE_A, WHERE_B), literal(3)), List.of());
+            assertThat(factoryClasses(operation), contains(FilterOperator.FilterOperatorFactory.class));
+            assertFilterEvaluator(operation, true);
+            return longRows(runPlanned(operation));
+        });
+        assertThat(rows, equalTo(List.of(List.of(2L, 2L), List.of(3L, 5L))));
+    }
+
+    /** A fused WHERE followed by a multi-field EVAL plans the filter then one EVAL operator per field, as before. */
+    public void testFusedWhereThenMultiFieldEval() throws IOException {
+        Alias sum = new Alias(Source.EMPTY, "sum", add(WHERE_A, WHERE_B));
+        Alias scaled = new Alias(Source.EMPTY, "scaled", new Mul(Source.EMPTY, add(WHERE_A, WHERE_B), literal(2)));
+        List<List<Long>> rows = withFusion(true, () -> {
+            var operation = planWhereThenEval(whereInput(), greaterThanOf(add(WHERE_A, WHERE_B), literal(3)), List.of(sum, scaled));
+            assertThat(
+                factoryClasses(operation),
+                contains(
+                    FilterOperator.FilterOperatorFactory.class,
+                    EvalOperator.EvalOperatorFactory.class,
+                    EvalOperator.EvalOperatorFactory.class
+                )
+            );
+            assertFilterEvaluator(operation, true);
+            return longRows(runPlanned(operation));
+        });
+        assertThat(rows, equalTo(List.of(List.of(2L, 2L, 4L, 8L), List.of(3L, 5L, 8L, 16L))));
+    }
+
+    /** With fusion off the WHERE evaluator is the ordinary block-producing chain, and the rows are the same. */
+    public void testFusionOffWhereFilterEvaluatesBlock() throws IOException {
+        List<List<Long>> rows = withFusion(false, () -> {
+            var operation = planWhereThenEval(whereInput(), greaterThanOf(add(WHERE_A, WHERE_B), literal(3)), List.of());
+            assertThat(factoryClasses(operation), contains(FilterOperator.FilterOperatorFactory.class));
+            assertFilterEvaluator(operation, false);
+            return longRows(runPlanned(operation));
+        });
+        assertThat(rows, equalTo(List.of(List.of(2L, 2L), List.of(3L, 5L))));
+    }
+
+    private static final ReferenceAttribute WHERE_A = new ReferenceAttribute(Source.EMPTY, "a", DataType.LONG);
+    private static final ReferenceAttribute WHERE_B = new ReferenceAttribute(Source.EMPTY, "b", DataType.LONG);
+
+    /** {@code a = [1, 2, 3], b = [1, 2, 5]}: {@code a + b > 3} keeps the last two rows. */
+    private static Page whereInput() {
+        var blockFactory = TestBlockFactory.getNonBreakingInstance();
+        return new Page(
+            blockFactory.newLongArrayVector(new long[] { 1, 2, 3 }, 3).asBlock(),
+            blockFactory.newLongArrayVector(new long[] { 1, 2, 5 }, 3).asBlock()
+        );
+    }
+
+    /** Plans {@code EVAL aliases} (none: just the filter) over {@code WHERE condition} over {@code a, b}. */
+    private LocalExecutionPlanner.PhysicalOperation planWhereThenEval(Page input, Expression condition, List<Alias> aliases)
+        throws IOException {
+        PhysicalPlan plan = new FilterExec(
+            Source.EMPTY,
+            new LocalSourceExec(Source.EMPTY, List.of(WHERE_A, WHERE_B), LocalSupplier.of(input)),
+            condition
+        );
+        if (aliases.isEmpty() == false) {
+            plan = new EvalExec(Source.EMPTY, plan, aliases);
+        }
+        return planner().plan(
+            "test",
+            FoldContext.small(),
+            PlannerSettings.DEFAULTS,
+            plan,
+            EmptyIndexedByShardId.instance(),
+            false
+        ).driverFactories.get(0).driverSupplier().physicalOperation();
+    }
+
+    private static List<Class<?>> factoryClasses(LocalExecutionPlanner.PhysicalOperation operation) {
+        List<Class<?>> classes = new ArrayList<>();
+        for (Operator.OperatorFactory factory : operation.intermediateOperatorFactories) {
+            classes.add(factory.getClass());
+        }
+        return classes;
+    }
+
+    /** Asserts whether the planned filter's evaluator writes positions itself. */
+    private static void assertFilterEvaluator(LocalExecutionPlanner.PhysicalOperation operation, boolean positions) {
+        var filter = (FilterOperator.FilterOperatorFactory) operation.intermediateOperatorFactories.get(0);
+        var blockFactory = TestBlockFactory.getNonBreakingInstance();
+        DriverContext driverContext = new DriverContext(blockFactory.bigArrays(), blockFactory, null);
+        try (ExpressionEvaluator evaluator = filter.evaluatorSupplier().get(driverContext)) {
+            assertThat(evaluator instanceof PositionsEvaluator, equalTo(positions));
+        }
+    }
+
+    @FunctionalInterface
+    private interface Planned<T> {
+        T run() throws IOException;
+    }
+
+    /** Runs {@code planned} with the fusion kill switch set to {@code enabled}, restoring the previous value. */
+    private static <T> T withFusion(boolean enabled, Planned<T> planned) throws IOException {
+        boolean saved = FusionSettings.isEnabledForBenchmarks();
+        FusionSettings.setEnabledForBenchmarks(enabled);
+        try {
+            return planned.run();
+        } finally {
+            FusionSettings.setEnabledForBenchmarks(saved);
+        }
     }
 
     /** Plans a filter on {@code condition} over a row for each of {@code contents}, each with a {@code _score} of 0.0. */

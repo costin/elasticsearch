@@ -116,7 +116,12 @@ final class FusedClassCache {
     /** Default doorkeeper table size; a power of two so the index is {@code hash & (slots - 1)}. */
     private static final int DEFAULT_DOORKEEPER_SLOTS = 4096;
 
-    /** Which {@link Stitcher} emit shape a cached class is; part of the cache key since one shape yields up to three. */
+    /**
+     * Which {@link Stitcher} emit shape a cached class is; part of the cache key since one shape yields up to three.
+     * A {@link Output#POSITIONS} class is keyed under the path of its value-output sibling: {@link #BLOCK} /
+     * {@link #LOGICAL_BLOCK} for {@link Stitcher#compileBlockPositionsLoop}, and {@link #PLAIN_VECTOR} /
+     * {@link #CHECKED_VECTOR} / {@link #LOGICAL_VECTOR} for {@link Stitcher#compileVectorPositionsLoop}.
+     */
     enum Path {
         BLOCK,
         /**
@@ -139,18 +144,39 @@ final class FusedClassCache {
     }
 
     /**
+     * What a cached class's fused methods produce. Part of the cache key because one boolean predicate compiles to a
+     * different class for each: the same {@code a + b > c} in an EVAL and in a WHERE must not share a class.
+     */
+    enum Output {
+        /** The expression's result {@code Block} (or {@code Vector}): every value-output emit path. */
+        VALUES,
+        /**
+         * The positions where a WHERE predicate is {@code true}, written into an {@code int[]} with their count returned
+         * ({@link Stitcher#compileBlockPositionsLoop} / {@link Stitcher#compileVectorPositionsLoop}).
+         */
+        POSITIONS
+    }
+
+    /**
      * The column-binding- and (non-baked) constant-value-independent identity of a stitched class. Two expressions
-     * with the same operator tree, kernel set, constant element markers, element type, and emit {@link Path} share a
-     * {@link Shape} regardless of which columns they read <em>or</em> which non-baked constant values they carry — the
-     * values arrive as trailing method arguments. A baked Div/Mod divisor does participate in the key.
+     * with the same operator tree, kernel set, constant element markers, element type, emit {@link Path} and
+     * {@link Output} share a {@link Shape} regardless of which columns they read <em>or</em> which non-baked constant
+     * values they carry — the values arrive as trailing method arguments. A baked Div/Mod divisor does participate in
+     * the key.
      *
      * @param signature the {@link FusionPlanner#shapeOf} op-tree + kernel-set signature: column leaves rendered as
      *                  {@code #}, non-baked literal constants as {@code #C:<element>} (element only, no value), and a
      *                  baked divisor as {@code #C:<element>:<value>}
      * @param element   the uniform primitive element kind of the homogeneous tree
      * @param path      which emit shape this class is
+     * @param output    what the class's fused methods produce
      */
-    record Shape(String signature, ElementKind element, Path path) {}
+    record Shape(String signature, ElementKind element, Path path, Output output) {
+        /** A {@link Output#VALUES} key, the output of every path that is not a WHERE predicate's positions. */
+        Shape(String signature, ElementKind element, Path path) {
+            this(signature, element, path, Output.VALUES);
+        }
+    }
 
     /**
      * A value stored in the {@link Cache}: either a successfully stitched {@link CachedFused} unit or a negative-cache
@@ -339,8 +365,8 @@ final class FusedClassCache {
 
     /**
      * The admission decision for a plan keyed on its plan-level {@code planShape} string (not a per-{@link Path}
-     * {@link Shape}) plus the {@code primaryShape} — the always-compiled block (or logical-block) class for that
-     * plan: returns {@code true} to stitch, {@code false} to leave this plan unfused.
+     * {@link Shape}) plus the {@code primaryShape} — the always-compiled block (or logical-block) class, in the plan's
+     * {@link Output}, for that plan: returns {@code true} to stitch, {@code false} to leave this plan unfused.
      *
      * <p><b>Already cached short-circuits the doorkeeper.</b> When {@code primaryShape}'s class is already retained,
      * the plan has been fused before, so it always fuses again without touching the doorkeeper or

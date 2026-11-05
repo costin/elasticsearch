@@ -36,7 +36,7 @@ import java.util.function.Function;
  * <p>The categories:
  * <ul>
  *   <li>{@link FusionTelemetry.Category#FUSED} — the top-level expression produced a fused factory (a
- *       {@link FusedExpressionEvaluatorFactory}).</li>
+ *       {@link FusedExpressionEvaluatorFactory}, or a {@link FusedFilterEvaluatorFactory} for a WHERE condition).</li>
  *   <li>{@link FusionTelemetry.Category#ISLAND} — not fused, but a proper descendant <em>would</em> fuse under the
  *       same {@link FusionPlanner} gates (a fusable island under an unfusable parent; partial codegen is out of
  *       scope).</li>
@@ -61,7 +61,7 @@ public final class FusionCoverage {
         Function<Expression, ExpressionEvaluator.Factory> rawFactory,
         ExpressionEvaluator.Factory fuseResult
     ) {
-        if (fuseResult instanceof FusedExpressionEvaluatorFactory) {
+        if (fuseResult instanceof FusedExpressionEvaluatorFactory || fuseResult instanceof FusedFilterEvaluatorFactory) {
             return new Result(FusionTelemetry.Category.FUSED, null);
         }
         return classifyUnfused(exp, layout, rawFactory);

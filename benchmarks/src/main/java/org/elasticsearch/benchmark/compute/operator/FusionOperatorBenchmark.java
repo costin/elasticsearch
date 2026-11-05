@@ -9,21 +9,37 @@
 
 package org.elasticsearch.benchmark.compute.operator;
 
+import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.benchmark.internal.BenchmarkLogging;
 import org.elasticsearch.common.breaker.NoopCircuitBreaker;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.compute.data.Block;
 import org.elasticsearch.compute.data.BlockFactory;
+import org.elasticsearch.compute.data.BytesRefVector;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.EvalOperator;
+import org.elasticsearch.compute.operator.FilterOperator;
 import org.elasticsearch.compute.operator.Operator;
 import org.elasticsearch.logging.LogManager;
 import org.elasticsearch.logging.Logger;
+import org.elasticsearch.xpack.esql.core.expression.Expression;
+import org.elasticsearch.xpack.esql.core.expression.FieldAttribute;
 import org.elasticsearch.xpack.esql.core.expression.FoldContext;
+import org.elasticsearch.xpack.esql.core.expression.Literal;
+import org.elasticsearch.xpack.esql.core.tree.Source;
+import org.elasticsearch.xpack.esql.core.type.DataType;
+import org.elasticsearch.xpack.esql.core.type.EsField;
 import org.elasticsearch.xpack.esql.evaluator.EvalMapper;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusionSettings;
+import org.elasticsearch.xpack.esql.expression.function.scalar.string.Length;
+import org.elasticsearch.xpack.esql.expression.predicate.logical.And;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.LessThan;
+import org.elasticsearch.xpack.esql.planner.Layout;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -39,6 +55,9 @@ import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
 
+import java.util.Arrays;
+import java.util.Map;
+import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -60,6 +79,10 @@ import java.util.concurrent.TimeUnit;
  * <p>Every invocation pushes {@link #TARGET_POSITIONS} positions through the operator (looping
  * {@code TARGET_POSITIONS / size} pages), and {@link OperationsPerInvocation} is that same constant, so the reported
  * average time is a per-position operator cost directly comparable across sizes and to {@link FusionBenchmark}.
+ *
+ * <p>{@link Where} adds the WHERE cells: a {@link FilterOperator} over an unfused predicate ({@code OFF}), over the
+ * boolean-output fused predicate whose {@code BooleanBlock} the filter scans ({@code BOOLEAN}), and over the fused
+ * predicate that writes the selected positions itself ({@code POSITIONS}).
  *
  * <h2>Running (see {@code benchmarks/AGENTS.md})</h2>
  * <pre>{@code
@@ -128,6 +151,7 @@ public class FusionOperatorBenchmark {
                     }
                 }
             }
+            Where.selfTest();
         } finally {
             FusionSettings.setEnabledForBenchmarks(true);
         }
@@ -199,5 +223,242 @@ public class FusionOperatorBenchmark {
      */
     private static boolean isFused(ExpressionEvaluator.Factory factory) {
         return factory.getClass().getSimpleName().equals("FusedExpressionEvaluatorFactory");
+    }
+
+    /**
+     * WHERE cells: one {@link FilterOperator} per invocation, fed {@code TARGET_POSITIONS / size} shallow copies of the
+     * trial page (the filter releases its input). Each predicate keeps about half the rows of seeded random data.
+     */
+    @Warmup(iterations = 3)
+    @Measurement(iterations = 5)
+    @BenchmarkMode(Mode.AverageTime)
+    @OutputTimeUnit(TimeUnit.NANOSECONDS)
+    @State(Scope.Thread)
+    @Fork(1)
+    public static class Where {
+        /**
+         * {@code a * 2 + b > 40} over longs, {@code x * y > 1.5} over doubles, {@code a > b AND a < c} over longs, and
+         * {@code LENGTH(k) > 5} over a dense keyword column (no vector path: the fused predicate runs its block loop).
+         */
+        public enum Shape {
+            LONG_ARITHMETIC,
+            DOUBLE_ARITHMETIC,
+            LOGICAL_AND,
+            KEYWORD_LENGTH
+        }
+
+        /**
+         * How the predicate reaches the filter.
+         * <ul>
+         *   <li>{@code OFF}: the unfused evaluator tree builds a {@code BooleanBlock}, the filter scans it.</li>
+         *   <li>{@code BOOLEAN}: the fused predicate builds the {@code BooleanBlock}, the filter scans it.</li>
+         *   <li>{@code POSITIONS}: the fused predicate writes the selected positions; no block, no scan.</li>
+         * </ul>
+         */
+        public enum Mode {
+            OFF,
+            BOOLEAN,
+            POSITIONS
+        }
+
+        @Param
+        public Shape shape;
+
+        @Param({ "1024", "8192" })
+        public int size;
+
+        @Param
+        public Mode mode;
+
+        private ExpressionEvaluator.Factory factory;
+        private Page page;
+        private int iterations;
+        private int expectedSurvivors;
+
+        static void selfTest() {
+            Logger log = LogManager.getLogger(Where.class);
+            for (Shape shape : Shape.values()) {
+                for (Mode mode : Mode.values()) {
+                    log.info("self testing where {} mode={}", shape, mode);
+                    Where cell = new Where();
+                    cell.shape = shape;
+                    cell.size = SELF_TEST_SIZE;
+                    cell.mode = mode;
+                    cell.setupCell();
+                    cell.iterations = 1;
+                    cell.checkExpected(cell.runInvocation(null));
+                }
+            }
+        }
+
+        @Setup(Level.Trial)
+        public void setup() {
+            FusionBenchmark.assertVerifyDisabled();
+            setupCell();
+        }
+
+        void setupCell() {
+            Built built = build(shape, size);
+            this.page = built.page();
+            this.expectedSurvivors = built.survivors();
+            this.iterations = TARGET_POSITIONS / size;
+            FusionSettings.setEnabledForBenchmarks(mode != Mode.OFF);
+            try {
+                this.factory = mode == Mode.POSITIONS
+                    ? EvalMapper.toFilterEvaluator(FOLD_CONTEXT, built.predicate(), built.layout())
+                    : EvalMapper.toEvaluator(FOLD_CONTEXT, built.predicate(), built.layout());
+            } finally {
+                FusionSettings.setEnabledForBenchmarks(true);
+            }
+            String expected = switch (mode) {
+                case OFF -> null;
+                case BOOLEAN -> "FusedExpressionEvaluatorFactory";
+                case POSITIONS -> "FusedFilterEvaluatorFactory";
+            };
+            String actual = factory.getClass().getSimpleName();
+            if (expected == null ? actual.startsWith("Fused") : actual.equals(expected) == false) {
+                throw new AssertionError("[" + shape + "] mode " + mode + " planned [" + actual + "]");
+            }
+        }
+
+        @Benchmark
+        @OperationsPerInvocation(TARGET_POSITIONS)
+        public void run(Blackhole bh) {
+            checkExpected(runInvocation(bh));
+        }
+
+        /** Pushes {@link #iterations} shallow copies of the page through one filter; returns the last output's size. */
+        private int runInvocation(Blackhole bh) {
+            int last = -1;
+            try (FilterOperator filter = new FilterOperator(factory.get(driverContext))) {
+                for (int i = 0; i < iterations; i++) {
+                    filter.addInput(page.shallowCopy());
+                    Page out = filter.getOutput();
+                    last = out == null ? 0 : out.getPositionCount();
+                    if (bh != null) {
+                        bh.consume(out);
+                    }
+                    if (out != null) {
+                        out.releaseBlocks();
+                    }
+                }
+            }
+            return last;
+        }
+
+        private void checkExpected(int survivors) {
+            if (survivors != expectedSurvivors) {
+                throw new AssertionError("[" + shape + "] mode " + mode + " kept " + survivors + " rows, expected " + expectedSurvivors);
+            }
+        }
+
+        private static final long DATA_SEED = 42L;
+
+        private static Built build(Shape shape, int size) {
+            Random r = new Random(DATA_SEED);
+            int survivors = 0;
+            return switch (shape) {
+                case LONG_ARITHMETIC -> {
+                    FieldAttribute a = field("a", DataType.LONG);
+                    FieldAttribute b = field("b", DataType.LONG);
+                    Expression predicate = new GreaterThan(
+                        Source.EMPTY,
+                        new Add(
+                            Source.EMPTY,
+                            new Mul(Source.EMPTY, a, new Literal(Source.EMPTY, 2L, DataType.LONG)),
+                            b,
+                            FusionBenchmark.configuration()
+                        ),
+                        new Literal(Source.EMPTY, 40L, DataType.LONG)
+                    );
+                    long[] av = new long[size];
+                    long[] bv = new long[size];
+                    for (int i = 0; i < size; i++) {
+                        av[i] = r.nextInt(41);
+                        bv[i] = r.nextInt(41) - 20;
+                        survivors += av[i] * 2 + bv[i] > 40 ? 1 : 0;
+                    }
+                    Page page = new Page(
+                        blockFactory.newLongArrayVector(av, size).asBlock(),
+                        blockFactory.newLongArrayVector(bv, size).asBlock()
+                    );
+                    yield new Built(predicate, layout(a, b), page, survivors);
+                }
+                case DOUBLE_ARITHMETIC -> {
+                    FieldAttribute x = field("x", DataType.DOUBLE);
+                    FieldAttribute y = field("y", DataType.DOUBLE);
+                    Expression predicate = new GreaterThan(
+                        Source.EMPTY,
+                        new Mul(Source.EMPTY, x, y),
+                        new Literal(Source.EMPTY, 1.5, DataType.DOUBLE)
+                    );
+                    double[] xv = new double[size];
+                    double[] yv = new double[size];
+                    for (int i = 0; i < size; i++) {
+                        xv[i] = 0.5 + r.nextDouble() * 1.5;
+                        yv[i] = 0.5 + r.nextDouble() * 1.5;
+                        survivors += xv[i] * yv[i] > 1.5 ? 1 : 0;
+                    }
+                    Page page = new Page(
+                        blockFactory.newDoubleArrayVector(xv, size).asBlock(),
+                        blockFactory.newDoubleArrayVector(yv, size).asBlock()
+                    );
+                    yield new Built(predicate, layout(x, y), page, survivors);
+                }
+                case LOGICAL_AND -> {
+                    FieldAttribute a = field("a", DataType.LONG);
+                    FieldAttribute b = field("b", DataType.LONG);
+                    FieldAttribute c = field("c", DataType.LONG);
+                    Expression predicate = new And(Source.EMPTY, new GreaterThan(Source.EMPTY, a, b), new LessThan(Source.EMPTY, a, c));
+                    long[] av = new long[size];
+                    long[] bv = new long[size];
+                    long[] cv = new long[size];
+                    for (int i = 0; i < size; i++) {
+                        av[i] = r.nextInt(100);
+                        bv[i] = r.nextInt(30);
+                        cv[i] = r.nextInt(100) + 40;
+                        survivors += av[i] > bv[i] && av[i] < cv[i] ? 1 : 0;
+                    }
+                    Page page = new Page(
+                        blockFactory.newLongArrayVector(av, size).asBlock(),
+                        blockFactory.newLongArrayVector(bv, size).asBlock(),
+                        blockFactory.newLongArrayVector(cv, size).asBlock()
+                    );
+                    yield new Built(predicate, layout(a, b, c), page, survivors);
+                }
+                case KEYWORD_LENGTH -> {
+                    FieldAttribute k = field("k", DataType.KEYWORD);
+                    Expression predicate = new GreaterThan(
+                        Source.EMPTY,
+                        new Length(Source.EMPTY, k),
+                        new Literal(Source.EMPTY, 5, DataType.INTEGER)
+                    );
+                    Block keywords;
+                    try (BytesRefVector.Builder builder = blockFactory.newBytesRefVectorBuilder(size)) {
+                        for (int i = 0; i < size; i++) {
+                            // ASCII, so LENGTH is the byte length: 1..10, about half above 5.
+                            byte[] bytes = new byte[1 + r.nextInt(10)];
+                            Arrays.fill(bytes, (byte) 'a');
+                            builder.appendBytesRef(new BytesRef(bytes));
+                            survivors += bytes.length > 5 ? 1 : 0;
+                        }
+                        keywords = builder.build().asBlock();
+                    }
+                    yield new Built(predicate, layout(k), new Page(keywords), survivors);
+                }
+            };
+        }
+
+        private static FieldAttribute field(String name, DataType type) {
+            return new FieldAttribute(Source.EMPTY, name, new EsField(name, type, Map.of(), true, EsField.TimeSeriesFieldType.NONE));
+        }
+
+        private static Layout layout(FieldAttribute... fields) {
+            Layout.Builder layout = new Layout.Builder();
+            layout.append(Arrays.asList(fields));
+            return layout.build();
+        }
+
+        private record Built(Expression predicate, Layout layout, Page page, int survivors) {}
     }
 }

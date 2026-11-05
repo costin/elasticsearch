@@ -32,6 +32,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.lessThan;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
 
 /**
@@ -574,6 +575,116 @@ public class StitcherBudgetTests extends ESTestCase {
             size,
             lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes)
         );
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------
+    // POSITIONS output — a WHERE predicate writes the positions where it is true instead of a BooleanBlock.
+    // -----------------------------------------------------------------------------------------------------------------
+
+    /** {@code (in0 + in1) > in2}: a comparison over overflow-checked arithmetic. */
+    private static FusionNode gtOverAdd() {
+        return new FusionNode.Kernel(
+            GT,
+            List.of(new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
+        );
+    }
+
+    /** {@code (in0 > in1) AND (in2 < in3)}: a 3VL logical predicate. */
+    private static FusionNode andGtLt() {
+        return new FusionNode.Logical(
+            FusionNode.BoolOp.AND,
+            new FusionNode.Kernel(GT, List.of(new FusionNode.Input(0), new FusionNode.Input(1))),
+            new FusionNode.Kernel(LT, List.of(new FusionNode.Input(2), new FusionNode.Input(3)))
+        );
+    }
+
+    /** Every POSITIONS class of a comparison predicate and of a logical predicate stays within the huge-method limit. */
+    public void testPositionsRepresentativeWithinBudget() throws Exception {
+        for (FusionNode predicate : List.of(gtOverAdd(), andGtLt())) {
+            for (byte[] bytecode : List.of(
+                emitters.blocks.emitBlockPositionsLoop(MethodHandles.lookup(), predicate),
+                emitters.vectors.emitVectorPositionsLoop(MethodHandles.lookup(), predicate)
+            )) {
+                int size = FusedMethodCodeLengths.maxMethodCodeLength(bytecode);
+                assertThat("emitted a fused positions method", size, greaterThan(0));
+                assertThat(
+                    "positions largest method must stay within the huge-method limit",
+                    size,
+                    lessThanOrEqualTo(Stitcher.maxFusedMethodBytecodes)
+                );
+            }
+        }
+    }
+
+    /** Both POSITIONS emit paths, for a comparison and a logical predicate, emit structurally valid classes. */
+    public void testPositionsLoopsStructurallyValid() throws Exception {
+        for (FusionNode predicate : List.of(gtOverAdd(), andGtLt())) {
+            assertStructurallyValid(emitters.blocks.emitBlockPositionsLoop(MethodHandles.lookup(), predicate));
+            assertStructurallyValid(emitters.vectors.emitVectorPositionsLoop(MethodHandles.lookup(), predicate));
+        }
+    }
+
+    /** The POSITIONS bodies (and the logical path's cmpN helpers) carry no boxing or invokedynamic. */
+    public void testPositionsLoopsHaveNoBoxingOrInvokedynamic() throws Exception {
+        for (FusionNode predicate : List.of(gtOverAdd(), andGtLt())) {
+            assertNoBoxingOrIndy(emitters.blocks.emitBlockPositionsLoop(MethodHandles.lookup(), predicate), "block positions");
+            assertNoBoxingOrIndy(emitters.vectors.emitVectorPositionsLoop(MethodHandles.lookup(), predicate), "vector positions");
+        }
+    }
+
+    /**
+     * A POSITIONS root method is strictly smaller than its value-output sibling: it drops the output allocation (the
+     * builder and its try/finally on the block path, the {@code boolean[]} and {@code new*ArrayVector} on the vector
+     * path) and adds only the {@code positions[n] = p; n += ...} bookkeeping. Logs both sizes per shape.
+     */
+    public void testPositionsRootMethodSmallerThanBooleanOutput() throws Exception {
+        MethodHandles.Lookup lookup = MethodHandles.lookup();
+        FusionNode cmp = gtOverAdd();
+        FusionNode logical = andGtLt();
+        assertPositionsSmaller(
+            "gt(add) block fused",
+            emitters.blocks.emitBlockLoop(lookup, cmp),
+            emitters.blocks.emitBlockPositionsLoop(lookup, cmp),
+            Stitcher.FUSED_METHOD_NAME
+        );
+        assertPositionsSmaller(
+            "gt(add) vector raw",
+            emitters.vectors.emitVectorLoopChecked(lookup, cmp),
+            Stitcher.FUSED_RAW_METHOD_NAME,
+            emitters.vectors.emitVectorPositionsLoop(lookup, cmp),
+            Stitcher.FUSED_METHOD_NAME
+        );
+        assertPositionsSmaller(
+            "and(gt,lt) logical block fused",
+            emitters.blocks.emitLogicalBlockLoop(lookup, logical),
+            emitters.blocks.emitBlockPositionsLoop(lookup, logical),
+            Stitcher.FUSED_METHOD_NAME
+        );
+        assertPositionsSmaller(
+            "and(gt,lt) logical vector fusedInterface",
+            emitters.vectors.emitLogicalVectorLoop(lookup, logical),
+            emitters.vectors.emitVectorPositionsLoop(lookup, logical),
+            Stitcher.FUSED_INTERFACE_METHOD_NAME
+        );
+    }
+
+    private void assertPositionsSmaller(String ctx, byte[] booleanClass, byte[] positionsClass, String method) {
+        assertPositionsSmaller(ctx, booleanClass, method, positionsClass, method);
+    }
+
+    private void assertPositionsSmaller(String ctx, byte[] booleanClass, String booleanMethod, byte[] positionsClass, String method) {
+        int booleanSize = FusedMethodCodeLengths.methodCodeLength(booleanClass, booleanMethod);
+        int positionsSize = FusedMethodCodeLengths.methodCodeLength(positionsClass, method);
+        logger.info(
+            "{}: boolean-output [{}] = {} bytecodes, positions [{}] = {} bytecodes",
+            ctx,
+            booleanMethod,
+            booleanSize,
+            method,
+            positionsSize
+        );
+        assertThat(ctx + " positions method present", positionsSize, greaterThan(0));
+        assertThat(ctx + " positions method smaller than the boolean-output one", positionsSize, lessThan(booleanSize));
     }
 
     // -----------------------------------------------------------------------------------------------------------------

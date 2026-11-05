@@ -21,6 +21,7 @@ import org.elasticsearch.compute.data.DoubleBlock;
 import org.elasticsearch.compute.data.LongBlock;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.compute.expression.PositionsEvaluator;
 import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
@@ -38,6 +39,7 @@ import org.elasticsearch.xpack.esql.core.tree.Source;
 import org.elasticsearch.xpack.esql.core.type.DataType;
 import org.elasticsearch.xpack.esql.core.type.EsField;
 import org.elasticsearch.xpack.esql.evaluator.EvalMapper;
+import org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache.Output;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache.Path;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache.Shape;
 import org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory.ElementKind;
@@ -53,17 +55,53 @@ import org.junit.Before;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 
+import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.nullValue;
 
-/** Iter-18 catch-and-fallback hardening (GOAL): proves that every stitching/linkage failure mode */
+/**
+ * Catch-and-fallback hardening: proves that <b>every</b> stitching/linkage failure mode
+ * degrades to the <b>correct unfused result</b> end-to-end through the real {@link EvalMapper} /
+ * {@link FusedExpressionEvaluatorFactory} path, not merely that an exception is caught.
+ *
+ * <p>Four failure modes are injected via the existing test seams (production hot path untouched — the seams default
+ * to {@code null}/no-op):
+ * <ol>
+ * <li><b>Plan-time {@code VerifyError}</b> — a {@link Stitcher.StitchingException} wrapping a {@link VerifyError}
+ * (the shape the {@link Stitcher} reports when a malformed emitted class fails JVM verification at
+ * {@code defineHiddenClass}; the genuine bytecode-corruption→{@code VerifyError}→{@code StitchingException}
+ * wrap is proven end-to-end by the {@code StitcherTests#testVerificationFailureSurfacesAsStitchingException}
+ * via {@code Stitcher.hostMethodInterceptor}). Here we assert the resulting EvalMapper fallback produces the
+ * correct unfused result and the failure metric increments by exactly one.</li>
+ * <li><b>Plan-time {@code LinkageError}/{@code IllegalAccessError}</b> — a raw {@link LinkageError} thrown at define
+ * time, simulating the modular double-kernel non-{@code java.base} linkage failure that cannot be reproduced on
+ * the flat test classpath. Exercises the {@code LinkageError} arm of {@link FusedExpressionEvaluatorFactory}'s
+ * plan-time catch.</li>
+ * <li><b>Eval-time {@code LinkageError}</b> — a stitch that verified at plan time but throws a {@link LinkageError}
+ * at first evaluation. Per the latch, the first failure records once and every later page routes
+ * straight to the unfused chain; values are asserted correct across multiple pages and the metric increments
+ * exactly once.</li>
+ * <li><b>Generic {@code RuntimeException} from the stitcher</b> — an {@link IllegalArgumentException} (the shape the
+ * stitcher's emit rejects an ill-formed tree with) thrown at define time. Exercises the broadened
+ * {@code RuntimeException} arm of the plan-time catch.</li>
+ * </ol>
+ *
+ * <p>Every case asserts the query result equals the unfused result <b>position-by-position (values and null
+ * positions)</b> over many random pages — empty, single-row, small, {@code >= 1024}-position, and null-carrying
+ * shapes — against an independently built unfused reference evaluator. Everything runs on a real breaker-backed
+ * {@link BlockFactory} against real emitted bytecode; the {@code @After} breaker-balance assert proves no block or
+ * builder leaks on any fallback path.
+ */
 public class FusionFallbackHardeningTests extends ESTestCase {
 
     private CircuitBreakerService breakerService;
@@ -143,7 +181,11 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         runPlanTimeFallbackCase(expr, layout, () -> { throw new IllegalArgumentException("injected emit failure"); }, false);
     }
 
-    /** A1(a): an {@link IllegalArgumentException} from the stitcher is wrapped onto the negative-cache path, so */
+    /**
+     * A1(a): an {@link IllegalArgumentException} from the stitcher is wrapped onto the negative-cache path, so
+     * planning the same shape three times stitches once and the factory emits exactly one WARN (fusion is lost).
+     * Repeats stay at DEBUG. The cache itself does not WARN.
+     */
     @TestLogging(
         value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG,"
             + "org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory:DEBUG",
@@ -182,7 +224,11 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         assertThat(cache.negativeHits(), is(2L));
     }
 
-    /** A2: a VECTOR-path-only stitch failure (block path still succeeds) must NOT WARN — fusion is degraded, not */
+    /**
+     * A2: a VECTOR-path-only stitch failure (block path still succeeds) must NOT WARN — fusion is degraded, not
+     * lost. Captures both the cache and the factory so a WARN at either site fails the assertion. The shape must
+     * still fuse via the block path ({@link VectorStrategy#NONE}).
+     */
     @TestLogging(
         value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG,"
             + "org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory:DEBUG",
@@ -242,7 +288,11 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         assertThat("the second plan is a negative-cache hit", cache.negativeHits(), is(1L));
     }
 
-    /** A2: a full-fallback stitch failure (block path fails, fusion is lost) must WARN exactly once at the factory, */
+    /**
+     * A2: a full-fallback stitch failure (block path fails, fusion is lost) must WARN exactly once at the factory,
+     * naming the failed path and stating the expression is now unfused. Planning the same shape again must not
+     * emit a second WARN (DEBUG instead). The cache itself must not WARN — it only signals first-failure.
+     */
     @TestLogging(
         value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG,"
             + "org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory:DEBUG",
@@ -281,7 +331,12 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         assertThat(cache.negativeHits(), is(2L));
     }
 
-    /** the production {@link FusionCompilationService} stitches a real class that is missing the method */
+    /**
+     *: the <em>production</em> {@link FusionCompilationService} stitches a real class that is missing the method
+     * the factory resolves (a vector class served on the block path, via an injected {@link Stitcher}). Resolution
+     * runs inside {@link FusionCompilationService#cached}, so the miss is negatively cached: plan 1 WARNs once,
+     * plans 2 and 3 DEBUG, {@code cache.failures()==1}.
+     */
     @TestLogging(
         value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG,"
             + "org.elasticsearch.xpack.esql.evaluator.fusion.FusedExpressionEvaluatorFactory:DEBUG",
@@ -321,6 +376,56 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         } finally {
             FusionPlanner.compilation().compileBlockLoopForTests = null;
         }
+    }
+
+    /**
+     * A2: {@link FusedFilterEvaluatorFactory#tryCreate} is a distinct call site of
+     * {@link FusedExpressionEvaluatorFactory#logPlanTimeStitchFailure}. A WHERE predicate whose block POSITIONS class
+     * cannot be stitched falls back to the unfused predicate: WARN once on the WHERE factory's logger, naming
+     * {@link Path#BLOCK}, then DEBUG on a repeat of the same shape, which the negative cache answers without stitching.
+     */
+    @TestLogging(
+        value = "org.elasticsearch.xpack.esql.evaluator.fusion.FusedClassCache:DEBUG,"
+            + "org.elasticsearch.xpack.esql.evaluator.fusion.FusedFilterEvaluatorFactory:DEBUG",
+        reason = "assert a WHERE positions stitch failure WARNs once at FusedFilterEvaluatorFactory then DEBUG on repeats"
+    )
+    public void testWherePositionsStitchFailureWarnsOnceThenDebug() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression predicate = new GreaterThan(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+        Function<Expression, ExpressionEvaluator.Factory> rawFactory = e -> unfusedReference(e, layout);
+
+        FusedClassCache cache = FusionPlanner.classCache();
+        cache.resetForTests();
+        AtomicInteger invocations = new AtomicInteger();
+        FusionPlanner.compilerForTests = cacheBackedCompiler(cache, (caller, tree, path) -> {
+            invocations.incrementAndGet();
+            throw new Stitcher.StitchingException("injected positions stitch failure", null);
+        });
+
+        try (var mockLog = MockLog.capture(FusedFilterEvaluatorFactory.class)) {
+            mockLog.addExpectation(exactlyOneUnfusedWarn(FusedFilterEvaluatorFactory.class));
+            mockLog.addExpectation(seenFactoryDebugRepeat(FusedFilterEvaluatorFactory.class));
+            for (int i = 0; i < 3; i++) {
+                ExpressionEvaluator.Factory candidate = FusionPlanner.maybeFuseFilter(predicate, layout, rawFactory);
+                assertThat(
+                    "a failed positions stitch must fall back to the unfused predicate",
+                    candidate,
+                    not(instanceOf(FusedFilterEvaluatorFactory.class))
+                );
+            }
+            mockLog.assertAllExpectationsMatched();
+        }
+        assertThat("planning the WHERE shape 3× must stitch once", invocations.get(), is(1));
+        assertThat(cache.failures(), is(1L));
+        assertThat(cache.negativeHits(), is(2L));
+        assertThat(
+            "the negative entry is the POSITIONS key, not the value-output one",
+            cache.entriesForTests().stream().map(Shape::output).toList(),
+            contains(Output.POSITIONS)
+        );
     }
 
     public void testEvalTimeLinkageErrorLatchesAndFallsBackAcrossPages() {
@@ -370,7 +475,61 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         assertMetricRecordedExactlyOnce(before);
     }
 
-    /** A logical {@code AND}/{@code OR} tree whose dense-vector stitch fails must degrade to block-only fusion */
+    /**
+     * The WHERE positions evaluator latches the same way: after an eval-time {@link LinkageError} every page selects
+     * through the unfused predicate, the failure is recorded once, and the selected positions stay correct.
+     */
+    public void testWhereEvalTimeLinkageErrorLatchesAndFallsBackAcrossPages() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression predicate = new GreaterThan(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+
+        ExpressionEvaluator.Factory candidate = EvalMapper.toFilterEvaluator(FoldContext.small(), predicate, layout);
+        assertThat("a + b > c over long columns must fuse as a WHERE predicate", candidate, instanceOf(FusedFilterEvaluatorFactory.class));
+        ExpressionEvaluator.Factory reference = ((FusedFilterEvaluatorFactory) candidate).unfusedFactory();
+
+        long before = FusionTelemetry.totalFailures();
+        FusedExpressionEvaluatorFactory.injectEvalLinkageErrorForTests = true;
+        PositionsEvaluator fused = (PositionsEvaluator) candidate.get(driverContext);
+        ExpressionEvaluator ref = reference.get(driverContext);
+        try {
+            for (int shape = 0; shape < 8; shape++) {
+                int positionCount = positionCountFor(shape);
+                boolean withNulls = shape % 3 == 0;
+                Page page = new Page(
+                    randomLongBlock(positionCount, withNulls),
+                    randomLongBlock(positionCount, withNulls),
+                    randomLongBlock(positionCount, false)
+                );
+                try {
+                    int[] actual = new int[positionCount];
+                    int actualCount = fused.filterPositions(page, actual);
+                    int[] expected = new int[positionCount];
+                    int expectedCount;
+                    try (BooleanBlock mask = (BooleanBlock) ref.eval(page)) {
+                        expectedCount = PositionsEvaluator.selectedPositions(mask, expected);
+                    }
+                    assertThat("shape " + shape, Arrays.copyOf(actual, actualCount), equalTo(Arrays.copyOf(expected, expectedCount)));
+                } finally {
+                    page.releaseBlocks();
+                }
+            }
+        } finally {
+            FusedExpressionEvaluatorFactory.injectEvalLinkageErrorForTests = false;
+            Releasables.closeExpectNoException(fused, ref);
+        }
+
+        assertMetricRecordedExactlyOnce(before);
+    }
+
+    /**
+     * A logical {@code AND}/{@code OR} tree whose dense-vector stitch fails must degrade to block-only fusion
+     * ({@link VectorStrategy#NONE}): keep the 3VL block handle, bump {@code vectorDegraded}, and still match the
+     * unfused chain on a dense page. Mirrors {@code EvalMapperFusionWiringTests#testVectorPathFailureDegradesToBlockOnly}
+     * for arithmetic.
+     */
     public void testLogicalVectorPathFailureDegradesToBlockOnly() {
         FieldAttribute a = field("a", DataType.LONG);
         FieldAttribute b = field("b", DataType.LONG);
@@ -467,7 +626,11 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         }
     }
 
-    /** Drives one plan-time fallback case: builds an independent unfused reference, injects {@code failure} into the */
+    /**
+     * Drives one plan-time fallback case: builds an independent unfused reference, injects {@code failure} into the
+     * plan-time stitch, asserts {@link EvalMapper} returned the (non-fused) unfused factory, that exactly one failure
+     * was recorded for the shape, and that the fallen-back query result equals the unfused reference on every page.
+     */
     private void runPlanTimeFallbackCase(Expression expr, Layout layout, FailingStitch failure, boolean doubleElement) {
         ExpressionEvaluator.Factory reference = unfusedReference(expr, layout);
         long before = FusionTelemetry.totalFailures();
@@ -508,7 +671,11 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         assertThat("that shape must be counted exactly once", snapshot.values().iterator().next(), is(1L));
     }
 
-    /** Evaluates a candidate long factory and its unfused reference over the same random pages (empty, single, small, */
+    /**
+     * Evaluates a candidate long factory and its unfused reference over the same random pages (empty, single, small,
+     * {@code >= 1024}-position, and null-carrying shapes) and asserts position-by-position equality of values and
+     * null positions.
+     */
     private void assertLongResultsMatch(ExpressionEvaluator.Factory candidate, ExpressionEvaluator.Factory reference) {
         ExpressionEvaluator candidateEval = candidate.get(driverContext);
         ExpressionEvaluator referenceEval = reference.get(driverContext);
@@ -697,7 +864,11 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         }
     }
 
-    /** Like {@link #cacheBackedCompiler} but succeeds on {@code succeeding} paths via the real {@link Stitcher} and */
+    /**
+     * Like {@link #cacheBackedCompiler} but succeeds on {@code succeeding} paths via the real {@link Stitcher} and
+     * fails every other path with {@code failureMessage}. Used to inject a vector-path-only stitch failure while
+     * still going through the process-wide {@link FusedClassCache} (so the first-failure signal is real).
+     */
     private static FusionPlanner.FusedClassCompiler cacheBackedCompilerFailingExcept(
         FusedClassCache cache,
         Set<Path> succeeding,
@@ -718,7 +889,11 @@ public class FusionFallbackHardeningTests extends ESTestCase {
         });
     }
 
-    /** A compiler that still goes through {@code cache} (unlike {@link FusionPlanner#compilerForTests}'s usual bypass) */
+    /**
+     * A compiler that still goes through {@code cache} (unlike {@link FusionPlanner#compilerForTests}'s usual bypass).
+     * The WHERE POSITIONS entry points are keyed with {@link Output#POSITIONS} as in production, and run {@code stitch}
+     * with the path they are keyed under (tests only inject failures there).
+     */
     private static FusionPlanner.FusedClassCompiler cacheBackedCompiler(FusedClassCache cache, PathStitch stitch) {
         return new FusionPlanner.FusedClassCompiler() {
             private Class<?> cached(MethodHandles.Lookup caller, FusionNode tree, Path path) throws Stitcher.StitchingException {
@@ -727,7 +902,11 @@ public class FusionFallbackHardeningTests extends ESTestCase {
                 return cache.get(shape, () -> FusedClassCache.stitchAndResolve(() -> stitch.stitch(caller, tree, path), caller, null));
             }
 
-            /** WHY resolve inside {@code cache.getResolved}: the factory's MethodType overloads pass the expected */
+            /**
+             * WHY resolve inside {@code cache.getResolved}: the factory's MethodType overloads pass the expected
+             * {@code fused*} MethodTypes here so a {@code findStatic} miss is a negatively-cached
+             * {@link Stitcher.StitchingException}, matching production {@link FusionCompilationService}.
+             */
             private FusedClassCache.CachedFused cachedResolved(
                 MethodHandles.Lookup caller,
                 FusionNode tree,
@@ -735,8 +914,19 @@ public class FusionFallbackHardeningTests extends ESTestCase {
                 MethodType type,
                 String... methods
             ) throws Stitcher.StitchingException {
+                return cachedResolved(caller, tree, path, Output.VALUES, type, methods);
+            }
+
+            private FusedClassCache.CachedFused cachedResolved(
+                MethodHandles.Lookup caller,
+                FusionNode tree,
+                Path path,
+                Output output,
+                MethodType type,
+                String... methods
+            ) throws Stitcher.StitchingException {
                 ElementKind element = FusionNode.isBooleanLogic(tree) ? ElementKind.BOOLEAN : ElementKind.LONG;
-                Shape shape = new Shape(FusionPlanner.shapeOf(tree), element, path);
+                Shape shape = new Shape(FusionPlanner.shapeOf(tree), element, path, output);
                 return cache.getResolved(
                     shape,
                     () -> FusedClassCache.stitchAndResolve(() -> stitch.stitch(caller, tree, path), caller, type, methods)
@@ -816,6 +1006,26 @@ public class FusionFallbackHardeningTests extends ESTestCase {
                 String... methods
             ) throws Stitcher.StitchingException {
                 return cachedResolved(caller, tree, Path.LOGICAL_VECTOR, type, methods);
+            }
+
+            @Override
+            public FusedClassCache.CachedFused compileBlockPositionsLoop(
+                MethodHandles.Lookup caller,
+                FusionNode tree,
+                MethodType type,
+                String... methods
+            ) throws Stitcher.StitchingException {
+                return cachedResolved(caller, tree, FusionCompilationService.primaryPathOf(tree), Output.POSITIONS, type, methods);
+            }
+
+            @Override
+            public FusedClassCache.CachedFused compileVectorPositionsLoop(
+                MethodHandles.Lookup caller,
+                FusionNode tree,
+                MethodType type,
+                String... methods
+            ) throws Stitcher.StitchingException {
+                return cachedResolved(caller, tree, FusionCompilationService.vectorPathOf(tree), Output.POSITIONS, type, methods);
             }
         };
     }

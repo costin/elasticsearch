@@ -19,6 +19,7 @@ import org.elasticsearch.compute.data.OrdinalBytesRefVector;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.data.Vector;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.compute.expression.PositionsEvaluator;
 import org.elasticsearch.core.PathUtils;
 import org.elasticsearch.core.Releasables;
 import org.elasticsearch.core.SuppressForbidden;
@@ -38,9 +39,10 @@ import java.util.function.Supplier;
 /**
  * C2 verify-mode A/B: when {@link FusionSettings#isVerifyEnabled()} the fused evaluators evaluate the unfused
  * fallback on the same page and fail on any difference. This class holds the comparison, encoding check, and
- * mismatch dump. The hot path in production is a single {@code static final} read of {@link FusionSettings#isVerifyEnabled()}
- * that the JIT folds away; nothing here is reached without {@code -ea} (verify defaults to {@code Assertions.ENABLED};
- * the in-process OFF hook is {@link #skipForTests}).
+ * mismatch dump; a WHERE predicate's fused positions are compared against the positions the unfused predicate's block
+ * selects ({@link #verifyPositions}). The hot path in production is a single {@code static final} read of
+ * {@link FusionSettings#isVerifyEnabled()} that the JIT folds away; nothing here is reached without {@code -ea}
+ * (verify defaults to {@code Assertions.ENABLED}; the in-process OFF hook is {@link #skipForTests}).
  *
  * <h2>Typed equality</h2>
  * Long/int/boolean/BytesRef use the compute-data {@code *Block.equals} contracts (positions, nulls, multi-values,
@@ -163,7 +165,40 @@ final class FusionVerify {
         return failMismatch(fused, unfused, shape, strategy, path, mismatch);
     }
 
-    /** Dumps the fused class, closes both blocks so the breaker returns to zero, and throws. */
+    /**
+     * Positions A/B for a fused WHERE predicate: evaluates the unfused predicate from {@code unfusedSupplier} on
+     * {@code page}, selects its positions with {@link PositionsEvaluator#selectedPositions} (the selection
+     * {@code FilterOperator} applies to an unfused predicate) and compares them with the fused
+     * {@code fusedPositions[0..fusedCount)}. The reference block is always closed; on mismatch the fused class is
+     * dumped and an {@link AssertionError} thrown. {@code fusedPositions} is left untouched.
+     */
+    static void verifyPositions(
+        Supplier<ExpressionEvaluator> unfusedSupplier,
+        Page page,
+        int[] fusedPositions,
+        int fusedCount,
+        String shape,
+        VectorStrategy strategy,
+        LastEvalPath path
+    ) {
+        if (skipForTests) {
+            return;
+        }
+        int[] reference = new int[page.getPositionCount()];
+        int referenceCount;
+        try (BooleanBlock mask = (BooleanBlock) unfusedSupplier.get().eval(page)) {
+            referenceCount = PositionsEvaluator.selectedPositions(mask, reference);
+        }
+        String mismatch = describeSurvivorMismatch(fusedPositions, fusedCount, reference, referenceCount);
+        if (mismatch != null) {
+            failMismatch(null, null, shape, strategy == null ? "?" : strategy.name(), path == null ? "?" : path.name(), mismatch);
+        }
+    }
+
+    /**
+     * Dumps the fused class, closes both blocks (either may be {@code null} — a positions mismatch has none), and
+     * throws. Shared by value/encoding and selected-position mismatches so the breaker-to-zero contract is identical.
+     */
     static Block failMismatch(Block fused, Block unfused, String shape, String strategy, String path, String mismatch) {
         String dumpNote;
         Throwable dumpFailure = null;
@@ -236,6 +271,49 @@ final class FusionVerify {
             return "positionCount=" + fusedCount + ", firstDiff@" + p + " fused=" + valueAt(fused, p) + " unfused=" + valueAt(unfused, p);
         }
         return null;
+    }
+
+    /**
+     * Compares the fused vs unfused selected positions (the rows a WHERE keeps). {@code null} if both counts and
+     * {@code [0..count)} values match. Does not throw if {@code fusedCount} exceeds array length.
+     */
+    static String describeSurvivorMismatch(int[] fusedSurvivors, int fusedCount, int[] unfusedPositions, int unfusedCount) {
+        int fusedBound = Math.min(Math.max(fusedCount, 0), fusedSurvivors.length);
+        int unfusedBound = Math.min(Math.max(unfusedCount, 0), unfusedPositions.length);
+        int n = Math.min(fusedBound, unfusedBound);
+        int firstDiff = -1;
+        for (int p = 0; p < n; p++) {
+            if (fusedSurvivors[p] != unfusedPositions[p]) {
+                firstDiff = p;
+                break;
+            }
+        }
+        if (firstDiff < 0 && fusedCount != unfusedCount) {
+            firstDiff = n;
+        }
+        if (firstDiff < 0 && fusedCount > fusedSurvivors.length) {
+            firstDiff = fusedSurvivors.length;
+        }
+        if (firstDiff < 0) {
+            return null;
+        }
+        return "survivorCount="
+            + fusedCount
+            + " vs "
+            + unfusedCount
+            + ", firstDiff@"
+            + firstDiff
+            + " fused="
+            + survivorAt(fusedSurvivors, fusedBound, firstDiff)
+            + " unfused="
+            + survivorAt(unfusedPositions, unfusedBound, firstDiff);
+    }
+
+    private static String survivorAt(int[] indices, int bound, int p) {
+        if (p < 0 || p >= bound) {
+            return "<out-of-range>";
+        }
+        return Integer.toString(indices[p]);
     }
 
     private static String encodingMismatch(String kind, int positionCount, Block fused, Block unfused) {

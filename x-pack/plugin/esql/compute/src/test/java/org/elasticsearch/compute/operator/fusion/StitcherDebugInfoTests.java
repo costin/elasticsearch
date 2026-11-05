@@ -198,6 +198,45 @@ public class StitcherDebugInfoTests extends ESTestCase {
     }
 
     /**
+     * Block POSITIONS {@code (a + b) > c}: the same post-order kernel numbering as the value-output block loop
+     * ({@code add}, then {@code gt}), spliced in the one {@code fused} method, under its own path token.
+     */
+    public void testBlockPositionsEmitsSourceFileLineNumbersAndKernelMap() throws Exception {
+        FusionNode predicate = new FusionNode.Kernel(
+            GT,
+            List.of(new FusionNode.Kernel(ADD, List.of(new FusionNode.Input(0), new FusionNode.Input(1))), new FusionNode.Input(2))
+        );
+        byte[] bytecode = emitters.blocks.emitBlockPositionsLoop(MethodHandles.lookup(), predicate);
+        assertDebugInfo(
+            bytecode,
+            "Fused$$BlockPositionsLoop",
+            List.of("gt", "add"),
+            "0=" + ADD_ENTRY + ";1=" + GT_ENTRY,
+            Stitcher.FUSED_METHOD_NAME
+        );
+        assertCodeLengthUninflatedByLineNumbers(bytecode, Stitcher.FUSED_METHOD_NAME);
+    }
+
+    /**
+     * Logical POSITIONS {@code (a > b) AND (c < d)}: the block class splices the comparisons in its {@code cmpN}
+     * helpers (global indices 0, 1), the vector class inline in {@code fusedInterface}.
+     */
+    public void testLogicalPositionsEmitKernelIndices() throws Exception {
+        ClassNode block = readClass(emitters.blocks.emitBlockPositionsLoop(MethodHandles.lookup(), andGtLt()));
+        assertSourceFile(block, "Fused$$LogicalBlockPositionsLoop", List.of("AND", "gt", "lt"));
+        assertKernelMap(block, "0=" + GT_ENTRY + ";1=" + LT_ENTRY);
+        assertLineNumbers(method(block, "cmp0"), List.of(0));
+        assertLineNumbers(method(block, "cmp1"), List.of(1));
+        assertDebugInfo(
+            emitters.vectors.emitVectorPositionsLoop(MethodHandles.lookup(), andGtLt()),
+            "Fused$$LogicalVectorPositionsLoop",
+            List.of("AND", "gt", "lt"),
+            "0=" + GT_ENTRY + ";1=" + LT_ENTRY,
+            Stitcher.FUSED_INTERFACE_METHOD_NAME
+        );
+    }
+
+    /**
      * SourceFile and KERNEL_MAP ConstantValue strings are capped at 4 KB so a huge shape cannot make ASM
      * throw ({@code UTF8 string too large}, 64 KB class-file limit) and lose fusion. The cap must engage, and the
      * truncated class must still {@code defineHiddenClass}.

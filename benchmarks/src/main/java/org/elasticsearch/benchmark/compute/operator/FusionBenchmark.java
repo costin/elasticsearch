@@ -857,7 +857,7 @@ public class FusionBenchmark {
         return layout.build();
     }
 
-    private static Configuration configuration() {
+    static Configuration configuration() {
         return new Configuration(
             Instant.now(),
             Locale.ROOT,

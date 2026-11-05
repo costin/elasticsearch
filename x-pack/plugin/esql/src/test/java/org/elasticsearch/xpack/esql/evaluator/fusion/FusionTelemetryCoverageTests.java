@@ -14,6 +14,7 @@ import org.elasticsearch.compute.data.BytesRefBlock;
 import org.elasticsearch.compute.data.LongBlock;
 import org.elasticsearch.compute.data.Page;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
+import org.elasticsearch.compute.lucene.EmptyIndexedByShardId;
 import org.elasticsearch.compute.operator.fusion.FusionNode;
 import org.elasticsearch.compute.operator.fusion.Stitcher;
 import org.elasticsearch.core.Releasables;
@@ -34,6 +35,7 @@ import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToLower;
 import org.elasticsearch.xpack.esql.expression.function.scalar.string.ToUpper;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Add;
 import org.elasticsearch.xpack.esql.expression.predicate.operator.arithmetic.Mul;
+import org.elasticsearch.xpack.esql.expression.predicate.operator.comparison.GreaterThan;
 import org.elasticsearch.xpack.esql.planner.Layout;
 import org.elasticsearch.xpack.esql.plugin.EsqlPlugin;
 import org.junit.After;
@@ -48,7 +50,11 @@ import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 
-/** Opt-in fusion coverage counters. With {@link FusionTelemetry#coverageEnabled} on, each top-level */
+/**
+ * Opt-in fusion coverage counters. With {@link FusionTelemetry#coverageEnabled} on, each <em>top-level</em>
+ * expression is classified once as FUSED/ISLAND/FRAGMENT/NONE (categories) and show up in
+ * {@link FusionTelemetry#coverageReport()}. With coverage off the record* coverage buckets stay at zero (zero cost).
+ */
 public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
 
     @Before
@@ -214,7 +220,10 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
         assertAccountingIdentity();
     }
 
-    /** guard: four top-level expressions, one per category, produce FUSED=1 / ISLAND=1 / FRAGMENT=1 / NONE=1 */
+    /**
+     * guard: four top-level expressions, one per category, produce FUSED=1 / ISLAND=1 / FRAGMENT=1 / NONE=1
+     * and record a first-refusal reason for the non-fused rows.
+     */
     public void testFourCategoriesAndOneRefusalReason() {
         FieldAttribute a = field("a", DataType.LONG);
         FieldAttribute b = field("b", DataType.LONG);
@@ -269,6 +278,64 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
         assertThat(FusionCoverage.isFusableOperator(opts, raw), is(false));
         assertThat(FusionCoverage.firstRefusalReason(opts, raw), is("MapExpression"));
         assertThat(FusionCoverage.kernelSkeletonDepth(opts, raw), is(0));
+    }
+
+    /** A declined WHERE predicate (a lone comparison) is one top-level expression classified NONE. */
+    public void testDeclinedWhereCountsAsOneTopLevel() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        Layout layout = layout(a, b);
+        Expression predicate = new GreaterThan(Source.EMPTY, a, b);
+        EvalMapper.toFilterEvaluator(FoldContext.small(), predicate, layout, EmptyIndexedByShardId.instance(), null);
+        assertThat(FusionTelemetry.attempts(), is(1L));
+        assertThat(FusionTelemetry.none(), is(1L));
+        assertAccountingIdentity();
+    }
+
+    /**
+     * A fused WHERE predicate counts as FUSED; when its block POSITIONS stitch fails it falls back unfused, counts as a
+     * FRAGMENT, and the plan-time failure is classified under {@link Path#BLOCK} in the coverage report.
+     */
+    public void testWhereFusedAndStitchFailureSurfacesBlockPath() {
+        FieldAttribute a = field("a", DataType.LONG);
+        FieldAttribute b = field("b", DataType.LONG);
+        FieldAttribute c = field("c", DataType.LONG);
+        Layout layout = layout(a, b, c);
+        Expression predicate = new GreaterThan(Source.EMPTY, new Add(Source.EMPTY, a, b, EsqlTestUtils.TEST_CFG), c);
+
+        ExpressionEvaluator.Factory fused = EvalMapper.toFilterEvaluator(
+            FoldContext.small(),
+            predicate,
+            layout,
+            EmptyIndexedByShardId.instance(),
+            null
+        );
+        assertThat(fused, instanceOf(FusedFilterEvaluatorFactory.class));
+        assertThat(FusionTelemetry.attempts(), is(1L));
+        assertThat(FusionTelemetry.fused(), is(1L));
+        assertThat(FusionTelemetry.totalFailures(), is(0L));
+
+        FusionTelemetry.resetForTests();
+        FusionPlanner.compilerForTests = failingCompiler();
+        ExpressionEvaluator.Factory fallback = EvalMapper.toFilterEvaluator(
+            FoldContext.small(),
+            predicate,
+            layout,
+            EmptyIndexedByShardId.instance(),
+            null
+        );
+        assertThat(fallback, not(instanceOf(FusedFilterEvaluatorFactory.class)));
+        assertThat(FusionTelemetry.attempts(), is(1L));
+        assertThat(FusionTelemetry.fused(), is(0L));
+        assertThat(FusionTelemetry.fragment(), is(1L));
+        assertThat(FusionTelemetry.totalFailures(), is(1L));
+        assertThat(FusionTelemetry.failuresForPath(Path.BLOCK), is(1L));
+
+        String report = FusionTelemetry.coverageReport();
+        assertThat(report, containsString("stitch-failures=1"));
+        assertThat(report, containsString("BLOCK=1"));
+        assertThat(FusionTelemetry.planTimeStitchFailures(), is(1L));
+        assertAccountingIdentity();
     }
 
     public void testCoverageReportIsNotANodeSetting() {
@@ -391,6 +458,11 @@ public class FusionTelemetryCoverageTests extends FusionDifferentialTestCase {
             @Override
             public Class<?> compileLogicalBlockLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
                 throw new Stitcher.StitchingException("injected stitch failure", new VerifyError("injected"));
+            }
+
+            @Override
+            public Class<?> compileBlockPositionsLoop(MethodHandles.Lookup caller, FusionNode tree) throws Stitcher.StitchingException {
+                throw new Stitcher.StitchingException("injected positions stitch failure", new VerifyError("injected"));
             }
         };
     }

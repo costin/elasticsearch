@@ -2562,7 +2562,7 @@ public class LocalExecutionPlanner {
         // TODO: should this be extracted into a separate eval block?
         return source.with(
             new FilterOperatorFactory(
-                EvalMapper.toEvaluator(context.foldCtx(), condition, source.layout, context.shardContexts, context.analysisRegistry())
+                EvalMapper.toFilterEvaluator(context.foldCtx(), condition, source.layout, context.shardContexts, context.analysisRegistry())
             ),
             source.layout
         );
