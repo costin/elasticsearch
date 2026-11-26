@@ -9,7 +9,11 @@ package org.elasticsearch.compute.data;
 
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.breaker.CircuitBreakingException;
+import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.core.Releasable;
+import org.elasticsearch.indices.breaker.AllCircuitBreakerStats;
+import org.elasticsearch.indices.breaker.CircuitBreakerService;
+import org.elasticsearch.indices.breaker.CircuitBreakerStats;
 
 import java.util.concurrent.atomic.AtomicLongArray;
 
@@ -192,6 +196,20 @@ public final class ConcurrentReservingCircuitBreaker implements CircuitBreaker, 
         return breaker;
     }
 
+    /**
+     * Big arrays that charge their {@link CircuitBreaker#REQUEST} bytes through this breaker's reserve, so the
+     * bytes ref arrays and other big arrays behind producer blocks don't hit the shared breaker on every page.
+     * Returns {@code bigArrays} itself if its request breaker isn't the one this breaker wraps, since rerouting it
+     * would move its bytes onto a different breaker.
+     */
+    public BigArrays bigArrays(BigArrays bigArrays) {
+        CircuitBreakerService next = bigArrays.breakerService();
+        if (next == null || next.getBreaker(CircuitBreaker.REQUEST) != breaker) {
+            return bigArrays;
+        }
+        return bigArrays.withBreakerService(new Service(next, this));
+    }
+
     // for tests
     long reservedBytes() {
         return reserve.get(RESERVE);
@@ -240,5 +258,34 @@ public final class ConcurrentReservingCircuitBreaker implements CircuitBreaker, 
     @Override
     public String toString() {
         return "ConcurrentReservingCircuitBreaker[" + reserve.get(RESERVE) + "/" + chunkBytes + "]";
+    }
+
+    /**
+     * Hands out the reserving breaker as the {@link CircuitBreaker#REQUEST} breaker and every other breaker from
+     * {@code next}.
+     */
+    private static final class Service extends CircuitBreakerService {
+        private final CircuitBreakerService next;
+        private final ConcurrentReservingCircuitBreaker requestBreaker;
+
+        Service(CircuitBreakerService next, ConcurrentReservingCircuitBreaker requestBreaker) {
+            this.next = next;
+            this.requestBreaker = requestBreaker;
+        }
+
+        @Override
+        public CircuitBreaker getBreaker(String name) {
+            return CircuitBreaker.REQUEST.equals(name) ? requestBreaker : next.getBreaker(name);
+        }
+
+        @Override
+        public AllCircuitBreakerStats stats() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public CircuitBreakerStats stats(String name) {
+            throw new UnsupportedOperationException();
+        }
     }
 }

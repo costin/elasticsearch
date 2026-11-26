@@ -224,7 +224,8 @@ public class BlockFactory {
      * breaker on every block.
      * <p>
      * The new factory is a root of its own: its breaker is thread-safe, so {@link Block#allowPassingToDifferentDriver()}
-     * keeps blocks on it and their releases refill the reserve too. Arrow buffers still come from this factory's
+     * keeps blocks on it and their releases refill the reserve too. Its {@link BigArrays}, which back e.g. the
+     * {@link BytesRefArray} of a bytes ref vector, charge the same reserve. Arrow buffers still come from this factory's
      * allocator. The caller owns {@code producerBreaker} and closes it once the producers stop; blocks released after
      * that pass straight through to this factory's breaker.
      */
@@ -233,7 +234,7 @@ public class BlockFactory {
             throw new IllegalStateException("Different parent breaker");
         }
         return new BlockFactory(
-            BlockFactory.builder(bigArrays)
+            BlockFactory.builder(producerBreaker.bigArrays(bigArrays))
                 .breaker(producerBreaker)
                 .maxPrimitiveArraySize(maxPrimitiveArrayBytes)
                 .bytesRefRamOverestimateThreshold(bytesRefRamOverestimateThreshold)

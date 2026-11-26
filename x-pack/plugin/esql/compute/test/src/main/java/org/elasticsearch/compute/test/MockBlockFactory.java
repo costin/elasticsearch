@@ -158,7 +158,7 @@ public class MockBlockFactory extends BlockFactory {
         }
         return new MockBlockFactory(
             this,
-            builder(bigArrays()).breaker(producerBreaker)
+            builder(producerBreaker.bigArrays(bigArrays())).breaker(producerBreaker)
                 .maxPrimitiveArraySize(maxPrimitiveArrayBytes())
                 .bytesRefRamOverestimateThreshold(bytesRefRamOverestimateThreshold())
                 .bytesRefRamOverestimateFactor(bytesRefRamOverestimateFactor())

@@ -7,17 +7,25 @@
 
 package org.elasticsearch.compute.data;
 
+import org.apache.lucene.util.BytesRef;
 import org.elasticsearch.common.breaker.CircuitBreaker;
 import org.elasticsearch.common.breaker.CircuitBreakingException;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeValue;
+import org.elasticsearch.common.util.BigArrays;
+import org.elasticsearch.common.util.BytesRefArray;
 import org.elasticsearch.common.util.LimitedBreaker;
+import org.elasticsearch.indices.breaker.AllCircuitBreakerStats;
+import org.elasticsearch.indices.breaker.CircuitBreakerService;
+import org.elasticsearch.indices.breaker.CircuitBreakerStats;
 import org.elasticsearch.test.ESTestCase;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
 
 public class ConcurrentReservingCircuitBreakerTests extends ESTestCase {
@@ -37,6 +45,35 @@ public class ConcurrentReservingCircuitBreakerTests extends ESTestCase {
         parent.addWithoutBreaking(-1101);
         breaker.close();
         assertThat(parent.getUsed(), equalTo(0L));
+    }
+
+    /**
+     * The {@link BytesRefArray} behind a bytes ref vector built on a producer factory allocates through
+     * {@link BigArrays}, which must charge the reserve too rather than the shared breaker on every page.
+     */
+    public void testProducerFactoryBigArraysChargeReserve() {
+        CountingBreaker shared = new CountingBreaker(ByteSizeValue.ofMb(100));
+        BigArrays bigArrays = new BigArrays(null, new SingleBreakerService(shared), CircuitBreaker.REQUEST).withCircuitBreaking();
+        BlockFactory root = BlockFactory.builder(bigArrays).breaker(shared).build();
+        ConcurrentReservingCircuitBreaker producerBreaker = new ConcurrentReservingCircuitBreaker(shared, ByteSizeValue.ofMb(1).getBytes());
+        BlockFactory producerFactory = root.newProducerFactory(producerBreaker);
+
+        // ~400kb across many BytesRefArray pages, so well inside one 1mb chunk
+        BytesRef value = new BytesRef(new byte[100]);
+        BytesRefVector vector;
+        try (BytesRefVector.Builder builder = producerFactory.newBytesRefVectorBuilder(16)) {
+            for (int i = 0; i < 4000; i++) {
+                builder.appendBytesRef(value);
+            }
+            vector = builder.build();
+        }
+        assertThat(shared.charges.get(), equalTo(1));
+        assertThat(shared.getUsed() - producerBreaker.reservedBytes(), greaterThan(400_000L));
+
+        vector.close();
+        assertThat(shared.getUsed(), equalTo(producerBreaker.reservedBytes()));
+        producerBreaker.close();
+        assertThat(shared.getUsed(), equalTo(0L));
     }
 
     public void testChunkFromSizeSettings() {
@@ -281,6 +318,56 @@ public class ConcurrentReservingCircuitBreakerTests extends ESTestCase {
         @Override
         public long getLimit() {
             return limit;
+        }
+    }
+
+    /**
+     * Counts the calls that grow the shared breaker, which are the ones the reserve exists to avoid.
+     */
+    private static class CountingBreaker extends LimitedBreaker {
+        private final AtomicInteger charges = new AtomicInteger();
+
+        CountingBreaker(ByteSizeValue max) {
+            super("test", max);
+        }
+
+        @Override
+        public void addEstimateBytesAndMaybeBreak(long bytes, String label) throws CircuitBreakingException {
+            if (bytes > 0) {
+                charges.incrementAndGet();
+            }
+            super.addEstimateBytesAndMaybeBreak(bytes, label);
+        }
+
+        @Override
+        public void addWithoutBreaking(long bytes) {
+            if (bytes > 0) {
+                charges.incrementAndGet();
+            }
+            super.addWithoutBreaking(bytes);
+        }
+    }
+
+    private static class SingleBreakerService extends CircuitBreakerService {
+        private final CircuitBreaker breaker;
+
+        SingleBreakerService(CircuitBreaker breaker) {
+            this.breaker = breaker;
+        }
+
+        @Override
+        public CircuitBreaker getBreaker(String name) {
+            return breaker;
+        }
+
+        @Override
+        public AllCircuitBreakerStats stats() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public CircuitBreakerStats stats(String name) {
+            throw new UnsupportedOperationException();
         }
     }
 }
