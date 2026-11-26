@@ -22,6 +22,7 @@ import org.elasticsearch.common.util.concurrent.EsThreadPoolExecutor;
 import org.elasticsearch.common.util.concurrent.ThreadContext;
 import org.elasticsearch.compute.data.BlockFactory;
 import org.elasticsearch.compute.data.BytesRefBlock;
+import org.elasticsearch.compute.data.ConcurrentReservingCircuitBreaker;
 import org.elasticsearch.compute.data.IntBlock;
 import org.elasticsearch.compute.data.LocalCircuitBreaker;
 import org.elasticsearch.compute.data.LongBlock;
@@ -742,7 +743,7 @@ public class AsyncExternalSourceOperatorFactoryTests extends ESTestCase {
         assertNull(AsyncExternalSourceOperatorFactory.producerBlockFactory(missingFactory));
     }
 
-    public void testChildDriverContextChargesProducerToRootBreaker() throws Exception {
+    public void testChildDriverContextChargesProducerToOperatorReserve() throws Exception {
         LocalCircuitBreaker local = new LocalCircuitBreaker(TEST_BLOCK_FACTORY.breaker(), 0, 0);
         try {
             BlockFactory child = TEST_BLOCK_FACTORY.newChildFactory(local);
@@ -799,12 +800,15 @@ public class AsyncExternalSourceOperatorFactoryTests extends ESTestCase {
                     }
                 }
                 assertNotNull(page);
-                assertSame("the operator must bind the producer parent factory before read", TEST_BLOCK_FACTORY, seenFactory.get());
-                assertSame(TEST_BLOCK_FACTORY.breaker(), seenBreaker.get());
+                BlockFactory producerFactory = seenFactory.get();
+                assertNotNull("the operator must bind the producer factory before read", producerFactory);
+                assertNotSame(child, producerFactory);
+                assertThat(producerFactory.breaker(), instanceOf(ConcurrentReservingCircuitBreaker.class));
+                assertSame(TEST_BLOCK_FACTORY.breaker(), ((ConcurrentReservingCircuitBreaker) producerFactory.breaker()).parentBreaker());
+                assertSame(producerFactory.breaker(), seenBreaker.get());
                 assertThat(seenBreaker.get(), not(instanceOf(LocalCircuitBreaker.class)));
                 IntBlock yearBlock = page.getBlock(1);
-                assertSame(TEST_BLOCK_FACTORY, yearBlock.blockFactory());
-                assertNotSame(child, yearBlock.blockFactory());
+                assertSame(producerFactory, yearBlock.blockFactory());
             } finally {
                 if (page != null) {
                     page.releaseBlocks();

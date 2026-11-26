@@ -458,9 +458,8 @@ public final class DataSourceModule implements Closeable {
 
         // Register the framework-internal FileSourceFactory as a catch-all fallback.
         // It must be last so that plugin-provided factories (Iceberg, Flight) get priority.
-        // Producer-thread allocations resolve the request-level BlockFactory via
-        // AsyncExternalSourceOperatorFactory.producerBlockFactory(DriverContext); this factory
-        // no longer threads one in.
+        // Producer-thread allocations use each operator's ProducerMemory factory, built in
+        // AsyncExternalSourceOperatorFactory.get(DriverContext); this factory no longer threads one in.
         FileSourceFactory fileFallback = new FileSourceFactory(
             storageProviderRegistry,
             formatReaderRegistry,

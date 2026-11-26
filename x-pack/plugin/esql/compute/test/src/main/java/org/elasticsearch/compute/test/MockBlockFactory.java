@@ -25,6 +25,7 @@ import org.elasticsearch.compute.data.BooleanBlock;
 import org.elasticsearch.compute.data.BooleanVector;
 import org.elasticsearch.compute.data.BytesRefBlock;
 import org.elasticsearch.compute.data.BytesRefVector;
+import org.elasticsearch.compute.data.ConcurrentReservingCircuitBreaker;
 import org.elasticsearch.compute.data.DoubleBlock;
 import org.elasticsearch.compute.data.DoubleRangeBlock;
 import org.elasticsearch.compute.data.DoubleRangeBlockBuilder;
@@ -141,6 +142,23 @@ public class MockBlockFactory extends BlockFactory {
         return new MockBlockFactory(
             this,
             builder(bigArrays).breaker(breaker)
+                .maxPrimitiveArraySize(maxPrimitiveArrayBytes())
+                .bytesRefRamOverestimateThreshold(bytesRefRamOverestimateThreshold())
+                .bytesRefRamOverestimateFactor(bytesRefRamOverestimateFactor())
+        );
+    }
+
+    /**
+     * Tracks the producer factory's blocks on this factory, so a test's leak check covers blocks built by producers.
+     */
+    @Override
+    public BlockFactory newProducerFactory(ConcurrentReservingCircuitBreaker producerBreaker) {
+        if (producerBreaker.parentBreaker() != breaker()) {
+            throw new IllegalStateException("Different parent breaker");
+        }
+        return new MockBlockFactory(
+            this,
+            builder(bigArrays()).breaker(producerBreaker)
                 .maxPrimitiveArraySize(maxPrimitiveArrayBytes())
                 .bytesRefRamOverestimateThreshold(bytesRefRamOverestimateThreshold())
                 .bytesRefRamOverestimateFactor(bytesRefRamOverestimateFactor())

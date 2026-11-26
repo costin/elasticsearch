@@ -219,6 +219,31 @@ public class BlockFactory {
     }
 
     /**
+     * A factory for blocks built off a driver's run loop, e.g. by the I/O and parser threads of one external-source
+     * operator, that charges through {@code producerBreaker}'s reserve instead of hitting this factory's shared
+     * breaker on every block.
+     * <p>
+     * The new factory is a root of its own: its breaker is thread-safe, so {@link Block#allowPassingToDifferentDriver()}
+     * keeps blocks on it and their releases refill the reserve too. Arrow buffers still come from this factory's
+     * allocator. The caller owns {@code producerBreaker} and closes it once the producers stop; blocks released after
+     * that pass straight through to this factory's breaker.
+     */
+    public BlockFactory newProducerFactory(ConcurrentReservingCircuitBreaker producerBreaker) {
+        if (producerBreaker.parentBreaker() != breaker) {
+            throw new IllegalStateException("Different parent breaker");
+        }
+        return new BlockFactory(
+            BlockFactory.builder(bigArrays)
+                .breaker(producerBreaker)
+                .maxPrimitiveArraySize(maxPrimitiveArrayBytes)
+                .bytesRefRamOverestimateThreshold(bytesRefRamOverestimateThreshold)
+                .bytesRefRamOverestimateFactor(bytesRefRamOverestimateFactor),
+            null,
+            this
+        );
+    }
+
+    /**
      * Adjust the circuit breaker with the given delta, if the delta is negative, the breaker will
      * be adjusted without tripping.
      * @throws CircuitBreakingException if the breaker was put above its limit

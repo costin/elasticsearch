@@ -39,9 +39,9 @@ import java.util.function.Consumer;
  * This iterator runs on the producer side of {@link AsyncExternalSourceBuffer} (the generic /
  * external-source pool thread that drains pages from the format reader), <em>not</em> on the
  * driver thread that later consumes them. Callers must therefore pass a {@link BlockFactory}
- * that is safe to use off-driver — the request-level root from
- * {@link AsyncExternalSourceOperatorFactory#producerBlockFactory(org.elasticsearch.compute.operator.DriverContext)} — so the
- * null-fill and cast allocations are charged to the global request circuit breaker. Passing a
+ * that is safe to use off-driver — the operator's {@link ProducerMemory#blockFactory()}, whose
+ * thread-safe reserve wraps the request-level breaker — so the null-fill and cast allocations are
+ * charged correctly from any thread. Passing a
  * driver-local factory backed by {@link org.elasticsearch.compute.data.LocalCircuitBreaker}
  * trips its single-thread assertion in debug builds and races with the driver loop's
  * reserved-bytes accounting in production (assertions stripped); see
