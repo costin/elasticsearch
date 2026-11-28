@@ -270,7 +270,7 @@ public class PageColumnReaderDictionaryCacheTests extends ESTestCase {
 
         BigArrays bigArrays = new MockBigArrays(PageCacheRecycler.NON_RECYCLING_INSTANCE, ByteSizeValue.ofMb(256)).withCircuitBreaking();
         CircuitBreaker rootBreaker = bigArrays.breakerService().getBreaker(CircuitBreaker.REQUEST);
-        BlockFactory root = BlockFactory.builder(bigArrays).breaker(rootBreaker).build();
+        CountingBlockFactory root = new CountingBlockFactory(rootBreaker, bigArrays);
         LocalCircuitBreaker local = new LocalCircuitBreaker(rootBreaker, 8 * 1024, 512 * 1024);
         BlockFactory child = root.newChildFactory(local);
 
@@ -299,6 +299,7 @@ public class PageColumnReaderDictionaryCacheTests extends ESTestCase {
                 }
             }
             assertNotNull(dict);
+            assertTrue("dict wrap must allocate through the root factory, not the child", root.bytesRefVectors.get() >= 1);
             assertSame("wrap-on-parent plus T1 leave the dict on the root factory", root, dict.blockFactory());
             assertFalse(dict.isReleased());
             local.close();
@@ -395,9 +396,9 @@ public class PageColumnReaderDictionaryCacheTests extends ESTestCase {
     }
 
     /**
-     * Producer hops each page then keeps calling {@code next()} while a consumer thread
-     * hops again (T3) and {@code releaseBlocks()} concurrently. Iterator stays open until
-     * produce finishes. Queue capacity > 1 keeps several pages live so hops overlap.
+     * Producer does not hop the page: wrap-time T1 is what makes the shared dict safe for
+     * {@code next()} vs concurrent {@code releaseBlocks()}. Consumer hops a random subset
+     * (T3) and always releases in {@code finally}. Iterator stays open until produce finishes.
      */
     public void testCrossDriverCloseDuringDecode() throws Exception {
         int iterations = 200;
@@ -420,6 +421,7 @@ public class PageColumnReaderDictionaryCacheTests extends ESTestCase {
                 CountDownLatch started = new CountDownLatch(1);
                 CountDownLatch consumed = new CountDownLatch(1);
                 Random jitter = new Random(randomLong());
+                consumerFailure.set(null);
                 consumer.execute(() -> {
                     started.countDown();
                     try {
@@ -429,16 +431,18 @@ public class PageColumnReaderDictionaryCacheTests extends ESTestCase {
                                 continue;
                             }
                             try {
-                                Thread.sleep(0, jitter.nextInt(200_000));
-                            } catch (InterruptedException ie) {
-                                Thread.currentThread().interrupt();
+                                try {
+                                    Thread.sleep(0, jitter.nextInt(200_000));
+                                } catch (InterruptedException ie) {
+                                    Thread.currentThread().interrupt();
+                                    break;
+                                }
+                                if (jitter.nextBoolean()) {
+                                    page.allowPassingToDifferentDriver();
+                                }
+                            } finally {
                                 page.releaseBlocks();
-                                break;
                             }
-                            if (jitter.nextBoolean()) {
-                                page.allowPassingToDifferentDriver();
-                            }
-                            page.releaseBlocks();
                         }
                     } catch (Throwable t) {
                         consumerFailure.compareAndSet(null, t);
@@ -455,11 +459,18 @@ public class PageColumnReaderDictionaryCacheTests extends ESTestCase {
                 try {
                     try (CloseableIterator<Page> iter = openIterator(blockFactory, data, batchSize)) {
                         while (iter.hasNext()) {
+                            Throwable failed = consumerFailure.get();
+                            if (failed != null) {
+                                throw new AssertionError("consumer thread failed on iteration " + i, failed);
+                            }
                             Page page = iter.next();
                             rowsRead += page.getPositionCount();
-                            page.allowPassingToDifferentDriver();
                             if (live.offer(page, 30, TimeUnit.SECONDS) == false) {
                                 page.releaseBlocks();
+                                failed = consumerFailure.get();
+                                if (failed != null) {
+                                    throw new AssertionError("consumer thread failed on iteration " + i, failed);
+                                }
                                 fail("consumer did not take pages on iteration " + i);
                             }
                         }
@@ -636,6 +647,25 @@ public class PageColumnReaderDictionaryCacheTests extends ESTestCase {
             }
         }
         throw new AssertionError("expected CircuitBreakingException, got " + e, e);
+    }
+
+    /**
+     * Counts {@link BlockFactory#newBytesRefArrayVector} on this instance. Child factories
+     * created via {@link BlockFactory#newChildFactory} are not this class, so a wrap-on-child
+     * regression leaves the count at 0.
+     */
+    private static final class CountingBlockFactory extends BlockFactory {
+        private final AtomicInteger bytesRefVectors = new AtomicInteger();
+
+        CountingBlockFactory(CircuitBreaker breaker, BigArrays bigArrays) {
+            super(breaker, bigArrays);
+        }
+
+        @Override
+        public BytesRefVector newBytesRefArrayVector(BytesRefArray values, int positionCount) {
+            bytesRefVectors.incrementAndGet();
+            return super.newBytesRefArrayVector(values, positionCount);
+        }
     }
 
     /**
