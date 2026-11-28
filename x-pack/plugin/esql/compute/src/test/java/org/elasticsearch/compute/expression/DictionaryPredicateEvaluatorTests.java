@@ -26,6 +26,7 @@ import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.operator.Warnings;
 import org.elasticsearch.compute.test.ComputeTestCase;
 import org.elasticsearch.compute.test.TestWarningsSource;
+import org.elasticsearch.core.Releasables;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -378,38 +379,48 @@ public class DictionaryPredicateEvaluatorTests extends ComputeTestCase {
             }
             dict = db.build();
         }
-        if (multivalue) {
-            try (IntBlock.Builder ob = factory.newIntBlockBuilder(n)) {
-                for (int i = 0; i < n; i++) {
-                    if (i % 5 == 0) {
-                        ob.beginPositionEntry();
-                        ob.appendInt(0);
-                        ob.appendInt(1);
-                        ob.endPositionEntry();
-                    } else {
-                        ob.appendInt(i % referenced);
+        try {
+            if (multivalue) {
+                try (IntBlock.Builder ob = factory.newIntBlockBuilder(n)) {
+                    for (int i = 0; i < n; i++) {
+                        if (i % 5 == 0) {
+                            ob.beginPositionEntry();
+                            ob.appendInt(0);
+                            ob.appendInt(1);
+                            ob.endPositionEntry();
+                        } else {
+                            ob.appendInt(i % referenced);
+                        }
                     }
+                    Page page = new Page(new OrdinalBytesRefBlock(ob.build(), dict));
+                    dict = null;
+                    return page;
                 }
-                return new Page(new OrdinalBytesRefBlock(ob.build(), dict));
             }
-        }
-        if (nulls) {
-            try (IntBlock.Builder ob = factory.newIntBlockBuilder(n)) {
-                for (int i = 0; i < n; i++) {
-                    if (i % 7 == 0) {
-                        ob.appendNull();
-                    } else {
-                        ob.appendInt(i % referenced);
+            if (nulls) {
+                try (IntBlock.Builder ob = factory.newIntBlockBuilder(n)) {
+                    for (int i = 0; i < n; i++) {
+                        if (i % 7 == 0) {
+                            ob.appendNull();
+                        } else {
+                            ob.appendInt(i % referenced);
+                        }
                     }
+                    Page page = new Page(new OrdinalBytesRefBlock(ob.build(), dict));
+                    dict = null;
+                    return page;
                 }
-                return new Page(new OrdinalBytesRefBlock(ob.build(), dict));
             }
-        }
-        try (var ob = factory.newIntVectorFixedBuilder(n)) {
-            for (int i = 0; i < n; i++) {
-                ob.appendInt(i % referenced);
+            try (var ob = factory.newIntVectorFixedBuilder(n)) {
+                for (int i = 0; i < n; i++) {
+                    ob.appendInt(i % referenced);
+                }
+                Page page = new Page(new OrdinalBytesRefVector(ob.build(), dict).asBlock());
+                dict = null;
+                return page;
             }
-            return new Page(new OrdinalBytesRefVector(ob.build(), dict).asBlock());
+        } finally {
+            Releasables.close(dict);
         }
     }
 

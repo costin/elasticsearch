@@ -22,6 +22,7 @@ import org.elasticsearch.compute.data.IntBlock;
 import org.elasticsearch.compute.data.OrdinalBytesRefBlock;
 import org.elasticsearch.compute.data.OrdinalBytesRefVector;
 import org.elasticsearch.compute.data.Page;
+import org.elasticsearch.compute.expression.DictionaryPredicateEvaluator;
 import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.lucene.EmptyIndexedByShardId;
 import org.elasticsearch.compute.operator.DriverContext;
@@ -102,6 +103,7 @@ public class DictionaryPredicateDifferentialTests extends ESTestCase {
                     for (Page page : pages) {
                         try (BooleanBlock wr = (BooleanBlock) w.eval(page); BooleanBlock or = (BooleanBlock) o.eval(page)) {
                             assertBlocksEqual(wr, or, page.getPositionCount());
+                            assertPaddedTakesDictionaryPath(w, page);
                         }
                     }
                     wrappedCtx.finish();
@@ -230,30 +232,32 @@ public class DictionaryPredicateDifferentialTests extends ESTestCase {
     }
 
     private static Page denseOrdinals(BlockFactory factory, int n, int k, boolean nulls) {
-        BytesRefVector dict;
-        try (BytesRefVector.Builder db = factory.newBytesRefVectorBuilder(k)) {
-            for (int i = 0; i < k; i++) {
-                db.appendBytesRef(VOCAB[i % VOCAB.length]);
-            }
-            dict = db.build();
-        }
-        if (nulls) {
-            try (IntBlock.Builder ob = factory.newIntBlockBuilder(n)) {
-                for (int i = 0; i < n; i++) {
-                    if (i % 7 == 0) {
-                        ob.appendNull();
-                    } else {
-                        ob.appendInt(i % k);
+        BytesRefVector dict = vocabDict(factory, k);
+        try {
+            if (nulls) {
+                try (IntBlock.Builder ob = factory.newIntBlockBuilder(n)) {
+                    for (int i = 0; i < n; i++) {
+                        if (i % 7 == 0) {
+                            ob.appendNull();
+                        } else {
+                            ob.appendInt(i % k);
+                        }
                     }
+                    Page page = new Page(new OrdinalBytesRefBlock(ob.build(), dict));
+                    dict = null;
+                    return page;
                 }
-                return new Page(new OrdinalBytesRefBlock(ob.build(), dict));
             }
-        }
-        try (var ob = factory.newIntVectorFixedBuilder(n)) {
-            for (int i = 0; i < n; i++) {
-                ob.appendInt(i % k);
+            try (var ob = factory.newIntVectorFixedBuilder(n)) {
+                for (int i = 0; i < n; i++) {
+                    ob.appendInt(i % k);
+                }
+                Page page = new Page(new OrdinalBytesRefVector(ob.build(), dict).asBlock());
+                dict = null;
+                return page;
             }
-            return new Page(new OrdinalBytesRefVector(ob.build(), dict).asBlock());
+        } finally {
+            Releasables.close(dict);
         }
     }
 
@@ -269,62 +273,94 @@ public class DictionaryPredicateDifferentialTests extends ESTestCase {
             }
             dict = db.build();
         }
-        try (var ob = factory.newIntVectorFixedBuilder(n)) {
-            for (int i = 0; i < n; i++) {
-                ob.appendInt(i % referenced);
+        try {
+            try (var ob = factory.newIntVectorFixedBuilder(n)) {
+                for (int i = 0; i < n; i++) {
+                    ob.appendInt(i % referenced);
+                }
+                Page page = new Page(new OrdinalBytesRefVector(ob.build(), dict).asBlock());
+                dict = null;
+                return page;
             }
-            return new Page(new OrdinalBytesRefVector(ob.build(), dict).asBlock());
+        } finally {
+            Releasables.close(dict);
         }
     }
 
     private static Page mvOrdinals(BlockFactory factory, int n, int k) {
-        BytesRefVector dict;
-        try (BytesRefVector.Builder db = factory.newBytesRefVectorBuilder(k)) {
-            for (int i = 0; i < k; i++) {
-                db.appendBytesRef(VOCAB[i % VOCAB.length]);
-            }
-            dict = db.build();
-        }
-        try (IntBlock.Builder ob = factory.newIntBlockBuilder(n)) {
-            for (int i = 0; i < n; i++) {
-                if (i % 4 == 0) {
-                    ob.beginPositionEntry();
-                    ob.appendInt(0);
-                    ob.appendInt(1);
-                    ob.endPositionEntry();
-                } else {
-                    ob.appendInt(i % k);
+        BytesRefVector dict = vocabDict(factory, k);
+        try {
+            try (IntBlock.Builder ob = factory.newIntBlockBuilder(n)) {
+                for (int i = 0; i < n; i++) {
+                    if (i % 4 == 0) {
+                        ob.beginPositionEntry();
+                        ob.appendInt(0);
+                        ob.appendInt(1);
+                        ob.endPositionEntry();
+                    } else {
+                        ob.appendInt(i % k);
+                    }
                 }
+                Page page = new Page(new OrdinalBytesRefBlock(ob.build(), dict));
+                dict = null;
+                return page;
             }
-            return new Page(new OrdinalBytesRefBlock(ob.build(), dict));
+        } finally {
+            Releasables.close(dict);
         }
     }
 
     private static Page allNullOrdinals(BlockFactory factory, int n) {
-        BytesRefVector dict;
-        try (BytesRefVector.Builder db = factory.newBytesRefVectorBuilder(1)) {
-            db.appendBytesRef(VOCAB[0]);
-            dict = db.build();
-        }
-        try (IntBlock.Builder ob = factory.newIntBlockBuilder(n)) {
-            for (int i = 0; i < n; i++) {
-                ob.appendNull();
+        BytesRefVector dict = vocabDict(factory, 1);
+        try {
+            try (IntBlock.Builder ob = factory.newIntBlockBuilder(n)) {
+                for (int i = 0; i < n; i++) {
+                    ob.appendNull();
+                }
+                Page page = new Page(new OrdinalBytesRefBlock(ob.build(), dict));
+                dict = null;
+                return page;
             }
-            return new Page(new OrdinalBytesRefBlock(ob.build(), dict));
+        } finally {
+            Releasables.close(dict);
         }
     }
 
     private static Page luceneOneEntry(BlockFactory factory, int n) {
-        BytesRefVector dict;
-        try (BytesRefVector.Builder db = factory.newBytesRefVectorBuilder(1)) {
-            db.appendBytesRef(VOCAB[0]);
-            dict = db.build();
-        }
-        try (var ob = factory.newIntVectorFixedBuilder(n)) {
-            for (int i = 0; i < n; i++) {
-                ob.appendInt(0);
+        BytesRefVector dict = vocabDict(factory, 1);
+        try {
+            try (var ob = factory.newIntVectorFixedBuilder(n)) {
+                for (int i = 0; i < n; i++) {
+                    ob.appendInt(0);
+                }
+                Page page = new Page(new OrdinalBytesRefVector(ob.build(), dict).asBlock());
+                dict = null;
+                return page;
             }
-            return new Page(new OrdinalBytesRefVector(ob.build(), dict).asBlock());
+        } finally {
+            Releasables.close(dict);
+        }
+    }
+
+    private static BytesRefVector vocabDict(BlockFactory factory, int k) {
+        try (BytesRefVector.Builder db = factory.newBytesRefVectorBuilder(k)) {
+            for (int i = 0; i < k; i++) {
+                db.appendBytesRef(VOCAB[i % VOCAB.length]);
+            }
+            return db.build();
+        }
+    }
+
+    private static void assertPaddedTakesDictionaryPath(ExpressionEvaluator eval, Page page) {
+        if (eval instanceof DictionaryPredicateEvaluator dpe) {
+            BytesRefBlock col = page.getBlock(0);
+            OrdinalBytesRefBlock ords = col.asOrdinals();
+            if (ords == null || col.mayHaveMultivaluedFields() || page.getPositionCount() < 10) {
+                return;
+            }
+            if (ords.getDictionaryVector().getPositionCount() > page.getPositionCount()) {
+                assertThat(dpe.lastPath(), equalTo(DictionaryPredicateEvaluator.Path.DICTIONARY));
+            }
         }
     }
 

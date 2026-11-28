@@ -22,6 +22,8 @@ import org.elasticsearch.compute.expression.ExpressionEvaluator;
 import org.elasticsearch.compute.lucene.EmptyIndexedByShardId;
 import org.elasticsearch.compute.operator.DriverContext;
 import org.elasticsearch.compute.test.TestBlockFactory;
+import org.elasticsearch.core.PathUtils;
+import org.elasticsearch.core.Releasables;
 import org.elasticsearch.test.ESTestCase;
 import org.elasticsearch.xpack.esql.EsqlTestUtils;
 import org.elasticsearch.xpack.esql.core.expression.Expression;
@@ -337,7 +339,7 @@ public class DictionaryEvaluationTests extends ESTestCase {
     }
 
     private static Path esqlSourceRoot() {
-        Path dir = Path.of("").toAbsolutePath();
+        Path dir = PathUtils.get("").toAbsolutePath();
         while (dir != null) {
             Path candidate = dir.resolve("src/main/java/org/elasticsearch/xpack/esql");
             if (Files.isDirectory(candidate)) {
@@ -349,7 +351,7 @@ public class DictionaryEvaluationTests extends ESTestCase {
             }
             dir = dir.getParent();
         }
-        throw new AssertionError("esql sources not found walking from " + Path.of("").toAbsolutePath());
+        throw new AssertionError("esql sources not found walking from " + PathUtils.get("").toAbsolutePath());
     }
 
     private static int assertNoWarnExceptions(Path source, String text) {
@@ -397,38 +399,47 @@ public class DictionaryEvaluationTests extends ESTestCase {
     }
 
     private static Page ordinalsNoNulls(BlockFactory factory, int n, List<BytesRef> dictValues) {
-        BytesRefVector dict;
-        try (BytesRefVector.Builder db = factory.newBytesRefVectorBuilder(dictValues.size())) {
-            for (BytesRef v : dictValues) {
-                db.appendBytesRef(v);
+        BytesRefVector dict = dictVector(factory, dictValues);
+        try {
+            try (var ob = factory.newIntVectorFixedBuilder(n)) {
+                for (int i = 0; i < n; i++) {
+                    ob.appendInt(i % dictValues.size());
+                }
+                Page page = new Page(new OrdinalBytesRefVector(ob.build(), dict).asBlock());
+                dict = null;
+                return page;
             }
-            dict = db.build();
-        }
-        try (var ob = factory.newIntVectorFixedBuilder(n)) {
-            for (int i = 0; i < n; i++) {
-                ob.appendInt(i % dictValues.size());
-            }
-            return new Page(new OrdinalBytesRefVector(ob.build(), dict).asBlock());
+        } finally {
+            Releasables.close(dict);
         }
     }
 
     private static Page ordinalsWithNulls(BlockFactory factory, int n, List<BytesRef> dictValues) {
-        BytesRefVector dict;
+        BytesRefVector dict = dictVector(factory, dictValues);
+        try {
+            try (IntBlock.Builder ob = factory.newIntBlockBuilder(n)) {
+                for (int i = 0; i < n; i++) {
+                    if (i % 7 == 0) {
+                        ob.appendNull();
+                    } else {
+                        ob.appendInt(i % dictValues.size());
+                    }
+                }
+                Page page = new Page(new OrdinalBytesRefBlock(ob.build(), dict));
+                dict = null;
+                return page;
+            }
+        } finally {
+            Releasables.close(dict);
+        }
+    }
+
+    private static BytesRefVector dictVector(BlockFactory factory, List<BytesRef> dictValues) {
         try (BytesRefVector.Builder db = factory.newBytesRefVectorBuilder(dictValues.size())) {
             for (BytesRef v : dictValues) {
                 db.appendBytesRef(v);
             }
-            dict = db.build();
-        }
-        try (IntBlock.Builder ob = factory.newIntBlockBuilder(n)) {
-            for (int i = 0; i < n; i++) {
-                if (i % 7 == 0) {
-                    ob.appendNull();
-                } else {
-                    ob.appendInt(i % dictValues.size());
-                }
-            }
-            return new Page(new OrdinalBytesRefBlock(ob.build(), dict));
+            return db.build();
         }
     }
 
