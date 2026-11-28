@@ -182,35 +182,56 @@ public class FilterBenchmark {
         return payload.build().asBlock();
     }
 
-    private static int expectedPositions(Operation operation, Page input) {
+    /**
+     * Expected kept row numbers. Payload is the original row index, so the self-test
+     * can reject "first N rows in order" which would still pass a count-and-increasing check.
+     */
+    private static int[] expectedRows(Operation operation, Page input) {
         return switch (operation) {
             case MIXED_50 -> {
                 var test = input.<BooleanBlock>getBlock(0).asVector();
+                int[] rows = new int[BLOCK_LENGTH];
                 int count = 0;
                 for (int i = 0; i < BLOCK_LENGTH; i++) {
                     if (test.getBoolean(i)) {
-                        count++;
+                        rows[count++] = i;
                     }
                 }
-                yield count;
+                yield Arrays.copyOf(rows, count);
             }
-            case ALL_TRUE -> BLOCK_LENGTH;
-            case ALL_FALSE, OR_OF_ANDS_16 -> 0;
-            case AND_BOOLEAN -> (BLOCK_LENGTH + 5) / 6;
+            case ALL_TRUE -> {
+                int[] rows = new int[BLOCK_LENGTH];
+                for (int i = 0; i < BLOCK_LENGTH; i++) {
+                    rows[i] = i;
+                }
+                yield rows;
+            }
+            case ALL_FALSE, OR_OF_ANDS_16 -> new int[0];
+            case AND_BOOLEAN -> {
+                // lhs even and rhs i%3==0 → i%6==0
+                int count = (BLOCK_LENGTH + 5) / 6;
+                int[] rows = new int[count];
+                for (int i = 0; i < count; i++) {
+                    rows[i] = i * 6;
+                }
+                yield rows;
+            }
         };
     }
 
     private static void checkExpected(Operation operation, Page input, Page output) {
-        int expected = expectedPositions(operation, input);
+        int[] expected = expectedRows(operation, input);
         int actual = output == null ? 0 : output.getPositionCount();
-        if (actual != expected) {
-            throw new AssertionError("[" + operation + "] expected [" + expected + "] positions but was [" + actual + "]");
+        if (actual != expected.length) {
+            throw new AssertionError("[" + operation + "] expected [" + expected.length + "] positions but was [" + actual + "]");
         }
         if (output != null) {
             LongBlock payload = output.getBlock(output.getBlockCount() - 1);
-            for (int p = 1; p < payload.getPositionCount(); p++) {
-                if (payload.getLong(p) <= payload.getLong(p - 1)) {
-                    throw new AssertionError("[" + operation + "] payload out of order at [" + p + "]");
+            for (int p = 0; p < expected.length; p++) {
+                if (payload.getLong(p) != expected[p]) {
+                    throw new AssertionError(
+                        "[" + operation + "] payload[" + p + "] expected [" + expected[p] + "] but was [" + payload.getLong(p) + "]"
+                    );
                 }
             }
         }
